@@ -31,15 +31,57 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
         // If it's a sheet instance, switch over to the new sheet.
         if (item instanceof SchematicSheet) {
-            this.project.set_active_page(
-                `${item.sheetfile}:${item.path}/${item.uuid}`,
-            );
+            const target = this.#find_sheet_page(item);
+            if (target) {
+                this.project.set_active_page(target.project_path);
+            } else {
+                console.warn(
+                    `Couldn't find a project page for sheet "${item.sheetfile}"`,
+                );
+            }
             return;
         }
 
         // Otherwise, selecting the same item twice will show the
         // properties panel.
         this.change_activity("properties");
+    }
+
+    /**
+     * Find the project page for a clicked-on sheet.
+     *
+     * We'd like to match on the sheet's full hierarchical path
+     * (`${item.path}/${item.uuid}`), but that requires the sheet's
+     * `(instances ...)` metadata to be fully populated in the file, which
+     * isn't always true - hand-authored or lightly-edited .kicad_sch files
+     * commonly leave it blank. Fall back progressively: match by uuid
+     * alone, then (if there's only one page for that file) by filename
+     * alone, so navigation still works even with incomplete metadata.
+     */
+    #find_sheet_page(item: SchematicSheet): ProjectPage | undefined {
+        let exact: ProjectPage | undefined;
+        let by_uuid: ProjectPage | undefined;
+        const by_filename: ProjectPage[] = [];
+
+        for (const page of this.project.pages()) {
+            if (page.filename !== item.sheetfile) {
+                continue;
+            }
+
+            by_filename.push(page);
+
+            if (page.sheet_path === `${item.path}/${item.uuid}`) {
+                exact = page;
+            } else if (page.sheet_path.endsWith(`/${item.uuid}`)) {
+                by_uuid = page;
+            }
+        }
+
+        return (
+            exact ??
+            by_uuid ??
+            (by_filename.length === 1 ? by_filename[0] : undefined)
+        );
     }
 
     override can_load(src: ProjectPage): boolean {
