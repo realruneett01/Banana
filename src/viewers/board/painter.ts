@@ -42,6 +42,11 @@ abstract class BoardItemPainter extends ItemPainter {
         return (this.view_painter as BoardPainter).filter_net;
     }
 
+    /** Alias for BoardPainter.filter_footprint */
+    get filter_footprint(): board_items.Footprint | null {
+        return (this.view_painter as BoardPainter).filter_footprint;
+    }
+
     protected isFillValid(fill: string): boolean {
         return Boolean(fill && fill !== "none" && fill !== "no");
     }
@@ -1233,6 +1238,30 @@ export class BoardPainter extends DocumentPainter {
     // should use this to determine whether to draw or skip the current item.
     filter_net: number | null = null;
 
+    // Used to filter out items by footprint when highlighting footprints.
+    filter_footprint: board_items.Footprint | null = null;
+
+    private get_parent_footprint(item: any): board_items.Footprint | null {
+        let current = item;
+        while (current) {
+            if (current instanceof board_items.Footprint) {
+                return current;
+            }
+            current = current.parent;
+        }
+        return null;
+    }
+
+    override paint_item(layer: ViewLayer, item: any, ...rest: any[]) {
+        if (this.filter_footprint) {
+            const parent_footprint = this.get_parent_footprint(item);
+            if (parent_footprint !== this.filter_footprint) {
+                return;
+            }
+        }
+        super.paint_item(layer, item, ...rest);
+    }
+
     paint_net(board: board_items.KicadPCB, net: number) {
         const layer = this.layers.overlay;
 
@@ -1255,5 +1284,36 @@ export class BoardPainter extends DocumentPainter {
         layer.graphics = this.gfx.end_layer();
         layer.graphics.composite_operation = "overlay";
         this.filter_net = null;
+    }
+
+    paint_footprint(
+        board: board_items.KicadPCB,
+        footprint: board_items.Footprint,
+    ) {
+        const layer = this.layers.overlay;
+
+        this.filter_footprint = footprint;
+
+        layer.clear();
+        layer.color = Color.white;
+        this.gfx.start_layer(layer.name);
+
+        for (const item of board.items()) {
+            const painter = this.painter_for(item);
+
+            if (!painter) {
+                continue;
+            }
+
+            this.paint_item(layer, item);
+        }
+
+        // Draw a subtle bbox outline for framing (no filled polygon)
+        const bb = footprint.bbox.copy().grow(footprint.bbox.w * 0.1);
+        this.gfx.line(Polyline.from_BBox(bb, 0.254, Color.white));
+
+        layer.graphics = this.gfx.end_layer();
+        layer.graphics.composite_operation = "overlay";
+        this.filter_footprint = null;
     }
 }

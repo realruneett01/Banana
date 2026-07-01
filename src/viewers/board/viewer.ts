@@ -97,9 +97,9 @@ export class BoardViewer extends DocumentViewer<
             item = this.board.find_footprint(item);
         }
 
-        // If it's a footprint, use the footprint's nominal bounding box.
         if (item instanceof board_items.Footprint) {
-            item = item.bbox;
+            super.select(item.bbox);
+            return;
         }
 
         super.select(item);
@@ -108,6 +108,20 @@ export class BoardViewer extends DocumentViewer<
     highlight_net(net: number) {
         this.painter.paint_net(this.board, net);
         this.draw();
+    }
+
+    highlight_footprint(footprint: board_items.Footprint) {
+        this.painter.paint_footprint(this.board, footprint);
+        this.draw();
+    }
+
+    protected override paint_selected() {
+        const selected = this.selected;
+        if (selected && selected.context instanceof board_items.Footprint) {
+            this.highlight_footprint(selected.context);
+        } else {
+            super.paint_selected();
+        }
     }
 
     private set_layers_opacity(layers: Generator<ViewLayer>, opacity: number) {
