@@ -83,7 +83,9 @@ export abstract class FileSystemBase implements IFileSystem {
     }
 
     async setup() {
-        // load all entries on root directory
+        // Recursively walk the whole tree starting at the root so every
+        // folder (not just the ones a caller happens to ask about) is
+        // known before the project starts resolving sheet/board files.
         await this.walk("");
     }
 
@@ -101,7 +103,10 @@ export abstract class FileSystemBase implements IFileSystem {
             return false;
         }
 
-        // load entries on current directory
+        // Entries should already be populated from the recursive walk
+        // done in setup(), but walk() is idempotent (it no-ops on an
+        // already-visited directory) so this is a safe fallback for
+        // directories discovered after the fact.
         await this.walk(dir);
 
         // check if the file exists and is a file
@@ -123,7 +128,10 @@ export abstract class FileSystemBase implements IFileSystem {
     }
 
     /**
-     * Walk through directories and update `this.entries`
+     * Walk through a directory, record its entries, and recurse into any
+     * subdirectories found so the entire folder tree ends up known -
+     * giving the project access to every file in every folder up front,
+     * not just the ones it happens to ask for by name.
      */
     private async walk(dir: string): Promise<void> {
         if (this.entries.get(dir)?.type === "visited-directory") {
@@ -134,12 +142,21 @@ export abstract class FileSystemBase implements IFileSystem {
         const entries = await this.enumerate(dir);
         this.entries.set(dir, { path: dir, type: "visited-directory" });
 
+        const subdirs: string[] = [];
+
         for (const it of entries) {
             if (it.type === "file" && !FileSystemBase.is_kicad_file(it.path)) {
                 continue;
             }
             this.entries.set(it.path, it);
+            if (it.type === "directory") {
+                subdirs.push(it.path);
+            }
         }
+
+        // Recurse into every subdirectory in parallel so the full tree is
+        // available as soon as setup() resolves.
+        await Promise.all(subdirs.map((subdir) => this.walk(subdir)));
     }
 
     /**
