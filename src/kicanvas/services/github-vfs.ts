@@ -23,22 +23,31 @@ const gh = new GitHub();
 export class GitHubFileSystem extends FileSystemBase {
     private download_urls: Map<string, URL>;
 
+    /**
+     * If the user linked directly to a single .kicad_sch/.kicad_pcb file
+     * (a "blob" URL), this holds that file's path relative to the repo
+     * folder we're browsing. We still enumerate that file's containing
+     * directory (and recurse into any sheets it references) through the
+     * GitHub API so hierarchical/child sheets can be found - we just also
+     * prefetch this one file directly so it's available immediately.
+     */
+    public readonly initial_file?: string;
+
     constructor(
         url: string | URL,
         private gh_repo: GitHubURLInfo,
-        private single_file = false,
+        initial_file?: string,
     ) {
         super();
         this.download_urls = new Map<string, URL>();
+        this.initial_file = initial_file;
 
-        // try using `raw.github` directly for single file
-        if (single_file) {
-            // Handles URLs like this:
-            // https://github.com/wntrblm/Helium/blob/main/hardware/board/board.kicad_sch
-            // In single-file mode, just store file basename
+        // Prefetch the exact linked file directly from
+        // raw.githubusercontent.com so it's available without waiting on
+        // the Contents API call that enumerate() below will also make.
+        if (initial_file) {
             const guc_url = gh_user_content.convert_url(url);
-            const name = basename(guc_url);
-            this.download_urls.set(name, guc_url);
+            this.download_urls.set(initial_file, guc_url);
         }
     }
 
@@ -52,14 +61,6 @@ export class GitHubFileSystem extends FileSystemBase {
     }
 
     async enumerate(cur_dir: string): Promise<FileEntry[]> {
-        if (this.single_file) {
-            // single file, return all files directly
-            return Array.from(this.download_urls.keys()).map((v) => ({
-                type: "file",
-                path: v,
-            }));
-        }
-
         const base_dir = this.gh_repo.path ?? "";
         const full_path = normalize_join(base_dir, cur_dir);
 
@@ -76,7 +77,9 @@ export class GitHubFileSystem extends FileSystemBase {
                 const path = decodeURI(it.path);
                 const file_path = based_on(base_dir, path);
 
-                this.download_urls.set(file_path, new URL(it.download_url));
+                if (!this.download_urls.has(file_path)) {
+                    this.download_urls.set(file_path, new URL(it.download_url));
+                }
 
                 result.push({
                     type: "file",
@@ -111,12 +114,18 @@ export class GitHubFileSystem extends FileSystemBase {
             info.type = "tree";
         }
 
-        // If it's one file just load one file.
-        let single_file = false;
+        // If the link points at a single kicad_sch/kicad_pcb file, remember
+        // it (so it can be prefetched and later focused as the active
+        // page), but still browse its containing directory via the API so
+        // that any sibling/child sheets it references can be discovered
+        // and loaded too - a single-file link no longer means "ignore the
+        // rest of the folder".
+        let initial_file: string | undefined;
         if (info.type === "blob") {
             const ext_name = extension(info.path!);
             if (["kicad_sch", "kicad_pcb"].includes(ext_name)) {
-                single_file = true;
+                initial_file = basename(info.path!);
+                info.path = dirname(info.path!);
             } else {
                 // Link to non-kicad file, try using the containing directory.
                 info.type = "tree";
@@ -126,6 +135,6 @@ export class GitHubFileSystem extends FileSystemBase {
             }
         }
 
-        return new GitHubFileSystem(url, info, single_file);
+        return new GitHubFileSystem(url, info, initial_file);
     }
 }

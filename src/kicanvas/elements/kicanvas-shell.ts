@@ -137,6 +137,26 @@ class KiCanvasShellElement extends KCUIElement {
         });
     }
 
+    /**
+     * If the loaded filesystem came from a link to one specific file (e.g.
+     * a GitHub blob URL), find the project page for that exact file so we
+     * open it instead of whatever the hierarchy walk happened to pick as
+     * "first". Falls through to the default (first_page) otherwise.
+     */
+    #preferred_page(vfs: IFileSystem) {
+        if (!(vfs instanceof GitHubFileSystem) || !vfs.initial_file) {
+            return null;
+        }
+
+        for (const page of this.project.pages()) {
+            if (page.filename === vfs.initial_file) {
+                return page;
+            }
+        }
+
+        return null;
+    }
+
     private async load_repo(url: string): Promise<IFileSystem | null> {
         return (
             (await GitHubFileSystem.fromURLs(url)) ??
@@ -151,7 +171,9 @@ class KiCanvasShellElement extends KCUIElement {
         try {
             await vfs.setup();
             await this.project.load(vfs);
-            this.project.set_active_page(this.project.first_page);
+            this.project.set_active_page(
+                this.#preferred_page(vfs) ?? this.project.first_page,
+            );
             this.loaded = true;
         } catch (e) {
             console.error(e);
