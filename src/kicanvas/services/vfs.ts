@@ -412,18 +412,26 @@ export class DragAndDropFileSystem extends LocalFileSystemBase {
                     item as FileSystemDirectoryEntry
                 ).createReader();
 
-                await new Promise((resolve, reject) => {
-                    reader.readEntries((entries) => {
-                        for (const entry of entries) {
-                            if (entry.isFile) {
-                                files.push(entry as FileSystemFileEntry);
-                            } else if (entry.isDirectory) {
-                                items.push(entry);
-                            }
+                // readEntries() is paginated by spec (browsers commonly
+                // cap a single call around ~100 entries) - it must be
+                // called repeatedly until it returns an empty array or
+                // larger folders will silently lose files/subfolders.
+                let batch: FileSystemEntry[];
+                do {
+                    batch = await new Promise<FileSystemEntry[]>(
+                        (resolve, reject) => {
+                            reader.readEntries(resolve, reject);
+                        },
+                    );
+
+                    for (const entry of batch) {
+                        if (entry.isFile) {
+                            files.push(entry as FileSystemFileEntry);
+                        } else if (entry.isDirectory) {
+                            items.push(entry);
                         }
-                        resolve(true);
-                    }, reject);
-                });
+                    }
+                } while (batch.length > 0);
             }
         }
 
@@ -436,6 +444,36 @@ export class DragAndDropFileSystem extends LocalFileSystemBase {
  */
 export class LocalFileSystem extends LocalFileSystemBase {
     constructor(files: File[]) {
-        super(new Map(files.map((f) => [f.name, f])));
+        super(LocalFileSystem.build_entries(files));
+    }
+
+    /**
+     * Build the path -> File map used by the base class.
+     *
+     * Files picked through a plain multi-file `<input type="file">` have
+     * no folder information, so they're keyed by their bare name. Files
+     * picked through a folder picker (`webkitdirectory`) carry
+     * `webkitRelativePath` (e.g. "myproject/hardware/board.kicad_sch") -
+     * for those we strip the leading (selected) folder name so the
+     * resulting paths are relative to the project root, matching how
+     * `sheetfile` references are resolved elsewhere.
+     */
+    private static build_entries(files: File[]): Map<string, File> {
+        const entries = files.map((f) => {
+            const rel = (f as File & { webkitRelativePath?: string })
+                .webkitRelativePath;
+
+            if (!rel) {
+                return [f.name, f] as const;
+            }
+
+            const parts = rel.split("/").filter(Boolean);
+            const path =
+                parts.length > 1 ? parts.slice(1).join("/") : parts.join("/");
+
+            return [path, f] as const;
+        });
+
+        return new Map(entries);
     }
 }

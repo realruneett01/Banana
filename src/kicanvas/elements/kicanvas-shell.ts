@@ -80,6 +80,9 @@ class KiCanvasShellElement extends KCUIElement {
     @query(`button[name="open_local"]`, true)
     public open_file_button: HTMLButtonElement;
 
+    @query(`button[name="open_local_folder"]`, true)
+    public open_folder_button: HTMLButtonElement;
+
     override initialContentCallback() {
         const url_params = new URLSearchParams(document.location.search);
 
@@ -132,6 +135,12 @@ class KiCanvasShellElement extends KCUIElement {
 
         this.open_file_button.addEventListener("click", async (e) => {
             FilePicker.pick(async (vfs) => {
+                await this.setup_project(vfs);
+            });
+        });
+
+        this.open_folder_button.addEventListener("click", async (e) => {
+            FilePicker.pick_folder(async (vfs) => {
                 await this.setup_project(vfs);
             });
         });
@@ -224,7 +233,10 @@ class KiCanvasShellElement extends KCUIElement {
                         or drag & drop your KiCad files, or<button
                             name="open_local"
                             class="link_button">
-                            open from local
+                            open a file
+                        </button>
+                        or<button name="open_local_folder" class="link_button">
+                            open a folder
                         </button>
                     </p>
                     <p class="note">
