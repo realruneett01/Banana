@@ -145,19 +145,26 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                 ${entry("Y", item.at.position.y.toFixed(4), "mm")}
                 ${header("Fields")} ${properties} ${header("Pins")} ${pins}
             `;
+        } else if (item instanceof DirectiveLabel) {
+            // Must be checked before the plain `Label` branch below:
+            // DirectiveLabel extends Label, so `item instanceof Label` is
+            // also true for directive labels. With the old ordering that
+            // branch matched first and this one was permanently dead code
+            // - clicking a directive label (ERC netclass flag) always
+            // rendered a generic "Net Label" panel instead of its own
+            // "Directive Label" panel.
+            const pos = item.at.position;
+            entries = html`
+                ${header("Directive Label")}
+                ${entry("Text", item.shown_text || item.text || "N/A")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
         } else if (item instanceof Label) {
             const pos = item.at.position;
             entries = html`
                 ${header("Net Label")}
                 ${entry("Text", item.shown_text || item.text || "Unnamed")}
-                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
-                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
-            `;
-        } else if (item instanceof DirectiveLabel) {
-            const pos = item.at.position;
-            entries = html`
-                ${header("Directive Label")}
-                ${entry("Text", item.shown_text || item.text || "N/A")}
                 ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
                 ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
             `;
