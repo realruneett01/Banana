@@ -76,6 +76,23 @@ export class ViewLayer implements IDisposable {
     bboxes: Map<any, BBox> = new Map();
 
     /**
+     * Fine-grained hit-test boxes for interactive picking.
+     *
+     * `bboxes` holds one box per top-level item (the union of everything
+     * drawn for that item - body, pins, and fields all merged together).
+     * That's fine for things like "zoom to selection", but it's too coarse
+     * for click hit-testing: it makes the whole item's bounding rectangle
+     * clickable, including empty space between disjoint sub-elements (e.g.
+     * a symbol body and a field label that sits far away from it).
+     *
+     * Painters can optionally push tighter, per-sub-element boxes here
+     * (each tagged via `.context` with whatever should actually get
+     * selected, usually the parent item). When populated, `query_point`
+     * prefers these over the coarse `bboxes` map.
+     */
+    hit_boxes: BBox[] = [];
+
+    /**
      * Create a new Layer.
      * @param layer_set - the LayerSet that this Layer belongs to
      * @param name - this layer's name
@@ -105,6 +122,7 @@ export class ViewLayer implements IDisposable {
         this.graphics = undefined;
         this.items = [];
         this.bboxes.clear();
+        this.hit_boxes = [];
     }
 
     get visible(): boolean {
@@ -124,10 +142,22 @@ export class ViewLayer implements IDisposable {
         return BBox.combine(this.bboxes.values());
     }
 
-    /** @yields a list of BBoxes that contain the given point */
-    *query_point(p: Vec2) {
+    /**
+     * Yields BBoxes that contain the given point.
+     * Checks fine-grained hit_boxes first, then falls back to standard bboxes
+     * so un-migrated elements (wires, junctions) are never masked out.
+     */
+    *query_point(p: Vec2, tolerance = 0) {
+        for (const bb of this.hit_boxes) {
+            const test_box = tolerance ? bb.grow(tolerance) : bb;
+            if (test_box.contains_point(p)) {
+                yield bb;
+            }
+        }
+
         for (const bb of this.bboxes.values()) {
-            if (bb.contains_point(p)) {
+            const test_box = tolerance ? bb.grow(tolerance) : bb;
+            if (test_box.contains_point(p)) {
                 yield bb;
             }
         }
@@ -292,9 +322,9 @@ export class ViewLayerSet implements IDisposable {
     /**
      * @yields layers and bounding boxes that contain the given point.
      */
-    *query_point(p: Vec2) {
+    *query_point(p: Vec2, tolerance = 0) {
         for (const layer of this.interactive_layers()) {
-            for (const bbox of layer.query_point(p)) {
+            for (const bbox of layer.query_point(p, tolerance)) {
                 yield { layer, bbox };
             }
         }

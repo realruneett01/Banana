@@ -5,7 +5,7 @@
 */
 
 import { Color } from "../../../base/color";
-import { Angle, Vec2 } from "../../../base/math";
+import { Angle, BBox, Vec2 } from "../../../base/math";
 import * as shapes from "../../../graphics/shapes";
 import * as schematic_items from "../../../kicad/schematic";
 import { SchText, StrokeFont } from "../../../kicad/text";
@@ -32,10 +32,47 @@ export class LabelPainter extends SchematicItemPainter {
     override classes: any[] = [];
 
     override layers_for(item: schematic_items.Label) {
-        return [LayerNames.label];
+        return [LayerNames.label, LayerNames.interactive];
     }
 
     override paint(layer: ViewLayer, l: schematic_items.Label) {
+        if (layer.name === LayerNames.interactive) {
+            const schtext = new SchText(l.shown_text);
+            schtext.apply_at(l.at);
+            schtext.apply_effects(l.effects);
+
+            this.after_apply(l, schtext);
+
+            if (l.at.rotation == 0 || l.at.rotation == 180) {
+                schtext.text_angle.degrees = 0;
+            } else if (l.at.rotation == 90 || l.at.rotation == 270) {
+                schtext.text_angle.degrees = 90;
+            }
+
+            const pos = schtext.text_pos.add(
+                this.get_schematic_text_offset(l, schtext),
+            );
+            schtext.text_pos = pos;
+            const text_box = schtext.get_text_box();
+
+            const shape_pts = this.create_shape(l, schtext);
+            const points: Vec2[] = shape_pts ? [...shape_pts] : [];
+            if (text_box) {
+                if (text_box.top_left && text_box.bottom_right) {
+                    points.push(text_box.top_left, text_box.bottom_right);
+                } else {
+                    points.push(
+                        new Vec2(text_box.x, text_box.y),
+                        new Vec2(text_box.x + text_box.w, text_box.y + text_box.h)
+                    );
+                }
+            }
+
+            const label_bbox = BBox.from_points(points, l);
+            layer.hit_boxes.push(label_bbox);
+            return;
+        }
+
         if (l.effects.hide) {
             return;
         }
@@ -358,10 +395,19 @@ export class DirectiveLabelPainter extends SchematicItemPainter {
     }
 
     override layers_for(item: schematic_items.DirectiveLabel) {
-        return [LayerNames.label];
+        return [LayerNames.label, LayerNames.interactive];
     }
 
     override paint(layer: ViewLayer, item: schematic_items.DirectiveLabel) {
+        if (layer.name === LayerNames.interactive) {
+            const pos = item.at.position;
+            const radius = 1.2;
+            layer.hit_boxes.push(
+                new BBox(pos.x - radius, pos.y - radius, radius * 2, radius * 2, item)
+            );
+            return;
+        }
+
         this.paint_shape(layer, item);
         for (const prop of item.properties) {
             this.paint_property(layer, prop);

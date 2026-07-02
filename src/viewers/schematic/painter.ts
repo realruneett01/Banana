@@ -154,10 +154,16 @@ class WirePainter extends SchematicItemPainter {
     classes = [schematic_items.Wire];
 
     layers_for(item: schematic_items.Wire) {
-        return [LayerNames.wire];
+        return [LayerNames.wire, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, w: schematic_items.Wire) {
+        if (layer.name === LayerNames.interactive) {
+            const wire_bbox = BBox.from_points(w.pts, w);
+            layer.hit_boxes.push(wire_bbox);
+            return;
+        }
+
         this.gfx.line(
             new Polyline(w.pts, this.gfx.state.stroke_width, this.theme.wire),
         );
@@ -168,10 +174,16 @@ class BusPainter extends SchematicItemPainter {
     classes = [schematic_items.Bus];
 
     layers_for(item: schematic_items.Bus) {
-        return [LayerNames.wire];
+        return [LayerNames.wire, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, w: schematic_items.Bus) {
+        if (layer.name === LayerNames.interactive) {
+            const bus_bbox = BBox.from_points(w.pts, w);
+            layer.hit_boxes.push(bus_bbox);
+            return;
+        }
+
         this.gfx.line(
             new Polyline(
                 w.pts,
@@ -186,10 +198,16 @@ class BusEntryPainter extends SchematicItemPainter {
     classes = [schematic_items.BusEntry];
 
     layers_for(item: schematic_items.BusEntry) {
-        return [LayerNames.junction];
+        return [LayerNames.junction, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, be: schematic_items.BusEntry) {
+        if (layer.name === LayerNames.interactive) {
+            const entry_bbox = BBox.from_points([be.at.position, be.at.position.add(be.size)], be);
+            layer.hit_boxes.push(entry_bbox);
+            return;
+        }
+
         this.gfx.line(
             new Polyline(
                 [be.at.position, be.at.position.add(be.size)],
@@ -295,10 +313,19 @@ class JunctionPainter extends SchematicItemPainter {
     classes = [schematic_items.Junction];
 
     layers_for(item: schematic_items.Junction) {
-        return [LayerNames.junction];
+        return [LayerNames.junction, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, j: schematic_items.Junction) {
+        if (layer.name === LayerNames.interactive) {
+            const pos = j.at.position;
+            const r = (j.diameter || 1) / 2;
+            layer.hit_boxes.push(
+                new BBox(pos.x - r, pos.y - r, r * 2, r * 2, j)
+            );
+            return;
+        }
+
         const color = this.theme.junction;
         this.gfx.circle(
             new Circle(j.at.position, (j.diameter || 1) / 2, color),
@@ -310,10 +337,19 @@ class NoConnectPainter extends SchematicItemPainter {
     classes = [schematic_items.NoConnect];
 
     layers_for(item: schematic_items.NoConnect) {
-        return [LayerNames.junction];
+        return [LayerNames.junction, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, nc: schematic_items.NoConnect): void {
+        if (layer.name === LayerNames.interactive) {
+            const pos = nc.at.position;
+            const padding = 0.75;
+            layer.hit_boxes.push(
+                new BBox(pos.x - padding, pos.y - padding, padding * 2, padding * 2, nc)
+            );
+            return;
+        }
+
         const color = this.theme.no_connect;
         const width = schematic_items.DefaultValues.line_width;
         const size = schematic_items.DefaultValues.noconnect_size / 2;
@@ -348,10 +384,22 @@ class TextPainter extends SchematicItemPainter {
     classes = [schematic_items.Text];
 
     layers_for(item: schematic_items.Text) {
-        return [LayerNames.notes];
+        return [LayerNames.notes, LayerNames.interactive];
     }
 
     paint(layer: ViewLayer, t: schematic_items.Text) {
+        if (layer.name === LayerNames.interactive) {
+            const schtext = new SchText(t.shown_text);
+            schtext.apply_at(t.at);
+            schtext.apply_effects(t.effects);
+            const bbox = schtext.get_text_box();
+            if (bbox) {
+                const text_bbox = new BBox(bbox.x, bbox.y, bbox.w, bbox.h, t);
+                layer.hit_boxes.push(text_bbox);
+            }
+            return;
+        }
+
         if (t.effects.hide || !t.text) {
             return;
         }
@@ -475,7 +523,18 @@ class PropertyPainter extends SchematicItemPainter {
 
         if (layer.name == LayerNames.interactive) {
             // Drawing text is expensive, just draw the bbox for the interactive layer.
-            this.gfx.line(new Polyline(Array.from(bbox_pts), 0.1, Color.white));
+            const pts = Array.from(bbox_pts);
+            this.gfx.line(new Polyline(pts, 0.1, Color.white));
+
+            // Register this field (Reference, Value, Footprint, etc) as
+            // its own independently-clickable hit box. Clicking it selects
+            // the owning symbol/sheet (matching KiCad's behavior), but the
+            // box itself stays tight to the text instead of being merged
+            // into the symbol's overall bounding rectangle - that's what
+            // was causing clicks on/near a field's surrounding empty space
+            // to select unrelated nearby items.
+            const field_bbox = BBox.from_points(pts, parent);
+            layer.hit_boxes.push(field_bbox);
         } else {
             this.gfx.state.push();
             StrokeFont.default().draw(
@@ -583,6 +642,11 @@ class SchematicSheetPainter extends SchematicItemPainter {
 
         if (layer.name == LayerNames.interactive) {
             this.gfx.polygon(Polygon.from_BBox(bbox.grow(3), fill_color));
+            // Tight body-only hit box; the sheet's fields (name/filename)
+            // register their own boxes via PropertyPainter below.
+            const hit_bbox = bbox.grow(3);
+            hit_bbox.context = ss;
+            layer.hit_boxes.push(hit_bbox);
         }
 
         if (layer.name == LayerNames.symbol_background) {

@@ -16,10 +16,13 @@ import {
     KiCanvasSelectEvent,
     type KiCanvasEventMap,
 } from "./events";
-import { ViewLayerSet } from "./view-layers";
+import { ViewLayer, ViewLayerSet } from "./view-layers";
 import { Viewport } from "./viewport";
 
 export abstract class Viewer extends EventTarget {
+    /** Click hit-test tolerance, in screen pixels. */
+    static hit_tolerance_px = 4;
+
     public renderer: Renderer;
     public viewport: Viewport;
     public layers: ViewLayerSet;
@@ -93,8 +96,7 @@ export abstract class Viewer extends EventTarget {
 
             this.disposables.add(
                 listen(this.canvas, "click", (e) => {
-                    const items = this.layers.query_point(this.mouse_position);
-                    this.on_pick(this.mouse_position, items);
+                    this.on_click(e);
                 }),
             );
         }
@@ -172,18 +174,34 @@ export abstract class Viewer extends EventTarget {
         });
     }
 
+    protected on_click(e: MouseEvent) {
+        const rect = this.canvas.getBoundingClientRect();
+        const mouse_pos = this.viewport.camera.screen_to_world(
+            new Vec2(e.clientX - rect.left, e.clientY - rect.top)
+        );
+        const tolerance =
+            Viewer.hit_tolerance_px / this.viewport.camera.zoom;
+
+        const items = this.layers.query_point(mouse_pos, tolerance);
+        this.on_pick(mouse_pos, items);
+    }
+
     protected on_pick(
-        mouse: Vec2,
-        items: ReturnType<ViewLayerSet["query_point"]>,
+        _mouse: Vec2,
+        items: Iterable<{ layer: ViewLayer; bbox: BBox }>,
     ) {
-        let selected = null;
+        let best: BBox | null = null;
+        let best_area = Infinity;
 
         for (const { bbox } of items) {
-            selected = bbox;
-            break;
+            const area = bbox.w * bbox.h;
+            if (area < best_area) {
+                best_area = area;
+                best = bbox;
+            }
         }
 
-        this.select(selected);
+        this.select(best);
     }
 
     public select(item: BBox | null) {

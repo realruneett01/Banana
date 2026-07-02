@@ -7,7 +7,17 @@
 import { sorted_by_numeric_strings } from "../../../base/array";
 import { html } from "../../../base/web-components";
 import { KCUIElement } from "../../../kc-ui";
-import { SchematicSheet, SchematicSymbol } from "../../../kicad/schematic";
+import {
+    SchematicSheet,
+    SchematicSymbol,
+    Label,
+    DirectiveLabel,
+    Wire,
+    Bus,
+    Junction,
+    NoConnect,
+    Text,
+} from "../../../kicad/schematic";
 import {
     KiCanvasLoadEvent,
     KiCanvasSelectEvent,
@@ -16,7 +26,7 @@ import { SchematicViewer } from "../../../viewers/schematic/viewer";
 
 export class KCSchematicPropertiesPanelElement extends KCUIElement {
     viewer: SchematicViewer;
-    selected_item?: SchematicSymbol | SchematicSheet;
+    selected_item?: any;
 
     override connectedCallback() {
         (async () => {
@@ -30,7 +40,7 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
     private setup_events() {
         this.addDisposable(
             this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
-                this.selected_item = e.detail.item as SchematicSymbol;
+                this.selected_item = e.detail.item;
                 this.update();
             }),
         );
@@ -98,7 +108,7 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                     ? entry(
                           "Unit",
                           String.fromCharCode(
-                              "A".charCodeAt(0) + item.unit - 1,
+                               "A".charCodeAt(0) + item.unit - 1,
                           ),
                       )
                     : ""}
@@ -134,6 +144,61 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                 ${entry("X", item.at.position.x.toFixed(4), "mm")}
                 ${entry("Y", item.at.position.y.toFixed(4), "mm")}
                 ${header("Fields")} ${properties} ${header("Pins")} ${pins}
+            `;
+        } else if (item instanceof Label) {
+            const pos = item.at.position;
+            entries = html`
+                ${header("Net Label")}
+                ${entry("Text", item.shown_text || item.text || "Unnamed")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else if (item instanceof DirectiveLabel) {
+            const pos = item.at.position;
+            entries = html`
+                ${header("Directive Label")}
+                ${entry("Text", item.shown_text || item.text || "N/A")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else if (item instanceof Wire) {
+            entries = html`
+                ${header("Wire")}
+                ${entry("Segments", `${item.pts?.length ?? 2} points`)}
+            `;
+        } else if (item instanceof Bus) {
+            entries = html`
+                ${header("Bus")}
+                ${entry("Segments", `${item.pts?.length ?? 2} points`)}
+            `;
+        } else if (item instanceof Junction) {
+            const pos = item.at.position;
+            entries = html`
+                ${header("Junction")}
+                ${entry("Diameter", item.diameter ?? "default")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else if (item instanceof NoConnect) {
+            const pos = item.at.position;
+            entries = html`
+                ${header("No Connect")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else if (item instanceof Text) {
+            const pos = item.at.position;
+            entries = html`
+                ${header("Text Note")}
+                ${entry("Text", item.shown_text || item.text || "")}
+                ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else {
+            entries = html`
+                ${header("Schematic Object")}
+                ${entry("Class", item.constructor.name)}
+                ${entry("UUID", (item as any).uuid || "N/A")}
             `;
         }
 

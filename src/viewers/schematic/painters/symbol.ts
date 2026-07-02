@@ -87,9 +87,20 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
     }
 
     paint(layer: ViewLayer, si: schematic_items.SchematicSymbol) {
-        if (layer.name == LayerNames.interactive && si.lib_symbol.power) {
-            // Don't draw power symbols on the interactive layer.
-            return;
+        if (layer.name == LayerNames.interactive) {
+            // Register a tight body+pins-only hit box (no fields) so
+            // clicking empty space between the symbol and a far-away
+            // field label doesn't select the symbol. Fields register
+            // their own separate hit boxes (see PropertyPainter).
+            const body_bbox = get_symbol_body_and_pins_bbox(this.theme, si);
+            if (body_bbox) {
+                body_bbox.context = si;
+                layer.hit_boxes.push(body_bbox);
+            }
+            if (si.lib_symbol.power) {
+                // Don't draw power symbols on the interactive layer.
+                return;
+            }
         }
 
         const transform = get_symbol_transform(si);
