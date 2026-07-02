@@ -1,210 +1,207 @@
 /*
-    Variables
+    Variables — remapped onto KiCad-derived design tokens.
+    The --cl-* vars are defined in debug/style.css :root and cascade
+    into every shadow DOM.  Component vars stay structurally identical
+    so nothing else in the codebase needs to change.
 */
 :host {
     font-size: var(--font-size, 16px);
 
     --transition-time-very-short: 100ms;
-    --transition-time-short: 200ms;
-    --transition-time-medium: 500ms;
+    --transition-time-short:      200ms;
+    --transition-time-medium:     500ms;
 
-    --bg: #131218;
-    --fg: #f8f8f0;
+    /* base surfaces */
+    --bg: var(--cl-bg-base,      #000);
+    --fg: var(--cl-text-primary, #ececec);
 
-    --tooltip-bg: #8864cb;
-    --tooltip-fg: #f8f8f0;
-    --tooltip-border: 1px solid #131218;
+    /* tooltips */
+    --tooltip-bg:     var(--cl-bg-surface-3,    #1b3352);
+    --tooltip-fg:     var(--cl-text-primary,     #ececec);
+    --tooltip-border: 1px solid var(--cl-border-subtle, rgba(208,210,205,0.12));
 
-    --scrollbar-bg: #131218;
-    --scrollbar-fg: #ae81ff66;
-    --scrollbar-active-fg: #ae81ff;
-    --scrollbar-hover-bg: #ae81ffbb;
+    /* scrollbar */
+    --scrollbar-bg:        var(--cl-bg-base,       #000);
+    --scrollbar-fg:        var(--cl-accent-secondary, rgb(77,127,196));
+    --scrollbar-active-fg: var(--cl-accent-primary,   rgb(200,52,52));
+    --scrollbar-hover-bg:  var(--cl-accent-secondary, rgb(77,127,196));
 
-    --activity-bar-bg: #282634;
-    --activity-bar-fg: #f8f8f0;
-    --activity-bar-active-bg: #131218;
-    --activity-bar-active-fg: #f8f8f0;
+    /* activity bar */
+    --activity-bar-bg:        var(--cl-bg-surface-1,    #091b33);
+    --activity-bar-fg:        var(--cl-text-primary,     #ececec);
+    --activity-bar-active-bg: var(--cl-bg-base,          #000);
+    --activity-bar-active-fg: var(--cl-accent-tertiary,  rgb(242,237,161));
 
-    --resizer-bg: #ae81ff;
-    --resizer-active-bg: #ae81ffbb;
+    /* resizer */
+    --resizer-bg:        var(--cl-border-strong,  rgba(208,210,205,0.28));
+    --resizer-active-bg: var(--cl-accent-primary, rgb(200,52,52));
 
-    --panel-bg: #131218;
-    --panel-fg: #f8f8f0;
-    --panel-border: 2px solid #282634;
-    --panel-title-bg: #8077a8;
-    --panel-title-fg: #f8f8f0;
-    --panel-title-border: 1px solid #634e89;
-    --panel-title-button-bg: transparent;
-    --panel-title-button-fg: #dcc8ff;
-    --panel-title-button-hover-bg: #ae81ff;
-    --panel-title-button-hover-fg: inherit;
+    /* panels */
+    --panel-bg:                    var(--cl-bg-surface-1,   #091b33);
+    --panel-fg:                    var(--cl-text-primary,   #ececec);
+    --panel-border:                2px solid var(--cl-border-subtle, rgba(208,210,205,0.12));
+    --panel-title-bg:              var(--cl-bg-surface-2,   #112242);
+    --panel-title-fg:              var(--cl-text-primary,   #ececec);
+    --panel-title-border:          1px solid var(--cl-border-strong, rgba(208,210,205,0.28));
+    --panel-title-button-bg:       transparent;
+    --panel-title-button-fg:       var(--cl-text-secondary,         #c2c2c2);
+    --panel-title-button-hover-bg: var(--cl-accent-primary,         rgb(200,52,52));
+    --panel-title-button-hover-fg: var(--cl-text-primary,           #ececec);
     --panel-title-button-disabled-bg: inherit;
-    --panel-title-button-disabled-fg: #888;
-    --panel-subtitle-bg: #634e89;
-    --panel-subtitle-fg: var(--panel-fg);
+    --panel-title-button-disabled-fg: var(--cl-text-muted, #848484);
+    --panel-subtitle-bg:           var(--cl-bg-surface-2,   #112242);
+    --panel-subtitle-fg:           var(--cl-text-secondary, #c2c2c2);
 
-    --dropdown-bg: #464258;
-    --dropdown-fg: #f8f8f0;
+    /* dropdowns */
+    --dropdown-bg: var(--cl-bg-surface-2, #112242);
+    --dropdown-fg: var(--cl-text-primary, #ececec);
 
-    --button-bg: #81eeff;
-    --button-fg: #131218;
-    --button-hover-bg: #a3f3ff;
-    --button-hover-fg: #131218;
-    --button-focus-outline: 1px solid #ae81ff;
-    --button-selected-bg: #ae81ff;
-    --button-selected-fg: #131218;
-    --button-disabled-bg: #131218;
-    --button-disabled-fg: #888;
-    --button-success-bg: #64cb96;
-    --button-success-fg: #131218;
-    --button-success-hover-bg: #81ffbe;
-    --button-success-hover-fg: #131218;
-    --button-danger-bg: #cb6488;
-    --button-danger-fg: #131218;
-    --button-danger-hover-bg: #ff81ad;
-    --button-danger-hover-fg: #131218;
-    --button-outline-bg: #282634;
-    --button-outline-fg: #f8f8f0;
-    --button-outline-hover-bg: #282634;
-    --button-outline-hover-fg: #81eeff;
-    --button-outline-disabled-bg: #131218;
-    --button-outline-disabled-fg: #888;
-    --button-toolbar-bg: #282634;
-    --button-toolbar-fg: #f8f8f0;
-    --button-toolbar-hover-bg: #282634;
-    --button-toolbar-hover-fg: #81eeff;
-    --button-toolbar-disabled-bg: #131218;
-    --button-toolbar-disabled-fg: #888;
-    --button-menu-bg: transparent;
-    --button-menu-fg: #f8f8f0;
-    --button-menu-hover-bg: transparent;
-    --button-menu-hover-fg: #81eeff;
+    /* buttons — primary */
+    --button-bg:         var(--cl-accent-secondary,      rgb(77,127,196));
+    --button-fg:         var(--cl-text-inverse,          rgb(0,16,35));
+    --button-hover-bg:   var(--cl-accent-primary,        rgb(200,52,52));
+    --button-hover-fg:   var(--cl-text-primary,          #ececec);
+    --button-focus-outline: 1px solid var(--cl-accent-highlight, rgb(255,38,226));
+    --button-selected-bg:   var(--cl-accent-primary,     rgb(200,52,52));
+    --button-selected-fg:   var(--cl-text-inverse,       rgb(0,16,35));
+    --button-disabled-bg:   var(--cl-bg-base,            #000);
+    --button-disabled-fg:   var(--cl-text-muted,         #848484);
+    /* buttons — success */
+    --button-success-bg:       var(--cl-success,     rgb(127,200,127));
+    --button-success-fg:       var(--cl-text-inverse,rgb(0,16,35));
+    --button-success-hover-bg: rgb(160,220,160);
+    --button-success-hover-fg: var(--cl-text-inverse,rgb(0,16,35));
+    /* buttons — danger */
+    --button-danger-bg:       var(--cl-error,       rgb(215,91,107));
+    --button-danger-fg:       var(--cl-text-inverse,rgb(0,16,35));
+    --button-danger-hover-bg: rgb(230,110,125);
+    --button-danger-hover-fg: var(--cl-text-inverse,rgb(0,16,35));
+    /* buttons — outline */
+    --button-outline-bg:           var(--cl-bg-surface-1, #091b33);
+    --button-outline-fg:           var(--cl-text-primary,  #ececec);
+    --button-outline-hover-bg:     var(--cl-bg-surface-1,  #091b33);
+    --button-outline-hover-fg:     var(--cl-accent-tertiary,rgb(242,237,161));
+    --button-outline-disabled-bg:  var(--cl-bg-base,       #000);
+    --button-outline-disabled-fg:  var(--cl-text-muted,    #848484);
+    /* buttons — toolbar */
+    --button-toolbar-bg:          var(--cl-bg-surface-1, #091b33);
+    --button-toolbar-fg:          var(--cl-text-primary,  #ececec);
+    --button-toolbar-hover-bg:    var(--cl-bg-surface-2,  #112242);
+    --button-toolbar-hover-fg:    var(--cl-accent-tertiary,rgb(242,237,161));
+    --button-toolbar-disabled-bg: var(--cl-bg-base,       #000);
+    --button-toolbar-disabled-fg: var(--cl-text-muted,    #848484);
+    /* buttons — menu */
+    --button-menu-bg:          transparent;
+    --button-menu-fg:          var(--cl-text-primary,  #ececec);
+    --button-menu-hover-bg:    transparent;
+    --button-menu-hover-fg:    var(--cl-accent-tertiary,rgb(242,237,161));
     --button-menu-disabled-bg: transparent;
-    --button-menu-disabled-fg: #888;
+    --button-menu-disabled-fg: var(--cl-text-muted,   #848484);
 
-    --input-bg: #131218;
-    --input-fg: #f8f8f0;
-    --input-border: 1px solid #8077a8;
-    --input-accent: #ae81ff;
-    --input-hover-shadow: 1px 1px 10px 5px rgba(0, 0, 0, 0.2);
-    --input-focus-outline: 1px solid #ae81ff;
-    --input-placeholder: #8077a8;
-    --input-disabled-bg: #131218;
-    --input-disabled-fg: #888;
+    /* inputs */
+    --input-bg:              var(--cl-bg-surface-1,    #091b33);
+    --input-fg:              var(--cl-text-primary,    #ececec);
+    --input-border:          1px solid var(--cl-border-strong, rgba(208,210,205,0.28));
+    --input-accent:          var(--cl-accent-primary,  rgb(200,52,52));
+    --input-hover-shadow:    1px 1px 10px 5px rgba(0,0,0,0.4);
+    --input-focus-outline:   1px solid var(--cl-accent-highlight, rgb(255,38,226));
+    --input-placeholder:     var(--cl-text-muted,      #848484);
+    --input-disabled-bg:     var(--cl-bg-base,         #000);
+    --input-disabled-fg:     var(--cl-text-muted,      #848484);
 
-    --input-range-bg: #8077a8;
-    --input-range-fg: #f8f8f0;
-    --input-range-hover-bg: #ae81ff;
-    --input-range-disabled-bg: #131218;
-    --input-range-hover-shadow: 1px 1px 10px 5px rgba(0, 0, 0, 0.2);
-    --input-range-handle-shadow: 1px 1px 5px 5px rgba(180, 180, 180, 0.2);
+    /* range inputs */
+    --input-range-bg:            var(--cl-bg-surface-2,    #112242);
+    --input-range-fg:            var(--cl-text-primary,    #ececec);
+    --input-range-hover-bg:      var(--cl-accent-primary,  rgb(200,52,52));
+    --input-range-disabled-bg:   var(--cl-bg-base,         #000);
+    --input-range-hover-shadow:  1px 1px 10px 5px rgba(0,0,0,0.4);
+    --input-range-handle-shadow: 1px 1px 5px 5px rgba(200,200,200,0.15);
 
-    --list-item-bg: var(--panel-bg);
-    --list-item-fg: var(--panel-fg);
-    --list-item-active-bg: #634e89;
-    --list-item-active-fg: var(--list-item-fg);
-    --list-item-hover-bg: #64cb96;
-    --list-item-hover-fg: var(--list-item-bg);
+    /* lists */
+    --list-item-bg:          var(--panel-bg);
+    --list-item-fg:          var(--panel-fg);
+    --list-item-active-bg:   var(--cl-bg-surface-3,     #1b3352);
+    --list-item-active-fg:   var(--cl-text-primary,     #ececec);
+    --list-item-hover-bg:    var(--cl-accent-primary,   rgb(200,52,52));
+    --list-item-hover-fg:    var(--cl-text-inverse,     rgb(0,16,35));
     --list-item-disabled-bg: var(--list-item-bg);
-    --list-item-disabled-fg: #888;
+    --list-item-disabled-fg: var(--cl-text-muted,       #848484);
 
-    --grid-outline: #433e56;
+    --grid-outline: var(--cl-border-subtle, rgba(208,210,205,0.12));
 }
+
 
 /*
-    Gradient theme
+    Gradient theme — KiCad navy/copper edition.
+    Replaces the original purple-teal gradients with surface tiers
+    derived from the board background colour.
 */
 :host {
-    --gradient-purple-green-light: linear-gradient(
-            190deg,
-            hsl(261deg 27% 42%) 0%,
-            hsl(243deg 27% 42%) 17%,
-            hsl(224deg 27% 42%) 33%,
-            hsl(205deg 27% 42%) 50%,
-            hsl(187deg 27% 42%) 67%,
-            hsl(168deg 27% 42%) 83%,
-            hsl(149deg 27% 42%) 100%
-        )
-        0 0 fixed;
-    --gradient-purple-blue-medium: linear-gradient(
-            190deg,
-            hsl(261deg 28% 30%) 0%,
-            hsl(248deg 30% 31%) 17%,
-            hsl(235deg 32% 32%) 33%,
-            hsl(222deg 34% 33%) 50%,
-            hsl(209deg 35% 34%) 67%,
-            hsl(197deg 37% 35%) 83%,
-            hsl(183deg 38% 36%) 100%
-        )
-        0 0 fixed;
-    --gradient-purple-blue-dark: linear-gradient(10deg, #111928, #1d162a) 0 0
-        fixed;
-    --gradient-cyan-blue-light: linear-gradient(
-            190deg,
-            hsl(183deg 63% 33%) 0%,
-            hsl(189deg 69% 30%) 17%,
-            hsl(194deg 74% 27%) 33%,
-            hsl(199deg 79% 24%) 50%,
-            hsl(203deg 85% 21%) 67%,
-            hsl(209deg 89% 18%) 83%,
-            hsl(214deg 95% 15%) 100%
-        )
-        0 0 fixed;
-    --gradient-purple-green-highlight: linear-gradient(
-            190deg,
-            hsl(261deg 27% 53%) 0%,
-            hsl(243deg 27% 52%) 17%,
-            hsl(224deg 27% 52%) 33%,
-            hsl(205deg 27% 51%) 50%,
-            hsl(186deg 27% 51%) 67%,
-            hsl(168deg 27% 50%) 83%,
-            hsl(149deg 27% 50%) 100%
-        )
-        0 0 fixed;
-    --gradient-purple-red: linear-gradient(90deg, #8864cb, #cb6488) 0 0 fixed;
-    --gradient-purple-red-highlight: linear-gradient(90deg, #b187ff, #ff80ac) 0
-        0 fixed;
+    /* Keep gradient vars as CSS var aliases so any CSS that
+       still references e.g. var(--gradient-purple-blue-dark)
+       gets a sensible KiCad-toned fallback. */
+    --gradient-purple-blue-dark:   var(--cl-bg-base,      rgb(0,16,35));
+    --gradient-purple-blue-medium: var(--cl-bg-surface-1, rgb(9,27,51));
+    --gradient-purple-green-light: var(--cl-bg-surface-2, rgb(17,38,66));
+    --gradient-cyan-blue-light:    var(--cl-bg-surface-3, rgb(27,51,82));
+    --gradient-purple-green-highlight: var(--cl-bg-surface-3, rgb(27,51,82));
+    --gradient-purple-red:           linear-gradient(90deg,
+        var(--cl-accent-secondary, rgb(77,127,196)),
+        var(--cl-accent-primary,   rgb(200,52,52))) 0 0 fixed;
+    --gradient-purple-red-highlight: linear-gradient(90deg,
+        rgb(110,160,220),
+        var(--cl-accent-primary-hover, rgb(224,74,74))) 0 0 fixed;
 
-    --scrollbar-bg: var(--gradient-purple-blue-dark);
-    --scrollbar-fg: var(--gradient-purple-green-light);
-    --scrollbar-hover-fg: var(--scrollbar-fg);
-    --scrollbar-active-fg: var(--scrollbar-fg);
+    /* Scrollbar — B.Cu blue thumb on board-bg track */
+    --scrollbar-bg:        var(--cl-bg-base);
+    --scrollbar-fg:        var(--cl-accent-secondary);
+    --scrollbar-hover-fg:  var(--cl-accent-primary);
+    --scrollbar-active-fg: var(--cl-accent-primary);
 
-    --activity-bar-bg: var(--gradient-purple-green-light);
+    /* Activity bar */
+    --activity-bar-bg: var(--cl-bg-surface-1);
 
-    --resizer-bg: var(--gradient-purple-blue-medium);
-    --resizer-active-bg: var(--gradient-purple-green-highlight);
+    /* Resizer */
+    --resizer-bg:        var(--cl-border-strong);
+    --resizer-active-bg: var(--cl-accent-primary);
 
-    --panel-bg: var(--gradient-purple-blue-dark);
-    --panel-title-bg: var(--gradient-purple-green-light);
-    --panel-subtitle-bg: var(--gradient-purple-blue-medium);
+    /* Panels */
+    --panel-bg:          var(--cl-bg-surface-1);
+    --panel-title-bg:    var(--cl-bg-surface-2);
+    --panel-subtitle-bg: var(--cl-bg-surface-2);
 
-    --button-toolbar-bg: var(--gradient-purple-blue-dark);
-    --button-toolbar-hover-bg: var(--gradient-purple-green-light);
-    --button-toolbar-hover-fg: #f8f8f0;
-    --button-toolbar-disabled-bg: var(--gradient-purple-blue-dark);
+    /* Toolbar buttons */
+    --button-toolbar-bg:          var(--cl-bg-surface-1);
+    --button-toolbar-hover-bg:    var(--cl-bg-surface-2);
+    --button-toolbar-hover-fg:    var(--cl-accent-tertiary);
+    --button-toolbar-disabled-bg: var(--cl-bg-base);
 
-    --button-toolbar-alt-bg: var(--gradient-purple-green-light);
-    --button-toolbar-alt-hover-bg: var(--gradient-purple-green-highlight);
-    --button-toolbar-alt-hover-fg: #f8f8f0;
-    --button-toolbar-alt-disabled-bg: var(--gradient-purple-blue-dark);
+    --button-toolbar-alt-bg:          var(--cl-bg-surface-2);
+    --button-toolbar-alt-hover-bg:    var(--cl-bg-surface-3);
+    --button-toolbar-alt-hover-fg:    var(--cl-text-primary);
+    --button-toolbar-alt-disabled-bg: var(--cl-bg-base);
 
-    --dropdown-bg: var(--gradient-purple-green-light);
-    --dropdown-fg: #f8f8f0;
-    --dropdown-hover-bg: var(--gradient-purple-green-highlight);
-    --dropdown-hover-fg: #f8f8f0;
-    --dropdown-active-bg: var(--gradient-purple-blue-dark);
-    --dropdown-active-fg: #f8f8f0;
+    /* Dropdowns */
+    --dropdown-bg:        var(--cl-bg-surface-2);
+    --dropdown-fg:        var(--cl-text-primary);
+    --dropdown-hover-bg:  var(--cl-bg-surface-3);
+    --dropdown-hover-fg:  var(--cl-text-primary);
+    --dropdown-active-bg: var(--cl-bg-base);
+    --dropdown-active-fg: var(--cl-text-primary);
 
-    --input-range-bg: var(--gradient-purple-green-light);
+    /* Range inputs */
+    --input-range-bg: var(--cl-bg-surface-2);
 
-    --list-item-hover-bg: var(--gradient-purple-green-highlight);
-    --list-item-active-bg: var(--gradient-cyan-blue-light);
+    /* Lists */
+    --list-item-hover-bg:  var(--cl-accent-primary);
+    --list-item-active-bg: var(--cl-bg-surface-3);
 
-    --focus-overlay-bg: var(--gradient-purple-green-light);
-    --focus-overlay-opacity: 0.5;
-    --focus-overlay-fg: #f8f8f0;
+    /* Focus overlay */
+    --focus-overlay-bg:      var(--cl-bg-surface-1);
+    --focus-overlay-opacity: 0.65;
+    --focus-overlay-fg:      var(--cl-text-primary);
 }
+
 
 /*
     Scrollbar
