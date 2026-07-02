@@ -9,7 +9,7 @@ import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
 import { no_self_recursion } from "../../base/functions";
 import { BBox, Vec2 } from "../../base/math";
-import { Color, Polygon, Polyline, Renderer } from "../../graphics";
+import { Color, Polyline, Renderer } from "../../graphics";
 import {
     KiCanvasLoadEvent,
     KiCanvasMouseMoveEvent,
@@ -242,18 +242,25 @@ export abstract class Viewer extends EventTarget {
         layer.clear();
 
         if (this.#selected) {
-            const bb = this.#selected.copy().grow(this.#selected.w * 0.1);
+            // Use max(w, h) so thin pin bboxes (where w or h ≈ 0.508 mm
+            // after grow) still produce a visible outline. The old w * 0.1
+            // gave near-zero padding for pins, making the highlight invisible.
+            const span = Math.max(this.#selected.w, this.#selected.h);
+            const grow = Math.max(span * 0.1, 0.25);
+            const bb = this.#selected.copy().grow(grow);
+
             this.renderer.start_layer(layer.name);
 
+            // White outline only — no polygon fill.
+            // The old polygon + composite_operation="overlay" produced the
+            // purple/blue wash that covered the entire symbol body instead of
+            // just the selected element.
             this.renderer.line(
                 Polyline.from_BBox(bb, 0.254, this.selection_color),
             );
 
-            this.renderer.polygon(Polygon.from_BBox(bb, this.selection_color));
-
             layer.graphics = this.renderer.end_layer();
-
-            layer.graphics.composite_operation = "overlay";
+            // No composite_operation override — render as plain white outline.
         }
 
         this.draw();

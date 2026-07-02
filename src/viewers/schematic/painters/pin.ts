@@ -70,24 +70,44 @@ export class PinPainter extends SchematicItemPainter {
         }
 
         if (layer.name == LayerNames.interactive) {
-            // Register a tight hit box that hugs just this pin's stem
-            // (connection point -> body root), tagged to the pin itself
-            // rather than the parent symbol. Without this, the pin's
-            // only footprint on the interactive layer was the coarse,
-            // automatic per-item bbox the renderer tracks around
-            // whatever draw_pin_shape() happens to draw - and it always
-            // lost the smallest-area tie-break against the symbol's own
-            // body+pins hit box, which SchematicSymbolPainter pushes for
-            // the *entire* IC. That's why clicking directly on a pin (or
-            // in the gap between the pin stub and the body) always
-            // selected and highlighted the whole component instead of
-            // just that pin.
+            // Build the hitbox from the already-transformed PinInfo (world
+            // coordinates, after apply_symbol_transformations) - NOT from
+            // the raw PinInstance which is still in library-local space.
             const { p0 } = PinShapeInternals.stem(
                 pin.position,
                 pin.orientation,
                 pin.def.length,
             );
-            const pin_bbox = BBox.from_points([pin.position, p0], p);
+
+            // Start with the external stem endpoints [connection point -> body edge].
+            const points: Vec2[] = [pin.position, p0];
+
+            // Also project a point inward into the symbol body so that clicks
+            // on the internal text label (FB, EN, BST, SW …) still resolve to
+            // this pin rather than the giant parent-symbol hitbox.
+            // We use the same pin_name_offset logic KiCad uses: if it's > 0
+            // labels render inside the body, otherwise they're placed outside.
+            // Either way we project one standard text depth (1.27 mm = half a
+            // 100-mil grid step) past p0, which safely covers the label area
+            // without swallowing an adjacent pin's territory.
+            const label_depth = pin.def.length > 0
+                ? Math.min(pin.def.length * 0.5, 2.54)
+                : 2.54;
+            const inward = new Vec2(p0.x, p0.y);
+            switch (pin.orientation) {
+                case "right": inward.x -= label_depth; break;
+                case "left":  inward.x += label_depth; break;
+                case "up":    inward.y += label_depth; break;
+                case "down":  inward.y -= label_depth; break;
+            }
+            points.push(inward);
+
+            // grow(0.254) is critical: for horizontal pins all three points
+            // share the same Y, so h=0 after from_points. contains_point
+            // then requires an exact floating-point Y match — impossible with
+            // real mouse input. The 0.254 mm pad (10 mils) makes the thin
+            // dimension catchable without stealing territory from neighbour pins.
+            const pin_bbox = BBox.from_points(points, p).grow(0.254);
             layer.hit_boxes.push(pin_bbox);
         }
 

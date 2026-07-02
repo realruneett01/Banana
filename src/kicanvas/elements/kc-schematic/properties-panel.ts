@@ -10,6 +10,7 @@ import { KCUIElement } from "../../../kc-ui";
 import {
     SchematicSheet,
     SchematicSymbol,
+    PinInstance,
     Label,
     DirectiveLabel,
     Wire,
@@ -192,6 +193,25 @@ export class KCSchematicPropertiesPanelElement extends KCUIElement {
                 ${header("No Connect")}
                 ${entry("X", pos?.x.toFixed(4) ?? "0", "mm")}
                 ${entry("Y", pos?.y.toFixed(4) ?? "0", "mm")}
+            `;
+        } else if (item instanceof PinInstance) {
+            // PinInstance: number/uuid live directly on the instance;
+            // name, electrical type, position come from item.definition.
+            const def = item.definition;
+            const pos = def?.at?.position;
+            const altText = item.alternate ? ` (alt: ${item.alternate})` : "";
+            entries = html`
+                ${header("Pin")}
+                ${entry("Number", item.number || "N/A")}
+                ${entry("Name", (def?.name?.text || "N/A") + altText)}
+                ${entry("Electrical Type", def?.type || "N/A")}
+                ${entry("Shape", def?.shape || "N/A")}
+                ${entry("Length", def?.length != null ? def.length.toFixed(4) : "N/A", "mm")}
+                ${entry("X", pos?.x.toFixed(4) ?? "N/A", "mm")}
+                ${entry("Y", pos?.y.toFixed(4) ?? "N/A", "mm")}
+                ${header("Parent Symbol")}
+                ${entry("Reference", item.parent?.properties?.get("Reference")?.text || "N/A")}
+                ${entry("Value", item.parent?.properties?.get("Value")?.text || "N/A")}
             `;
         } else if (item instanceof Text) {
             const pos = item.at.position;
