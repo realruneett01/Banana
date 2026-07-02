@@ -4,7 +4,7 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
-import { Angle, Matrix3, Vec2 } from "../../../base/math";
+import { Angle, BBox, Matrix3, Vec2 } from "../../../base/math";
 import { Color, Renderer } from "../../../graphics";
 import { Effects } from "../../../kicad/common";
 import * as schematic_items from "../../../kicad/schematic";
@@ -68,6 +68,29 @@ export class PinPainter extends SchematicItemPainter {
         ) {
             this.draw_pin_shape(this.gfx, pin);
         }
+
+        if (layer.name == LayerNames.interactive) {
+            // Register a tight hit box that hugs just this pin's stem
+            // (connection point -> body root), tagged to the pin itself
+            // rather than the parent symbol. Without this, the pin's
+            // only footprint on the interactive layer was the coarse,
+            // automatic per-item bbox the renderer tracks around
+            // whatever draw_pin_shape() happens to draw - and it always
+            // lost the smallest-area tie-break against the symbol's own
+            // body+pins hit box, which SchematicSymbolPainter pushes for
+            // the *entire* IC. That's why clicking directly on a pin (or
+            // in the gap between the pin stub and the body) always
+            // selected and highlighted the whole component instead of
+            // just that pin.
+            const { p0 } = PinShapeInternals.stem(
+                pin.position,
+                pin.orientation,
+                pin.def.length,
+            );
+            const pin_bbox = BBox.from_points([pin.position, p0], p);
+            layer.hit_boxes.push(pin_bbox);
+        }
+
         if (layer.name == LayerNames.symbol_foreground) {
             this.draw_name_and_number(this.gfx, pin);
         }
