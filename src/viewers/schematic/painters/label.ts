@@ -57,19 +57,38 @@ export class LabelPainter extends SchematicItemPainter {
 
             const shape_pts = this.create_shape(l, schtext);
             const points: Vec2[] = shape_pts ? [...shape_pts] : [];
+
             if (text_box) {
+                // get_text_box() returns internal units (×10000) because
+                // apply_at() stores text_pos = position × 10000.
+                // shape_pts from create_shape() are in mm (they end with
+                // .multiply(1 / 10000)). Scale down so both sets of points
+                // live in the same world-coordinate space.
+                const scale = 1 / 10000;
                 if (text_box.top_left && text_box.bottom_right) {
-                    points.push(text_box.top_left, text_box.bottom_right);
+                    points.push(
+                        text_box.top_left.multiply(scale),
+                        text_box.bottom_right.multiply(scale),
+                    );
                 } else {
                     points.push(
-                        new Vec2(text_box.x, text_box.y),
-                        new Vec2(text_box.x + text_box.w, text_box.y + text_box.h)
+                        new Vec2(text_box.x * scale, text_box.y * scale),
+                        new Vec2(
+                            (text_box.x + text_box.w) * scale,
+                            (text_box.y + text_box.h) * scale,
+                        ),
                     );
                 }
             }
 
+            // Always include the wire-connection anchor so the bbox is
+            // never empty (e.g. NetLabel with no shape and no text).
+            points.push(l.at.position);
+
             const label_bbox = BBox.from_points(points, l);
-            layer.hit_boxes.push(label_bbox);
+            // grow(0.254 mm = 10 mils) ensures catchability and covers
+            // the wire connection stub at the label origin.
+            layer.hit_boxes.push(label_bbox.grow(0.254));
             return;
         }
 

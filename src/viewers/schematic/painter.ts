@@ -394,8 +394,18 @@ class TextPainter extends SchematicItemPainter {
             schtext.apply_effects(t.effects);
             const bbox = schtext.get_text_box();
             if (bbox) {
-                const text_bbox = new BBox(bbox.x, bbox.y, bbox.w, bbox.h, t);
-                layer.hit_boxes.push(text_bbox);
+                // get_text_box() returns internal units (×10000) because
+                // apply_at() stores text_pos = position × 10000.
+                // Divide by 10000 to convert back to world-coordinate mm.
+                const scale = 1 / 10000;
+                const text_bbox = new BBox(
+                    bbox.x * scale,
+                    bbox.y * scale,
+                    bbox.w * scale,
+                    bbox.h * scale,
+                    t,
+                );
+                layer.hit_boxes.push(text_bbox.grow(0.254));
             }
             return;
         }
