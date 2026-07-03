@@ -306,8 +306,7 @@ export class LayerSet extends BaseLayerSet {
                         this.color_for(LayerNames.via_holewalls),
                     ),
                 );
-                this.add(
-                    new ViewLayer(
+                const zone_layer = new ViewLayer(
                         this,
                         virtual_layer_for(
                             layer_name,
@@ -316,8 +315,9 @@ export class LayerSet extends BaseLayerSet {
                         () => this.by_name(layer_name)!.visible,
                         false,
                         this.color_for(layer_name),
-                    ),
-                );
+                    );
+                    zone_layer.opacity = 0.65;
+                    this.add(zone_layer);
             }
 
             this.add(

@@ -99,7 +99,7 @@ export class KCBoardObjectsPanelElement extends KCUIElement {
                                 min="0"
                                 max="1.0"
                                 step="0.01"
-                                value="1"
+                                value="0.65"
                                 name="zones"></kc-ui-range>
                         </kc-ui-control>
                         <kc-ui-control>
