@@ -29,6 +29,7 @@ export class BoardViewer extends DocumentViewer<
     BoardTheme
 > {
     #contextMenuCallback: ContextMenuCallback | null = null;
+    #net_settings: import("../../kicad").NetSettings | null = null;
 
     get board(): board_items.KicadPCB {
         return this.document;
@@ -38,9 +39,18 @@ export class BoardViewer extends DocumentViewer<
      * Apply project-level net colors (from .kicad_pro net_settings) so
      * pours/tracks render with the same per-net overrides KiCad itself uses,
      * instead of only the flat per-layer theme color.
+     *
+     * We store the value here and push it into the painter inside paint(),
+     * because the painter is recreated on every load() call and does not
+     * exist before the first paint.
      */
     set_net_settings(net_settings: import("../../kicad").NetSettings | null) {
-        this.painter.set_net_settings(net_settings);
+        this.#net_settings = net_settings;
+        // If the painter already exists (e.g. re-loading into the same viewer)
+        // propagate immediately so callers don't need a separate repaint.
+        if (this.painter) {
+            this.painter.set_net_settings(net_settings);
+        }
     }
 
     set contextMenuCallback(callback: ContextMenuCallback | null) {
@@ -54,6 +64,14 @@ export class BoardViewer extends DocumentViewer<
 
     protected override create_painter() {
         return new BoardPainter(this.renderer, this.layers, this.theme);
+    }
+
+    public override paint() {
+        super.paint();
+        // Propagate stored net settings into the freshly-created painter.
+        if (this.painter && this.#net_settings !== null) {
+            this.painter.set_net_settings(this.#net_settings);
+        }
     }
 
     protected override create_layer_set() {
