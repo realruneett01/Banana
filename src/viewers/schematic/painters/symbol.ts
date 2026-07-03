@@ -95,7 +95,7 @@ export class SchematicSymbolPainter extends SchematicItemPainter {
             const body_bbox = get_symbol_body_and_pins_bbox(this.theme, si);
             if (body_bbox) {
                 body_bbox.context = si;
-                layer.hit_boxes.push(body_bbox);
+                layer.hit_boxes.push(body_bbox.grow(0.254));
             }
             if (si.lib_symbol.power) {
                 // Don't draw power symbols on the interactive layer.
