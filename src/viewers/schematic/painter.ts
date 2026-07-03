@@ -743,4 +743,53 @@ export class SchematicPainter extends BaseSchematicPainter {
             new SchematicSheetPainter(this, gfx),
         ];
     }
+
+    /**
+     * Repaints a single selected symbol or sheet onto the overlay layer, at
+     * full opacity, with no outline/bbox of any kind. The rest of the
+     * schematic gets dimmed by Viewer.on_draw() based on selection state, so
+     * this is what actually reads as "highlighted": it's just the item's own
+     * normal graphics, undimmed, against a dimmed backdrop.
+     *
+     * Symbol/sheet painters dispatch what they draw based on `layer.name`
+     * (symbol_background vs symbol_foreground vs symbol_pin vs symbol_field,
+     * etc.) rather than drawing everything unconditionally the way board pad
+     * painters do. Since the overlay is always named ":Overlay", we have to
+     * temporarily relabel it for each sub-pass so every part of the item
+     * gets painted. The underlying render target (set by gfx.start_layer)
+     * doesn't care about this — only the painters' internal `if` checks do.
+     */
+    paint_selected_item(
+        item: schematic_items.SchematicSymbol | schematic_items.SchematicSheet,
+    ) {
+        const layer = this.layers.overlay;
+        const original_name = layer.name;
+
+        layer.clear();
+        this.gfx.start_layer(layer.name);
+
+        const sub_layer_names =
+            item instanceof schematic_items.SchematicSheet
+                ? [
+                      LayerNames.symbol_background,
+                      LayerNames.symbol_foreground,
+                      LayerNames.symbol_field,
+                      LayerNames.label,
+                  ]
+                : [
+                      LayerNames.symbol_background,
+                      LayerNames.symbol_foreground,
+                      LayerNames.symbol_pin,
+                      LayerNames.symbol_field,
+                  ];
+
+        for (const name of sub_layer_names) {
+            layer.name = name;
+            this.paint_item(layer, item);
+        }
+
+        layer.name = original_name;
+        layer.graphics = this.gfx.end_layer();
+        layer.graphics.composite_operation = "overlay";
+    }
 }

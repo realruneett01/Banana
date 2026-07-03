@@ -77,4 +77,20 @@ export class SchematicViewer extends DocumentViewer<
 
         super.select(item);
     }
+
+    protected override paint_selected() {
+        const selected = this.selected;
+
+        if (
+            selected &&
+            (selected.context instanceof SchematicSymbol ||
+                selected.context instanceof SchematicSheet)
+        ) {
+            this.painter.paint_selected_item(selected.context);
+            this.draw();
+            return;
+        }
+
+        super.paint_selected();
+    }
 }

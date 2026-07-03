@@ -1308,10 +1308,6 @@ export class BoardPainter extends DocumentPainter {
             this.paint_item(layer, item);
         }
 
-        // Draw a subtle bbox outline for framing (no filled polygon)
-        const bb = footprint.bbox.copy().grow(footprint.bbox.w * 0.1);
-        this.gfx.line(Polyline.from_BBox(bb, 0.254, Color.white));
-
         layer.graphics = this.gfx.end_layer();
         layer.graphics.composite_operation = "overlay";
         this.filter_footprint = null;

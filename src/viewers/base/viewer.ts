@@ -9,7 +9,7 @@ import { Disposables, type IDisposable } from "../../base/disposable";
 import { listen } from "../../base/events";
 import { no_self_recursion } from "../../base/functions";
 import { BBox, Vec2 } from "../../base/math";
-import { Color, Polyline, Renderer } from "../../graphics";
+import { Color, Renderer } from "../../graphics";
 import {
     KiCanvasLoadEvent,
     KiCanvasMouseMoveEvent,
@@ -32,7 +32,7 @@ export abstract class Viewer extends EventTarget {
     protected disposables = new Disposables();
     protected setup_finished = new Barrier();
 
-    #selected: BBox | null;
+    #selected: BBox | null = null;
 
     constructor(
         public canvas: HTMLCanvasElement,
@@ -146,7 +146,8 @@ export abstract class Viewer extends EventTarget {
         // Render all layers in display order (back to front)
         let depth = 0.01;
         const camera = this.viewport.camera.matrix;
-        const should_dim = this.layers.is_any_layer_highlighted();
+        const should_dim =
+            this.layers.is_any_layer_highlighted() || this.#selected !== null;
 
         // TODO: donot flip drawing sheet and grid
 
@@ -154,7 +155,15 @@ export abstract class Viewer extends EventTarget {
             if (layer.visible && layer.graphics) {
                 let alpha = layer.opacity;
 
-                if (should_dim && !layer.highlighted) {
+                // The overlay layer carries the selected element's own
+                // highlighted graphics and should always render at full
+                // strength; every other layer gets dimmed so the selection
+                // reads clearly against everything else.
+                if (
+                    should_dim &&
+                    !layer.highlighted &&
+                    layer !== this.layers.overlay
+                ) {
                     alpha = 0.25;
                 }
 
@@ -236,33 +245,20 @@ export abstract class Viewer extends EventTarget {
         return Color.white;
     }
 
+    /**
+     * Paints whatever visual indicates the current selection.
+     *
+     * The base implementation draws no outline or box of any kind — it just
+     * clears the overlay layer. Dimming of every other layer is handled
+     * automatically in on_draw() based on whether anything is selected.
+     * Subclasses (BoardViewer, SchematicViewer) override this to repaint the
+     * selected item's own graphics onto the overlay layer at full opacity,
+     * which is what actually reads as "highlighted" once the rest of the
+     * drawing is dimmed.
+     */
     protected paint_selected() {
         const layer = this.layers.overlay;
-
         layer.clear();
-
-        if (this.#selected) {
-            // Use max(w, h) so thin pin bboxes (where w or h ≈ 0.508 mm
-            // after grow) still produce a visible outline. The old w * 0.1
-            // gave near-zero padding for pins, making the highlight invisible.
-            const span = Math.max(this.#selected.w, this.#selected.h);
-            const grow = Math.max(span * 0.1, 0.25);
-            const bb = this.#selected.copy().grow(grow);
-
-            this.renderer.start_layer(layer.name);
-
-            // White outline only — no polygon fill.
-            // The old polygon + composite_operation="overlay" produced the
-            // purple/blue wash that covered the entire symbol body instead of
-            // just the selected element.
-            this.renderer.line(
-                Polyline.from_BBox(bb, 0.254, this.selection_color),
-            );
-
-            layer.graphics = this.renderer.end_layer();
-            // No composite_operation override — render as plain white outline.
-        }
-
         this.draw();
     }
 
