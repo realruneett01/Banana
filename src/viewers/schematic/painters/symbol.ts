@@ -170,7 +170,7 @@ export type SymbolTransform = {
  * This is based on SCH_PAINTER::orientSymbol, where KiCad does some fun logic
  * to place a symbol instance. This tries to replicate that.
  */
-function get_symbol_transform(
+export function get_symbol_transform(
     symbol: schematic_items.SchematicSymbol,
 ): SymbolTransform {
     // Note: KiCad uses a 2x2 transformation matrix for symbol orientation. It's

@@ -81,11 +81,7 @@ export class SchematicViewer extends DocumentViewer<
     protected override paint_selected() {
         const selected = this.selected;
 
-        if (
-            selected &&
-            (selected.context instanceof SchematicSymbol ||
-                selected.context instanceof SchematicSheet)
-        ) {
+        if (selected?.context) {
             this.painter.paint_selected_item(selected.context);
             this.draw();
             return;

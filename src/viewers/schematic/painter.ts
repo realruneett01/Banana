@@ -26,7 +26,11 @@ import {
     NetLabelPainter,
 } from "./painters/label";
 import { PinPainter } from "./painters/pin";
-import { LibSymbolPainter, SchematicSymbolPainter } from "./painters/symbol";
+import {
+    LibSymbolPainter,
+    SchematicSymbolPainter,
+    get_symbol_transform,
+} from "./painters/symbol";
 
 class RectanglePainter extends SchematicItemPainter {
     classes = [schematic_items.Rectangle];
@@ -759,37 +763,49 @@ export class SchematicPainter extends BaseSchematicPainter {
      * gets painted. The underlying render target (set by gfx.start_layer)
      * doesn't care about this — only the painters' internal `if` checks do.
      */
-    paint_selected_item(
-        item: schematic_items.SchematicSymbol | schematic_items.SchematicSheet,
-    ) {
+    paint_selected_item(item: any) {
         const layer = this.layers.overlay;
         const original_name = layer.name;
 
         layer.clear();
         this.gfx.start_layer(layer.name);
 
-        const sub_layer_names =
-            item instanceof schematic_items.SchematicSheet
-                ? [
-                      LayerNames.symbol_background,
-                      LayerNames.symbol_foreground,
-                      LayerNames.symbol_field,
-                      LayerNames.label,
-                  ]
-                : [
-                      LayerNames.symbol_background,
-                      LayerNames.symbol_foreground,
-                      LayerNames.symbol_pin,
-                      LayerNames.symbol_field,
-                  ];
+        // Pins don't carry their own world position - PinPainter reads
+        // this.current_symbol_transform, which is normally only valid while
+        // the parent SchematicSymbol is mid-paint. Restore that context here
+        // so an isolated repaint of a single pin lands in the right place.
+        const previous_symbol = this.current_symbol;
+        const previous_transform = this.current_symbol_transform;
+        let restore_context = false;
+
+        if (
+            item instanceof schematic_items.PinInstance &&
+            item.parent instanceof schematic_items.SchematicSymbol
+        ) {
+            this.current_symbol = item.parent;
+            this.current_symbol_transform = get_symbol_transform(item.parent);
+            restore_context = true;
+        }
+
+        // Ask the item's own painter which layers it draws on, rather than
+        // hardcoding a list per item type - this covers symbols, sheets,
+        // labels, pins, wires, junctions, text, everything, automatically.
+        const sub_layer_names = this.layers_for(item).filter(
+            (name) => name !== LayerNames.interactive,
+        );
 
         for (const name of sub_layer_names) {
             layer.name = name;
             this.paint_item(layer, item);
         }
 
+        if (restore_context) {
+            this.current_symbol = previous_symbol;
+            this.current_symbol_transform = previous_transform;
+        }
+
         layer.name = original_name;
         layer.graphics = this.gfx.end_layer();
-        layer.graphics.composite_operation = "overlay";
+        layer.graphics.composite_operation = "source-over";
     }
 }
