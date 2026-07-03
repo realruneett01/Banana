@@ -34,6 +34,15 @@ export class BoardViewer extends DocumentViewer<
         return this.document;
     }
 
+    /**
+     * Apply project-level net colors (from .kicad_pro net_settings) so
+     * pours/tracks render with the same per-net overrides KiCad itself uses,
+     * instead of only the flat per-layer theme color.
+     */
+    set_net_settings(net_settings: import("../../kicad").NetSettings | null) {
+        this.painter.set_net_settings(net_settings);
+    }
+
     set contextMenuCallback(callback: ContextMenuCallback | null) {
         this.#contextMenuCallback = callback;
     }

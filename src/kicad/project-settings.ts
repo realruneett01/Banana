@@ -24,7 +24,7 @@ export class ProjectSettings {
         filename: string;
         version: number;
     } = { filename: "unknown.kicad_pro", version: 1 };
-    public net_settings: unknown;
+    public net_settings: NetSettings = new NetSettings();
     public pcbnew: {
         page_layout_descr_file: string;
     } = { page_layout_descr_file: "" };
@@ -39,6 +39,72 @@ export class ProjectSettings {
         merge(project, src);
         return project;
     }
+}
+
+// NET_SETTINGS - net_settings.h/net_settings.cpp
+// Holds KiCad's "Board Setup > Nets" data: direct per-net color overrides
+// (net_colors), per-netclass colors (netclasses[name].pcb_color), and the
+// pattern rules that assign nets to netclasses (netclass_patterns).
+export class NetClassSettings {
+    // Serialized as a CSS-style color string, e.g. "rgba(255, 0, 0, 1.000)"
+    // or a hex string. Absent/empty means "use the layer's default color".
+    pcb_color?: string;
+
+    [s: string]: unknown;
+}
+
+export class NetClassPatternAssignment {
+    netclass: string;
+    pattern: string;
+}
+
+export class NetSettings {
+    // Fully-qualified net name -> color string. Highest priority override.
+    net_colors: Record<string, string> = {};
+
+    // Netclass name -> netclass definition (includes pcb_color).
+    netclasses: Record<string, NetClassSettings> = {};
+
+    // Wildcard pattern -> netclass assignment, e.g. {netclass: "Power", pattern: "+24V"}
+    netclass_patterns: NetClassPatternAssignment[] = [];
+
+    [s: string]: unknown;
+
+    /**
+     * Resolve the color to use for a given net name, following KiCad's own
+     * priority: direct per-net override, then pattern-matched netclass
+     * color, then undefined (meaning "use the layer's default color").
+     */
+    color_for(net_name: string | undefined): string | undefined {
+        if (!net_name) {
+            return undefined;
+        }
+
+        const direct = this.net_colors[net_name];
+        if (direct) {
+            return direct;
+        }
+
+        for (const assignment of this.netclass_patterns) {
+            if (!wildcard_match(net_name, assignment.pattern)) {
+                continue;
+            }
+            const netclass = this.netclasses[assignment.netclass];
+            if (netclass?.pcb_color) {
+                return netclass.pcb_color;
+            }
+        }
+
+        return undefined;
+    }
+}
+
+/** Simple glob match supporting KiCad's `*` and `?` wildcards. */
+function wildcard_match(text: string, pattern: string): boolean {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    const regex_src =
+        "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+    return new RegExp(regex_src, "i").test(text);
 }
 
 export class BoardSettings {

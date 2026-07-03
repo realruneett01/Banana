@@ -8,6 +8,7 @@ import { html } from "../../../base/web-components";
 import { BoardViewer } from "../../../viewers/board/viewer";
 import { KCViewerElement } from "../common/viewer";
 import type { KCContextMenuElement } from "../common/context-menu";
+import type { ProjectPage } from "../../project";
 
 import "../common/context-menu";
 
@@ -16,6 +17,13 @@ export class KCBoardViewerElement extends KCViewerElement<BoardViewer> {
 
     protected override update_theme(): void {
         this.viewer.theme = this.themeObject.board;
+    }
+
+    override async load(src: ProjectPage) {
+        // Pull KiCad's project-level net colors (.kicad_pro net_settings)
+        // in alongside the board so pours/tracks match KiCad's own coloring.
+        this.viewer.set_net_settings(src.project?.settings?.net_settings ?? null);
+        await super.load(src);
     }
 
     protected override make_viewer(): BoardViewer {

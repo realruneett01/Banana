@@ -29,6 +29,7 @@ import {
     is_manufacturing_layer,
 } from "./layers";
 import type { BoardTheme } from "../../kicad";
+import type { NetSettings } from "../../kicad/project-settings";
 
 abstract class BoardItemPainter extends ItemPainter {
     override view_painter: BoardPainter;
@@ -249,8 +250,12 @@ class TraceSegmentPainter extends NetNameItemPainter {
             return;
         }
 
+        const color =
+            (this.view_painter as BoardPainter).color_for_net(s.netname) ??
+            layer.color;
+
         const points = [s.start, s.end];
-        this.gfx.line(new Polyline(points, s.width, layer.color));
+        this.gfx.line(new Polyline(points, s.width, color));
     }
 }
 
@@ -266,9 +271,13 @@ class TraceArcPainter extends NetNameItemPainter {
             return;
         }
 
+        const color =
+            (this.view_painter as BoardPainter).color_for_net(a.netname) ??
+            layer.color;
+
         const arc = Arc.from_three_points(a.start, a.mid, a.end, a.width);
         const points = arc.to_polyline();
-        this.gfx.line(new Polyline(points, arc.width, layer.color));
+        this.gfx.line(new Polyline(points, arc.width, color));
     }
 }
 
@@ -372,6 +381,10 @@ class ZonePainter extends BoardItemPainter {
             return;
         }
 
+        const color =
+            (this.view_painter as BoardPainter).color_for_net(z.net_name) ??
+            layer.color;
+
         for (const p of z.filled_polygons) {
             if (
                 !layer.name.includes(p.layer) &&
@@ -380,7 +393,7 @@ class ZonePainter extends BoardItemPainter {
                 continue;
             }
 
-            this.gfx.polygon(new Polygon(p.polyline, layer.color));
+            this.gfx.polygon(new Polygon(p.polyline, color));
         }
     }
 }
@@ -1232,6 +1245,38 @@ export class BoardPainter extends DocumentPainter {
             new PropertyTextPainter(this, gfx),
             new DimensionPainter(this, gfx),
         ];
+    }
+
+    // KiCad project-level net colors (from .kicad_pro net_settings), if any.
+    // Set by the viewer after a project is loaded alongside the board.
+    net_settings: NetSettings | null = null;
+
+    #net_color_cache = new Map<string, Color | null>();
+
+    set_net_settings(net_settings: NetSettings | null) {
+        this.net_settings = net_settings;
+        this.#net_color_cache.clear();
+    }
+
+    /**
+     * Resolve the color override (if any) for a copper item's net, matching
+     * KiCad's own "Board Setup > Nets" priority: a direct per-net color
+     * wins, then a pattern-matched netclass color, then null (meaning "fall
+     * back to the layer's default color").
+     */
+    color_for_net(net_name: string | undefined): Color | null {
+        if (!this.net_settings || !net_name) {
+            return null;
+        }
+
+        if (this.#net_color_cache.has(net_name)) {
+            return this.#net_color_cache.get(net_name)!;
+        }
+
+        const css = this.net_settings.color_for(net_name);
+        const color = css ? Color.from_css(css) : null;
+        this.#net_color_cache.set(net_name, color);
+        return color;
     }
 
     // Used to filter out items by net when highlighting nets. Painters
