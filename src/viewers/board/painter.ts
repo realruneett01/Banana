@@ -1327,7 +1327,7 @@ export class BoardPainter extends DocumentPainter {
         }
 
         layer.graphics = this.gfx.end_layer();
-        layer.graphics.composite_operation = "overlay";
+        layer.graphics.composite_operation = "source-over";
         this.filter_net = null;
     }
 
@@ -1354,7 +1354,7 @@ export class BoardPainter extends DocumentPainter {
         }
 
         layer.graphics = this.gfx.end_layer();
-        layer.graphics.composite_operation = "overlay";
+        layer.graphics.composite_operation = "source-over";
         this.filter_footprint = null;
     }
 }
