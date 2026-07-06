@@ -150,8 +150,12 @@ export class BoardViewer extends DocumentViewer<
         // Native selection-box representation (selection highlight box)
         if (this.selected) {
             const bb = this.selected.copy().grow(this.selected.w * 0.1);
-            this.renderer.line(Polyline.from_BBox(bb, 0.254, this.selection_color));
-            this.renderer.polygon(Polygon.from_BBox(bb, this.selection_color.with_alpha(0.15)));
+            this.renderer.line(
+                Polyline.from_BBox(bb, 0.254, this.selection_color),
+            );
+            this.renderer.polygon(
+                Polygon.from_BBox(bb, this.selection_color.with_alpha(0.15)),
+            );
         }
 
         // Diff items — render geometry with swapped color on the overlay

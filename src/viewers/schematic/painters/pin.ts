@@ -90,15 +90,24 @@ export class PinPainter extends SchematicItemPainter {
             // Either way we project one standard text depth (1.27 mm = half a
             // 100-mil grid step) past p0, which safely covers the label area
             // without swallowing an adjacent pin's territory.
-            const label_depth = pin.def.length > 0
-                ? Math.min(pin.def.length * 0.5, 2.54)
-                : 2.54;
+            const label_depth =
+                pin.def.length > 0
+                    ? Math.min(pin.def.length * 0.5, 2.54)
+                    : 2.54;
             const inward = new Vec2(p0.x, p0.y);
             switch (pin.orientation) {
-                case "right": inward.x -= label_depth; break;
-                case "left":  inward.x += label_depth; break;
-                case "up":    inward.y += label_depth; break;
-                case "down":  inward.y -= label_depth; break;
+                case "right":
+                    inward.x -= label_depth;
+                    break;
+                case "left":
+                    inward.x += label_depth;
+                    break;
+                case "up":
+                    inward.y += label_depth;
+                    break;
+                case "down":
+                    inward.y -= label_depth;
+                    break;
             }
             points.push(inward);
 

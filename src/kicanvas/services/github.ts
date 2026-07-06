@@ -35,6 +35,24 @@ export class GitHub {
     static readonly api_version = "2022-11-28";
     static readonly accept_header = "application/vnd.github+json";
 
+    static auth = { loggedIn: false } as {
+        loggedIn: boolean;
+        username?: string;
+        avatar_url?: string;
+    };
+
+    static async check_auth() {
+        try {
+            const response = await fetch("/auth/me");
+            if (response.ok) {
+                this.auth = await response.json();
+            }
+        } catch (e) {
+            console.error("Failed to check auth status", e);
+        }
+        return this.auth;
+    }
+
     headers: Record<string, string>;
     last_response?: Response;
     rate_limit_remaining?: number;
@@ -100,18 +118,52 @@ export class GitHub {
     ): Promise<unknown> {
         const static_this = this.constructor as typeof GitHub;
 
-        const url = new URL(path, static_this.base_url);
+        let request: Request;
 
-        if (params) {
-            const url_params = new URLSearchParams(params).toString();
-            url.search = `?${url_params}`;
+        if (GitHub.auth.loggedIn) {
+            // Rewrite the request to call our backend API proxy contents endpoint
+            const match = path.match(
+                /^repos\/([^/]+)\/([^/]+)\/contents\/?(.*)$/,
+            );
+            if (match) {
+                const [, owner, repo, subpath] = match;
+                const ref = params?.["ref"] || "";
+                const urlParams = new URLSearchParams({
+                    owner: owner!,
+                    repo: repo!,
+                    path: subpath!,
+                });
+                if (ref) {
+                    urlParams.set("ref", ref);
+                }
+
+                request = new Request(`/api/contents?${urlParams.toString()}`, {
+                    method: "GET",
+                });
+            } else {
+                const url = new URL(path, static_this.base_url);
+                if (params) {
+                    const url_params = new URLSearchParams(params).toString();
+                    url.search = `?${url_params}`;
+                }
+                request = new Request(url, {
+                    method: data ? "POST" : "GET",
+                    headers: this.headers,
+                    body: data ? JSON.stringify(data) : undefined,
+                });
+            }
+        } else {
+            const url = new URL(path, static_this.base_url);
+            if (params) {
+                const url_params = new URLSearchParams(params).toString();
+                url.search = `?${url_params}`;
+            }
+            request = new Request(url, {
+                method: data ? "POST" : "GET",
+                headers: this.headers,
+                body: data ? JSON.stringify(data) : undefined,
+            });
         }
-
-        const request = new Request(url, {
-            method: data ? "POST" : "GET",
-            headers: this.headers,
-            body: data ? JSON.stringify(data) : undefined,
-        });
 
         const response = await fetch(request);
         await request_error_handler(response);
@@ -119,14 +171,12 @@ export class GitHub {
         this.last_response = response;
 
         this.rate_limit_remaining = parseInt(
-            response.headers.get("x-ratelimit-remaining") ?? "",
+            response.headers.get("x-ratelimit-remaining") ?? "100",
             10,
         );
 
-        if (
-            response.headers.get("content-type") ==
-            "application/json; charset=utf-8"
-        ) {
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
             return await response.json();
         } else {
             return await response.text();
@@ -159,10 +209,56 @@ export class GitHubUserContent {
 
     constructor() {}
 
+    static parse_raw_url(
+        url_or_path: string | URL,
+    ): { owner: string; repo: string; ref: string; path: string } | null {
+        const u = new URL(url_or_path, GitHubUserContent.base_url);
+        if (u.hostname !== "raw.githubusercontent.com") {
+            return null;
+        }
+        const parts = u.pathname.split("/").filter(Boolean);
+        if (parts.length < 3) {
+            return null;
+        }
+        const [owner, repo, ref, ...path_parts] = parts;
+        return {
+            owner: owner!,
+            repo: repo!,
+            ref: ref!,
+            path: path_parts.join("/"),
+        };
+    }
+
     async get(url_or_path: string | URL): Promise<File> {
+        if (GitHub.auth.loggedIn) {
+            const raw_info = GitHubUserContent.parse_raw_url(url_or_path);
+            if (raw_info) {
+                const params = new URLSearchParams({
+                    owner: raw_info.owner,
+                    repo: raw_info.repo,
+                    path: raw_info.path,
+                });
+                if (raw_info.ref) {
+                    params.set("ref", raw_info.ref);
+                }
+                const response = await fetch(
+                    `/api/contents?${params.toString()}`,
+                );
+                if (!response.ok) {
+                    throw new Error("not found at this ref");
+                }
+                const blob = await response.blob();
+                const name = basename(raw_info.path) ?? "unknown";
+                return new File([blob], name);
+            }
+        }
+
         const url = new URL(url_or_path, GitHubUserContent.base_url);
         const request = new Request(url, { method: "GET" });
         const response = await fetch(request);
+        if (!response.ok) {
+            throw new Error("not found at this ref");
+        }
         const blob = await response.blob();
         const name = basename(url) ?? "unknown";
 

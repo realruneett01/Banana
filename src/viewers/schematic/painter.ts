@@ -207,7 +207,10 @@ class BusEntryPainter extends SchematicItemPainter {
 
     paint(layer: ViewLayer, be: schematic_items.BusEntry) {
         if (layer.name === LayerNames.interactive) {
-            const entry_bbox = BBox.from_points([be.at.position, be.at.position.add(be.size)], be);
+            const entry_bbox = BBox.from_points(
+                [be.at.position, be.at.position.add(be.size)],
+                be,
+            );
             layer.hit_boxes.push(entry_bbox);
             return;
         }
@@ -325,7 +328,7 @@ class JunctionPainter extends SchematicItemPainter {
             const pos = j.at.position;
             const r = (j.diameter || 1) / 2;
             layer.hit_boxes.push(
-                new BBox(pos.x - r, pos.y - r, r * 2, r * 2, j)
+                new BBox(pos.x - r, pos.y - r, r * 2, r * 2, j),
             );
             return;
         }
@@ -349,7 +352,13 @@ class NoConnectPainter extends SchematicItemPainter {
             const pos = nc.at.position;
             const padding = 0.75;
             layer.hit_boxes.push(
-                new BBox(pos.x - padding, pos.y - padding, padding * 2, padding * 2, nc)
+                new BBox(
+                    pos.x - padding,
+                    pos.y - padding,
+                    padding * 2,
+                    padding * 2,
+                    nc,
+                ),
             );
             return;
         }

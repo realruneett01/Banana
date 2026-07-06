@@ -8,128 +8,131 @@
     font-size: var(--font-size, 16px);
 
     --transition-time-very-short: 100ms;
-    --transition-time-short:      200ms;
-    --transition-time-medium:     500ms;
+    --transition-time-short: 200ms;
+    --transition-time-medium: 500ms;
 
     /* base surfaces */
-    --bg: var(--cl-bg-base,      #000);
+    --bg: var(--cl-bg-base, #000);
     --fg: var(--cl-text-primary, #ececec);
 
     /* tooltips */
-    --tooltip-bg:     var(--cl-bg-surface-3,    #1b3352);
-    --tooltip-fg:     var(--cl-text-primary,     #ececec);
-    --tooltip-border: 1px solid var(--cl-border-subtle, rgba(208,210,205,0.12));
+    --tooltip-bg: var(--cl-bg-surface-3, #1b3352);
+    --tooltip-fg: var(--cl-text-primary, #ececec);
+    --tooltip-border: 1px solid
+        var(--cl-border-subtle, rgba(208, 210, 205, 0.12));
 
     /* scrollbar */
-    --scrollbar-bg:        var(--cl-bg-base,       #000);
-    --scrollbar-fg:        var(--cl-accent-secondary, rgb(77,127,196));
-    --scrollbar-active-fg: var(--cl-accent-primary,   rgb(200,52,52));
-    --scrollbar-hover-bg:  var(--cl-accent-secondary, rgb(77,127,196));
+    --scrollbar-bg: var(--cl-bg-base, #000);
+    --scrollbar-fg: var(--cl-accent-secondary, rgb(77, 127, 196));
+    --scrollbar-active-fg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --scrollbar-hover-bg: var(--cl-accent-secondary, rgb(77, 127, 196));
 
     /* activity bar */
-    --activity-bar-bg:        var(--cl-bg-surface-1,    #091b33);
-    --activity-bar-fg:        var(--cl-text-primary,     #ececec);
-    --activity-bar-active-bg: var(--cl-bg-base,          #000);
-    --activity-bar-active-fg: var(--cl-accent-tertiary,  rgb(242,237,161));
+    --activity-bar-bg: var(--cl-bg-surface-1, #091b33);
+    --activity-bar-fg: var(--cl-text-primary, #ececec);
+    --activity-bar-active-bg: var(--cl-bg-base, #000);
+    --activity-bar-active-fg: var(--cl-accent-tertiary, rgb(242, 237, 161));
 
     /* resizer */
-    --resizer-bg:        var(--cl-border-strong,  rgba(208,210,205,0.28));
-    --resizer-active-bg: var(--cl-accent-primary, rgb(200,52,52));
+    --resizer-bg: var(--cl-border-strong, rgba(208, 210, 205, 0.28));
+    --resizer-active-bg: var(--cl-accent-primary, rgb(200, 52, 52));
 
     /* panels */
-    --panel-bg:                    var(--cl-bg-surface-1,   #091b33);
-    --panel-fg:                    var(--cl-text-primary,   #ececec);
-    --panel-border:                2px solid var(--cl-border-subtle, rgba(208,210,205,0.12));
-    --panel-title-bg:              var(--cl-bg-surface-2,   #112242);
-    --panel-title-fg:              var(--cl-text-primary,   #ececec);
-    --panel-title-border:          1px solid var(--cl-border-strong, rgba(208,210,205,0.28));
-    --panel-title-button-bg:       transparent;
-    --panel-title-button-fg:       var(--cl-text-secondary,         #c2c2c2);
-    --panel-title-button-hover-bg: var(--cl-accent-primary,         rgb(200,52,52));
-    --panel-title-button-hover-fg: var(--cl-text-primary,           #ececec);
+    --panel-bg: var(--cl-bg-surface-1, #091b33);
+    --panel-fg: var(--cl-text-primary, #ececec);
+    --panel-border: 2px solid var(--cl-border-subtle, rgba(208, 210, 205, 0.12));
+    --panel-title-bg: var(--cl-bg-surface-2, #112242);
+    --panel-title-fg: var(--cl-text-primary, #ececec);
+    --panel-title-border: 1px solid
+        var(--cl-border-strong, rgba(208, 210, 205, 0.28));
+    --panel-title-button-bg: transparent;
+    --panel-title-button-fg: var(--cl-text-secondary, #c2c2c2);
+    --panel-title-button-hover-bg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --panel-title-button-hover-fg: var(--cl-text-primary, #ececec);
     --panel-title-button-disabled-bg: inherit;
     --panel-title-button-disabled-fg: var(--cl-text-muted, #848484);
-    --panel-subtitle-bg:           var(--cl-bg-surface-2,   #112242);
-    --panel-subtitle-fg:           var(--cl-text-secondary, #c2c2c2);
+    --panel-subtitle-bg: var(--cl-bg-surface-2, #112242);
+    --panel-subtitle-fg: var(--cl-text-secondary, #c2c2c2);
 
     /* dropdowns */
     --dropdown-bg: var(--cl-bg-surface-2, #112242);
     --dropdown-fg: var(--cl-text-primary, #ececec);
 
     /* buttons — primary */
-    --button-bg:         var(--cl-accent-secondary,      rgb(77,127,196));
-    --button-fg:         var(--cl-text-inverse,          rgb(0,16,35));
-    --button-hover-bg:   var(--cl-accent-primary,        rgb(200,52,52));
-    --button-hover-fg:   var(--cl-text-primary,          #ececec);
-    --button-focus-outline: 1px solid var(--cl-accent-highlight, rgb(255,38,226));
-    --button-selected-bg:   var(--cl-accent-primary,     rgb(200,52,52));
-    --button-selected-fg:   var(--cl-text-inverse,       rgb(0,16,35));
-    --button-disabled-bg:   var(--cl-bg-base,            #000);
-    --button-disabled-fg:   var(--cl-text-muted,         #848484);
+    --button-bg: var(--cl-accent-secondary, rgb(77, 127, 196));
+    --button-fg: var(--cl-text-inverse, rgb(0, 16, 35));
+    --button-hover-bg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --button-hover-fg: var(--cl-text-primary, #ececec);
+    --button-focus-outline: 1px solid
+        var(--cl-accent-highlight, rgb(255, 38, 226));
+    --button-selected-bg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --button-selected-fg: var(--cl-text-inverse, rgb(0, 16, 35));
+    --button-disabled-bg: var(--cl-bg-base, #000);
+    --button-disabled-fg: var(--cl-text-muted, #848484);
     /* buttons — success */
-    --button-success-bg:       var(--cl-success,     rgb(127,200,127));
-    --button-success-fg:       var(--cl-text-inverse,rgb(0,16,35));
-    --button-success-hover-bg: rgb(160,220,160);
-    --button-success-hover-fg: var(--cl-text-inverse,rgb(0,16,35));
+    --button-success-bg: var(--cl-success, rgb(127, 200, 127));
+    --button-success-fg: var(--cl-text-inverse, rgb(0, 16, 35));
+    --button-success-hover-bg: rgb(160, 220, 160);
+    --button-success-hover-fg: var(--cl-text-inverse, rgb(0, 16, 35));
     /* buttons — danger */
-    --button-danger-bg:       var(--cl-error,       rgb(215,91,107));
-    --button-danger-fg:       var(--cl-text-inverse,rgb(0,16,35));
-    --button-danger-hover-bg: rgb(230,110,125);
-    --button-danger-hover-fg: var(--cl-text-inverse,rgb(0,16,35));
+    --button-danger-bg: var(--cl-error, rgb(215, 91, 107));
+    --button-danger-fg: var(--cl-text-inverse, rgb(0, 16, 35));
+    --button-danger-hover-bg: rgb(230, 110, 125);
+    --button-danger-hover-fg: var(--cl-text-inverse, rgb(0, 16, 35));
     /* buttons — outline */
-    --button-outline-bg:           var(--cl-bg-surface-1, #091b33);
-    --button-outline-fg:           var(--cl-text-primary,  #ececec);
-    --button-outline-hover-bg:     var(--cl-bg-surface-1,  #091b33);
-    --button-outline-hover-fg:     var(--cl-accent-tertiary,rgb(242,237,161));
-    --button-outline-disabled-bg:  var(--cl-bg-base,       #000);
-    --button-outline-disabled-fg:  var(--cl-text-muted,    #848484);
+    --button-outline-bg: var(--cl-bg-surface-1, #091b33);
+    --button-outline-fg: var(--cl-text-primary, #ececec);
+    --button-outline-hover-bg: var(--cl-bg-surface-1, #091b33);
+    --button-outline-hover-fg: var(--cl-accent-tertiary, rgb(242, 237, 161));
+    --button-outline-disabled-bg: var(--cl-bg-base, #000);
+    --button-outline-disabled-fg: var(--cl-text-muted, #848484);
     /* buttons — toolbar */
-    --button-toolbar-bg:          var(--cl-bg-surface-1, #091b33);
-    --button-toolbar-fg:          var(--cl-text-primary,  #ececec);
-    --button-toolbar-hover-bg:    var(--cl-bg-surface-2,  #112242);
-    --button-toolbar-hover-fg:    var(--cl-accent-tertiary,rgb(242,237,161));
-    --button-toolbar-disabled-bg: var(--cl-bg-base,       #000);
-    --button-toolbar-disabled-fg: var(--cl-text-muted,    #848484);
+    --button-toolbar-bg: var(--cl-bg-surface-1, #091b33);
+    --button-toolbar-fg: var(--cl-text-primary, #ececec);
+    --button-toolbar-hover-bg: var(--cl-bg-surface-2, #112242);
+    --button-toolbar-hover-fg: var(--cl-accent-tertiary, rgb(242, 237, 161));
+    --button-toolbar-disabled-bg: var(--cl-bg-base, #000);
+    --button-toolbar-disabled-fg: var(--cl-text-muted, #848484);
     /* buttons — menu */
-    --button-menu-bg:          transparent;
-    --button-menu-fg:          var(--cl-text-primary,  #ececec);
-    --button-menu-hover-bg:    transparent;
-    --button-menu-hover-fg:    var(--cl-accent-tertiary,rgb(242,237,161));
+    --button-menu-bg: transparent;
+    --button-menu-fg: var(--cl-text-primary, #ececec);
+    --button-menu-hover-bg: transparent;
+    --button-menu-hover-fg: var(--cl-accent-tertiary, rgb(242, 237, 161));
     --button-menu-disabled-bg: transparent;
-    --button-menu-disabled-fg: var(--cl-text-muted,   #848484);
+    --button-menu-disabled-fg: var(--cl-text-muted, #848484);
 
     /* inputs */
-    --input-bg:              var(--cl-bg-surface-1,    #091b33);
-    --input-fg:              var(--cl-text-primary,    #ececec);
-    --input-border:          1px solid var(--cl-border-strong, rgba(208,210,205,0.28));
-    --input-accent:          var(--cl-accent-primary,  rgb(200,52,52));
-    --input-hover-shadow:    1px 1px 10px 5px rgba(0,0,0,0.4);
-    --input-focus-outline:   1px solid var(--cl-accent-highlight, rgb(255,38,226));
-    --input-placeholder:     var(--cl-text-muted,      #848484);
-    --input-disabled-bg:     var(--cl-bg-base,         #000);
-    --input-disabled-fg:     var(--cl-text-muted,      #848484);
+    --input-bg: var(--cl-bg-surface-1, #091b33);
+    --input-fg: var(--cl-text-primary, #ececec);
+    --input-border: 1px solid var(--cl-border-strong, rgba(208, 210, 205, 0.28));
+    --input-accent: var(--cl-accent-primary, rgb(200, 52, 52));
+    --input-hover-shadow: 1px 1px 10px 5px rgba(0, 0, 0, 0.4);
+    --input-focus-outline: 1px solid
+        var(--cl-accent-highlight, rgb(255, 38, 226));
+    --input-placeholder: var(--cl-text-muted, #848484);
+    --input-disabled-bg: var(--cl-bg-base, #000);
+    --input-disabled-fg: var(--cl-text-muted, #848484);
 
     /* range inputs */
-    --input-range-bg:            var(--cl-bg-surface-2,    #112242);
-    --input-range-fg:            var(--cl-text-primary,    #ececec);
-    --input-range-hover-bg:      var(--cl-accent-primary,  rgb(200,52,52));
-    --input-range-disabled-bg:   var(--cl-bg-base,         #000);
-    --input-range-hover-shadow:  1px 1px 10px 5px rgba(0,0,0,0.4);
-    --input-range-handle-shadow: 1px 1px 5px 5px rgba(200,200,200,0.15);
+    --input-range-bg: var(--cl-bg-surface-2, #112242);
+    --input-range-fg: var(--cl-text-primary, #ececec);
+    --input-range-hover-bg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --input-range-disabled-bg: var(--cl-bg-base, #000);
+    --input-range-hover-shadow: 1px 1px 10px 5px rgba(0, 0, 0, 0.4);
+    --input-range-handle-shadow: 1px 1px 5px 5px rgba(200, 200, 200, 0.15);
 
     /* lists */
-    --list-item-bg:          var(--panel-bg);
-    --list-item-fg:          var(--panel-fg);
-    --list-item-active-bg:   var(--cl-bg-surface-3,     #1b3352);
-    --list-item-active-fg:   var(--cl-text-primary,     #ececec);
-    --list-item-hover-bg:    var(--cl-accent-primary,   rgb(200,52,52));
-    --list-item-hover-fg:    var(--cl-text-inverse,     rgb(0,16,35));
+    --list-item-bg: var(--panel-bg);
+    --list-item-fg: var(--panel-fg);
+    --list-item-active-bg: var(--cl-bg-surface-3, #1b3352);
+    --list-item-active-fg: var(--cl-text-primary, #ececec);
+    --list-item-hover-bg: var(--cl-accent-primary, rgb(200, 52, 52));
+    --list-item-hover-fg: var(--cl-text-inverse, rgb(0, 16, 35));
     --list-item-disabled-bg: var(--list-item-bg);
-    --list-item-disabled-fg: var(--cl-text-muted,       #848484);
+    --list-item-disabled-fg: var(--cl-text-muted, #848484);
 
-    --grid-outline: var(--cl-border-subtle, rgba(208,210,205,0.12));
+    --grid-outline: var(--cl-border-subtle, rgba(208, 210, 205, 0.12));
 }
-
 
 /*
     Gradient theme — KiCad navy/copper edition.
@@ -140,52 +143,58 @@
     /* Keep gradient vars as CSS var aliases so any CSS that
        still references e.g. var(--gradient-purple-blue-dark)
        gets a sensible KiCad-toned fallback. */
-    --gradient-purple-blue-dark:   var(--cl-bg-base,      rgb(0,16,35));
-    --gradient-purple-blue-medium: var(--cl-bg-surface-1, rgb(9,27,51));
-    --gradient-purple-green-light: var(--cl-bg-surface-2, rgb(17,38,66));
-    --gradient-cyan-blue-light:    var(--cl-bg-surface-3, rgb(27,51,82));
-    --gradient-purple-green-highlight: var(--cl-bg-surface-3, rgb(27,51,82));
-    --gradient-purple-red:           linear-gradient(90deg,
-        var(--cl-accent-secondary, rgb(77,127,196)),
-        var(--cl-accent-primary,   rgb(200,52,52))) 0 0 fixed;
-    --gradient-purple-red-highlight: linear-gradient(90deg,
-        rgb(110,160,220),
-        var(--cl-accent-primary-hover, rgb(224,74,74))) 0 0 fixed;
+    --gradient-purple-blue-dark: var(--cl-bg-base, rgb(0, 16, 35));
+    --gradient-purple-blue-medium: var(--cl-bg-surface-1, rgb(9, 27, 51));
+    --gradient-purple-green-light: var(--cl-bg-surface-2, rgb(17, 38, 66));
+    --gradient-cyan-blue-light: var(--cl-bg-surface-3, rgb(27, 51, 82));
+    --gradient-purple-green-highlight: var(--cl-bg-surface-3, rgb(27, 51, 82));
+    --gradient-purple-red: linear-gradient(
+            90deg,
+            var(--cl-accent-secondary, rgb(77, 127, 196)),
+            var(--cl-accent-primary, rgb(200, 52, 52))
+        )
+        0 0 fixed;
+    --gradient-purple-red-highlight: linear-gradient(
+            90deg,
+            rgb(110, 160, 220),
+            var(--cl-accent-primary-hover, rgb(224, 74, 74))
+        )
+        0 0 fixed;
 
     /* Scrollbar — B.Cu blue thumb on board-bg track */
-    --scrollbar-bg:        var(--cl-bg-base);
-    --scrollbar-fg:        var(--cl-accent-secondary);
-    --scrollbar-hover-fg:  var(--cl-accent-primary);
+    --scrollbar-bg: var(--cl-bg-base);
+    --scrollbar-fg: var(--cl-accent-secondary);
+    --scrollbar-hover-fg: var(--cl-accent-primary);
     --scrollbar-active-fg: var(--cl-accent-primary);
 
     /* Activity bar */
     --activity-bar-bg: var(--cl-bg-surface-1);
 
     /* Resizer */
-    --resizer-bg:        var(--cl-border-strong);
+    --resizer-bg: var(--cl-border-strong);
     --resizer-active-bg: var(--cl-accent-primary);
 
     /* Panels */
-    --panel-bg:          var(--cl-bg-surface-1);
-    --panel-title-bg:    var(--cl-bg-surface-2);
+    --panel-bg: var(--cl-bg-surface-1);
+    --panel-title-bg: var(--cl-bg-surface-2);
     --panel-subtitle-bg: var(--cl-bg-surface-2);
 
     /* Toolbar buttons */
-    --button-toolbar-bg:          var(--cl-bg-surface-1);
-    --button-toolbar-hover-bg:    var(--cl-bg-surface-2);
-    --button-toolbar-hover-fg:    var(--cl-accent-tertiary);
+    --button-toolbar-bg: var(--cl-bg-surface-1);
+    --button-toolbar-hover-bg: var(--cl-bg-surface-2);
+    --button-toolbar-hover-fg: var(--cl-accent-tertiary);
     --button-toolbar-disabled-bg: var(--cl-bg-base);
 
-    --button-toolbar-alt-bg:          var(--cl-bg-surface-2);
-    --button-toolbar-alt-hover-bg:    var(--cl-bg-surface-3);
-    --button-toolbar-alt-hover-fg:    var(--cl-text-primary);
+    --button-toolbar-alt-bg: var(--cl-bg-surface-2);
+    --button-toolbar-alt-hover-bg: var(--cl-bg-surface-3);
+    --button-toolbar-alt-hover-fg: var(--cl-text-primary);
     --button-toolbar-alt-disabled-bg: var(--cl-bg-base);
 
     /* Dropdowns */
-    --dropdown-bg:        var(--cl-bg-surface-2);
-    --dropdown-fg:        var(--cl-text-primary);
-    --dropdown-hover-bg:  var(--cl-bg-surface-3);
-    --dropdown-hover-fg:  var(--cl-text-primary);
+    --dropdown-bg: var(--cl-bg-surface-2);
+    --dropdown-fg: var(--cl-text-primary);
+    --dropdown-hover-bg: var(--cl-bg-surface-3);
+    --dropdown-hover-fg: var(--cl-text-primary);
     --dropdown-active-bg: var(--cl-bg-base);
     --dropdown-active-fg: var(--cl-text-primary);
 
@@ -193,15 +202,14 @@
     --input-range-bg: var(--cl-bg-surface-2);
 
     /* Lists */
-    --list-item-hover-bg:  var(--cl-accent-primary);
+    --list-item-hover-bg: var(--cl-accent-primary);
     --list-item-active-bg: var(--cl-bg-surface-3);
 
     /* Focus overlay */
-    --focus-overlay-bg:      var(--cl-bg-surface-1);
+    --focus-overlay-bg: var(--cl-bg-surface-1);
     --focus-overlay-opacity: 0.65;
-    --focus-overlay-fg:      var(--cl-text-primary);
+    --focus-overlay-fg: var(--cl-text-primary);
 }
-
 
 /*
     Scrollbar

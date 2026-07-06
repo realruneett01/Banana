@@ -422,7 +422,13 @@ export class DirectiveLabelPainter extends SchematicItemPainter {
             const pos = item.at.position;
             const radius = 1.2;
             layer.hit_boxes.push(
-                new BBox(pos.x - radius, pos.y - radius, radius * 2, radius * 2, item)
+                new BBox(
+                    pos.x - radius,
+                    pos.y - radius,
+                    radius * 2,
+                    radius * 2,
+                    item,
+                ),
             );
             return;
         }

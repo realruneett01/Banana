@@ -22,7 +22,9 @@ export class KCBoardViewerElement extends KCViewerElement<BoardViewer> {
     override async load(src: ProjectPage) {
         // Pull KiCad's project-level net colors (.kicad_pro net_settings)
         // in alongside the board so pours/tracks match KiCad's own coloring.
-        this.viewer.set_net_settings(src.project?.settings?.net_settings ?? null);
+        this.viewer.set_net_settings(
+            src.project?.settings?.net_settings ?? null,
+        );
         await super.load(src);
     }
 

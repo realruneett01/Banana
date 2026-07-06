@@ -24,6 +24,8 @@ import { Project } from "../../project";
 import type { ProjectPage } from "../../project";
 import { KCBoardViewerElement } from "../kc-board/viewer";
 import { FilePicker } from "../../../base/dom/file-picker";
+import { GitHub } from "../../services/github";
+import type { IFileSystem } from "../../services/vfs";
 
 // import dependent elements so they're registered before use.
 import "./help-panel";
@@ -48,6 +50,8 @@ export abstract class KCViewerAppElement<
 
     project: Project;
     viewerReady: DeferredPromise<boolean> = new DeferredPromise<boolean>();
+    public leftFileMissing: boolean = false;
+    public rightFileMissing: boolean = false;
 
     constructor() {
         super();
@@ -135,6 +139,17 @@ export abstract class KCViewerAppElement<
                     console.warn("Unknown button", e);
             }
         });
+
+        this.renderRoot.addEventListener("click", (e: Event) => {
+            const target = e.target as HTMLElement;
+            if (!target) return;
+
+            if (target.closest('[data-action="toggle-user-dropdown"]')) {
+                this.toggleUserDropdown(e);
+            } else if (target.closest('[data-action="logout"]')) {
+                this.handleLogout();
+            }
+        });
     }
 
     protected abstract on_viewer_select(
@@ -205,8 +220,156 @@ export abstract class KCViewerAppElement<
 
     protected abstract make_viewer_element(): ViewerElementT;
 
+    toggleUserDropdown(e: Event) {
+        e.stopPropagation();
+        const container = (e.target as HTMLElement).closest(
+            ".user-profile-menu",
+        );
+        if (container) {
+            container.classList.toggle("active");
+            const close = () => {
+                container.classList.remove("active");
+                document.removeEventListener("click", close);
+            };
+            document.addEventListener("click", close);
+        }
+    }
+
+    async handleLogout() {
+        try {
+            const res = await fetch("/auth/logout", { method: "POST" });
+            if (res.ok) {
+                GitHub.auth = { loggedIn: false };
+                window.location.reload();
+            }
+        } catch (e) {
+            console.error("Logout failed", e);
+        }
+    }
+
+    async startComparisonWithVFS(
+        leftVfs: IFileSystem,
+        rightVfs: IFileSystem,
+        filePath: string,
+    ) {
+        this.leftFileMissing = false;
+        this.rightFileMissing = false;
+        this.compareActive = true;
+        this.hidden = false;
+
+        // 1. Setup and load Left VFS
+        try {
+            await leftVfs.setup();
+            await this.project.load(leftVfs);
+        } catch (e) {
+            console.error("Left version load failed:", e);
+            this.leftFileMissing = true;
+        }
+
+        // 2. Setup and load Right VFS
+        try {
+            this.#right_project = new Project();
+            await rightVfs.setup();
+            await this.#right_project.load(rightVfs);
+        } catch (e) {
+            console.error("Right version load failed:", e);
+            this.rightFileMissing = true;
+        }
+
+        this.#right_viewer_elm = this.make_viewer_element();
+        this.#right_viewer_elm.disableinteraction = false;
+
+        this.update();
+
+        // 3. Load pages in viewers if they exist
+        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+        if (!this.leftFileMissing && this.project.first_page) {
+            await this.#viewer_elm.load(this.project.first_page);
+        }
+        if (
+            !this.rightFileMissing &&
+            this.#right_project &&
+            this.#right_project.first_page &&
+            this.#right_viewer_elm
+        ) {
+            await this.#right_viewer_elm.load(this.#right_project.first_page);
+        }
+
+        // 4. Run AST diff if both exist
+        if (
+            !this.leftFileMissing &&
+            !this.rightFileMissing &&
+            this.#right_viewer_elm
+        ) {
+            const leftDoc = (this.#viewer_elm.viewer as any)?.document;
+            const rightDoc = (this.#right_viewer_elm as any)?.viewer?.document;
+
+            if (leftDoc && rightDoc) {
+                const { diff_documents, build_highlight_map } =
+                    await import("../../services/diff-engine.js");
+                const diffEntries = diff_documents(leftDoc, rightDoc);
+
+                this.#viewer_elm.viewer.set_diff_highlights(
+                    build_highlight_map(diffEntries, "old"),
+                );
+                (this.#right_viewer_elm as any).viewer.set_diff_highlights(
+                    build_highlight_map(diffEntries, "new"),
+                );
+
+                // Synchronize viewports
+                let isSyncing = false;
+                const leftViewer = this.#viewer_elm.viewer;
+                const rightViewer = (this.#right_viewer_elm as any).viewer;
+
+                this._leftViewportListener = () => {
+                    if (!this.syncEnabled || isSyncing) return;
+                    isSyncing = true;
+                    rightViewer.viewport.camera.center.set(
+                        leftViewer.viewport.camera.center,
+                    );
+                    rightViewer.viewport.camera.zoom =
+                        leftViewer.viewport.camera.zoom;
+                    rightViewer.viewport.camera.rotation =
+                        leftViewer.viewport.camera.rotation;
+                    rightViewer.viewport.camera.flipped =
+                        leftViewer.viewport.camera.flipped;
+                    rightViewer.draw();
+                    isSyncing = false;
+                };
+
+                this._rightViewportListener = () => {
+                    if (!this.syncEnabled || isSyncing) return;
+                    isSyncing = true;
+                    leftViewer.viewport.camera.center.set(
+                        rightViewer.viewport.camera.center,
+                    );
+                    leftViewer.viewport.camera.zoom =
+                        rightViewer.viewport.camera.zoom;
+                    leftViewer.viewport.camera.rotation =
+                        rightViewer.viewport.camera.rotation;
+                    leftViewer.viewport.camera.flipped =
+                        rightViewer.viewport.camera.flipped;
+                    leftViewer.draw();
+                    isSyncing = false;
+                };
+
+                (leftViewer as any).addEventListener(
+                    "viewportchange",
+                    this._leftViewportListener,
+                );
+                (rightViewer as any).addEventListener(
+                    "viewportchange",
+                    this._rightViewportListener,
+                );
+            }
+        }
+    }
+
     async startComparison() {
-        const compareFolder = confirm("Compare with folder? (Click Cancel to select a single file)");
+        const compareFolder = confirm(
+            "Compare with folder? (Click Cancel to select a single file)",
+        );
         const handler = async (vfs: any) => {
             try {
                 this.#right_project = new Project();
@@ -219,20 +382,30 @@ export abstract class KCViewerAppElement<
                 this.update();
 
                 // Wait for DOM to render the panes
-                await new Promise((resolve) => window.requestAnimationFrame(resolve));
+                await new Promise((resolve) =>
+                    window.requestAnimationFrame(resolve),
+                );
 
-                await this.#right_viewer_elm.load(this.#right_project.first_page);
+                await this.#right_viewer_elm.load(
+                    this.#right_project.first_page,
+                );
 
                 // Run AST diff
                 const leftDoc = (this.#viewer_elm.viewer as any).document;
-                const rightDoc = (this.#right_viewer_elm as any).viewer.document;
+                const rightDoc = (this.#right_viewer_elm as any).viewer
+                    .document;
 
                 if (leftDoc && rightDoc) {
-                    const { diff_documents, build_highlight_map } = await import("../../services/diff-engine.js");
+                    const { diff_documents, build_highlight_map } =
+                        await import("../../services/diff-engine.js");
                     const diffEntries = diff_documents(leftDoc, rightDoc);
 
-                    this.#viewer_elm.viewer.set_diff_highlights(build_highlight_map(diffEntries, "old"));
-                    (this.#right_viewer_elm as any).viewer.set_diff_highlights(build_highlight_map(diffEntries, "new"));
+                    this.#viewer_elm.viewer.set_diff_highlights(
+                        build_highlight_map(diffEntries, "old"),
+                    );
+                    (this.#right_viewer_elm as any).viewer.set_diff_highlights(
+                        build_highlight_map(diffEntries, "new"),
+                    );
 
                     // Synchronize viewports
                     let isSyncing = false;
@@ -242,10 +415,15 @@ export abstract class KCViewerAppElement<
                     this._leftViewportListener = () => {
                         if (!this.syncEnabled || isSyncing) return;
                         isSyncing = true;
-                        rightViewer.viewport.camera.center.set(leftViewer.viewport.camera.center);
-                        rightViewer.viewport.camera.zoom = leftViewer.viewport.camera.zoom;
-                        rightViewer.viewport.camera.rotation = leftViewer.viewport.camera.rotation;
-                        rightViewer.viewport.camera.flipped = leftViewer.viewport.camera.flipped;
+                        rightViewer.viewport.camera.center.set(
+                            leftViewer.viewport.camera.center,
+                        );
+                        rightViewer.viewport.camera.zoom =
+                            leftViewer.viewport.camera.zoom;
+                        rightViewer.viewport.camera.rotation =
+                            leftViewer.viewport.camera.rotation;
+                        rightViewer.viewport.camera.flipped =
+                            leftViewer.viewport.camera.flipped;
                         rightViewer.draw();
                         isSyncing = false;
                     };
@@ -253,16 +431,27 @@ export abstract class KCViewerAppElement<
                     this._rightViewportListener = () => {
                         if (!this.syncEnabled || isSyncing) return;
                         isSyncing = true;
-                        leftViewer.viewport.camera.center.set(rightViewer.viewport.camera.center);
-                        leftViewer.viewport.camera.zoom = rightViewer.viewport.camera.zoom;
-                        leftViewer.viewport.camera.rotation = rightViewer.viewport.camera.rotation;
-                        leftViewer.viewport.camera.flipped = rightViewer.viewport.camera.flipped;
+                        leftViewer.viewport.camera.center.set(
+                            rightViewer.viewport.camera.center,
+                        );
+                        leftViewer.viewport.camera.zoom =
+                            rightViewer.viewport.camera.zoom;
+                        leftViewer.viewport.camera.rotation =
+                            rightViewer.viewport.camera.rotation;
+                        leftViewer.viewport.camera.flipped =
+                            rightViewer.viewport.camera.flipped;
                         leftViewer.draw();
                         isSyncing = false;
                     };
 
-                    (leftViewer as any).addEventListener("viewportchange", this._leftViewportListener);
-                    (rightViewer as any).addEventListener("viewportchange", this._rightViewportListener);
+                    (leftViewer as any).addEventListener(
+                        "viewportchange",
+                        this._leftViewportListener,
+                    );
+                    (rightViewer as any).addEventListener(
+                        "viewportchange",
+                        this._rightViewportListener,
+                    );
                 }
             } catch (err: any) {
                 console.error(err);
@@ -285,7 +474,10 @@ export abstract class KCViewerAppElement<
         if (this.#viewer_elm && this.#viewer_elm.viewer) {
             const leftViewer = this.#viewer_elm.viewer;
             if (this._leftViewportListener) {
-                (leftViewer as any).removeEventListener("viewportchange", this._leftViewportListener);
+                (leftViewer as any).removeEventListener(
+                    "viewportchange",
+                    this._leftViewportListener,
+                );
             }
             leftViewer.set_diff_highlights(new Map());
         }
@@ -293,7 +485,10 @@ export abstract class KCViewerAppElement<
         if (this.#right_viewer_elm && (this.#right_viewer_elm as any).viewer) {
             const rightViewer = (this.#right_viewer_elm as any).viewer;
             if (this._rightViewportListener) {
-                (rightViewer as any).removeEventListener("viewportchange", this._rightViewportListener);
+                (rightViewer as any).removeEventListener(
+                    "viewportchange",
+                    this._rightViewportListener,
+                );
             }
         }
 
@@ -363,13 +558,51 @@ export abstract class KCViewerAppElement<
             top_toolbar_buttons.push(
                 html`<kc-ui-button
                     slot="right"
-                    name="${this.compareActive ? 'exit_compare' : 'compare'}"
-                    title="${this.compareActive ? 'Exit Compare' : 'Compare Boards'}"
+                    name="${this.compareActive ? "exit_compare" : "compare"}"
+                    title="${this.compareActive
+                        ? "Exit Compare"
+                        : "Compare Boards"}"
                     icon="difference"
-                    class="${this.compareActive ? 'active' : ''}"
+                    class="${this.compareActive ? "active" : ""}"
                     variant="toolbar-alt">
                 </kc-ui-button>`,
             );
+        }
+
+        // GitHub Profile / Login Button
+        if (GitHub.auth.loggedIn) {
+            top_toolbar_buttons.push(html`
+                <div
+                    class="user-profile-menu"
+                    slot="right"
+                    style="margin-left: 8px; align-self: center;">
+                    <img
+                        src="${GitHub.auth.avatar_url || ""}"
+                        alt="${GitHub.auth.username || ""}"
+                        class="user-avatar"
+                        data-action="toggle-user-dropdown" />
+                    <div class="user-dropdown-content">
+                        <div class="user-info">
+                            Signed in as
+                            <strong>${GitHub.auth.username || ""}</strong>
+                        </div>
+                        <button class="logout-btn" data-action="logout">
+                            Sign out
+                        </button>
+                    </div>
+                </div>
+            `);
+        } else {
+            top_toolbar_buttons.push(html`
+                <a
+                    href="/auth/github/login"
+                    class="github-login-btn"
+                    slot="right"
+                    style="margin-left: 8px; align-self: center;">
+                    <img src="images/github-mark-white.svg" alt="GitHub" />
+                    Sign in with GitHub
+                </a>
+            `);
         }
 
         const top_toolbar = html`<kc-ui-floating-toolbar location="top">
@@ -383,52 +616,74 @@ export abstract class KCViewerAppElement<
 
         const viewer_content = this.compareActive
             ? html`
-                <div class="split-view-container">
-                    <style>
-                        .split-view-container {
-                            display: flex;
-                            flex-direction: row;
-                            width: 100%;
-                            height: 100%;
-                        }
-                        .split-view-container .pane {
-                            flex: 1;
-                            height: 100%;
-                            position: relative;
-                        }
-                        .split-view-container .left-pane {
-                            border-right: 2px solid var(--border);
-                        }
-                        .pane::before {
-                            position: absolute;
-                            top: 8px;
-                            left: 8px;
-                            padding: 4px 8px;
-                            background: rgba(22, 19, 33, 0.85);
-                            border: 1px solid var(--border);
-                            border-radius: 4px;
-                            font-size: 11px;
-                            font-weight: 600;
-                            z-index: 10;
-                            pointer-events: none;
-                        }
-                        .left-pane::before {
-                            content: "Older version (deleted/modified)";
-                            color: #ef4444;
-                        }
-                        .right-pane::before {
-                            content: "Newer version (added/modified)";
-                            color: #22c55e;
-                        }
-                    </style>
-                    <div class="pane left-pane">
-                        ${this.#viewer_elm}
-                    </div>
-                    <div class="pane right-pane">
-                        ${this.#right_viewer_elm}
-                    </div>
-                </div>
-            `
+                  <div class="split-view-container">
+                      <style>
+                          .split-view-container {
+                              display: flex;
+                              flex-direction: row;
+                              width: 100%;
+                              height: 100%;
+                          }
+                          .split-view-container .pane {
+                              flex: 1;
+                              height: 100%;
+                              position: relative;
+                          }
+                          .split-view-container .left-pane {
+                              border-right: 2px solid var(--border);
+                          }
+                          .pane::before {
+                              position: absolute;
+                              top: 8px;
+                              left: 8px;
+                              padding: 4px 8px;
+                              background: rgba(22, 19, 33, 0.85);
+                              border: 1px solid var(--border);
+                              border-radius: 4px;
+                              font-size: 11px;
+                              font-weight: 600;
+                              z-index: 10;
+                              pointer-events: none;
+                          }
+                          .left-pane::before {
+                              content: "Older version (deleted/modified)";
+                              color: #ef4444;
+                          }
+                          .right-pane::before {
+                              content: "Newer version (added/modified)";
+                              color: #22c55e;
+                          }
+                          .missing-file-placeholder {
+                              width: 100%;
+                              height: 100%;
+                              display: flex;
+                              align-items: center;
+                              justify-content: center;
+                              color: #aaa;
+                              font-size: 14px;
+                              font-weight: 500;
+                              background: rgba(22, 19, 33, 0.4);
+                              text-align: center;
+                              padding: 20px;
+                              box-sizing: border-box;
+                          }
+                      </style>
+                      <div class="pane left-pane">
+                          ${this.leftFileMissing
+                              ? html`<div class="missing-file-placeholder">
+                                    This file did not exist at this commit
+                                </div>`
+                              : this.#viewer_elm}
+                      </div>
+                      <div class="pane right-pane">
+                          ${this.rightFileMissing
+                              ? html`<div class="missing-file-placeholder">
+                                    This file did not exist at this commit
+                                </div>`
+                              : this.#right_viewer_elm}
+                      </div>
+                  </div>
+              `
             : this.#viewer_elm;
 
         return html`<kc-ui-split-view vertical>

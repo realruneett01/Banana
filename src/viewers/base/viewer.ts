@@ -183,10 +183,9 @@ export abstract class Viewer extends EventTarget {
     protected on_click(e: MouseEvent) {
         const rect = this.canvas.getBoundingClientRect();
         const mouse_pos = this.viewport.camera.screen_to_world(
-            new Vec2(e.clientX - rect.left, e.clientY - rect.top)
+            new Vec2(e.clientX - rect.left, e.clientY - rect.top),
         );
-        const tolerance =
-            Viewer.hit_tolerance_px / this.viewport.camera.zoom;
+        const tolerance = Viewer.hit_tolerance_px / this.viewport.camera.zoom;
 
         const items = this.layers.query_point(mouse_pos, tolerance);
         this.on_pick(mouse_pos, items);

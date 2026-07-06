@@ -78,7 +78,10 @@ function fingerprint(item: any): string {
     return JSON.stringify(walk(item));
 }
 
-export function diff_documents(old_doc: Diffable, new_doc: Diffable): DiffEntry[] {
+export function diff_documents(
+    old_doc: Diffable,
+    new_doc: Diffable,
+): DiffEntry[] {
     const old_map = index_by_uuid(old_doc);
     const new_map = index_by_uuid(new_doc);
     const entries: DiffEntry[] = [];
@@ -101,7 +104,10 @@ export function diff_documents(old_doc: Diffable, new_doc: Diffable): DiffEntry[
     return entries;
 }
 
-export function build_highlight_map(entries: DiffEntry[], side: "old" | "new"): Map<any, Color> {
+export function build_highlight_map(
+    entries: DiffEntry[],
+    side: "old" | "new",
+): Map<any, Color> {
     const map = new Map<any, Color>();
     for (const entry of entries) {
         if (side === "old" && entry.status === "added") continue;

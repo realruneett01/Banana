@@ -78,7 +78,12 @@ export class GitHubFileSystem extends FileSystemBase {
                 const file_path = based_on(base_dir, path);
 
                 if (!this.download_urls.has(file_path)) {
-                    this.download_urls.set(file_path, new URL(it.download_url));
+                    const download_url = it.download_url
+                        ? new URL(it.download_url)
+                        : new URL(
+                              `https://raw.githubusercontent.com/${this.gh_repo.owner}/${this.gh_repo.repo}/${this.gh_repo.ref || "HEAD"}/${it.path}`,
+                          );
+                    this.download_urls.set(file_path, download_url);
                 }
 
                 result.push({
@@ -136,5 +141,84 @@ export class GitHubFileSystem extends FileSystemBase {
         }
 
         return new GitHubFileSystem(url, info, initial_file);
+    }
+}
+
+/**
+ * Authenticated virtual file system for GitHub.
+ * Routes directory traversal and file loading securely through `/api/contents`.
+ */
+export class AuthenticatedGitHubFileSystem extends FileSystemBase {
+    public readonly initial_file?: string;
+
+    constructor(
+        private owner: string,
+        private repo: string,
+        private ref: string,
+        initial_file?: string,
+    ) {
+        super();
+        this.initial_file = initial_file;
+    }
+
+    async load_file(path: string): Promise<File> {
+        const params = new URLSearchParams({
+            owner: this.owner,
+            repo: this.repo,
+            path: path,
+        });
+        if (this.ref) {
+            params.set("ref", this.ref);
+        }
+
+        const response = await fetch(`/api/contents?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch file: ${path}`);
+        }
+
+        const blob = await response.blob();
+        const fileName = basename(path) ?? "unknown";
+        return new File([blob], fileName);
+    }
+
+    async enumerate(cur_dir: string): Promise<FileEntry[]> {
+        const params = new URLSearchParams({
+            owner: this.owner,
+            repo: this.repo,
+            path: cur_dir,
+        });
+        if (this.ref) {
+            params.set("ref", this.ref);
+        }
+
+        const response = await fetch(`/api/contents?${params.toString()}`);
+        if (!response.ok) {
+            throw new Error(`Failed to list directory: ${cur_dir}`);
+        }
+
+        const data = await response.json();
+        if (!Array.isArray(data)) {
+            // Expected a directory but got a file
+            return [];
+        }
+
+        const result: FileEntry[] = [];
+        for (const it of data) {
+            if (
+                it.type === "file" &&
+                AuthenticatedGitHubFileSystem.is_kicad_file(it.name)
+            ) {
+                result.push({
+                    type: "file",
+                    path: decodeURI(it.path),
+                });
+            } else if (it.type === "dir") {
+                result.push({
+                    type: "directory",
+                    path: decodeURI(it.path),
+                });
+            }
+        }
+        return result;
     }
 }

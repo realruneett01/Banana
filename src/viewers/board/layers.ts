@@ -307,17 +307,17 @@ export class LayerSet extends BaseLayerSet {
                     ),
                 );
                 const zone_layer = new ViewLayer(
-                        this,
-                        virtual_layer_for(
-                            layer_name,
-                            CopperVirtualLayerNames.zones,
-                        ),
-                        () => this.by_name(layer_name)!.visible,
-                        false,
-                        this.color_for(layer_name),
-                    );
-                    zone_layer.opacity = 0.65;
-                    this.add(zone_layer);
+                    this,
+                    virtual_layer_for(
+                        layer_name,
+                        CopperVirtualLayerNames.zones,
+                    ),
+                    () => this.by_name(layer_name)!.visible,
+                    false,
+                    this.color_for(layer_name),
+                );
+                zone_layer.opacity = 0.65;
+                this.add(zone_layer);
             }
 
             this.add(

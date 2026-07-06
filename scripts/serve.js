@@ -15,10 +15,5 @@ let { context } = await bundle({
 });
 
 await context.watch();
-
-let { hosts, port } = await context.serve({
-    servedir: "./debug",
-    port: 8001,
-});
-
-console.log(`[serve] listening at http://${hosts[0]}:${port}`);
+console.log("[serve] watching source files...");
+await import("../server/server.ts");

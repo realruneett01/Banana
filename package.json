@@ -22,6 +22,7 @@
         "html-minifier-terser": "^7.2.0",
         "prettier": "^3.7.4",
         "svgstore": "^3.0.1",
+        "tsx": "^4.23.0",
         "typescript": "^5.9.3",
         "typescript-lit-html-plugin": "^0.9.0"
     },
@@ -34,7 +35,7 @@
         "lint:prettier": "prettier . --check",
         "lint": "npm run lint:eslint && npm run lint:types && npm run lint:prettier",
         "format": "prettier . --write",
-        "serve": "node scripts/serve.js",
+        "serve": "tsx scripts/serve.js",
         "build:no-check": "node scripts/build.js",
         "build:font": "node scripts/build-font.js",
         "build:sprites": "node scripts/build-sprites.js",
@@ -50,5 +51,10 @@
     "bugs": {
         "url": "https://github.com/theacodes/kicanvas.js/issues"
     },
-    "homepage": "https://github.com/theacodes/kicanvas.js#readme"
+    "homepage": "https://github.com/theacodes/kicanvas.js#readme",
+    "dependencies": {
+        "@hono/node-server": "^2.0.8",
+        "dotenv": "^17.4.2",
+        "hono": "^4.12.27"
+    }
 }

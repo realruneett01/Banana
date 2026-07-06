@@ -7,11 +7,15 @@
 import { later } from "../../base/async";
 import { DropTarget } from "../../base/dom/drag-drop";
 import { FilePicker } from "../../base/dom/file-picker";
-import { CSS, attribute, html, query } from "../../base/web-components";
+import { CSS, attribute, html } from "../../base/web-components";
 import { KCUIElement, KCUIIconElement } from "../../kc-ui";
 import { sprites_url } from "../icons/sprites";
 import { Project } from "../project";
-import { GitHubFileSystem } from "../services/github-vfs";
+import { GitHub } from "../services/github";
+import {
+    AuthenticatedGitHubFileSystem,
+    GitHubFileSystem,
+} from "../services/github-vfs";
 import { CodebergFileSystem } from "../services/codeberg-vfs";
 import { FetchFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
@@ -60,6 +64,21 @@ class KiCanvasShellElement extends KCUIElement {
     #schematic_app: KCSchematicAppElement;
     #board_app: KCBoardAppElement;
 
+    public gitHubPickerOpen: boolean = false;
+    public gitHubPickerLoading: boolean = false;
+    public gitHubRepos: any[] = [];
+    public gitHubCurrentRepo: any = null;
+    public gitHubCurrentPath: string = "";
+    public gitHubContents: any[] = [];
+    public gitHubPickerError: string = "";
+    public gitHubPickerView: "repos" | "files" | "commits" = "repos";
+    public gitHubCommits: any[] = [];
+    public gitHubCommitPage: number = 1;
+    public gitHubSelectedFile: string = "";
+    public gitHubBaseCommit: string = "";
+    public gitHubHeadCommit: string = "";
+    public gitHubHasMoreCommits: boolean = true;
+
     constructor() {
         super();
         this.provideContext("project", this.project);
@@ -74,15 +93,6 @@ class KiCanvasShellElement extends KCUIElement {
     @attribute({ type: String })
     public src: string;
 
-    @query(`input[name="link"]`, true)
-    public link_input: HTMLInputElement;
-
-    @query(`button[name="open_local"]`, true)
-    public open_file_button: HTMLButtonElement;
-
-    @query(`button[name="open_local_folder"]`, true)
-    public open_folder_button: HTMLButtonElement;
-
     override initialContentCallback() {
         const url_params = new URLSearchParams(document.location.search);
 
@@ -95,6 +105,9 @@ class KiCanvasShellElement extends KCUIElement {
         const url = urls[0];
 
         later(async () => {
+            await GitHub.check_auth();
+            this.update();
+
             if (this.src) {
                 const vfs = new FetchFileSystem([this.src]);
                 await this.setup_project(vfs);
@@ -116,33 +129,136 @@ class KiCanvasShellElement extends KCUIElement {
             });
         });
 
-        this.link_input.addEventListener("input", async (e) => {
-            const link = this.link_input.value;
-            const vfs = await this.load_repo(link);
+        // Event delegation for clicks
+        this.renderRoot.addEventListener("click", (e: Event) => {
+            const target = e.target as HTMLElement;
+            if (!target) return;
 
-            if (!vfs) {
-                // TODO: show error message: invaild URL
-                console.error(`Invalid URL: ${link}`);
+            // Open local file
+            if (target.closest('[name="open_local"]')) {
+                this.openLocalFile();
                 return;
             }
 
-            await this.setup_project(vfs);
+            // Open local folder
+            if (target.closest('[name="open_local_folder"]')) {
+                this.openLocalFolder();
+                return;
+            }
 
-            const location = new URL(window.location.href);
-            location.searchParams.set("repo", link);
-            window.history.pushState(null, "", location);
+            // Browse GitHub
+            if (target.closest('[name="browse_github"]')) {
+                this.openGitHubPicker();
+                return;
+            }
+
+            // Close picker backdrop/button
+            if (target.closest('[data-action="close-picker"]')) {
+                this.gitHubPickerOpen = false;
+                this.update();
+                return;
+            }
+
+            // Back button in picker
+            if (target.closest('[data-action="back-picker"]')) {
+                this.navigateBack();
+                return;
+            }
+
+            // Load more commits
+            if (target.closest('[data-action="load-more-commits"]')) {
+                this.loadMoreCommits();
+                return;
+            }
+
+            // Execute comparison
+            if (target.closest('[data-action="execute-compare"]')) {
+                this.executeComparison();
+                return;
+            }
+
+            // Set base commit
+            const baseBtn = target.closest(".set-base-btn") as HTMLElement;
+            if (baseBtn) {
+                this.gitHubBaseCommit = baseBtn.dataset["sha"] || "";
+                this.update();
+                return;
+            }
+
+            // Set head commit
+            const headBtn = target.closest(".set-head-btn") as HTMLElement;
+            if (headBtn) {
+                this.gitHubHeadCommit = headBtn.dataset["sha"] || "";
+                this.update();
+                return;
+            }
+
+            // Compare versions button clicked
+            const compareBtn = target.closest(
+                ".compare-versions-btn",
+            ) as HTMLElement;
+            if (compareBtn) {
+                this.openCommitPicker(compareBtn.dataset["path"] || "");
+                return;
+            }
+
+            // Repo item clicked
+            const repoItem = target.closest(".repo-item") as HTMLElement;
+            if (repoItem) {
+                const owner = repoItem.dataset["repoOwner"];
+                const name = repoItem.dataset["repoName"];
+                const repo = this.gitHubRepos.find(
+                    (r) => r.owner.login === owner && r.name === name,
+                );
+                if (repo) {
+                    this.selectRepo(repo);
+                }
+                return;
+            }
+
+            // Folder item clicked
+            const folderItem = target.closest(".folder-item") as HTMLElement;
+            if (folderItem) {
+                const path = folderItem.dataset["path"];
+                if (path !== undefined) {
+                    this.navigateToFolder(path);
+                }
+                return;
+            }
+
+            // File item clicked (except if comparing versions)
+            if (target.closest(".compare-versions-btn")) {
+                return;
+            }
+            const fileItem = target.closest(".file-item") as HTMLElement;
+            if (fileItem) {
+                const path = fileItem.dataset["path"];
+                const file = this.gitHubContents.find((f) => f.path === path);
+                if (file) {
+                    this.selectFile(file);
+                }
+                return;
+            }
+
+            // User dropdown toggle
+            if (target.closest('[data-action="toggle-user-dropdown"]')) {
+                this.toggleUserDropdown(e);
+                return;
+            }
+
+            // Logout
+            if (target.closest('[data-action="logout"]')) {
+                this.handleLogout();
+                return;
+            }
         });
 
-        this.open_file_button.addEventListener("click", async (e) => {
-            FilePicker.pick(async (vfs) => {
-                await this.setup_project(vfs);
-            });
-        });
-
-        this.open_folder_button.addEventListener("click", async (e) => {
-            FilePicker.pick_folder(async (vfs) => {
-                await this.setup_project(vfs);
-            });
+        // Event delegation for input
+        this.renderRoot.addEventListener("input", (e: Event) => {
+            const target = e.target as HTMLInputElement;
+            if (target && target.name === "link") {
+                this.handleLinkInput(e);
+            }
         });
     }
 
@@ -191,6 +307,270 @@ class KiCanvasShellElement extends KCUIElement {
         }
     }
 
+    handleLinkInput(e: Event) {
+        const link = (e.currentTarget as HTMLInputElement).value;
+        later(async () => {
+            const vfs = await this.load_repo(link);
+
+            if (!vfs) {
+                console.error(`Invalid URL: ${link}`);
+                return;
+            }
+
+            await this.setup_project(vfs);
+
+            const location = new URL(window.location.href);
+            location.searchParams.set("repo", link);
+            window.history.pushState(null, "", location);
+        });
+    }
+
+    openLocalFile() {
+        FilePicker.pick(async (vfs) => {
+            await this.setup_project(vfs);
+        });
+    }
+
+    openLocalFolder() {
+        FilePicker.pick_folder(async (vfs) => {
+            await this.setup_project(vfs);
+        });
+    }
+
+    toggleUserDropdown(e: Event) {
+        e.stopPropagation();
+        const container = (e.target as HTMLElement).closest(
+            ".user-profile-menu",
+        );
+        if (container) {
+            container.classList.toggle("active");
+            const close = () => {
+                container.classList.remove("active");
+                document.removeEventListener("click", close);
+            };
+            document.addEventListener("click", close);
+        }
+    }
+
+    async handleLogout() {
+        try {
+            const res = await fetch("/auth/logout", { method: "POST" });
+            if (res.ok) {
+                GitHub.auth = { loggedIn: false };
+                window.location.reload();
+            }
+        } catch (e) {
+            console.error("Logout failed", e);
+        }
+    }
+
+    async openGitHubPicker() {
+        this.gitHubPickerOpen = true;
+        this.gitHubPickerLoading = true;
+        this.gitHubPickerView = "repos";
+        this.gitHubRepos = [];
+        this.gitHubCurrentRepo = null;
+        this.gitHubCurrentPath = "";
+        this.gitHubContents = [];
+        this.gitHubPickerError = "";
+        this.update();
+
+        try {
+            const response = await fetch("/api/repos");
+            if (response.status === 401) {
+                this.gitHubPickerError =
+                    "Session expired, please sign in again";
+            } else if (!response.ok) {
+                this.gitHubPickerError = "Failed to fetch repositories";
+            } else {
+                this.gitHubRepos = await response.json();
+            }
+        } catch (e) {
+            console.error(e);
+            this.gitHubPickerError =
+                "An error occurred while fetching repositories";
+        } finally {
+            this.gitHubPickerLoading = false;
+            this.update();
+        }
+    }
+
+    async selectRepo(repo: any) {
+        this.gitHubCurrentRepo = repo;
+        this.gitHubCurrentPath = "";
+        this.gitHubPickerView = "files";
+        await this.loadRepoContents();
+    }
+
+    async loadRepoContents() {
+        this.gitHubPickerLoading = true;
+        this.update();
+
+        try {
+            const owner = this.gitHubCurrentRepo.owner.login;
+            const repo = this.gitHubCurrentRepo.name;
+            const params = new URLSearchParams({
+                owner,
+                repo,
+                path: this.gitHubCurrentPath,
+            });
+            if (this.gitHubCurrentRepo.default_branch) {
+                params.set("ref", this.gitHubCurrentRepo.default_branch);
+            }
+
+            const response = await fetch(`/api/contents?${params.toString()}`);
+            if (response.status === 401) {
+                this.gitHubPickerError =
+                    "Session expired, please sign in again";
+            } else if (!response.ok) {
+                this.gitHubPickerError = "Failed to load directory contents";
+            } else {
+                this.gitHubContents = await response.json();
+            }
+        } catch (e) {
+            console.error(e);
+            this.gitHubPickerError =
+                "An error occurred while loading folder contents";
+        } finally {
+            this.gitHubPickerLoading = false;
+            this.update();
+        }
+    }
+
+    async navigateToFolder(path: string) {
+        this.gitHubCurrentPath = path;
+        await this.loadRepoContents();
+    }
+
+    navigateBack() {
+        if (this.gitHubPickerView === "commits") {
+            this.gitHubPickerView = "files";
+            this.update();
+        } else if (this.gitHubCurrentPath) {
+            const parts = this.gitHubCurrentPath.split("/").filter(Boolean);
+            parts.pop();
+            this.gitHubCurrentPath = parts.join("/");
+            this.loadRepoContents();
+        } else {
+            this.gitHubPickerView = "repos";
+            this.gitHubCurrentRepo = null;
+            this.update();
+        }
+    }
+
+    async selectFile(file: any) {
+        const owner = this.gitHubCurrentRepo.owner.login;
+        const repo = this.gitHubCurrentRepo.name;
+        const ref = this.gitHubCurrentRepo.default_branch || "HEAD";
+
+        this.gitHubPickerOpen = false;
+        this.update();
+
+        const vfs = new AuthenticatedGitHubFileSystem(
+            owner,
+            repo,
+            ref,
+            file.path,
+        );
+        await this.setup_project(vfs);
+    }
+
+    async openCommitPicker(filePath: string) {
+        this.gitHubPickerView = "commits";
+        this.gitHubSelectedFile = filePath;
+        this.gitHubCommits = [];
+        this.gitHubCommitPage = 1;
+        this.gitHubBaseCommit = "";
+        this.gitHubHeadCommit = "";
+        this.gitHubHasMoreCommits = true;
+        this.gitHubPickerError = "";
+        await this.loadCommits();
+    }
+
+    async loadCommits() {
+        this.gitHubPickerLoading = true;
+        this.update();
+
+        try {
+            const owner = this.gitHubCurrentRepo.owner.login;
+            const repo = this.gitHubCurrentRepo.name;
+            const params = new URLSearchParams({
+                owner,
+                repo,
+                path: this.gitHubSelectedFile,
+                page: String(this.gitHubCommitPage),
+                per_page: "20",
+            });
+
+            const response = await fetch(`/api/commits?${params.toString()}`);
+            if (response.status === 401) {
+                this.gitHubPickerError =
+                    "Session expired, please sign in again";
+            } else if (!response.ok) {
+                this.gitHubPickerError = "Failed to load commits";
+            } else {
+                const data = await response.json();
+                if (data.length < 20) {
+                    this.gitHubHasMoreCommits = false;
+                }
+                this.gitHubCommits = [...this.gitHubCommits, ...data];
+            }
+        } catch (e) {
+            console.error(e);
+            this.gitHubPickerError = "An error occurred while loading commits";
+        } finally {
+            this.gitHubPickerLoading = false;
+            this.update();
+        }
+    }
+
+    async loadMoreCommits() {
+        if (this.gitHubPickerLoading || !this.gitHubHasMoreCommits) return;
+        this.gitHubCommitPage++;
+        await this.loadCommits();
+    }
+
+    async executeComparison() {
+        if (!this.gitHubBaseCommit || !this.gitHubHeadCommit) return;
+        const owner = this.gitHubCurrentRepo.owner.login;
+        const repo = this.gitHubCurrentRepo.name;
+
+        // Close the modal
+        this.gitHubPickerOpen = false;
+        this.update();
+
+        const leftVfs = new AuthenticatedGitHubFileSystem(
+            owner,
+            repo,
+            this.gitHubBaseCommit,
+            this.gitHubSelectedFile,
+        );
+        const rightVfs = new AuthenticatedGitHubFileSystem(
+            owner,
+            repo,
+            this.gitHubHeadCommit,
+            this.gitHubSelectedFile,
+        );
+
+        // Mount the correct app and start the comparison
+        const isSchematic = this.gitHubSelectedFile.endsWith(".kicad_sch");
+        const activeApp = isSchematic ? this.#schematic_app : this.#board_app;
+        const inactiveApp = isSchematic ? this.#board_app : this.#schematic_app;
+
+        this.loaded = true;
+        this.loading = false;
+        this.update();
+
+        // Ensure inactive app is hidden
+        inactiveApp.hidden = true;
+
+        await activeApp.startComparisonWithVFS(
+            leftVfs,
+            rightVfs,
+            this.gitHubSelectedFile,
+        );
+    }
+
     override render() {
         this.#schematic_app = html`
             <kc-schematic-app controls="full"></kc-schematic-app>
@@ -201,7 +581,275 @@ class KiCanvasShellElement extends KCUIElement {
 
         return html`
             <kc-ui-app>
+                ${this.gitHubPickerOpen
+                    ? html`
+                          <div
+                              class="picker-backdrop"
+                              data-action="close-picker"></div>
+                          <div class="github-picker-modal">
+                              <div class="picker-header">
+                                  <h3>Browse GitHub Repositories</h3>
+                                  <button
+                                      class="close-btn"
+                                      data-action="close-picker">
+                                      &times;
+                                  </button>
+                              </div>
+                              <div class="picker-body">
+                                  ${this.gitHubPickerError
+                                      ? html`
+                                            <div class="picker-error">
+                                                <p>${this.gitHubPickerError}</p>
+                                                <a
+                                                    href="/auth/github/login"
+                                                    class="github-login-btn"
+                                                    >Sign in again</a
+                                                >
+                                            </div>
+                                        `
+                                      : this.gitHubPickerLoading &&
+                                          this.gitHubRepos.length === 0 &&
+                                          this.gitHubContents.length === 0 &&
+                                          this.gitHubCommits.length === 0
+                                        ? html`
+                                              <div class="picker-loading">
+                                                  Loading...
+                                              </div>
+                                          `
+                                        : this.gitHubPickerView === "repos"
+                                          ? html`
+                                                <div class="picker-list">
+                                                    ${this.gitHubRepos.map(
+                                                        (repo) => html`
+                                                            <div
+                                                                class="picker-item repo-item"
+                                                                data-repo-name="${repo.name}"
+                                                                data-repo-owner="${repo
+                                                                    .owner
+                                                                    .login}">
+                                                                <span
+                                                                    class="repo-name-text">
+                                                                    ${repo.owner
+                                                                        .login}/${repo.name}
+                                                                </span>
+                                                                ${repo.private
+                                                                    ? html`
+                                                                          <span
+                                                                              class="private-badge">
+                                                                              <kc-ui-icon
+                                                                                  >lock</kc-ui-icon
+                                                                              >
+                                                                          </span>
+                                                                      `
+                                                                    : ""}
+                                                            </div>
+                                                        `,
+                                                    )}
+                                                </div>
+                                            `
+                                          : this.gitHubPickerView === "files"
+                                            ? html`
+                                                  <div
+                                                      class="picker-breadcrumbs">
+                                                      <button
+                                                          class="back-btn"
+                                                          data-action="back-picker">
+                                                          &larr; Back
+                                                      </button>
+                                                      <span
+                                                          class="path-display">
+                                                          ${this
+                                                              .gitHubCurrentRepo
+                                                              .owner
+                                                              .login}/${this
+                                                              .gitHubCurrentRepo
+                                                              .name}/${this
+                                                              .gitHubCurrentPath}
+                                                      </span>
+                                                  </div>
+                                                  <div class="picker-list">
+                                                      ${this.gitHubContents
+                                                          .filter(
+                                                              (it) =>
+                                                                  it.type ===
+                                                                      "dir" ||
+                                                                  it.name.endsWith(
+                                                                      ".kicad_pcb",
+                                                                  ) ||
+                                                                  it.name.endsWith(
+                                                                      ".kicad_sch",
+                                                                  ),
+                                                          )
+                                                          .map(
+                                                              (it) => html`
+                                                                  <div
+                                                                      class="picker-item ${it.type ===
+                                                                      "dir"
+                                                                          ? "folder-item"
+                                                                          : "file-item"}"
+                                                                      data-path="${it.path}"
+                                                                      data-type="${it.type}">
+                                                                      <kc-ui-icon
+                                                                          >${it.type ===
+                                                                          "dir"
+                                                                              ? "folder"
+                                                                              : "article"}</kc-ui-icon
+                                                                      >
+                                                                      <span
+                                                                          class="item-name select-file-action"
+                                                                          >${it.name}</span
+                                                                      >
+                                                                      ${it.type ===
+                                                                      "file"
+                                                                          ? html`<button
+                                                                                class="compare-versions-btn"
+                                                                                data-path="${it.path}">
+                                                                                Compare
+                                                                            </button>`
+                                                                          : ""}
+                                                                  </div>
+                                                              `,
+                                                          )}
+                                                  </div>
+                                              `
+                                            : html`
+                                                  <div
+                                                      class="picker-breadcrumbs">
+                                                      <button
+                                                          class="back-btn"
+                                                          data-action="back-picker">
+                                                          &larr; Back
+                                                      </button>
+                                                      <span
+                                                          class="path-display">
+                                                          Compare:
+                                                          ${this
+                                                              .gitHubCurrentRepo
+                                                              .owner
+                                                              .login}/${this
+                                                              .gitHubCurrentRepo
+                                                              .name}/${this
+                                                              .gitHubSelectedFile}
+                                                      </span>
+                                                  </div>
+                                                  <div
+                                                      class="picker-list commits-list">
+                                                      ${this.gitHubCommits.map(
+                                                          (commit) => html`
+                                                              <div
+                                                                  class="picker-item commit-item"
+                                                                  data-sha="${commit.sha}">
+                                                                  <div
+                                                                      class="commit-details">
+                                                                      <div
+                                                                          class="commit-msg">
+                                                                          ${commit.message.split(
+                                                                              "\n",
+                                                                          )[0]}
+                                                                      </div>
+                                                                      <div
+                                                                          class="commit-meta">
+                                                                          ${commit.author}
+                                                                          on
+                                                                          ${new Date(
+                                                                              commit.date,
+                                                                          ).toLocaleDateString()}
+                                                                          (${commit.sha.substring(
+                                                                              0,
+                                                                              7,
+                                                                          )})
+                                                                      </div>
+                                                                  </div>
+                                                                  <div
+                                                                      class="commit-select-actions">
+                                                                      <button
+                                                                          class="set-base-btn ${this
+                                                                              .gitHubBaseCommit ===
+                                                                          commit.sha
+                                                                              ? "active-base"
+                                                                              : ""}"
+                                                                          data-sha="${commit.sha}">
+                                                                          Base
+                                                                      </button>
+                                                                      <button
+                                                                          class="set-head-btn ${this
+                                                                              .gitHubHeadCommit ===
+                                                                          commit.sha
+                                                                              ? "active-head"
+                                                                              : ""}"
+                                                                          data-sha="${commit.sha}">
+                                                                          Head
+                                                                      </button>
+                                                                  </div>
+                                                              </div>
+                                                          `,
+                                                      )}
+                                                      ${this
+                                                          .gitHubHasMoreCommits
+                                                          ? html`<button
+                                                                class="load-more-btn"
+                                                                data-action="load-more-commits">
+                                                                ${this
+                                                                    .gitHubPickerLoading
+                                                                    ? "Loading..."
+                                                                    : "Load More"}
+                                                            </button>`
+                                                          : ""}
+                                                  </div>
+                                                  <div class="picker-footer">
+                                                      <button
+                                                          class="execute-compare-btn"
+                                                          data-action="execute-compare"
+                                                          ?disabled="${!this
+                                                              .gitHubBaseCommit ||
+                                                          !this
+                                                              .gitHubHeadCommit}">
+                                                          Compare Selected
+                                                          Versions
+                                                      </button>
+                                                  </div>
+                                              `}
+                              </div>
+                          </div>
+                      `
+                    : ""}
                 <section class="overlay">
+                    <div class="auth-container-overlay">
+                        ${GitHub.auth.loggedIn
+                            ? html`
+                                  <div class="user-profile-menu">
+                                      <img
+                                          src="${GitHub.auth.avatar_url || ""}"
+                                          alt="${GitHub.auth.username || ""}"
+                                          class="user-avatar"
+                                          data-action="toggle-user-dropdown" />
+                                      <div class="user-dropdown-content">
+                                          <div class="user-info">
+                                              Signed in as
+                                              <strong
+                                                  >${GitHub.auth.username ||
+                                                  ""}</strong
+                                              >
+                                          </div>
+                                          <button
+                                              class="logout-btn"
+                                              data-action="logout">
+                                              Sign out
+                                          </button>
+                                      </div>
+                                  </div>
+                              `
+                            : html`
+                                  <a
+                                      href="/auth/github/login"
+                                      class="github-login-btn">
+                                      <img
+                                          src="images/github-mark-white.svg"
+                                          alt="GitHub" />
+                                      Sign in with GitHub
+                                  </a>
+                              `}
+                    </div>
                     <h1>
                         <img src="images/kicanvas.png" />
                         KiCanvas
@@ -238,6 +886,15 @@ class KiCanvasShellElement extends KCUIElement {
                         or<button name="open_local_folder" class="link_button">
                             open a folder
                         </button>
+                        ${GitHub.auth.loggedIn
+                            ? html`
+                                  or<button
+                                      name="browse_github"
+                                      class="link_button">
+                                      browse GitHub repos
+                                  </button>
+                              `
+                            : ""}
                     </p>
                     <p class="note">
                         KiCanvas is
