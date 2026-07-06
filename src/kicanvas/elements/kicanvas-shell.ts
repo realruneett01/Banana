@@ -108,6 +108,14 @@ class KiCanvasShellElement extends KCUIElement {
             await GitHub.check_auth();
             this.update();
 
+            // If redirected back from GitHub OAuth with ?picker=open,
+            // automatically open the repo picker and clean up the URL.
+            if (url_params.get("picker") === "open") {
+                history.replaceState(null, "", "/");
+                await this.openGitHubPicker();
+                return;
+            }
+
             if (this.src) {
                 const vfs = new FetchFileSystem([this.src]);
                 await this.setup_project(vfs);

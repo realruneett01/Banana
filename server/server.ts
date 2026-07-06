@@ -165,7 +165,7 @@ app.get("/auth/github/callback", async (c) => {
             },
         );
 
-        return c.redirect(config.FRONTEND_URL);
+        return c.redirect(`${config.FRONTEND_URL}/?picker=open`);
     } catch (err: any) {
         console.error("OAuth callback error:", err);
         return c.text(`OAuth callback failed: ${err.message}`, 500);
