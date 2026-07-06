@@ -6,7 +6,7 @@
 
 import { BBox, Vec2 } from "../../base/math";
 import { is_string } from "../../base/types";
-import { Renderer } from "../../graphics";
+import { Polygon, Polyline, Renderer } from "../../graphics";
 import { WebGL2Renderer } from "../../graphics/webgl";
 import type { BoardTheme } from "../../kicad";
 import * as kicad_common from "../../kicad/common";
@@ -143,12 +143,32 @@ export class BoardViewer extends DocumentViewer<
     }
 
     protected override paint_selected() {
-        const selected = this.selected;
-        if (selected && selected.context instanceof board_items.Footprint) {
-            this.highlight_footprint(selected.context);
-        } else {
-            super.paint_selected();
+        const layer = this.layers.overlay;
+        layer.clear();
+        this.renderer.start_layer(layer.name);
+
+        // Native selection-box representation (selection highlight box)
+        if (this.selected) {
+            const bb = this.selected.copy().grow(this.selected.w * 0.1);
+            this.renderer.line(Polyline.from_BBox(bb, 0.254, this.selection_color));
+            this.renderer.polygon(Polygon.from_BBox(bb, this.selection_color.with_alpha(0.15)));
         }
+
+        // Diff items — render geometry with swapped color on the overlay
+        for (const [item, color] of this.highlighted_diff_items) {
+            for (const layer_name of this.painter.layers_for(item)) {
+                const target_layer = this.layers.by_name(layer_name);
+                if (!target_layer) continue;
+                const original_color = target_layer.color;
+                target_layer.color = color;
+                this.painter.paint_item(target_layer, item);
+                target_layer.color = original_color;
+            }
+        }
+
+        layer.graphics = this.renderer.end_layer();
+        layer.graphics.composite_operation = "overlay";
+        this.draw();
     }
 
     private set_layers_opacity(layers: Generator<ViewLayer>, opacity: number) {

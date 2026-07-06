@@ -33,6 +33,7 @@ export abstract class Viewer extends EventTarget {
     protected setup_finished = new Barrier();
 
     #selected: BBox | null = null;
+    protected highlighted_diff_items: Map<any, Color> = new Map();
 
     constructor(
         public canvas: HTMLCanvasElement,
@@ -108,6 +109,7 @@ export abstract class Viewer extends EventTarget {
         if (this.interactive) {
             this.draw();
         }
+        this.dispatchEvent(new CustomEvent("viewportchange"));
     }
 
     protected on_mouse_change(e: MouseEvent) {
@@ -147,7 +149,9 @@ export abstract class Viewer extends EventTarget {
         let depth = 0.01;
         const camera = this.viewport.camera.matrix;
         const should_dim =
-            this.layers.is_any_layer_highlighted() || this.#selected !== null;
+            this.layers.is_any_layer_highlighted() ||
+            this.highlighted_diff_items.size > 0 ||
+            this.#selected !== null;
 
         // TODO: donot flip drawing sheet and grid
 
@@ -155,15 +159,8 @@ export abstract class Viewer extends EventTarget {
             if (layer.visible && layer.graphics) {
                 let alpha = layer.opacity;
 
-                // The overlay layer carries the selected element's own
-                // highlighted graphics and should always render at full
-                // strength; every other layer gets dimmed so the selection
-                // reads clearly against everything else.
-                if (
-                    should_dim &&
-                    !layer.highlighted &&
-                    layer !== this.layers.overlay
-                ) {
+                const is_overlay = layer === this.layers.overlay;
+                if (should_dim && !layer.highlighted && !is_overlay) {
                     alpha = 0.25;
                 }
 
@@ -219,6 +216,11 @@ export abstract class Viewer extends EventTarget {
 
     public get selected(): BBox | null {
         return this.#selected;
+    }
+
+    public set_diff_highlights(items: Map<any, Color>) {
+        this.highlighted_diff_items = items;
+        later(() => this.paint_selected());
     }
 
     public set selected(bb: BBox | null) {

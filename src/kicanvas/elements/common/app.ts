@@ -20,8 +20,10 @@ import {
 } from "../../../kc-ui";
 import { KiCanvasSelectEvent } from "../../../viewers/base/events";
 import type { Viewer } from "../../../viewers/base/viewer";
-import type { Project, ProjectPage } from "../../project";
+import { Project } from "../../project";
+import type { ProjectPage } from "../../project";
 import { KCBoardViewerElement } from "../kc-board/viewer";
+import { FilePicker } from "../../../base/dom/file-picker";
 
 // import dependent elements so they're registered before use.
 import "./help-panel";
@@ -64,6 +66,15 @@ export abstract class KCViewerAppElement<
 
     @attribute({ type: Boolean })
     sidebarcollapsed: boolean;
+
+    @attribute({ type: Boolean })
+    compareActive: boolean = false;
+
+    syncEnabled: boolean = true;
+    #right_viewer_elm: any = null;
+    #right_project: Project | null = null;
+    _leftViewportListener: any = null;
+    _rightViewportListener: any = null;
 
     override connectedCallback() {
         this.hidden = true;
@@ -113,6 +124,12 @@ export abstract class KCViewerAppElement<
                     break;
                 case "flip_view":
                     this.#viewer_elm.viewer.flip_view();
+                    break;
+                case "compare":
+                    this.startComparison();
+                    break;
+                case "exit_compare":
+                    this.stopComparison();
                     break;
                 default:
                     console.warn("Unknown button", e);
@@ -188,6 +205,103 @@ export abstract class KCViewerAppElement<
 
     protected abstract make_viewer_element(): ViewerElementT;
 
+    async startComparison() {
+        const compareFolder = confirm("Compare with folder? (Click Cancel to select a single file)");
+        const handler = async (vfs: any) => {
+            try {
+                this.#right_project = new Project();
+                await this.#right_project.load(vfs);
+
+                this.#right_viewer_elm = this.make_viewer_element();
+                this.#right_viewer_elm.disableinteraction = false;
+
+                this.compareActive = true;
+                this.update();
+
+                // Wait for DOM to render the panes
+                await new Promise((resolve) => window.requestAnimationFrame(resolve));
+
+                await this.#right_viewer_elm.load(this.#right_project.first_page);
+
+                // Run AST diff
+                const leftDoc = (this.#viewer_elm.viewer as any).document;
+                const rightDoc = (this.#right_viewer_elm as any).viewer.document;
+
+                if (leftDoc && rightDoc) {
+                    const { diff_documents, build_highlight_map } = await import("../../services/diff-engine.js");
+                    const diffEntries = diff_documents(leftDoc, rightDoc);
+
+                    this.#viewer_elm.viewer.set_diff_highlights(build_highlight_map(diffEntries, "old"));
+                    (this.#right_viewer_elm as any).viewer.set_diff_highlights(build_highlight_map(diffEntries, "new"));
+
+                    // Synchronize viewports
+                    let isSyncing = false;
+                    const leftViewer = this.#viewer_elm.viewer;
+                    const rightViewer = (this.#right_viewer_elm as any).viewer;
+
+                    this._leftViewportListener = () => {
+                        if (!this.syncEnabled || isSyncing) return;
+                        isSyncing = true;
+                        rightViewer.viewport.camera.center.set(leftViewer.viewport.camera.center);
+                        rightViewer.viewport.camera.zoom = leftViewer.viewport.camera.zoom;
+                        rightViewer.viewport.camera.rotation = leftViewer.viewport.camera.rotation;
+                        rightViewer.viewport.camera.flipped = leftViewer.viewport.camera.flipped;
+                        rightViewer.draw();
+                        isSyncing = false;
+                    };
+
+                    this._rightViewportListener = () => {
+                        if (!this.syncEnabled || isSyncing) return;
+                        isSyncing = true;
+                        leftViewer.viewport.camera.center.set(rightViewer.viewport.camera.center);
+                        leftViewer.viewport.camera.zoom = rightViewer.viewport.camera.zoom;
+                        leftViewer.viewport.camera.rotation = rightViewer.viewport.camera.rotation;
+                        leftViewer.viewport.camera.flipped = rightViewer.viewport.camera.flipped;
+                        leftViewer.draw();
+                        isSyncing = false;
+                    };
+
+                    (leftViewer as any).addEventListener("viewportchange", this._leftViewportListener);
+                    (rightViewer as any).addEventListener("viewportchange", this._rightViewportListener);
+                }
+            } catch (err: any) {
+                console.error(err);
+                alert("Error loading comparison file: " + err.message);
+                this.stopComparison();
+            }
+        };
+
+        if (compareFolder) {
+            await FilePicker.pick_folder(handler);
+        } else {
+            await FilePicker.pick(handler);
+        }
+    }
+
+    stopComparison() {
+        this.compareActive = false;
+
+        // Clean up listeners
+        if (this.#viewer_elm && this.#viewer_elm.viewer) {
+            const leftViewer = this.#viewer_elm.viewer;
+            if (this._leftViewportListener) {
+                (leftViewer as any).removeEventListener("viewportchange", this._leftViewportListener);
+            }
+            leftViewer.set_diff_highlights(new Map());
+        }
+
+        if (this.#right_viewer_elm && (this.#right_viewer_elm as any).viewer) {
+            const rightViewer = (this.#right_viewer_elm as any).viewer;
+            if (this._rightViewportListener) {
+                (rightViewer as any).removeEventListener("viewportchange", this._rightViewportListener);
+            }
+        }
+
+        this.#right_project = null;
+        this.#right_viewer_elm = null;
+        this.update();
+    }
+
     override render() {
         const controls = this.controls ?? "none";
         const controlslist = parseFlagAttribute(
@@ -245,6 +359,19 @@ export abstract class KCViewerAppElement<
             );
         }
 
+        if (this.#viewer_elm instanceof KCBoardViewerElement) {
+            top_toolbar_buttons.push(
+                html`<kc-ui-button
+                    slot="right"
+                    name="${this.compareActive ? 'exit_compare' : 'compare'}"
+                    title="${this.compareActive ? 'Exit Compare' : 'Compare Boards'}"
+                    icon="difference"
+                    class="${this.compareActive ? 'active' : ''}"
+                    variant="toolbar-alt">
+                </kc-ui-button>`,
+            );
+        }
+
         const top_toolbar = html`<kc-ui-floating-toolbar location="top">
             ${top_toolbar_buttons}
         </kc-ui-floating-toolbar>`;
@@ -254,9 +381,59 @@ export abstract class KCViewerAppElement<
             bottom_toolbar = html`<kc-viewer-bottom-toolbar></kc-viewer-bottom-toolbar>`;
         }
 
+        const viewer_content = this.compareActive
+            ? html`
+                <div class="split-view-container">
+                    <style>
+                        .split-view-container {
+                            display: flex;
+                            flex-direction: row;
+                            width: 100%;
+                            height: 100%;
+                        }
+                        .split-view-container .pane {
+                            flex: 1;
+                            height: 100%;
+                            position: relative;
+                        }
+                        .split-view-container .left-pane {
+                            border-right: 2px solid var(--border);
+                        }
+                        .pane::before {
+                            position: absolute;
+                            top: 8px;
+                            left: 8px;
+                            padding: 4px 8px;
+                            background: rgba(22, 19, 33, 0.85);
+                            border: 1px solid var(--border);
+                            border-radius: 4px;
+                            font-size: 11px;
+                            font-weight: 600;
+                            z-index: 10;
+                            pointer-events: none;
+                        }
+                        .left-pane::before {
+                            content: "Older version (deleted/modified)";
+                            color: #ef4444;
+                        }
+                        .right-pane::before {
+                            content: "Newer version (added/modified)";
+                            color: #22c55e;
+                        }
+                    </style>
+                    <div class="pane left-pane">
+                        ${this.#viewer_elm}
+                    </div>
+                    <div class="pane right-pane">
+                        ${this.#right_viewer_elm}
+                    </div>
+                </div>
+            `
+            : this.#viewer_elm;
+
         return html`<kc-ui-split-view vertical>
             <kc-ui-view class="grow">
-                ${top_toolbar} ${this.#viewer_elm} ${bottom_toolbar}
+                ${top_toolbar} ${viewer_content} ${bottom_toolbar}
             </kc-ui-view>
             ${resizer} ${this.#activity_bar}
         </kc-ui-split-view>`;
