@@ -33,8 +33,7 @@ app.get("/auth/github/login", async (c) => {
 
     const state = `${payload}.${signature}`;
 
-    const redirectUri = encodeURIComponent(config.GITHUB_CALLBACK_URL);
-    const authorizeUrl = `https://github.com/login/oauth/authorize?client_id=${config.GITHUB_CLIENT_ID}&redirect_uri=${redirectUri}&scope=repo&state=${state}`;
+    const authorizeUrl = `https://github.com/login/oauth/authorize?client_id=${config.GITHUB_CLIENT_ID}&scope=repo&state=${state}`;
 
     return c.redirect(authorizeUrl);
 });
