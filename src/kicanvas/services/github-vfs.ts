@@ -166,6 +166,7 @@ export class AuthenticatedGitHubFileSystem extends FileSystemBase {
             owner: this.owner,
             repo: this.repo,
             path: path,
+            raw: "true",
         });
         if (this.ref) {
             params.set("ref", this.ref);

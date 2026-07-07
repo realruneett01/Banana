@@ -13,7 +13,6 @@ interface SessionData {
     access_token?: string;
     github_username?: string;
     github_avatar_url?: string;
-    state?: string;
 }
 
 // In-memory session store (Session ID -> SessionData)
@@ -21,7 +20,7 @@ const sessions = new Map<string, SessionData>();
 
 /**
  * GET /auth/github/login
- * Generates state, redirects to GitHub authorize endpoint.
+ * Generates HMAC-signed state, redirects to GitHub authorize endpoint.
  */
 app.get("/auth/github/login", async (c) => {
     const nonce = crypto.randomUUID();
@@ -34,14 +33,22 @@ app.get("/auth/github/login", async (c) => {
 
     const state = `${payload}.${signature}`;
 
-    const authorizeUrl = `https://github.com/login/oauth/authorize?client_id=${config.GITHUB_CLIENT_ID}&scope=repo&state=${state}`;
+    // MUST include redirect_uri — must match GitHub OAuth App settings EXACTLY
+    const params = new URLSearchParams({
+        client_id: config.GITHUB_CLIENT_ID,
+        redirect_uri: config.GITHUB_CALLBACK_URL,
+        scope: "repo",
+        state: state,
+    });
+
+    const authorizeUrl = `https://github.com/login/oauth/authorize?${params.toString()}`;
 
     return c.redirect(authorizeUrl);
 });
 
 /**
  * GET /auth/github/callback
- * Verifies state, exchanges code for access token, fetches profile, and redirects home.
+ * Verifies state, exchanges code for access token, creates session, redirects home.
  */
 app.get("/auth/github/callback", async (c) => {
     const code = c.req.query("code");
@@ -58,29 +65,23 @@ app.get("/auth/github/callback", async (c) => {
 
     const [nonce, timestampStr, signature] = parts;
 
-    // Validate signature is well-formed base64url
     if (!/^[A-Za-z0-9_-]+$/.test(signature)) {
         return c.text("Invalid state format", 400);
     }
 
-    // Parse timestamp
     const timestamp = parseInt(timestampStr, 10);
     if (isNaN(timestamp)) {
         return c.text("Invalid state format", 400);
     }
 
     const now = Date.now();
-    // Expiration check (10 minutes in the past)
     if (now - timestamp > 10 * 60 * 1000) {
-        return c.text("State has expired or is invalid", 400);
+        return c.text("State has expired", 400);
     }
-
-    // Anti-future-timestamp check
     if (timestamp > now) {
-        return c.text("State has expired or is invalid", 400);
+        return c.text("Invalid timestamp", 400);
     }
 
-    // Recompute and verify HMAC signature
     const payload = `${nonce}.${timestampStr}`;
     const expectedSignature = crypto
         .createHmac("sha256", config.SESSION_SECRET)
@@ -90,11 +91,17 @@ app.get("/auth/github/callback", async (c) => {
     const sigBuf = Buffer.from(signature, "utf8");
     const expectedBuf = Buffer.from(expectedSignature, "utf8");
 
-    const isValid = sigBuf.length === expectedBuf.length &&
-                    crypto.timingSafeEqual(sigBuf, expectedBuf);
+    if (sigBuf.length !== expectedBuf.length) {
+        return c.text("CSRF validation failed", 400);
+    }
 
+    const isValid = crypto.timingSafeEqual(sigBuf, expectedBuf);
     if (!isValid) {
         return c.text("CSRF validation failed", 400);
+    }
+
+    if (!code) {
+        return c.text("Missing authorization code", 400);
     }
 
     try {
@@ -117,16 +124,19 @@ app.get("/auth/github/callback", async (c) => {
         );
 
         if (!tokenResponse.ok) {
+            const errorText = await tokenResponse.text();
+            console.error("Token exchange failed:", errorText);
             return c.text("Failed to exchange code for token", 500);
         }
 
         const tokenData = (await tokenResponse.json()) as any;
         const accessToken = tokenData.access_token;
         if (!accessToken) {
+            console.error("No access token in response:", tokenData);
             return c.text("No access token returned from GitHub", 500);
         }
 
-        // Fetch user profile info
+        // Fetch user profile
         const userResponse = await fetch("https://api.github.com/user", {
             headers: {
                 Authorization: `Bearer ${accessToken}`,
@@ -141,17 +151,15 @@ app.get("/auth/github/callback", async (c) => {
 
         const userData = (await userResponse.json()) as any;
 
-        // Generate a fresh session ID only after token exchange and profile fetch succeed
+        // Create session
         const sessionId = crypto.randomUUID();
-
-        // Save access token and user info to session
         sessions.set(sessionId, {
             access_token: accessToken,
             github_username: userData.login,
             github_avatar_url: userData.avatar_url,
         });
 
-        // Set signed session ID cookie (session-only, no maxAge/expires)
+        // Set signed session cookie
         await setSignedCookie(
             c,
             "session_id",
@@ -174,7 +182,6 @@ app.get("/auth/github/callback", async (c) => {
 
 /**
  * GET /auth/me
- * Reads session cookie and returns user details. Never leaks token.
  */
 app.get("/auth/me", async (c) => {
     const sessionId = await getSignedCookie(
@@ -200,7 +207,6 @@ app.get("/auth/me", async (c) => {
 
 /**
  * POST /auth/logout
- * Deletes session and clears the cookie.
  */
 app.post("/auth/logout", async (c) => {
     const sessionId = await getSignedCookie(
@@ -217,7 +223,6 @@ app.post("/auth/logout", async (c) => {
 
 /**
  * GET /api/repos
- * Proxy endpoint to list authenticated user's repositories.
  */
 app.get("/api/repos", async (c) => {
     const sessionId = await getSignedCookie(
@@ -240,7 +245,6 @@ app.get("/api/repos", async (c) => {
         params.set("per_page", "100");
         params.set("sort", "updated");
 
-        // Merge existing query parameters from the request
         const queries = c.req.query();
         for (const [key, val] of Object.entries(queries)) {
             if (val !== undefined) {
@@ -285,7 +289,6 @@ app.get("/api/repos", async (c) => {
 
 /**
  * GET /api/contents
- * Proxy endpoint to fetch a file's raw contents securely.
  */
 app.get("/api/contents", async (c) => {
     const sessionId = await getSignedCookie(
@@ -306,8 +309,9 @@ app.get("/api/contents", async (c) => {
     const repo = c.req.query("repo");
     const filePath = c.req.query("path");
     const ref = c.req.query("ref");
+    const raw = c.req.query("raw") === "true";
 
-    if (!owner || !repo || !filePath) {
+    if (!owner || !repo || filePath === undefined) {
         return c.text("Missing owner, repo, or path", 400);
     }
 
@@ -319,10 +323,14 @@ app.get("/api/contents", async (c) => {
         const queryStr = params.toString();
         const githubUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}${queryStr ? "?" + queryStr : ""}`;
 
+        const acceptHeader = raw
+            ? "application/vnd.github.raw+json"
+            : "application/vnd.github+json";
+
         const contentResponse = await fetch(githubUrl, {
             headers: {
                 Authorization: `Bearer ${session.access_token}`,
-                Accept: "application/vnd.github.raw+json",
+                Accept: acceptHeader,
                 "User-Agent": "KiCanvas-Backend",
             },
         });
@@ -352,7 +360,6 @@ app.get("/api/contents", async (c) => {
 
 /**
  * GET /api/commits
- * Proxy endpoint to fetch commits that touched a specific file.
  */
 app.get("/api/commits", async (c) => {
     const sessionId = await getSignedCookie(
@@ -433,7 +440,7 @@ app.get("/api/commits", async (c) => {
     }
 });
 
-// Serve static assets from the docs/docs/images folder for /images/* pathing
+// Serve static assets
 app.use(
     "/images/*",
     serveStatic({
@@ -442,10 +449,21 @@ app.use(
     }),
 );
 
-// Serve frontend static assets from the esbuild output directory
+// Serve frontend static assets
 app.use("/*", serveStatic({ root: "./debug" }));
 
-// Start the server using @hono/node-server
+// Graceful shutdown for dev server restarts
+process.on("SIGTERM", () => {
+    console.log("[backend] SIGTERM received, shutting down gracefully");
+    process.exit(0);
+});
+
+process.on("SIGINT", () => {
+    console.log("[backend] SIGINT received, shutting down gracefully");
+    process.exit(0);
+});
+
+// Start server
 const port = config.PORT;
 serve({
     fetch: app.fetch,
