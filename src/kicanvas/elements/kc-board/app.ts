@@ -21,6 +21,7 @@ import "./nets-panel";
 import "./objects-panel";
 import "./properties-panel";
 import "./viewer";
+import "../common/compare-sidebar";
 
 /**
  * Internal "parent" element for KiCanvas's board viewer. Handles
@@ -45,6 +46,14 @@ export class KCBoardAppElement extends KCViewerAppElement<KCBoardViewerElement> 
 
     override make_activities() {
         return [
+            // Compare Studio sidebar (only relevant when compare is possible)
+            html`<kc-ui-activity
+                slot="activities"
+                name="Compare"
+                icon="difference">
+                <kc-compare-sidebar></kc-compare-sidebar>
+            </kc-ui-activity>`,
+
             // Layers
             html`<kc-ui-activity slot="activities" name="Layers" icon="layers">
                 <kc-board-layers-panel></kc-board-layers-panel>

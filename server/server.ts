@@ -6,6 +6,11 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { getSignedCookie, setSignedCookie, deleteCookie } from "hono/cookie";
 import crypto from "node:crypto";
 import { config } from "./config.ts";
+import git from "isomorphic-git";
+import fs from "fs";
+import path from "path";
+
+
 
 const app = new Hono();
 
@@ -437,6 +442,166 @@ app.get("/api/commits", async (c) => {
     } catch (err: any) {
         console.error("Error fetching commits:", err);
         return c.json({ error: "Internal server error" }, 500);
+    }
+});
+
+// Git local API endpoints
+app.get("/api/git/repos", async (c) => {
+    const repos = [
+        { path: process.cwd(), name: "Banana (Workspace)" },
+    ];
+    return c.json(repos);
+});
+
+app.get("/api/git/refs", async (c) => {
+    const repo = c.req.query("repo");
+    if (!repo) return c.json({ error: "repo required" }, 400);
+
+    const { execSync } = await import("child_process");
+
+    try {
+        const branches = execSync(`git -C "${repo}" branch -a --format="%(refname:short)|%(objectname:short)"`, { encoding: "utf-8" })
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => {
+                const [name, sha] = line.split("|");
+                return { type: "branch", name, sha };
+            });
+
+        const tags = execSync(`git -C "${repo}" tag -l --format="%(refname:short)|%(objectname:short)"`, { encoding: "utf-8" })
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => {
+                const [name, sha] = line.split("|");
+                return { type: "tag", name, sha };
+            });
+
+        return c.json([...branches, ...tags]);
+    } catch {
+        return c.json({ error: "Failed to list refs" }, 500);
+    }
+});
+
+app.get("/api/git/tree", async (c) => {
+    const repo = c.req.query("repo");
+    const ref = c.req.query("ref") || "HEAD";
+    const path = c.req.query("path") || "";
+
+    if (!repo) return c.json({ error: "repo required" }, 400);
+
+    const { execSync } = await import("child_process");
+    const treePath = path ? `${ref}:${path}` : `${ref}:`;
+
+    try {
+        const output = execSync(`git -C "${repo}" ls-tree ${treePath}`, { encoding: "utf-8" });
+        const entries = output.split("\n").filter(Boolean).map((line) => {
+            const [mode, type, sha, ...pathParts] = line.split(/\s+/);
+            return { mode, type, sha, path: pathParts.join(" ") };
+        });
+        return c.json(entries);
+    } catch {
+        return c.json({ error: "Failed to read tree" }, 500);
+    }
+});
+
+// ── Helpers ───────────────────────────────────────────────
+
+async function readFileAtRef(
+    repoPath: string,
+    ref: string,
+    filePath: string
+): Promise<Buffer> {
+    const commitOid = await git.resolveRef({ fs, dir: repoPath, ref });
+    const { commit } = await git.readCommit({ fs, dir: repoPath, oid: commitOid });
+
+    let treeOid = commit.tree;
+    const parts = filePath.split('/').filter(Boolean);
+
+    for (let i = 0; i < parts.length; i++) {
+        const { tree } = await git.readTree({ fs, dir: repoPath, oid: treeOid });
+        const entry = tree.find((e) => e.path === parts[i]);
+        if (!entry) {
+            throw new Error(`Path not found: ${filePath} (missing ${parts[i]})`);
+        }
+        if (i === parts.length - 1) {
+            const { blob } = await git.readBlob({ fs, dir: repoPath, oid: entry.oid });
+            return Buffer.from(blob);
+        }
+        treeOid = entry.oid;
+    }
+    throw new Error(`Invalid file path: ${filePath}`);
+}
+
+// ── Routes ──────────────────────────────────────────────
+
+app.post('/api/git/init', async (c) => {
+    try {
+        const body = await c.req.json<{ repoPath?: string }>();
+        const repoPath = body?.repoPath;
+
+        if (!repoPath || typeof repoPath !== 'string') {
+            return c.json({ error: 'repoPath required' }, 400);
+        }
+
+        const gitDir = path.join(repoPath, '.git');
+        const hasGit = fs.existsSync(gitDir) && fs.statSync(gitDir).isDirectory();
+
+        if (!hasGit) {
+            return c.json({ hasGit: false, commits: [], branches: [], tags: [] });
+        }
+
+        const [commits, branches, tags] = await Promise.all([
+            git.log({ fs, dir: repoPath, depth: 100 }),
+            git.listBranches({ fs, dir: repoPath }),
+            git.listTags({ fs, dir: repoPath }),
+        ]);
+
+        return c.json({ hasGit: true, commits, branches, tags });
+    } catch (err) {
+        console.error('/api/git/init error:', err);
+        return c.json({ error: (err as Error).message }, 500);
+    }
+});
+
+app.get('/api/git/log', async (c) => {
+    try {
+        const repoPath = c.req.query('repoPath');
+        const filePath = c.req.query('filePath');
+
+        if (!repoPath) {
+            return c.json({ error: 'repoPath required' }, 400);
+        }
+
+        const commits = await git.log({
+            fs,
+            dir: repoPath,
+            filepath: filePath || undefined,
+            depth: 100,
+        });
+
+        return c.json({ commits });
+    } catch (err) {
+        console.error('/api/git/log error:', err);
+        return c.json({ error: (err as Error).message }, 500);
+    }
+});
+
+app.get('/api/git/blob', async (c) => {
+    try {
+        const repoPath = c.req.query('repoPath');
+        const ref = c.req.query('ref');
+        const filePath = c.req.query('filePath');
+
+        if (!repoPath || !ref || !filePath) {
+            return c.json({ error: 'repoPath, ref, and filePath required' }, 400);
+        }
+
+        const content = await readFileAtRef(repoPath, ref, filePath);
+        c.header('Content-Type', 'text/plain; charset=utf-8');
+        return c.body(content);
+    } catch (err) {
+        console.error('/api/git/blob error:', err);
+        return c.json({ error: (err as Error).message }, 500);
     }
 });
 

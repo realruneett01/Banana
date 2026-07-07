@@ -22,10 +22,10 @@ import { KiCanvasSelectEvent } from "../../../viewers/base/events";
 import type { Viewer } from "../../../viewers/base/viewer";
 import { Project } from "../../project";
 import type { ProjectPage } from "../../project";
-import { KCBoardViewerElement } from "../kc-board/viewer";
-import { FilePicker } from "../../../base/dom/file-picker";
-import { GitHub } from "../../services/github";
 import type { IFileSystem } from "../../services/vfs";
+import { GitCommitFileSystem } from "../../services/git-commit-vfs";
+import { KCBoardViewerElement } from "../kc-board/viewer";
+import { GitHub } from "../../services/github";
 
 // import dependent elements so they're registered before use.
 import "./help-panel";
@@ -76,7 +76,6 @@ export abstract class KCViewerAppElement<
 
     syncEnabled: boolean = true;
     #right_viewer_elm: any = null;
-    #right_project: Project | null = null;
     _leftViewportListener: any = null;
     _rightViewportListener: any = null;
 
@@ -130,7 +129,7 @@ export abstract class KCViewerAppElement<
                     this.#viewer_elm.viewer.flip_view();
                     break;
                 case "compare":
-                    this.startComparison();
+                    this.change_activity("Compare");
                     break;
                 case "exit_compare":
                     this.stopComparison();
@@ -149,6 +148,11 @@ export abstract class KCViewerAppElement<
             } else if (target.closest('[data-action="logout"]')) {
                 this.handleLogout();
             }
+        });
+
+        this.renderRoot.addEventListener("compare-git-commits", async (e: any) => {
+            const { commitA, commitB, filePath, repoPath } = e.detail;
+            await this.compareGitCommits(repoPath, filePath, commitA, commitB);
         });
     }
 
@@ -257,51 +261,69 @@ export abstract class KCViewerAppElement<
         this.compareActive = true;
         this.hidden = false;
 
-        // 1. Setup and load Left VFS
+        // ─── CRITICAL FIX: Create a FRESH left project instead of reusing this.project ───
+        // this.project was loaded with the original VFS; reloading it corrupts state.
+        const leftProject = new Project();
+
+        // 1. Setup and load Left VFS into the NEW left project
         try {
             await leftVfs.setup();
-            await this.project.load(leftVfs);
+            await leftProject.load(leftVfs);
         } catch (e) {
             console.error("Left version load failed:", e);
             this.leftFileMissing = true;
         }
 
-        // 2. Setup and load Right VFS
+        // 2. Setup and load Right VFS into a new right project
+        const rightProject = new Project();
         try {
-            this.#right_project = new Project();
             await rightVfs.setup();
-            await this.#right_project.load(rightVfs);
+            await rightProject.load(rightVfs);
         } catch (e) {
             console.error("Right version load failed:", e);
             this.rightFileMissing = true;
         }
+
+        // 3. Create fresh viewer elements for BOTH sides
+        // We MUST recreate the left viewer so it's bound to the new leftProject
+        this.#viewer_elm = this.make_viewer_element();
+        this.#viewer_elm.disableinteraction = false;
 
         this.#right_viewer_elm = this.make_viewer_element();
         this.#right_viewer_elm.disableinteraction = false;
 
         this.update();
 
-        // 3. Load pages in viewers if they exist
+        // Wait for DOM render
         await new Promise((resolve) => window.requestAnimationFrame(resolve));
 
-        if (!this.leftFileMissing && this.project.first_page) {
-            await this.#viewer_elm.load(this.project.first_page);
-        }
-        if (
-            !this.rightFileMissing &&
-            this.#right_project &&
-            this.#right_project.first_page &&
-            this.#right_viewer_elm
-        ) {
-            await this.#right_viewer_elm.load(this.#right_project.first_page);
+        // 4. Load the specific file into each viewer
+        if (!this.leftFileMissing) {
+            const leftPage = this.findPageByPath(leftProject, filePath);
+            if (leftPage) {
+                await this.#viewer_elm.load(leftPage);
+            } else if (leftProject.first_page) {
+                await this.#viewer_elm.load(leftProject.first_page);
+            } else {
+                this.leftFileMissing = true;
+                this.update();
+            }
         }
 
-        // 4. Run AST diff if both exist
-        if (
-            !this.leftFileMissing &&
-            !this.rightFileMissing &&
-            this.#right_viewer_elm
-        ) {
+        if (!this.rightFileMissing) {
+            const rightPage = this.findPageByPath(rightProject, filePath);
+            if (rightPage) {
+                await this.#right_viewer_elm.load(rightPage);
+            } else if (rightProject.first_page) {
+                await this.#right_viewer_elm.load(rightProject.first_page);
+            } else {
+                this.rightFileMissing = true;
+                this.update();
+            }
+        }
+
+        // 5. Run AST diff if both exist
+        if (!this.leftFileMissing && !this.rightFileMissing) {
             const leftDoc = (this.#viewer_elm.viewer as any)?.document;
             const rightDoc = (this.#right_viewer_elm as any)?.viewer?.document;
 
@@ -317,185 +339,93 @@ export abstract class KCViewerAppElement<
                     build_highlight_map(diffEntries, "new"),
                 );
 
-                // Synchronize viewports
-                let isSyncing = false;
-                const leftViewer = this.#viewer_elm.viewer;
-                const rightViewer = (this.#right_viewer_elm as any).viewer;
-
-                this._leftViewportListener = () => {
-                    if (!this.syncEnabled || isSyncing) return;
-                    isSyncing = true;
-                    rightViewer.viewport.camera.center.set(
-                        leftViewer.viewport.camera.center,
-                    );
-                    rightViewer.viewport.camera.zoom =
-                        leftViewer.viewport.camera.zoom;
-                    rightViewer.viewport.camera.rotation =
-                        leftViewer.viewport.camera.rotation;
-                    rightViewer.viewport.camera.flipped =
-                        leftViewer.viewport.camera.flipped;
-                    rightViewer.draw();
-                    isSyncing = false;
-                };
-
-                this._rightViewportListener = () => {
-                    if (!this.syncEnabled || isSyncing) return;
-                    isSyncing = true;
-                    leftViewer.viewport.camera.center.set(
-                        rightViewer.viewport.camera.center,
-                    );
-                    leftViewer.viewport.camera.zoom =
-                        rightViewer.viewport.camera.zoom;
-                    leftViewer.viewport.camera.rotation =
-                        rightViewer.viewport.camera.rotation;
-                    leftViewer.viewport.camera.flipped =
-                        rightViewer.viewport.camera.flipped;
-                    leftViewer.draw();
-                    isSyncing = false;
-                };
-
-                (leftViewer as any).addEventListener(
-                    "viewportchange",
-                    this._leftViewportListener,
-                );
-                (rightViewer as any).addEventListener(
-                    "viewportchange",
-                    this._rightViewportListener,
-                );
+                this.setupViewportSync();
             }
         }
     }
 
-    async startComparison() {
-        const compareFolder = confirm(
-            "Compare with folder? (Click Cancel to select a single file)",
-        );
-        const handler = async (vfs: any) => {
-            try {
-                this.#right_project = new Project();
-                await this.#right_project.load(vfs);
-
-                this.#right_viewer_elm = this.make_viewer_element();
-                this.#right_viewer_elm.disableinteraction = false;
-
-                this.compareActive = true;
-                this.update();
-
-                // Wait for DOM to render the panes
-                await new Promise((resolve) =>
-                    window.requestAnimationFrame(resolve),
-                );
-
-                await this.#right_viewer_elm.load(
-                    this.#right_project.first_page,
-                );
-
-                // Run AST diff
-                const leftDoc = (this.#viewer_elm.viewer as any).document;
-                const rightDoc = (this.#right_viewer_elm as any).viewer
-                    .document;
-
-                if (leftDoc && rightDoc) {
-                    const { diff_documents, build_highlight_map } =
-                        await import("../../services/diff-engine.js");
-                    const diffEntries = diff_documents(leftDoc, rightDoc);
-
-                    this.#viewer_elm.viewer.set_diff_highlights(
-                        build_highlight_map(diffEntries, "old"),
-                    );
-                    (this.#right_viewer_elm as any).viewer.set_diff_highlights(
-                        build_highlight_map(diffEntries, "new"),
-                    );
-
-                    // Synchronize viewports
-                    let isSyncing = false;
-                    const leftViewer = this.#viewer_elm.viewer;
-                    const rightViewer = (this.#right_viewer_elm as any).viewer;
-
-                    this._leftViewportListener = () => {
-                        if (!this.syncEnabled || isSyncing) return;
-                        isSyncing = true;
-                        rightViewer.viewport.camera.center.set(
-                            leftViewer.viewport.camera.center,
-                        );
-                        rightViewer.viewport.camera.zoom =
-                            leftViewer.viewport.camera.zoom;
-                        rightViewer.viewport.camera.rotation =
-                            leftViewer.viewport.camera.rotation;
-                        rightViewer.viewport.camera.flipped =
-                            leftViewer.viewport.camera.flipped;
-                        rightViewer.draw();
-                        isSyncing = false;
-                    };
-
-                    this._rightViewportListener = () => {
-                        if (!this.syncEnabled || isSyncing) return;
-                        isSyncing = true;
-                        leftViewer.viewport.camera.center.set(
-                            rightViewer.viewport.camera.center,
-                        );
-                        leftViewer.viewport.camera.zoom =
-                            rightViewer.viewport.camera.zoom;
-                        leftViewer.viewport.camera.rotation =
-                            rightViewer.viewport.camera.rotation;
-                        leftViewer.viewport.camera.flipped =
-                            rightViewer.viewport.camera.flipped;
-                        leftViewer.draw();
-                        isSyncing = false;
-                    };
-
-                    (leftViewer as any).addEventListener(
-                        "viewportchange",
-                        this._leftViewportListener,
-                    );
-                    (rightViewer as any).addEventListener(
-                        "viewportchange",
-                        this._rightViewportListener,
-                    );
-                }
-            } catch (err: any) {
-                console.error(err);
-                alert("Error loading comparison file: " + err.message);
-                this.stopComparison();
+    private findPageByPath(project: Project, path: string) {
+        for (const page of project.pages()) {
+            if (page.filename === path || page.project_path === path) {
+                return page;
             }
+        }
+        return null;
+    }
+
+
+
+    private setupViewportSync() {
+        this.cleanupViewportSync();
+
+        let isSyncing = false;
+        const leftViewer = this.#viewer_elm.viewer;
+        const rightViewer = (this.#right_viewer_elm as any).viewer;
+
+        this._leftViewportListener = () => {
+            if (!this.syncEnabled || isSyncing) return;
+            isSyncing = true;
+            rightViewer.viewport.camera.center.set(leftViewer.viewport.camera.center);
+            rightViewer.viewport.camera.zoom = leftViewer.viewport.camera.zoom;
+            rightViewer.viewport.camera.rotation = leftViewer.viewport.camera.rotation;
+            rightViewer.viewport.camera.flipped = leftViewer.viewport.camera.flipped;
+            rightViewer.draw();
+            isSyncing = false;
         };
 
-        if (compareFolder) {
-            await FilePicker.pick_folder(handler);
-        } else {
-            await FilePicker.pick(handler);
+        this._rightViewportListener = () => {
+            if (!this.syncEnabled || isSyncing) return;
+            isSyncing = true;
+            leftViewer.viewport.camera.center.set(rightViewer.viewport.camera.center);
+            leftViewer.viewport.camera.zoom = rightViewer.viewport.camera.zoom;
+            leftViewer.viewport.camera.rotation = rightViewer.viewport.camera.rotation;
+            leftViewer.viewport.camera.flipped = rightViewer.viewport.camera.flipped;
+            leftViewer.draw();
+            isSyncing = false;
+        };
+
+        (leftViewer as any).addEventListener("viewportchange", this._leftViewportListener);
+        (rightViewer as any).addEventListener("viewportchange", this._rightViewportListener);
+    }
+
+    private cleanupViewportSync() {
+        if (this.#viewer_elm?.viewer && this._leftViewportListener) {
+            (this.#viewer_elm.viewer as any).removeEventListener("viewportchange", this._leftViewportListener);
         }
+        if (this.#right_viewer_elm && (this.#right_viewer_elm as any).viewer && this._rightViewportListener) {
+            ((this.#right_viewer_elm as any).viewer as any).removeEventListener("viewportchange", this._rightViewportListener);
+        }
+        this._leftViewportListener = null;
+        this._rightViewportListener = null;
     }
 
     stopComparison() {
         this.compareActive = false;
+        this.cleanupViewportSync();
 
-        // Clean up listeners
-        if (this.#viewer_elm && this.#viewer_elm.viewer) {
-            const leftViewer = this.#viewer_elm.viewer;
-            if (this._leftViewportListener) {
-                (leftViewer as any).removeEventListener(
-                    "viewportchange",
-                    this._leftViewportListener,
-                );
-            }
-            leftViewer.set_diff_highlights(new Map());
+        if (this.#viewer_elm?.viewer) {
+            this.#viewer_elm.viewer.set_diff_highlights(new Map());
         }
 
-        if (this.#right_viewer_elm && (this.#right_viewer_elm as any).viewer) {
-            const rightViewer = (this.#right_viewer_elm as any).viewer;
-            if (this._rightViewportListener) {
-                (rightViewer as any).removeEventListener(
-                    "viewportchange",
-                    this._rightViewportListener,
-                );
-            }
-        }
-
-        this.#right_project = null;
         this.#right_viewer_elm = null;
+
+        // CRITICAL: Clear the reference so render() creates a fresh one
+        this.#viewer_elm = null as any;
+
+        // If project has an active page, reload it
+        if (this.project?.active_page) {
+            this.load(this.project.active_page);
+        }
+
         this.update();
     }
+
+   async compareGitCommits(repoPath: string, filePath: string, commitA: string, commitB: string) 
+   {
+    const leftVfs = new GitCommitFileSystem({ repoPath, ref: commitA, filePath });
+    const rightVfs = new GitCommitFileSystem({ repoPath, ref: commitB, filePath });
+    await this.startComparisonWithVFS(leftVfs, rightVfs, filePath);
+   }
 
     override render() {
         const controls = this.controls ?? "none";
@@ -506,7 +436,9 @@ export abstract class KCViewerAppElement<
                 : { fullscreen: true, download: true, flipview: true },
         );
 
+        if (!this.#viewer_elm) {
         this.#viewer_elm = this.make_viewer_element();
+        }
         this.#viewer_elm.disableinteraction = controls == "none";
 
         let resizer = null;

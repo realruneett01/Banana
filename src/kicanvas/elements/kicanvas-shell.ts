@@ -17,7 +17,7 @@ import {
     GitHubFileSystem,
 } from "../services/github-vfs";
 import { CodebergFileSystem } from "../services/codeberg-vfs";
-import { FetchFileSystem, type IFileSystem } from "../services/vfs";
+import { FetchFileSystem, LocalFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
 import { KCSchematicAppElement } from "./kc-schematic/app";
 
@@ -131,6 +131,52 @@ class KiCanvasShellElement extends KCUIElement {
                 await this.setup_project(vfs);
                 return;
             }
+
+             this.addEventListener("drop", async (e: DragEvent) => {
+                const items = e.dataTransfer?.items;
+                if (!items) return;
+
+                for (const item of items) {
+                    if (item.kind !== 'file') continue;
+                    try {
+                        const handle = await (item as any).getAsFileSystemHandle?.();
+                        if (handle && handle.kind === 'directory') {
+                            let hasGit = false;
+                            try {
+                                await handle.getDirectoryHandle('.git');
+                                hasGit = true;
+                            } catch {}
+
+                            if (hasGit) {
+                                e.preventDefault();
+                                e.stopPropagation();
+
+                                const repoPath = prompt(
+                                    'Git repo detected. Enter the absolute path on disk so the backend can read it:'
+                                );
+                                if (repoPath) {
+                                    const res = await fetch('/api/git/init', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ repoPath }),
+                                    });
+                                    const data = await res.json();
+                                    if (data.hasGit) {
+                                        this.dispatchEvent(new CustomEvent("git-repo-detected", {
+                                            detail: { repoPath, commits: data.commits },
+                                            bubbles: true,
+                                            composed: true,
+                                        }));
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                    } catch (err) {
+                        console.error("Drop handle check failed:", err);
+                    }
+                }
+            }, { capture: true });
 
             new DropTarget(this, async (fs) => {
                 await this.setup_project(fs);
@@ -342,7 +388,41 @@ class KiCanvasShellElement extends KCUIElement {
     openLocalFolder() {
         FilePicker.pick_folder(async (vfs) => {
             await this.setup_project(vfs);
+            if (vfs instanceof LocalFileSystem) {
+                this.detectGitRepo(vfs);
+            }
         });
+    }
+
+    private async detectGitRepo(fs: any) {
+        const hasGit = confirm("Is this folder a Git repository? Click OK to enter the repo path for commit history.");
+        if (hasGit) {
+            const repoPath = prompt("Enter absolute path to this repo on the server (e.g., /home/user/projects/myboard):");
+            if (repoPath) {
+                await this.initGitRepo(repoPath);
+            }
+        }
+    }
+
+    private async initGitRepo(repoPath: string) {
+        try {
+            const res = await fetch("/api/git/init", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ repoPath }),
+            });
+            
+            const data = await res.json();
+            if (data.hasGit) {
+                this.dispatchEvent(new CustomEvent("git-repo-detected", {
+                    detail: { repoPath, commits: data.commits },
+                    bubbles: true,
+                    composed: true,
+                }));
+            }
+        } catch (e) {
+            console.error("Git init failed:", e);
+        }
     }
 
     toggleUserDropdown(e: Event) {
@@ -543,7 +623,6 @@ class KiCanvasShellElement extends KCUIElement {
         const owner = this.gitHubCurrentRepo.owner.login;
         const repo = this.gitHubCurrentRepo.name;
 
-        // Close the modal
         this.gitHubPickerOpen = false;
         this.update();
 
@@ -560,23 +639,23 @@ class KiCanvasShellElement extends KCUIElement {
             this.gitHubSelectedFile,
         );
 
-        // Mount the correct app and start the comparison
+        // Find the active app and trigger comparison through the new state system
         const isSchematic = this.gitHubSelectedFile.endsWith(".kicad_sch");
         const activeApp = isSchematic ? this.#schematic_app : this.#board_app;
-        const inactiveApp = isSchematic ? this.#board_app : this.#schematic_app;
 
-        this.loaded = true;
-        this.loading = false;
-        this.update();
+        // Set state in compare store
+        const { compareStore } = await import("./common/compare-state.js");
+        compareStore.setSelection({
+            repoPath: "",
+            filePath: this.gitHubSelectedFile,
+            commitA: this.gitHubBaseCommit,
+            commitB: this.gitHubHeadCommit,
+        });
 
-        // Ensure inactive app is hidden
-        inactiveApp.hidden = true;
-
-        await activeApp.startComparisonWithVFS(
-            leftVfs,
-            rightVfs,
-            this.gitHubSelectedFile,
-        );
+        // Activate compare mode on the app
+        activeApp.compareActive = true;
+        activeApp.update();
+        await activeApp.startComparisonWithVFS(leftVfs, rightVfs, this.gitHubSelectedFile);
     }
 
     override render() {

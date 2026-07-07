@@ -13,6 +13,7 @@ import "./info-panel";
 import "./properties-panel";
 import "./symbols-panel";
 import "./viewer";
+import "../common/compare-sidebar";
 import type { ProjectPage } from "../../project";
 import { KicadSch } from "../../../kicad";
 import { SchematicSheet } from "../../../kicad/schematic";
@@ -94,6 +95,14 @@ export class KCSchematicAppElement extends KCViewerAppElement<KCSchematicViewerE
 
     override make_activities() {
         return [
+            // Compare Studio sidebar (only relevant when compare is possible)
+            html`<kc-ui-activity
+                slot="activities"
+                name="Compare"
+                icon="difference">
+                <kc-compare-sidebar></kc-compare-sidebar>
+            </kc-ui-activity>`,
+
             // Symbols
             html`<kc-ui-activity
                 slot="activities"

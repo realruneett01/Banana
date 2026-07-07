@@ -28,6 +28,8 @@ export class Project extends EventTarget implements IDisposable {
 
     public loaded: Barrier = new Barrier();
     public settings: ProjectSettings = new ProjectSettings();
+    public gitRepoPath?: string;
+    public gitCommits?: any[];
 
     public dispose() {
         this.#files_by_name.clear();
