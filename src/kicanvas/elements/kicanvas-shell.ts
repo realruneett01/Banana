@@ -145,7 +145,9 @@ class KiCanvasShellElement extends KCUIElement {
                             try {
                                 await handle.getDirectoryHandle('.git');
                                 hasGit = true;
-                            } catch {}
+                            } catch {
+                                // .git directory does not exist
+                            }
 
                             if (hasGit) {
                                 e.preventDefault();
