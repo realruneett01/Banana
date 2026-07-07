@@ -506,6 +506,51 @@ app.get("/api/git/tree", async (c) => {
 
 // ── Helpers ───────────────────────────────────────────────
 
+async function scanForGitRepos(rootPath: string, maxDepth = 2): Promise<Array<{
+    repoPath: string;
+    name: string;
+    commits: any[];
+}>> {
+    const repos: any[] = [];
+    
+    async function scan(dir: string, depth: number) {
+        if (depth > maxDepth) return;
+        
+        try {
+            const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+            
+            // Check if current dir is a git repo
+            const gitDir = path.join(dir, '.git');
+            try {
+                const gitStat = await fs.promises.stat(gitDir);
+                if (gitStat.isDirectory()) {
+                    const commits = await git.log({ fs, dir, depth: 100 });
+                    repos.push({
+                        repoPath: dir,
+                        name: path.basename(dir),
+                        commits,
+                    });
+                    return; // Don't recurse into .git or submodules
+                }
+            } catch {
+                // Not a git repo, continue scanning subdirectories
+            }
+            
+            // Recurse into subdirectories
+            for (const entry of entries) {
+                if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+                    await scan(path.join(dir, entry.name), depth + 1);
+                }
+            }
+        } catch {
+            // Permission denied or other error, skip
+        }
+    }
+    
+    await scan(rootPath, 0);
+    return repos;
+}
+
 async function readFileAtRef(
     repoPath: string,
     ref: string,
@@ -533,6 +578,26 @@ async function readFileAtRef(
 }
 
 // ── Routes ──────────────────────────────────────────────
+
+app.get('/api/git/scan', async (c) => {
+    try {
+        // Scan from configured root or current working directory
+        const scanRoot = process.env['REPO_SCAN_PATH'] || process.cwd();
+        const repos = await scanForGitRepos(scanRoot, 2);
+        
+        return c.json({
+            scannedFrom: scanRoot,
+            repos: repos.map(r => ({
+                name: r.name,
+                repoPath: r.repoPath,
+                commits: r.commits,
+            })),
+        });
+    } catch (err) {
+        console.error('/api/git/scan error:', err);
+        return c.json({ error: (err as Error).message }, 500);
+    }
+});
 
 app.post('/api/git/init', async (c) => {
     try {

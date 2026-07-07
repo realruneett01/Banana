@@ -72,6 +72,14 @@ export class KCCompareSidebarElement extends KCUIElement {
             this.scanForKicadFiles();
             this.update();
         }) as EventListener);
+
+        window.addEventListener('open-compare-panel', () => {
+            this.dispatchEvent(new CustomEvent('request-activity-change', {
+                detail: { name: 'Compare' },
+                bubbles: true,
+                composed: true,
+            }));
+        });
     }
 
     async scanForKicadFiles() {

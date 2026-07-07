@@ -133,50 +133,28 @@ class KiCanvasShellElement extends KCUIElement {
             }
 
              this.addEventListener("drop", async (e: DragEvent) => {
-                const items = e.dataTransfer?.items;
-                if (!items) return;
+                e.preventDefault();
+                e.stopPropagation();
 
-                for (const item of items) {
-                    if (item.kind !== 'file') continue;
-                    try {
-                        const handle = await (item as any).getAsFileSystemHandle?.();
-                        if (handle && handle.kind === 'directory') {
-                            let hasGit = false;
-                            try {
-                                await handle.getDirectoryHandle('.git');
-                                hasGit = true;
-                            } catch {
-                                // .git directory does not exist
-                            }
+                const res = await fetch('/api/git/scan');
+                const data = await res.json();
 
-                            if (hasGit) {
-                                e.preventDefault();
-                                e.stopPropagation();
+                if (data.repos && data.repos.length > 0) {
+                    const sorted = data.repos.sort((a: any, b: any) => {
+                        const aDate = a.commits[0]?.commit?.committer?.date || '';
+                        const bDate = b.commits[0]?.commit?.committer?.date || '';
+                        return bDate.localeCompare(aDate);
+                    });
+                    const repo = sorted[0];
 
-                                const repoPath = prompt(
-                                    'Git repo detected. Enter the absolute path on disk so the backend can read it:'
-                                );
-                                if (repoPath) {
-                                    const res = await fetch('/api/git/init', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ repoPath }),
-                                    });
-                                    const data = await res.json();
-                                    if (data.hasGit) {
-                                        window.dispatchEvent(new CustomEvent('git-repo-detected', {
-                                            detail: { repoPath, commits: data.commits },
-                                        }));
+                    window.dispatchEvent(new CustomEvent('git-repo-detected', {
+                        detail: {
+                            repoPath: repo.repoPath,
+                            commits: repo.commits,
+                        },
+                    }));
 
-                                        window.dispatchEvent(new CustomEvent('open-compare-panel'));
-                                    }
-                                }
-                                return;
-                            }
-                        }
-                    } catch (err) {
-                        console.error("Drop handle check failed:", err);
-                    }
+                    window.dispatchEvent(new CustomEvent('open-compare-panel'));
                 }
             }, { capture: true });
 
