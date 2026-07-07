@@ -6,7 +6,7 @@
 
 import { BBox, Vec2 } from "../../base/math";
 import { is_string } from "../../base/types";
-import { Polygon, Polyline, Renderer } from "../../graphics";
+import { Renderer } from "../../graphics";
 import { WebGL2Renderer } from "../../graphics/webgl";
 import type { BoardTheme } from "../../kicad";
 import * as kicad_common from "../../kicad/common";
@@ -147,15 +147,22 @@ export class BoardViewer extends DocumentViewer<
         layer.clear();
         this.renderer.start_layer(layer.name);
 
-        // Native selection-box representation (selection highlight box)
-        if (this.selected) {
-            const bb = this.selected.copy().grow(this.selected.w * 0.1);
-            this.renderer.line(
-                Polyline.from_BBox(bb, 0.254, this.selection_color),
-            );
-            this.renderer.polygon(
-                Polygon.from_BBox(bb, this.selection_color.with_alpha(0.15)),
-            );
+        const original_layer_color = layer.color;
+
+        // Draw selection highlight for footprint's own elements in white (excluding courtyard)
+        if (this.selected && this.selected.context instanceof board_items.Footprint) {
+            const footprint = this.selected.context;
+            
+            this.painter.filter_footprint = footprint;
+            layer.color = this.selection_color;
+
+            for (const item of this.board.items()) {
+                const painter = this.painter.painter_for(item);
+                if (!painter) continue;
+                this.painter.paint_item(layer, item);
+            }
+
+            this.painter.filter_footprint = null;
         }
 
         // Diff items — render geometry with swapped color on the overlay
@@ -170,8 +177,10 @@ export class BoardViewer extends DocumentViewer<
             }
         }
 
+        layer.color = original_layer_color;
+
         layer.graphics = this.renderer.end_layer();
-        layer.graphics.composite_operation = "overlay";
+        layer.graphics.composite_operation = "source-over";
         this.draw();
     }
 

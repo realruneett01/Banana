@@ -1306,6 +1306,12 @@ export class BoardPainter extends DocumentPainter {
             if (parent_footprint !== this.filter_footprint) {
                 return;
             }
+            if (layer.name === ViewLayerNames.overlay || layer.name === ":Overlay") {
+                const itemLayer = item.layer;
+                if (typeof itemLayer === "string" && (itemLayer.includes("CrtYd") || itemLayer.includes("crtyd"))) {
+                    return;
+                }
+            }
         }
         super.paint_item(layer, item, ...rest);
     }
