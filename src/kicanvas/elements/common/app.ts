@@ -154,6 +154,10 @@ export abstract class KCViewerAppElement<
             const { commitA, commitB, filePath, repoPath } = e.detail;
             await this.compareGitCommits(repoPath, filePath, commitA, commitB);
         });
+
+        window.addEventListener("open-compare-panel", () => {
+            this.change_activity("Compare");
+        });
     }
 
     protected abstract on_viewer_select(
@@ -436,10 +440,15 @@ export abstract class KCViewerAppElement<
                 : { fullscreen: true, download: true, flipview: true },
         );
 
-        if (!this.#viewer_elm) {
-        this.#viewer_elm = this.make_viewer_element();
+        // CRITICAL: Only create viewer if missing, AND not in compare mode
+        // In compare mode, viewers are created by startComparisonWithVFS()
+        if (!this.compareActive && !this.#viewer_elm) {
+            this.#viewer_elm = this.make_viewer_element();
         }
-        this.#viewer_elm.disableinteraction = controls == "none";
+        
+        if (!this.compareActive) {
+            this.#viewer_elm.disableinteraction = controls == "none";
+        }
 
         let resizer = null;
 

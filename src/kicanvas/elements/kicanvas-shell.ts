@@ -162,11 +162,11 @@ class KiCanvasShellElement extends KCUIElement {
                                     });
                                     const data = await res.json();
                                     if (data.hasGit) {
-                                        this.dispatchEvent(new CustomEvent("git-repo-detected", {
+                                        window.dispatchEvent(new CustomEvent('git-repo-detected', {
                                             detail: { repoPath, commits: data.commits },
-                                            bubbles: true,
-                                            composed: true,
                                         }));
+
+                                        window.dispatchEvent(new CustomEvent('open-compare-panel'));
                                     }
                                 }
                                 return;
@@ -388,20 +388,10 @@ class KiCanvasShellElement extends KCUIElement {
     openLocalFolder() {
         FilePicker.pick_folder(async (vfs) => {
             await this.setup_project(vfs);
-            if (vfs instanceof LocalFileSystem) {
-                this.detectGitRepo(vfs);
+            if (vfs instanceof LocalFileSystem && (vfs as any).path) {
+                await this.initGitRepo((vfs as any).path);
             }
         });
-    }
-
-    private async detectGitRepo(fs: any) {
-        const hasGit = confirm("Is this folder a Git repository? Click OK to enter the repo path for commit history.");
-        if (hasGit) {
-            const repoPath = prompt("Enter absolute path to this repo on the server (e.g., /home/user/projects/myboard):");
-            if (repoPath) {
-                await this.initGitRepo(repoPath);
-            }
-        }
     }
 
     private async initGitRepo(repoPath: string) {
@@ -414,10 +404,8 @@ class KiCanvasShellElement extends KCUIElement {
             
             const data = await res.json();
             if (data.hasGit) {
-                this.dispatchEvent(new CustomEvent("git-repo-detected", {
+                window.dispatchEvent(new CustomEvent("git-repo-detected", {
                     detail: { repoPath, commits: data.commits },
-                    bubbles: true,
-                    composed: true,
                 }));
             }
         } catch (e) {
