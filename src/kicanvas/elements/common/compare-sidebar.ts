@@ -1,8 +1,256 @@
-import { html } from "../../../base/web-components";
+import { html, CSS } from "../../../base/web-components";
 import { KCUIElement } from "../../../kc-ui";
 import { compareStore } from "./compare-state.js";
 
+const sidebarStyles = new CSS(`
+    :host {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        overflow-y: auto;
+        background: #13111c;
+        color: #e2e0e7;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 13px;
+    }
+
+    .sidebar-header {
+        padding: 16px 14px 12px;
+        border-bottom: 1px solid #2a2833;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .sidebar-header h3 {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        margin: 0;
+        color: #e2e0e7;
+    }
+
+    .sidebar-header .icon {
+        width: 16px;
+        height: 16px;
+        color: #6366f1;
+        flex-shrink: 0;
+    }
+
+    .section {
+        padding: 14px;
+        border-bottom: 1px solid #2a2833;
+    }
+
+    .section-label {
+        font-size: 11px;
+        font-weight: 500;
+        color: #6b6578;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+        display: block;
+    }
+
+    .input-row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }
+
+    input[type="text"], select {
+        flex: 1;
+        background: #161321;
+        border: 1px solid #2a2833;
+        color: #e2e0e7;
+        padding: 7px 10px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-family: inherit;
+        outline: none;
+        transition: border-color 0.15s;
+    }
+
+    input[type="text"]:focus, select:focus {
+        border-color: #6366f1;
+    }
+
+    input[type="text"]::placeholder {
+        color: #6b6578;
+        opacity: 0.6;
+    }
+
+    select {
+        cursor: pointer;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6578' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 28px;
+    }
+
+    select option {
+        background: #161321;
+        color: #e2e0e7;
+    }
+
+    .btn {
+        padding: 7px 14px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        font-family: inherit;
+        cursor: pointer;
+        border: none;
+        transition: all 0.15s;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        white-space: nowrap;
+    }
+
+    .btn-primary {
+        background: #6366f1;
+        color: #fff;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+        background: #818cf8;
+    }
+
+    .btn-primary:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+    }
+
+    .btn-ghost {
+        background: transparent;
+        color: #6b6578;
+        border: 1px solid #2a2833;
+    }
+
+    .btn-ghost:hover {
+        color: #e2e0e7;
+        border-color: #6b6578;
+    }
+
+    .btn-sm {
+        padding: 5px 10px;
+        font-size: 11px;
+    }
+
+    .file-tree {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+
+    .file-tree li {
+        padding: 6px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #e2e0e7;
+        transition: background 0.1s;
+        font-family: 'SF Mono', monospace;
+    }
+
+    .file-tree li:hover {
+        background: rgba(99, 102, 241, 0.08);
+    }
+
+    .file-tree li.active {
+        background: rgba(99, 102, 241, 0.15);
+        color: #818cf8;
+    }
+
+    .file-tree li.empty {
+        color: #6b6578;
+        font-style: italic;
+        cursor: default;
+        font-family: inherit;
+    }
+
+    .file-tree li.empty:hover {
+        background: transparent;
+    }
+
+    .file-icon {
+        width: 14px;
+        height: 14px;
+        opacity: 0.6;
+        flex-shrink: 0;
+    }
+
+    .file-tree li.active .file-icon {
+        opacity: 1;
+        color: #818cf8;
+    }
+
+    .compare-action {
+        padding: 14px;
+        margin-top: auto;
+        border-top: 1px solid #2a2833;
+    }
+
+    .compare-btn {
+        width: 100%;
+        padding: 10px;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .compare-btn svg {
+        flex-shrink: 0;
+    }
+
+    .sync-toggle {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        font-size: 12px;
+        color: #6b6578;
+        cursor: pointer;
+        border-top: 1px solid #2a2833;
+    }
+
+    .sync-toggle input[type="checkbox"] {
+        width: 14px;
+        height: 14px;
+        accent-color: #6366f1;
+        cursor: pointer;
+        margin: 0;
+    }
+
+    .commit-meta {
+        font-size: 10px;
+        color: #6b6578;
+        margin-top: 4px;
+        padding-left: 2px;
+    }
+
+    /* Hierarchical spacing */
+    .section + .section {
+        padding-top: 12px;
+    }
+
+    .input-row + .commit-meta {
+        margin-top: 6px;
+    }
+`);
+
 export class KCCompareSidebarElement extends KCUIElement {
+    static override styles = [...KCUIElement.styles, sidebarStyles];
+
     private commits: Array<{ oid: string; commit: { message: string } }> = [];
     private repoPath = '';
     private selectedFile = '';
@@ -20,7 +268,6 @@ export class KCCompareSidebarElement extends KCUIElement {
     }
 
     override initialContentCallback() {
-        // Event delegation for clicks
         this.renderRoot.addEventListener('click', (e: Event) => {
             const target = e.target as HTMLElement;
             if (!target) return;
@@ -43,7 +290,6 @@ export class KCCompareSidebarElement extends KCUIElement {
             }
         });
 
-        // Event delegation for inputs
         this.renderRoot.addEventListener('input', (e: Event) => {
             const target = e.target as HTMLInputElement;
             if (!target) return;
@@ -64,11 +310,9 @@ export class KCCompareSidebarElement extends KCUIElement {
             }
         });
 
-        // Listen for git detection from shell (cross-DOM)
         window.addEventListener('git-repo-detected', ((e: CustomEvent) => {
             this.repoPath = e.detail.repoPath;
             this.commits = e.detail.commits;
-            // Auto-scan for .kicad files in the repo
             this.scanForKicadFiles();
             this.update();
         }) as EventListener);
@@ -143,17 +387,19 @@ export class KCCompareSidebarElement extends KCUIElement {
     override render() {
         const canCompare = this.commitA && this.commitB && this.selectedFile;
 
-        const fileItems = this.fileList.map((path) => html`
-            <li class="${path === this.selectedFile ? 'active' : ''}"
-                data-action="pick-file"
-                data-path="${path}">
-                <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
-                </svg>
-                ${path.split('/').pop()}
-            </li>
-        `);
+        const fileItems = this.fileList.length
+            ? this.fileList.map((path) => html`
+                <li class="${path === this.selectedFile ? 'active' : ''}"
+                    data-action="pick-file"
+                    data-path="${path}">
+                    <svg class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    ${path.split('/').pop()}
+                </li>
+            `)
+            : html`<li class="empty">No .kicad files found</li>`;
 
         const commitOptions = this.commits.map((c) => {
             const shortMsg = c.commit.message.split('\n')[0];
@@ -185,7 +431,7 @@ export class KCCompareSidebarElement extends KCUIElement {
                 <div class="section">
                     <label class="section-label">File</label>
                     <ul class="file-tree">
-                        ${fileItems.length ? fileItems : html`<li style="color:var(--muted);font-style:italic;">No .kicad files found</li>`}
+                        ${fileItems}
                     </ul>
                 </div>
 
