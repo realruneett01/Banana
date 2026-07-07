@@ -48,7 +48,10 @@ abstract class BoardItemPainter extends ItemPainter {
         return (this.view_painter as BoardPainter).filter_footprint;
     }
 
-    protected isFillValid(fill: string): boolean {
+    protected isFillValid(fill: string, layer?: ViewLayer): boolean {
+        if (layer && layer.name === ViewLayerNames.overlay) {
+            return false;
+        }
         return Boolean(fill && fill !== "none" && fill !== "no");
     }
 }
@@ -150,7 +153,7 @@ class RectPainter extends GraphicItemPainter {
 
         this.styled_line(points, r.width, color, r.stroke_params);
 
-        if (this.isFillValid(r.fill)) {
+        if (this.isFillValid(r.fill, layer)) {
             this.gfx.polygon(new Polygon(points, color));
         }
     }
@@ -182,7 +185,7 @@ class PolyPainter extends GraphicItemPainter {
             );
         }
 
-        if (this.isFillValid(p.fill)) {
+        if (this.isFillValid(p.fill, layer)) {
             this.gfx.polygon(new Polygon(p.polyline, color));
         }
     }
@@ -226,7 +229,7 @@ class CirclePainter extends GraphicItemPainter {
             c.width,
         );
 
-        if (this.isFillValid(c.fill)) {
+        if (this.isFillValid(c.fill, layer)) {
             this.gfx.circle(
                 new Circle(arc.center, arc.radius + (c.width ?? 0), color),
             );
