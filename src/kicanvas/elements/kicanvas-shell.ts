@@ -20,6 +20,8 @@ import { CodebergFileSystem } from "../services/codeberg-vfs";
 import { FetchFileSystem, LocalFileSystem, type IFileSystem } from "../services/vfs";
 import { KCBoardAppElement } from "./kc-board/app";
 import { KCSchematicAppElement } from "./kc-schematic/app";
+import git from "isomorphic-git";
+import { BrowserGitFs } from "../services/browser-git-fs";
 
 import kc_ui_styles from "../../kc-ui/kc-ui.css";
 import shell_styles from "./kicanvas-shell.css";
@@ -82,6 +84,7 @@ class KiCanvasShellElement extends KCUIElement {
     constructor() {
         super();
         this.provideContext("project", this.project);
+        (window as any).FilePicker = FilePicker;
     }
 
     @attribute({ type: Boolean })
@@ -136,26 +139,48 @@ class KiCanvasShellElement extends KCUIElement {
                 e.preventDefault();
                 e.stopPropagation();
 
+                const dropped = this.getDroppedEntry(e);
+
                 const res = await fetch('/api/git/scan');
                 const data = await res.json();
+                if (!data.repos || data.repos.length === 0) return;
 
-                if (data.repos && data.repos.length > 0) {
-                    const sorted = data.repos.sort((a: any, b: any) => {
+                let matched: any = null;
+                let matchConfidence: 'exact-name' | 'file-content' | 'fallback' = 'fallback';
+
+                if (dropped?.isDirectory) {
+                    matched = data.repos.find((r: any) => r.name === dropped.name) || null;
+                    if (matched) matchConfidence = 'exact-name';
+                } else if (dropped?.name) {
+                    matched = await this.findRepoContainingFile(data.repos, dropped.name);
+                    if (matched) matchConfidence = 'file-content';
+                }
+
+                if (!matched) {
+                    const sorted = [...data.repos].sort((a: any, b: any) => {
                         const aDate = a.commits[0]?.commit?.committer?.date || '';
                         const bDate = b.commits[0]?.commit?.committer?.date || '';
                         return bDate.localeCompare(aDate);
                     });
-                    const repo = sorted[0];
-
-                    window.dispatchEvent(new CustomEvent('git-repo-detected', {
-                        detail: {
-                            repoPath: repo.repoPath,
-                            commits: repo.commits,
-                        },
-                    }));
-
-                    window.dispatchEvent(new CustomEvent('open-compare-panel'));
+                    matched = sorted[0];
+                    console.warn(
+                        `git-repo-detected: no name/content match for "${dropped?.name ?? 'unknown'}" — ` +
+                        `falling back to most-recently-committed repo (${matched.repoPath}). ` +
+                        `This is a low-confidence guess.`,
+                    );
+                } else {
+                    console.info(
+                        `git-repo-detected: matched "${dropped?.name}" to ${matched.repoPath} via ${matchConfidence}`,
+                    );
                 }
+
+                window.dispatchEvent(new CustomEvent('git-repo-detected', {
+                    detail: {
+                        repoPath: matched.repoPath,
+                        commits: matched.commits,
+                    },
+                }));
+                window.dispatchEvent(new CustomEvent('open-compare-panel'));
             }, { capture: true });
 
             new DropTarget(this, async (fs) => {
@@ -368,8 +393,27 @@ class KiCanvasShellElement extends KCUIElement {
     openLocalFolder() {
         FilePicker.pick_folder(async (vfs) => {
             await this.setup_project(vfs);
-            if (vfs instanceof LocalFileSystem && (vfs as any).path) {
-                await this.initGitRepo((vfs as any).path);
+            const hasGit = Array.from(vfs.file_list.keys()).some(k => k.startsWith(".git/"));
+            if (hasGit) {
+                try {
+                    console.log("map size:", vfs.file_list.size, "sample:", [...vfs.file_list.keys()].slice(0, 5));
+                    const browserFs = new BrowserGitFs(vfs.file_list);
+                    console.log('[kicanvas-shell] calling git.log with dir=', JSON.stringify(''));
+                    const commits = await git.log({ fs: browserFs.promises, dir: '', depth: 100 });
+                    const { compareStore } = await import("./common/compare-state.js");
+                    compareStore.browserFs = browserFs;
+                    window.dispatchEvent(new CustomEvent("git-repo-detected", {
+                        detail: { repoPath: "local", commits: commits },
+                    }));
+                } catch (e) {
+                    console.error("Local git init/log failed:", e);
+                }
+            } else {
+                const { compareStore } = await import("./common/compare-state.js");
+                compareStore.browserFs = null;
+                if (vfs instanceof LocalFileSystem && (vfs as any).path) {
+                    await this.initGitRepo((vfs as any).path);
+                }
             }
         });
     }
@@ -391,6 +435,44 @@ class KiCanvasShellElement extends KCUIElement {
         } catch (e) {
             console.error("Git init failed:", e);
         }
+    }
+
+    private getDroppedEntry(e: DragEvent): { name: string; isDirectory: boolean } | null {
+        const item = e.dataTransfer?.items?.[0];
+        if (item) {
+            const entry = (item as any).webkitGetAsEntry?.();
+            if (entry) {
+                return { name: entry.name, isDirectory: entry.isDirectory };
+            }
+        }
+        const file = e.dataTransfer?.files?.[0];
+        if (file) {
+            return { name: file.name, isDirectory: false };
+        }
+        return null;
+    }
+
+    private async findRepoContainingFile(
+        repos: Array<{ repoPath: string; name: string; commits: any[] }>,
+        filename: string,
+    ): Promise<{ repoPath: string; name: string; commits: any[] } | null> {
+        for (const repo of repos) {
+            try {
+                const res = await fetch(
+                    `/api/git/tree?repo=${encodeURIComponent(repo.repoPath)}&ref=HEAD`,
+                );
+                const tree = await res.json();
+                if (
+                    Array.isArray(tree) &&
+                    tree.some((entry: any) => entry.path.split('/').pop() === filename)
+                ) {
+                    return repo;
+                }
+            } catch (e) {
+                console.error('Tree check failed for', repo.repoPath, e);
+            }
+        }
+        return null;
     }
 
     toggleUserDropdown(e: Event) {

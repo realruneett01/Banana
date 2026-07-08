@@ -227,7 +227,7 @@ export class MergedFileSystem implements IFileSystem {
  * Local file system base class, with a file list provided by the constructor.
  */
 export class LocalFileSystemBase extends FileSystemBase {
-    constructor(private file_list: Map<string, File>) {
+    constructor(public file_list: Map<string, File>) {
         super(LocalFileSystemBase.into_entries(file_list));
     }
 

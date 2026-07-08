@@ -485,22 +485,34 @@ app.get("/api/git/refs", async (c) => {
 app.get("/api/git/tree", async (c) => {
     const repo = c.req.query("repo");
     const ref = c.req.query("ref") || "HEAD";
-    const path = c.req.query("path") || "";
 
     if (!repo) return c.json({ error: "repo required" }, 400);
 
-    const { execSync } = await import("child_process");
-    const treePath = path ? `${ref}:${path}` : `${ref}:`;
-
     try {
-        const output = execSync(`git -C "${repo}" ls-tree ${treePath}`, { encoding: "utf-8" });
-        const entries = output.split("\n").filter(Boolean).map((line) => {
-            const [mode, type, sha, ...pathParts] = line.split(/\s+/);
-            return { mode, type, sha, path: pathParts.join(" ") };
-        });
-        return c.json(entries);
-    } catch {
-        return c.json({ error: "Failed to read tree" }, 500);
+        // Recursive walk via isomorphic-git so the sidebar receives every
+        // .kicad_sch / .kicad_pcb file in the repo, not just the top level.
+        const commitOid = await git.resolveRef({ fs, dir: repo, ref });
+        const { commit } = await git.readCommit({ fs, dir: repo, oid: commitOid });
+
+        const allFiles: Array<{ type: string; sha: string; path: string }> = [];
+
+        async function walkTree(treeOid: string, prefix: string) {
+            const { tree } = await git.readTree({ fs, dir: repo, oid: treeOid });
+            for (const entry of tree) {
+                const fullPath = prefix ? `${prefix}/${entry.path}` : entry.path;
+                if (entry.type === "tree") {
+                    await walkTree(entry.oid, fullPath);
+                } else {
+                    allFiles.push({ type: entry.type, sha: entry.oid, path: fullPath });
+                }
+            }
+        }
+
+        await walkTree(commit.tree, "");
+        return c.json(allFiles);
+    } catch (err) {
+        console.error("/api/git/tree error:", err);
+        return c.json({ error: (err as Error).message }, 500);
     }
 });
 

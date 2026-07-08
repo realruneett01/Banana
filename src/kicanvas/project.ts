@@ -103,6 +103,14 @@ export class Project extends EventTarget implements IDisposable {
     }
 
     async #load_file(filename: string) {
+        const extension = filename.split('.').pop()?.toLowerCase();
+        const supportedExtensions = ['kicad_sch', 'kicad_pcb', 'kicad_pro', 'kicad_dru'];
+
+        if (!supportedExtensions.includes(extension ?? '')) {
+            // Silently return for non-KiCad files like .csv or .txt
+            return;
+        }
+
         log.info(`Loading file ${filename}`);
 
         if (filename.endsWith(".kicad_sch")) {
@@ -114,8 +122,6 @@ export class Project extends EventTarget implements IDisposable {
         if (filename.endsWith(".kicad_pro")) {
             return this.#load_meta(filename);
         }
-
-        log.warn(`Couldn't load ${filename}: unknown file type`);
     }
 
     async #load_doc(

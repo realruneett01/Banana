@@ -60,6 +60,8 @@ export class CustomElement extends HTMLElement {
         return this.shadowRoot ?? this;
     }
 
+    #initialized = false;
+
     /**
      * Called when connected to the DOM
      *
@@ -67,7 +69,10 @@ export class CustomElement extends HTMLElement {
      * renderRoot.
      */
     connectedCallback(): void | undefined {
-        this.#renderInitialContent();
+        if (!this.#initialized) {
+            this.#initialized = true;
+            this.#renderInitialContent();
+        }
     }
 
     disconnectedCallback(): void | undefined {

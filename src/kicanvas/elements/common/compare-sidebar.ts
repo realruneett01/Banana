@@ -238,6 +238,42 @@ const sidebarStyles = new CSS(`
         padding-left: 2px;
     }
 
+    .local-repo-status {
+        background: rgba(99, 102, 241, 0.04);
+        border: 1px solid rgba(99, 102, 241, 0.15);
+        border-radius: 8px;
+        padding: 12px;
+        margin: 4px 0;
+    }
+
+    .status-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 600;
+        color: #818cf8;
+        font-size: 12px;
+        margin-bottom: 4px;
+    }
+
+    .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+    }
+
+    .status-dot.online {
+        background: #10b981;
+        box-shadow: 0 0 8px #10b981;
+    }
+
+    .status-details {
+        font-size: 11px;
+        color: #6b6578;
+        line-height: 1.4;
+    }
+
     /* Hierarchical spacing */
     .section + .section {
         padding-top: 12px;
@@ -304,18 +340,22 @@ export class KCCompareSidebarElement extends KCUIElement {
             if (target.name === 'commit-b') {
                 this.commitB = target.value;
                 this.update();
+                if (this.commitB) {
+                    this.scanForKicadFiles(this.commitB);
+                }
             }
             if (target.name === 'sync-toggle') {
                 compareStore.setSyncEnabled(target.checked);
             }
         });
 
-        window.addEventListener('git-repo-detected', ((e: CustomEvent) => {
+        window.addEventListener('git-repo-detected', (async (e: CustomEvent) => {
             this.repoPath = e.detail.repoPath;
             this.commits = e.detail.commits;
             this.scanForKicadFiles();
-            this.update();
-        }) as EventListener);
+            await this.update();
+            this.populateDropdowns();
+        }) as unknown as EventListener);
 
         window.addEventListener('open-compare-panel', () => {
             this.dispatchEvent(new CustomEvent('request-activity-change', {
@@ -326,10 +366,53 @@ export class KCCompareSidebarElement extends KCUIElement {
         });
     }
 
-    async scanForKicadFiles() {
+    private populateCommitDropdown(selectEl: HTMLSelectElement, selectedValue: string) {
+        selectEl.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'Select commit...';
+        selectEl.appendChild(placeholder);
+
+        for (const c of this.commits) {
+            const shortMsg = c.commit.message.split('\n')[0];
+            const shortOid = c.oid.slice(0, 7);
+            const opt = document.createElement('option');
+            opt.value = c.oid;
+            opt.textContent = `${shortMsg} (${shortOid})`;
+            opt.selected = c.oid === selectedValue;
+            selectEl.appendChild(opt);
+        }
+    }
+
+    private populateDropdowns() {
+        const selectA = this.renderRoot.querySelector('select[name="commit-a"]') as HTMLSelectElement;
+        const selectB = this.renderRoot.querySelector('select[name="commit-b"]') as HTMLSelectElement;
+        if (selectA) {
+            this.populateCommitDropdown(selectA, this.commitA);
+        }
+        if (selectB) {
+            this.populateCommitDropdown(selectB, this.commitB);
+        }
+    }
+
+    override renderedCallback() {
+        super.renderedCallback();
+        this.populateDropdowns();
+    }
+
+    async scanForKicadFiles(ref: string = 'HEAD') {
+        if (compareStore.browserFs) {
+            this.fileList = (Array.from(compareStore.browserFs.files.keys()) as string[])
+                .filter((p) => p.endsWith('.kicad_sch') || p.endsWith('.kicad_pcb'));
+            if (this.fileList.length > 0 && !this.selectedFile) {
+                this.selectedFile = this.fileList[0] ?? '';
+            }
+            this.update();
+            return;
+        }
         if (!this.repoPath) return;
         try {
-            const res = await fetch(`/api/git/tree?repo=${encodeURIComponent(this.repoPath)}&ref=HEAD`);
+            const res = await fetch(`/api/git/tree?repo=${encodeURIComponent(this.repoPath)}&ref=${encodeURIComponent(ref)}`);
             const data = await res.json();
             if (Array.isArray(data)) {
                 this.fileList = data
@@ -356,12 +439,15 @@ export class KCCompareSidebarElement extends KCUIElement {
         if (data.hasGit) {
             this.commits = data.commits;
             await this.scanForKicadFiles();
-            this.update();
+            await this.update();
+            this.populateDropdowns();
         }
     }
 
     startCompare() {
         if (!this.commitA || !this.commitB || !this.selectedFile || !this.repoPath) return;
+
+        console.log('[compare-sidebar] selectedFile:', this.selectedFile);
 
         compareStore.setSelection({
             repoPath: this.repoPath,
@@ -401,15 +487,7 @@ export class KCCompareSidebarElement extends KCUIElement {
             `)
             : html`<li class="empty">No .kicad files found</li>`;
 
-        const commitOptions = this.commits.map((c) => {
-            const shortMsg = c.commit.message.split('\n')[0];
-            const shortOid = c.oid.slice(0, 7);
-            return html`
-                <option value="${c.oid}" ?selected="${c.oid === this.commitA || c.oid === this.commitB}">
-                    ${shortMsg} (${shortOid})
-                </option>
-            `;
-        });
+        const isLocalRepo = !!compareStore.browserFs;
 
         return html`
             <div class="compare-sidebar">
@@ -421,11 +499,26 @@ export class KCCompareSidebarElement extends KCUIElement {
                 </div>
 
                 <div class="section">
-                    <label class="section-label">Repository</label>
-                    <div class="input-row">
-                        <input type="text" name="repo-path" .value="${this.repoPath}" placeholder="/path/to/repo" />
-                        <button class="btn btn-ghost btn-sm" data-action="load-commits">Load</button>
-                    </div>
+                    ${isLocalRepo
+                        ? html`
+                            <div class="local-repo-status">
+                                <div class="status-header">
+                                    <span class="status-dot online"></span>
+                                    <span class="status-text">Local Repository connected</span>
+                                </div>
+                                <div class="status-details">
+                                    Scanning folder picked in browser (${this.commits.length} commits found)
+                                </div>
+                            </div>
+                          `
+                        : html`
+                            <label class="section-label">Repository</label>
+                            <div class="input-row">
+                                <input type="text" name="repo-path" .value="${this.repoPath}" placeholder="/path/to/repo" />
+                                <button class="btn btn-ghost btn-sm" data-action="load-commits">Load</button>
+                            </div>
+                          `
+                    }
                 </div>
 
                 <div class="section">
@@ -439,7 +532,6 @@ export class KCCompareSidebarElement extends KCUIElement {
                     <label class="section-label">Base Commit (A)</label>
                     <select name="commit-a">
                         <option value="">Select commit...</option>
-                        ${commitOptions}
                     </select>
                 </div>
 
@@ -447,7 +539,6 @@ export class KCCompareSidebarElement extends KCUIElement {
                     <label class="section-label">Head Commit (B)</label>
                     <select name="commit-b">
                         <option value="">Select commit...</option>
-                        ${commitOptions}
                     </select>
                 </div>
 

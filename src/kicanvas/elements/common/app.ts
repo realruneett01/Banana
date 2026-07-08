@@ -24,8 +24,10 @@ import { Project } from "../../project";
 import type { ProjectPage } from "../../project";
 import type { IFileSystem } from "../../services/vfs";
 import { GitCommitFileSystem } from "../../services/git-commit-vfs";
+import { LocalGitCommitFileSystem } from "../../services/local-git-commit-vfs";
 import { KCBoardViewerElement } from "../kc-board/viewer";
 import { GitHub } from "../../services/github";
+import { compareStore } from "./compare-state.js";
 
 // import dependent elements so they're registered before use.
 import "./help-panel";
@@ -367,7 +369,7 @@ export abstract class KCViewerAppElement<
         const rightViewer = (this.#right_viewer_elm as any).viewer;
 
         this._leftViewportListener = () => {
-            if (!this.syncEnabled || isSyncing) return;
+            if (!compareStore.syncEnabled || isSyncing) return;
             isSyncing = true;
             rightViewer.viewport.camera.center.set(leftViewer.viewport.camera.center);
             rightViewer.viewport.camera.zoom = leftViewer.viewport.camera.zoom;
@@ -378,7 +380,7 @@ export abstract class KCViewerAppElement<
         };
 
         this._rightViewportListener = () => {
-            if (!this.syncEnabled || isSyncing) return;
+            if (!compareStore.syncEnabled || isSyncing) return;
             isSyncing = true;
             leftViewer.viewport.camera.center.set(rightViewer.viewport.camera.center);
             leftViewer.viewport.camera.zoom = rightViewer.viewport.camera.zoom;
@@ -426,8 +428,25 @@ export abstract class KCViewerAppElement<
 
    async compareGitCommits(repoPath: string, filePath: string, commitA: string, commitB: string) 
    {
-    const leftVfs = new GitCommitFileSystem({ repoPath, ref: commitA, filePath });
-    const rightVfs = new GitCommitFileSystem({ repoPath, ref: commitB, filePath });
+    let leftVfs: IFileSystem;
+    let rightVfs: IFileSystem;
+
+    if (compareStore.browserFs) {
+        leftVfs = new LocalGitCommitFileSystem({
+            browserFs: compareStore.browserFs,
+            ref: commitA,
+            filePath,
+        });
+        rightVfs = new LocalGitCommitFileSystem({
+            browserFs: compareStore.browserFs,
+            ref: commitB,
+            filePath,
+        });
+    } else {
+        leftVfs = new GitCommitFileSystem({ repoPath, ref: commitA, filePath });
+        rightVfs = new GitCommitFileSystem({ repoPath, ref: commitB, filePath });
+    }
+
     await this.startComparisonWithVFS(leftVfs, rightVfs, filePath);
    }
 

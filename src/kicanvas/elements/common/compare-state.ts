@@ -11,6 +11,7 @@ class CompareStore {
     selection: CompareSelection | null = null;
     syncEnabled = true;
     viewMode: 'side-by-side' | 'overlay' = 'side-by-side';
+    browserFs: any = null;
 
     private listeners = new Set<() => void>();
 
@@ -30,6 +31,7 @@ class CompareStore {
 
     clearSelection() {
         this.selection = null;
+        this.browserFs = null;
         this.notify();
     }
 

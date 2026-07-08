@@ -54,6 +54,7 @@
     "homepage": "https://github.com/theacodes/kicanvas.js#readme",
     "dependencies": {
         "@hono/node-server": "^2.0.8",
+        "buffer": "^6.0.3",
         "dotenv": "^17.4.2",
         "hono": "^4.12.27",
         "isomorphic-git": "^1.38.6"
