@@ -91,30 +91,39 @@ export abstract class KCViewerAppElement<
     }
 
     override initialContentCallback() {
-        // If the project already has an active page, load it.
-        if (this.project.active_page) {
-            this.load(this.project.active_page!);
-        }
+        (async () => {
+            // Wait for the child viewer element to finish its own initial
+            // render pass — this.viewer proxies to #viewer_elm.viewer, which
+            // is only assigned inside the child's initialContentCallback().
+            // Without this, we race the child's construction and read
+            // undefined here.
+            await this.#viewer_elm.updateComplete;
 
-        // Listen for changes to the project's active page and load or hide
-        // as needed.
-        this.addDisposable(
-            listen(this.project, "change", async (e) => {
-                const page = this.project.active_page;
-                if (page) {
-                    await this.load(page);
-                } else {
-                    this.hidden = true;
-                }
-            }),
-        );
+            // If the project already has an active page, load it.
+            if (this.project.active_page) {
+                this.load(this.project.active_page!);
+            }
 
-        // Handle item selection in the viewers.
-        this.addDisposable(
-            this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
-                this.on_viewer_select(e.detail.item, e.detail.previous);
-            }),
-        );
+            // Listen for changes to the project's active page and load or hide
+            // as needed.
+            this.addDisposable(
+                listen(this.project, "change", async (e) => {
+                    const page = this.project.active_page;
+                    if (page) {
+                        await this.load(page);
+                    } else {
+                        this.hidden = true;
+                    }
+                }),
+            );
+
+            // Handle item selection in the viewers.
+            this.addDisposable(
+                this.viewer.addEventListener(KiCanvasSelectEvent.type, (e) => {
+                    this.on_viewer_select(e.detail.item, e.detail.previous);
+                }),
+            );
+        })();
 
         // Handle download button.
         delegate(this.renderRoot, "kc-ui-button", "click", (e) => {
@@ -153,6 +162,9 @@ export abstract class KCViewerAppElement<
         });
 
         this.renderRoot.addEventListener("compare-git-commits", async (e: any) => {
+            // Skip if this app element is hidden — prevents both kc-board-app
+            // and kc-schematic-app from both handling the same bubbled event.
+            if (this.hidden) return;
             const { commitA, commitB, filePath, repoPath } = e.detail;
             await this.compareGitCommits(repoPath, filePath, commitA, commitB);
         });
@@ -172,6 +184,7 @@ export abstract class KCViewerAppElement<
     async load(src: ProjectPage) {
         await this.viewerReady;
         if (this.can_load(src)) {
+            await this.waitForViewerReady(this.#viewer_elm);
             await this.#viewer_elm.load(src);
             this.hidden = false;
         } else {
@@ -257,6 +270,13 @@ export abstract class KCViewerAppElement<
         }
     }
 
+    private async waitForViewerReady(viewerEl: any) {
+        while (!viewerEl.viewer) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+        await (viewerEl.viewer as any).setup_finished;
+    }
+
     async startComparisonWithVFS(
         leftVfs: IFileSystem,
         rightVfs: IFileSystem,
@@ -267,68 +287,71 @@ export abstract class KCViewerAppElement<
         this.compareActive = true;
         this.hidden = false;
 
-        // ─── CRITICAL FIX: Create a FRESH left project instead of reusing this.project ───
-        // this.project was loaded with the original VFS; reloading it corrupts state.
+        // Load both VFS projects in parallel
         const leftProject = new Project();
-
-        // 1. Setup and load Left VFS into the NEW left project
-        try {
-            await leftVfs.setup();
-            await leftProject.load(leftVfs);
-        } catch (e) {
-            console.error("Left version load failed:", e);
-            this.leftFileMissing = true;
-        }
-
-        // 2. Setup and load Right VFS into a new right project
         const rightProject = new Project();
-        try {
-            await rightVfs.setup();
-            await rightProject.load(rightVfs);
-        } catch (e) {
-            console.error("Right version load failed:", e);
-            this.rightFileMissing = true;
-        }
 
-        // 3. Create fresh viewer elements for BOTH sides
-        // We MUST recreate the left viewer so it's bound to the new leftProject
+        await Promise.all([
+            (async () => {
+                try {
+                    await leftVfs.setup();
+                    await leftProject.load(leftVfs);
+                } catch (e) {
+                    console.error("Left version load failed:", e);
+                    this.leftFileMissing = true;
+                }
+            })(),
+            (async () => {
+                try {
+                    await rightVfs.setup();
+                    await rightProject.load(rightVfs);
+                } catch (e) {
+                    console.error("Right version load failed:", e);
+                    this.rightFileMissing = true;
+                }
+            })()
+        ]);
+
+        // Create fresh viewer elements
         this.#viewer_elm = this.make_viewer_element();
         this.#viewer_elm.disableinteraction = false;
-
         this.#right_viewer_elm = this.make_viewer_element();
         this.#right_viewer_elm.disableinteraction = false;
 
-        this.update();
+        // Instead of calling this.update() (which tears down all child elements
+        // and triggers DisposableStack-already-disposed errors), we directly
+        // inject the split-view layout into the existing kc-ui-view.grow container.
+        this.injectCompareLayout();
 
-        // Wait for DOM render
-        await new Promise((resolve) => window.requestAnimationFrame(resolve));
+        // Wait for both viewer elements' WebGL setup to complete.
+        // KCViewerElement.initialContentCallback() is async — it creates
+        // this.viewer and awaits viewer.setup(). We must not call .load()
+        // until `viewerEl.viewer` is non-null or we crash with Uninitialized.
+        await Promise.all([
+            this.waitForViewerReady(this.#viewer_elm),
+            this.waitForViewerReady(this.#right_viewer_elm),
+        ]);
 
-        // 4. Load the specific file into each viewer
+        // Load the file into each viewer
         if (!this.leftFileMissing) {
-            const leftPage = this.findPageByPath(leftProject, filePath);
+            const leftPage = this.findPageByPath(leftProject, filePath) || leftProject.first_page;
             if (leftPage) {
                 await this.#viewer_elm.load(leftPage);
-            } else if (leftProject.first_page) {
-                await this.#viewer_elm.load(leftProject.first_page);
             } else {
                 this.leftFileMissing = true;
-                this.update();
             }
         }
 
         if (!this.rightFileMissing) {
-            const rightPage = this.findPageByPath(rightProject, filePath);
+            const rightPage = this.findPageByPath(rightProject, filePath) || rightProject.first_page;
             if (rightPage) {
                 await this.#right_viewer_elm.load(rightPage);
-            } else if (rightProject.first_page) {
-                await this.#right_viewer_elm.load(rightProject.first_page);
             } else {
                 this.rightFileMissing = true;
-                this.update();
             }
         }
 
-        // 5. Run AST diff if both exist
+        // Run AST diff if both loaded
         if (!this.leftFileMissing && !this.rightFileMissing) {
             const leftDoc = (this.#viewer_elm.viewer as any)?.document;
             const rightDoc = (this.#right_viewer_elm as any)?.viewer?.document;
@@ -347,6 +370,69 @@ export abstract class KCViewerAppElement<
 
                 this.setupViewportSync();
             }
+        }
+    }
+
+    /**
+     * Directly injects the compare split-view layout into the existing DOM
+     * without calling this.update(), which would tear down all child elements
+     * (side panels, toolbar, etc.) and trigger DisposableStack disposal errors.
+     *
+     * We find the kc-ui-view.grow container and swap its viewer slot content.
+     */
+    private injectCompareLayout() {
+        // Find the viewer content container in the existing rendered DOM.
+        // The render() output is: kc-ui-split-view > kc-ui-view.grow > [toolbar, viewer, bottom-toolbar]
+        const viewContainer = this.renderRoot.querySelector('kc-ui-view.grow');
+        if (!viewContainer) {
+            console.warn('[compare] Could not find kc-ui-view.grow — falling back to full update()');
+            this.update();
+            return;
+        }
+
+        // Remove any existing viewer/split-view from the container
+        const existingViewer = viewContainer.querySelector('kc-board-viewer, kc-schematic-viewer, .split-view-container');
+        if (existingViewer) {
+            existingViewer.remove();
+        }
+
+        // Build the split-view container inline
+        const splitContainer = document.createElement('div');
+        splitContainer.className = 'split-view-container';
+        splitContainer.style.cssText = 'display:flex;flex-direction:row;width:100%;height:100%;';
+
+        const leftPane = document.createElement('div');
+        leftPane.className = 'pane left-pane';
+        leftPane.style.cssText = 'flex:1;height:100%;position:relative;border-right:2px solid var(--border,#2a2833);';
+
+        const rightPane = document.createElement('div');
+        rightPane.className = 'pane right-pane';
+        rightPane.style.cssText = 'flex:1;height:100%;position:relative;';
+
+        // Add pane labels via ::before-equivalent spans (since we can't inject <style> easily here)
+        const leftLabel = document.createElement('div');
+        leftLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#ef4444;font-family:inherit;';
+        leftLabel.textContent = 'Older version (deleted/modified)';
+
+        const rightLabel = document.createElement('div');
+        rightLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#22c55e;font-family:inherit;';
+        rightLabel.textContent = 'Newer version (added/modified)';
+
+        leftPane.appendChild(leftLabel);
+        leftPane.appendChild(this.#viewer_elm);
+
+        rightPane.appendChild(rightLabel);
+        rightPane.appendChild(this.#right_viewer_elm);
+
+        splitContainer.appendChild(leftPane);
+        splitContainer.appendChild(rightPane);
+
+        // Append after the top toolbar (first child is typically the toolbar)
+        const topToolbar = viewContainer.querySelector('kc-ui-floating-toolbar');
+        if (topToolbar && topToolbar.nextSibling) {
+            viewContainer.insertBefore(splitContainer, topToolbar.nextSibling);
+        } else {
+            viewContainer.appendChild(splitContainer);
         }
     }
 

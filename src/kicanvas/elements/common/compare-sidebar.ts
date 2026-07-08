@@ -326,28 +326,33 @@ export class KCCompareSidebarElement extends KCUIElement {
             }
         });
 
-        this.renderRoot.addEventListener('input', (e: Event) => {
-            const target = e.target as HTMLInputElement;
+        const handleFormChange = (e: Event) => {
+            const target = e.target as HTMLInputElement | HTMLSelectElement;
             if (!target) return;
 
             if (target.name === 'repo-path') {
-                this.repoPath = target.value;
+                this.repoPath = (target as HTMLInputElement).value;
             }
             if (target.name === 'commit-a') {
                 this.commitA = target.value;
+                console.log('[compare-sidebar] commitA set to:', this.commitA);
                 this.update();
             }
             if (target.name === 'commit-b') {
                 this.commitB = target.value;
+                console.log('[compare-sidebar] commitB set to:', this.commitB);
                 this.update();
                 if (this.commitB) {
                     this.scanForKicadFiles(this.commitB);
                 }
             }
             if (target.name === 'sync-toggle') {
-                compareStore.setSyncEnabled(target.checked);
+                compareStore.setSyncEnabled((target as HTMLInputElement).checked);
             }
-        });
+        };
+        // 'input' fires for text inputs; 'change' fires for <select> elements
+        this.renderRoot.addEventListener('input', handleFormChange);
+        this.renderRoot.addEventListener('change', handleFormChange);
 
         window.addEventListener('git-repo-detected', (async (e: CustomEvent) => {
             this.repoPath = e.detail.repoPath;

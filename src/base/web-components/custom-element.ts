@@ -50,6 +50,9 @@ export class CustomElement extends HTMLElement {
     }
 
     addDisposable<T extends IDisposable>(item: T): T {
+        if (this.disposables.isDisposed) {
+            this.disposables = new Disposables();
+        }
         return this.disposables.add(item);
     }
 
@@ -69,6 +72,7 @@ export class CustomElement extends HTMLElement {
      * renderRoot.
      */
     connectedCallback(): void | undefined {
+        this.disposables = new Disposables();
         if (!this.#initialized) {
             this.#initialized = true;
             this.#renderInitialContent();

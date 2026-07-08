@@ -27,10 +27,19 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
         // Setup logic
     }
 
+    /** Resolve a ref or raw OID to a commit OID. */
+    private async resolveCommitOid(ref: string): Promise<string> {
+        // If the ref is already a 40-char hex OID, use it directly
+        if (/^[0-9a-f]{40}$/i.test(ref)) {
+            return ref;
+        }
+        return git.resolveRef({ fs: this.browserFs.promises, dir: '', ref });
+    }
+
     override async enumerate(base_dir: string): Promise<FileEntry[]> {
         console.log('[LGCVFS-v2] enumerate() called for ref=', this.ref);
 
-        const commitOid = await git.resolveRef({ fs: this.browserFs.promises, dir: '', ref: this.ref });
+        const commitOid = await this.resolveCommitOid(this.ref);
         const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '', oid: commitOid });
 
         const entries: FileEntry[] = [];
@@ -53,9 +62,9 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
     }
 
     override async load_file(path: string): Promise<File> {
-        console.log('[local-git-commit-vfs] calling resolveRef with dir=', JSON.stringify(''), 'ref=', this.ref);
-        const commitOid = await git.resolveRef({ fs: this.browserFs.promises, dir: '', ref: this.ref });
-        console.log('[local-git-commit-vfs] calling readCommit with dir=', JSON.stringify(''), 'oid=', commitOid);
+        console.log('[local-git-commit-vfs] resolving ref=', this.ref);
+        const commitOid = await this.resolveCommitOid(this.ref);
+        console.log('[local-git-commit-vfs] resolved to commitOid=', commitOid);
         const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '', oid: commitOid });
 
         let treeOid = commit.tree;
