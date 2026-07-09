@@ -123,13 +123,18 @@ export class BoardViewer extends DocumentViewer<
         }
     }
 
-    get selected_diff_item() {
+    public get selected_diff_item(): unknown | null {
         return this.#selected_diff_item;
     }
 
-    select_diff_item(item: unknown | null) {
+    public set selected_diff_item(item: unknown | null) {
         this.#selected_diff_item = item;
-        this.draw();
+        this.paint_selected();
+    }
+
+    /** @deprecated Use the selected_diff_item setter directly. */
+    select_diff_item(item: unknown | null) {
+        this.selected_diff_item = item;
     }
 
     override select(item: board_items.Footprint | string | BBox | null) {

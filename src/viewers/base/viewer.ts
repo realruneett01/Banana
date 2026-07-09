@@ -148,9 +148,11 @@ export abstract class Viewer extends EventTarget {
         // Render all layers in display order (back to front)
         let depth = 0.01;
         const camera = this.viewport.camera.matrix;
+        // highlighted_diff_items.size is intentionally NOT included here;
+        // diff colours are painted onto the overlay layer directly, so the
+        // board should not wash out just because diff mode is active.
         const should_dim =
             this.layers.is_any_layer_highlighted() ||
-            this.highlighted_diff_items.size > 0 ||
             this.#selected !== null;
 
         // TODO: donot flip drawing sheet and grid
@@ -225,6 +227,17 @@ export abstract class Viewer extends EventTarget {
 
     public set selected(bb: BBox | null) {
         this._set_selected(bb);
+
+        // If the concrete viewer exposes selected_diff_item (e.g. BoardViewer),
+        // auto-sync it whenever the general selection changes.
+        if ('selected_diff_item' in this) {
+            const item = bb?.context ?? null;
+            if (item && (this as any).highlighted_diff_items?.has(item)) {
+                (this as any).selected_diff_item = item;
+            } else {
+                (this as any).selected_diff_item = null;
+            }
+        }
     }
 
     @no_self_recursion
