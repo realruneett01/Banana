@@ -58,10 +58,18 @@ export abstract class KCViewerAppElement<
     constructor() {
         super();
         this.provideLazyContext("viewer", () => this.viewer);
+        this.provideLazyContext("viewers", () => this.active_viewers);
     }
 
     get viewer() {
         return this.#viewer_elm.viewer;
+    }
+
+    get active_viewers(): Viewer[] {
+        if (this.compareActive && this.#right_viewer_elm?.viewer) {
+            return [this.#viewer_elm.viewer, (this.#right_viewer_elm as any).viewer];
+        }
+        return [this.#viewer_elm.viewer];
     }
 
     @attribute({ type: String })

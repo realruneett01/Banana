@@ -42,6 +42,7 @@ export class KCBoardLayersPanelElement extends KCUIElement {
     ];
 
     viewer: BoardViewer;
+    viewers: BoardViewer[] = [];
 
     @query("kc-ui-panel-body", true)
     private panel_body!: KCUIPanelBodyElement;
@@ -58,6 +59,7 @@ export class KCBoardLayersPanelElement extends KCUIElement {
     override connectedCallback() {
         (async () => {
             this.viewer = await this.requestLazyContext("viewer");
+            this.viewers = await this.requestLazyContext("viewers");
             await this.viewer.loaded;
             super.connectedCallback();
         })();
@@ -79,17 +81,24 @@ export class KCBoardLayersPanelElement extends KCUIElement {
 
                 // if this layer is already highlighted, de-highlight it.
                 if (layer.highlighted) {
-                    this.viewer.layers.highlight(null);
+                    for (const v of this.viewers) {
+                        v.layers.highlight(null);
+                    }
                 }
                 // otherwise mark it as highlighted.
                 else {
-                    this.viewer.layers.highlight(layer);
-                    layer.visible = true;
+                    for (const v of this.viewers) {
+                        v.layers.highlight(v.layers.by_name(item.layer_name!)!);
+                        const l = v.layers.by_name(item.layer_name!);
+                        if (l) l.visible = true;
+                    }
                     item.layer_visible = true;
                     item.layer_highlighted = true;
                 }
 
-                this.viewer.draw();
+                for (const v of this.viewers) {
+                    v.draw();
+                }
             },
         );
 
@@ -100,16 +109,20 @@ export class KCBoardLayersPanelElement extends KCUIElement {
                 const item = (e as CustomEvent)
                     .detail as KCBoardLayerControlElement;
 
-                const layer = this.viewer.layers.by_name(item.layer_name!)!;
+                const new_visible = !this.viewer.layers.by_name(item.layer_name!)!.visible;
 
-                // Toggle layer visibility
-                layer.visible = !layer.visible;
-                item.layer_visible = layer.visible;
+                for (const v of this.viewers) {
+                    const l = v.layers.by_name(item.layer_name!);
+                    if (l) l.visible = new_visible;
+                }
+                item.layer_visible = new_visible;
 
                 // Deselect any presets, as we're no longer showing preset layers.
                 this.presets_menu.deselect();
 
-                this.viewer.draw();
+                for (const v of this.viewers) {
+                    v.draw();
+                }
             },
         );
 
@@ -119,21 +132,17 @@ export class KCBoardLayersPanelElement extends KCUIElement {
             ?.addEventListener("click", (e) => {
                 e.stopPropagation();
 
-                const ui_layers = this.viewer.layers.in_ui_order();
+                const show = !this.items.some((n) => n.layer_visible);
 
-                if (this.items.some((n) => n.layer_visible)) {
-                    // hide all layers.
-                    for (const l of ui_layers) {
-                        l.visible = false;
-                    }
-                } else {
-                    // show all layers
-                    for (const l of ui_layers) {
-                        l.visible = true;
+                for (const v of this.viewers) {
+                    for (const l of v.layers.in_ui_order()) {
+                        l.visible = show;
                     }
                 }
 
-                this.viewer.draw();
+                for (const v of this.viewers) {
+                    v.draw();
+                }
 
                 // Deselect any presets, as we're no longer showing preset layers.
                 this.presets_menu.deselect();
@@ -144,65 +153,70 @@ export class KCBoardLayersPanelElement extends KCUIElement {
         // Presets
         this.presets_menu.addEventListener("kc-ui-menu:select", (e) => {
             const item = (e as CustomEvent).detail as KCUIMenuItemElement;
-            const ui_layers = this.viewer.layers.in_ui_order();
 
-            switch (item.name) {
-                case "all":
-                    for (const l of ui_layers) {
-                        l.visible = true;
-                    }
-                    break;
-                case "front":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            l.name.startsWith("F.") ||
-                            l.name == LayerNames.edge_cuts;
-                    }
-                    break;
-                case "back":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            l.name.startsWith("B.") ||
-                            l.name == LayerNames.edge_cuts;
-                    }
-                    break;
-                case "copper":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            l.name.includes(".Cu") ||
-                            l.name == LayerNames.edge_cuts;
-                    }
-                    break;
-                case "outer-copper":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            l.name == LayerNames.f_cu ||
-                            l.name == LayerNames.b_cu ||
-                            l.name == LayerNames.edge_cuts;
-                    }
-                    break;
-                case "inner-copper":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            (l.name.includes(".Cu") &&
-                                !(
-                                    l.name == LayerNames.f_cu ||
-                                    l.name == LayerNames.b_cu
-                                )) ||
-                            l.name == LayerNames.edge_cuts;
-                    }
-                    break;
-                case "drawings":
-                    for (const l of ui_layers) {
-                        l.visible =
-                            !l.name.includes(".Cu") &&
-                            !l.name.includes(".Mask") &&
-                            !l.name.includes(".Paste") &&
-                            !l.name.includes(".Adhes");
-                    }
+            for (const v of this.viewers) {
+                const ui_layers = v.layers.in_ui_order();
+
+                switch (item.name) {
+                    case "all":
+                        for (const l of ui_layers) {
+                            l.visible = true;
+                        }
+                        break;
+                    case "front":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                l.name.startsWith("F.") ||
+                                l.name == LayerNames.edge_cuts;
+                        }
+                        break;
+                    case "back":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                l.name.startsWith("B.") ||
+                                l.name == LayerNames.edge_cuts;
+                        }
+                        break;
+                    case "copper":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                l.name.includes(".Cu") ||
+                                l.name == LayerNames.edge_cuts;
+                        }
+                        break;
+                    case "outer-copper":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                l.name == LayerNames.f_cu ||
+                                l.name == LayerNames.b_cu ||
+                                l.name == LayerNames.edge_cuts;
+                        }
+                        break;
+                    case "inner-copper":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                (l.name.includes(".Cu") &&
+                                    !(
+                                        l.name == LayerNames.f_cu ||
+                                        l.name == LayerNames.b_cu
+                                    )) ||
+                                l.name == LayerNames.edge_cuts;
+                        }
+                        break;
+                    case "drawings":
+                        for (const l of ui_layers) {
+                            l.visible =
+                                !l.name.includes(".Cu") &&
+                                !l.name.includes(".Mask") &&
+                                !l.name.includes(".Paste") &&
+                                !l.name.includes(".Adhes");
+                        }
+                }
             }
 
-            this.viewer.draw();
+            for (const v of this.viewers) {
+                v.draw();
+            }
             this.update_item_states();
         });
     }
