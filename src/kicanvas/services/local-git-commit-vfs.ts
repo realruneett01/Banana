@@ -29,19 +29,19 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
         if (/^[0-9a-f]{40}$/i.test(ref)) {
             return ref;
         }
-        return git.resolveRef({ fs: this.browserFs.promises, dir: '', ref });
+        return git.resolveRef({ fs: this.browserFs.promises, dir: '/', ref });
     }
 
     override async enumerate(base_dir: string): Promise<FileEntry[]> {
         console.log('[LGCVFS-v2] enumerate() called for ref=', this.ref);
 
         const commitOid = await this.resolveCommitOid(this.ref);
-        const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '', oid: commitOid });
+        const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '/', oid: commitOid });
 
         const entries: FileEntry[] = [];
 
         const walk = async (treeOid: string, prefix: string) => {
-            const { tree } = await git.readTree({ fs: this.browserFs.promises, dir: '', oid: treeOid });
+            const { tree } = await git.readTree({ fs: this.browserFs.promises, dir: '/', oid: treeOid });
             for (const entry of tree) {
                 const entryPath = prefix ? `${prefix}/${entry.path}` : entry.path;
                 if (entry.type === 'tree') {
@@ -61,21 +61,21 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
         console.log('[local-git-commit-vfs] resolving ref=', this.ref);
         const commitOid = await this.resolveCommitOid(this.ref);
         console.log('[local-git-commit-vfs] resolved to commitOid=', commitOid);
-        const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '', oid: commitOid });
+        const { commit } = await git.readCommit({ fs: this.browserFs.promises, dir: '/', oid: commitOid });
 
         let treeOid = commit.tree;
         const parts = path.split('/').filter(Boolean);
 
         for (let i = 0; i < parts.length; i++) {
-            console.log('[local-git-commit-vfs] calling readTree with dir=', JSON.stringify(''), 'oid=', treeOid);
-            const { tree } = await git.readTree({ fs: this.browserFs.promises, dir: '', oid: treeOid });
+            console.log('[local-git-commit-vfs] calling readTree with dir=', JSON.stringify('/'), 'oid=', treeOid);
+            const { tree } = await git.readTree({ fs: this.browserFs.promises, dir: '/', oid: treeOid });
             const entry = tree.find((e) => e.path === parts[i]);
             if (!entry) {
                 throw new Error(`LocalGitCommitFileSystem: Path not found: ${path} (missing ${parts[i]}) at ref ${this.ref}`);
             }
             if (i === parts.length - 1) {
-                console.log('[local-git-commit-vfs] calling readBlob with dir=', JSON.stringify(''), 'oid=', entry.oid);
-                const { blob } = await git.readBlob({ fs: this.browserFs.promises, dir: '', oid: entry.oid });
+                console.log('[local-git-commit-vfs] calling readBlob with dir=', JSON.stringify('/'), 'oid=', entry.oid);
+                const { blob } = await git.readBlob({ fs: this.browserFs.promises, dir: '/', oid: entry.oid });
                 // DEBUG: Log file load with byte length for cross-panel debugging
                 console.log(`[load_file] path=${path} ref=${this.ref} bytes=${(blob as Uint8Array).byteLength}`);
                 return new File([blob as any], path.split("/").pop() ?? "file");

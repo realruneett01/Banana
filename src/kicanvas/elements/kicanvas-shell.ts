@@ -398,8 +398,8 @@ class KiCanvasShellElement extends KCUIElement {
                 try {
                     console.log("map size:", vfs.file_list.size, "sample:", [...vfs.file_list.keys()].slice(0, 5));
                     const browserFs = new BrowserGitFs(vfs.file_list);
-                    console.log('[kicanvas-shell] calling git.log with dir=', JSON.stringify(''));
-                    const commits = await git.log({ fs: browserFs.promises, dir: '', depth: 100 });
+                    console.log('[kicanvas-shell] calling git.log with dir=', JSON.stringify('/'));
+                    const commits = await git.log({ fs: browserFs.promises, dir: '/', depth: 100 });
                     const { compareStore } = await import("./common/compare-state.js");
                     compareStore.browserFs = browserFs;
                     window.dispatchEvent(new CustomEvent("git-repo-detected", {

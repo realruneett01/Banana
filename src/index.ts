@@ -4,6 +4,8 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+console.log("BUILD-CHECK-" + Date.now());
+
 import { Buffer } from "buffer";
 (window as any).Buffer = Buffer;
 

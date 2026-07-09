@@ -337,6 +337,21 @@ export class KCCompareSidebarElement extends KCUIElement {
                 this.commitA = target.value;
                 console.log('[compare-sidebar] commitA set to:', this.commitA);
                 this.update();
+                // Dispatch preview for left panel if all needed data is available
+                if (this.commitA && this.selectedFile && this.repoPath) {
+                    this.dispatchEvent(
+                        new CustomEvent('preview-commit', {
+                            bubbles: true,
+                            composed: true,
+                            detail: {
+                                side: 'left',
+                                commit: this.commitA,
+                                filePath: this.selectedFile,
+                                repoPath: this.repoPath,
+                            },
+                        })
+                    );
+                }
             }
             if (target.name === 'commit-b') {
                 this.commitB = target.value;
@@ -344,6 +359,21 @@ export class KCCompareSidebarElement extends KCUIElement {
                 this.update();
                 if (this.commitB) {
                     this.scanForKicadFiles(this.commitB);
+                }
+                // Dispatch preview for right panel if all needed data is available
+                if (this.commitB && this.selectedFile && this.repoPath) {
+                    this.dispatchEvent(
+                        new CustomEvent('preview-commit', {
+                            bubbles: true,
+                            composed: true,
+                            detail: {
+                                side: 'right',
+                                commit: this.commitB,
+                                filePath: this.selectedFile,
+                                repoPath: this.repoPath,
+                            },
+                        })
+                    );
                 }
             }
             if (target.name === 'sync-toggle') {

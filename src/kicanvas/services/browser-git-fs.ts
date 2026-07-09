@@ -6,6 +6,9 @@ export class BrowserGitFs {
     constructor(files: Map<string, File>) {
         this.files = files;
         console.log(`[BrowserGitFs] Constructed instance #${this.instanceId} with files map size:`, files.size);
+        // Log a sample of .git/ paths to verify git objects are present
+        const gitPaths = Array.from(files.keys()).filter(k => k.startsWith('.git/')).slice(0, 20);
+        console.log(`[BrowserGitFs #${this.instanceId}] Sample .git/ paths:`, gitPaths);
     }
 
     private normalize(filepath: string): string {
@@ -40,9 +43,18 @@ export class BrowserGitFs {
     }
 
     promises = {
-        readFile: async (filepath: string, opts?: any): Promise<Uint8Array | string> => {
+        readFile: async (filepath: string | undefined, opts?: any): Promise<Uint8Array | string> => {
             console.log(`[BrowserGitFs #${this.instanceId}.readFile] called with:`, JSON.stringify(filepath), opts);
             console.trace(`[BrowserGitFs #${this.instanceId}.readFile] stack`);
+            
+            // Defensive check: if filepath is undefined, null, or empty, throw immediately
+            if (filepath === undefined || filepath === null || filepath === '') {
+                const err: any = new Error(`BrowserGitFs.readFile: invalid filepath: ${filepath}`);
+                err.code = "EINVAL";
+                console.error(`[BrowserGitFs #${this.instanceId}.readFile] INVALID PATH:`, filepath);
+                throw err;
+            }
+            
             try {
                 const bytes = await this.readBytes(filepath);
                 let result: Uint8Array | string = bytes;
@@ -65,9 +77,18 @@ export class BrowserGitFs {
             throw new Error("BrowserGitFs is read-only");
         },
 
-        readdir: async (dirpath: string): Promise<string[]> => {
+        readdir: async (dirpath: string | undefined): Promise<string[]> => {
             console.log(`[BrowserGitFs #${this.instanceId}.readdir] called with:`, JSON.stringify(dirpath));
             console.trace(`[BrowserGitFs #${this.instanceId}.readdir] stack`);
+            
+            // Defensive check
+            if (dirpath === undefined || dirpath === null) {
+                const err: any = new Error(`BrowserGitFs.readdir: invalid dirpath: ${dirpath}`);
+                err.code = "EINVAL";
+                console.error(`[BrowserGitFs #${this.instanceId}.readdir] INVALID PATH:`, dirpath);
+                throw err;
+            }
+            
             try {
                 const norm = this.normalize(dirpath);
                 const prefix = norm === "" ? "" : norm.replace(/\/$/, "") + "/";
@@ -98,9 +119,18 @@ export class BrowserGitFs {
             throw new Error("BrowserGitFs is read-only");
         },
 
-        stat: async (filepath: string) => {
+        stat: async (filepath: string | undefined) => {
             console.log(`[BrowserGitFs #${this.instanceId}.stat] called with:`, JSON.stringify(filepath));
             console.trace(`[BrowserGitFs #${this.instanceId}.stat] stack`);
+            
+            // Defensive check
+            if (filepath === undefined || filepath === null) {
+                const err: any = new Error(`BrowserGitFs.stat: invalid filepath: ${filepath}`);
+                err.code = "EINVAL";
+                console.error(`[BrowserGitFs #${this.instanceId}.stat] INVALID PATH:`, filepath);
+                throw err;
+            }
+            
             try {
                 const result = await this.statImpl(filepath);
                 console.log(`[BrowserGitFs #${this.instanceId}.stat] success:`, JSON.stringify(filepath), "isFile:", result.isFile(), "isDir:", result.isDirectory());
@@ -111,9 +141,18 @@ export class BrowserGitFs {
             }
         },
 
-        lstat: async (filepath: string) => {
+        lstat: async (filepath: string | undefined) => {
             console.log(`[BrowserGitFs #${this.instanceId}.lstat] called with:`, JSON.stringify(filepath));
             console.trace(`[BrowserGitFs #${this.instanceId}.lstat] stack`);
+            
+            // Defensive check
+            if (filepath === undefined || filepath === null) {
+                const err: any = new Error(`BrowserGitFs.lstat: invalid filepath: ${filepath}`);
+                err.code = "EINVAL";
+                console.error(`[BrowserGitFs #${this.instanceId}.lstat] INVALID PATH:`, filepath);
+                throw err;
+            }
+            
             try {
                 const result = await this.statImpl(filepath);
                 console.log(`[BrowserGitFs #${this.instanceId}.lstat] success:`, JSON.stringify(filepath), "isFile:", result.isFile(), "isDir:", result.isDirectory());

@@ -4,6 +4,9 @@
     Full text available at: https://opensource.org/licenses/MIT
 */
 
+// BUILD VERIFICATION - Remove after confirming fresh code runs
+console.log("BUILD-CHECK-" + Date.now());
+
 import { DeferredPromise } from "../../../base/async";
 import { delegate, listen } from "../../../base/events";
 import { length } from "../../../base/iterator";
@@ -88,6 +91,8 @@ export abstract class KCViewerAppElement<
     #right_viewer_elm: any = null;
     _leftViewportListener: any = null;
     _rightViewportListener: any = null;
+    #leftLoadedRef: string | null = null;
+    #rightLoadedRef: string | null = null;
 
     override connectedCallback() {
         this.hidden = true;
@@ -175,6 +180,84 @@ export abstract class KCViewerAppElement<
             if (this.hidden) return;
             const { commitA, commitB, filePath, repoPath } = e.detail;
             await this.compareGitCommits(repoPath, filePath, commitA, commitB);
+        });
+
+        this.renderRoot.addEventListener("preview-commit", async (e: any) => {
+            if (this.hidden) return;
+            const { side, commit, filePath, repoPath } = e.detail;
+            
+            console.log(`[preview-commit] Received for ${side}: commit=${commit}, file=${filePath}`);
+
+            // Ensure the split layout + both viewer elements exist before loading either side
+            if (!this.compareActive) {
+                console.log('[preview-commit] Activating compare mode...');
+                this.compareActive = true;
+                this.hidden = false;
+                
+                // Create viewer elements if they don't exist
+                if (!this.#viewer_elm) {
+                    this.#viewer_elm = this.make_viewer_element();
+                    this.#viewer_elm.disableinteraction = false;
+                    console.log('[preview-commit] Created left viewer element');
+                }
+                
+                if (!this.#right_viewer_elm) {
+                    this.#right_viewer_elm = this.make_viewer_element();
+                    this.#right_viewer_elm.disableinteraction = false;
+                    console.log('[preview-commit] Created right viewer element');
+                }
+                
+                // Add viewers to DOM first (this triggers connectedCallback)
+                this.injectCompareLayout();
+                console.log('[preview-commit] Layout injected, viewers added to DOM');
+                
+                // Now wait for both viewers' updateComplete promises
+                // connectedCallback() was triggered by appendChild() in injectCompareLayout()
+                console.log('[preview-commit] Waiting for both viewers to complete initialization...');
+                try {
+                    await Promise.race([
+                        Promise.all([
+                            (this.#viewer_elm as any).updateComplete,
+                            (this.#right_viewer_elm as any).updateComplete
+                        ]),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Viewer initialization timeout')), 5000))
+                    ]);
+                    console.log('[preview-commit] Both viewers initialized successfully');
+                } catch (error) {
+                    console.error('[preview-commit] ERROR: Viewer initialization failed:', error);
+                    console.error('Left viewer element:', this.#viewer_elm);
+                    console.error('Right viewer element:', this.#right_viewer_elm);
+                    console.error('Left isConnected:', (this.#viewer_elm as any)?.isConnected);
+                    console.error('Right isConnected:', (this.#right_viewer_elm as any)?.isConnected);
+                    return;
+                }
+                
+                // Verify both viewers are in the DOM
+                const leftInDom = document.body.contains(this.#viewer_elm);
+                const rightInDom = document.body.contains(this.#right_viewer_elm);
+                const leftQueryable = document.querySelector('.left-pane kc-board-viewer, .left-pane kc-schematic-viewer') !== null;
+                const rightQueryable = document.querySelector('.right-pane kc-board-viewer, .right-pane kc-schematic-viewer') !== null;
+                
+                console.log(`[preview-commit] Viewers in DOM - left: ${leftInDom}, right: ${rightInDom}`);
+                console.log(`[preview-commit] Viewers queryable - left: ${leftQueryable}, right: ${rightQueryable}`);
+                
+                if (!leftInDom || !rightInDom) {
+                    console.error('[preview-commit] ERROR: Viewers not properly attached to DOM!');
+                    console.error('Left viewer:', this.#viewer_elm);
+                    console.error('Right viewer:', this.#right_viewer_elm);
+                    return;
+                }
+                
+                console.log('[preview-commit] Compare mode layout ready');
+            }
+
+            await this.loadPanelFromCommit(side, repoPath, filePath, commit);
+
+            // Set up viewport sync if both panels are loaded
+            if (this.#leftLoadedRef && this.#rightLoadedRef) {
+                console.log('[preview-commit] Both panels loaded, setting up viewport sync');
+                this.setupViewportSync();
+            }
         });
 
         window.addEventListener("open-compare-panel", () => {
@@ -279,10 +362,107 @@ export abstract class KCViewerAppElement<
     }
 
     private async waitForViewerReady(viewerEl: any) {
-        while (!viewerEl.viewer) {
-            await new Promise((resolve) => requestAnimationFrame(resolve));
+        console.log('[waitForViewerReady] Checking if viewer element exists...');
+        if (!viewerEl) {
+            throw new Error('Viewer element is null!');
         }
+        
+        console.log('[waitForViewerReady] Waiting for viewer.viewer to be created...');
+        let attempts = 0;
+        const maxAttempts = 100; // 100 * 16ms ≈ 1.6 seconds
+        
+        while (!viewerEl.viewer && attempts < maxAttempts) {
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            attempts++;
+        }
+        
+        if (!viewerEl.viewer) {
+            console.error('[waitForViewerReady] ERROR: viewer.viewer never initialized after', attempts, 'attempts');
+            console.error('[waitForViewerReady] ViewerEl:', viewerEl);
+            console.error('[waitForViewerReady] Is connected?', viewerEl.isConnected);
+            throw new Error('Viewer failed to initialize');
+        }
+        
+        console.log('[waitForViewerReady] viewer.viewer exists, waiting for setup_finished...');
         await (viewerEl.viewer as any).setup_finished;
+        console.log('[waitForViewerReady] Viewer fully ready!');
+    }
+
+    private async loadPanelFromCommit(
+        side: 'left' | 'right',
+        repoPath: string,
+        filePath: string,
+        ref: string,
+    ) {
+        console.log(`[loadPanelFromCommit] Loading ${side} panel with ref ${ref}`);
+
+        // Build VFS
+        const vfs: IFileSystem = compareStore.browserFs
+            ? new LocalGitCommitFileSystem({
+                  browserFs: compareStore.browserFs,
+                  ref,
+                  filePath,
+              })
+            : new GitCommitFileSystem({ repoPath, ref, filePath });
+
+        // Load project
+        const project = new Project();
+        try {
+            await vfs.setup();
+            await project.load(vfs);
+            console.log(`[loadPanelFromCommit] ${side} project loaded, pages:`, [...project.pages()].length);
+        } catch (e) {
+            console.error(`Failed to load ${side} panel:`, e);
+            if (side === 'left') {
+                this.leftFileMissing = true;
+            } else {
+                this.rightFileMissing = true;
+            }
+            return;
+        }
+
+        // Find the page
+        const page = this.findPageByPath(project, filePath) || project.first_page;
+        if (!page) {
+            console.error(`No page found for ${filePath} in ${side} panel`);
+            if (side === 'left') {
+                this.leftFileMissing = true;
+            } else {
+                this.rightFileMissing = true;
+            }
+            return;
+        }
+
+        console.log(`[loadPanelFromCommit] ${side} page found:`, page.filename);
+
+        // Get the viewer element for this side
+        const viewerElm = side === 'left' ? this.#viewer_elm : this.#right_viewer_elm;
+        if (!viewerElm) {
+            console.error(`No viewer element for ${side} panel`);
+            return;
+        }
+
+        console.log(`[loadPanelFromCommit] ${side} viewer element:`, viewerElm);
+        console.log(`[loadPanelFromCommit] ${side} viewer.isConnected:`, (viewerElm as any).isConnected);
+        console.log(`[loadPanelFromCommit] ${side} viewer.viewer exists:`, !!(viewerElm as any).viewer);
+
+        // Wait for viewer to be ready and load
+        console.log(`[loadPanelFromCommit] ${side} waiting for viewer ready...`);
+        await this.waitForViewerReady(viewerElm);
+        console.log(`[loadPanelFromCommit] ${side} viewer ready, loading page...`);
+        await viewerElm.load(page);
+        console.log(`[loadPanelFromCommit] ${side} page loaded into viewer`);
+
+        // Track what ref is loaded
+        if (side === 'left') {
+            this.#leftLoadedRef = ref;
+            this.leftFileMissing = false;
+        } else {
+            this.#rightLoadedRef = ref;
+            this.rightFileMissing = false;
+        }
+
+        console.log(`[loadPanelFromCommit] ${side} panel loaded successfully`);
     }
 
     async startComparisonWithVFS(
@@ -290,6 +470,12 @@ export abstract class KCViewerAppElement<
         rightVfs: IFileSystem,
         filePath: string,
     ) {
+        this.cleanupViewportSync();
+
+        // Dispose old viewer elements if they exist
+        this.#viewer_elm?.remove?.();
+        (this.#right_viewer_elm as any)?.remove?.();
+
         this.leftFileMissing = false;
         this.rightFileMissing = false;
         this.compareActive = true;
@@ -393,6 +579,8 @@ export abstract class KCViewerAppElement<
      * We find the kc-ui-view.grow container and swap its viewer slot content.
      */
     private injectCompareLayout() {
+        console.log('[injectCompareLayout] Starting layout injection');
+        
         // Find the viewer content container in the existing rendered DOM.
         // The render() output is: kc-ui-split-view > kc-ui-view.grow > [toolbar, viewer, bottom-toolbar]
         const viewContainer = this.renderRoot.querySelector('kc-ui-view.grow');
@@ -405,6 +593,7 @@ export abstract class KCViewerAppElement<
         // Remove any existing viewer/split-view from the container
         const existingViewer = viewContainer.querySelector('kc-board-viewer, kc-schematic-viewer, .split-view-container');
         if (existingViewer) {
+            console.log('[injectCompareLayout] Removing existing viewer');
             existingViewer.remove();
         }
 
@@ -446,6 +635,17 @@ export abstract class KCViewerAppElement<
         } else {
             viewContainer.appendChild(splitContainer);
         }
+
+        console.log('[injectCompareLayout] Layout injection complete');
+        console.log('[injectCompareLayout] Left viewer isConnected:', (this.#viewer_elm as any).isConnected);
+        console.log('[injectCompareLayout] Right viewer isConnected:', (this.#right_viewer_elm as any).isConnected);
+        
+        // Force a synchronous layout to ensure connectedCallback() fires
+        // Reading offsetHeight forces a layout calculation
+        void splitContainer.offsetHeight;
+        
+        console.log('[injectCompareLayout] After layout force - Left viewer isConnected:', (this.#viewer_elm as any).isConnected);
+        console.log('[injectCompareLayout] After layout force - Right viewer isConnected:', (this.#right_viewer_elm as any).isConnected);
     }
 
     private findPageByPath(project: Project, path: string) {
@@ -512,6 +712,8 @@ export abstract class KCViewerAppElement<
         }
 
         this.#right_viewer_elm = null;
+        this.#leftLoadedRef = null;
+        this.#rightLoadedRef = null;
 
         // CRITICAL: Clear the reference so render() creates a fresh one
         this.#viewer_elm = null as any;
@@ -526,26 +728,58 @@ export abstract class KCViewerAppElement<
 
    async compareGitCommits(repoPath: string, filePath: string, commitA: string, commitB: string) 
    {
-    let leftVfs: IFileSystem;
-    let rightVfs: IFileSystem;
+    console.log('[compareGitCommits] Starting full comparison');
+    console.log(`  commitA=${commitA}, commitB=${commitB}, file=${filePath}`);
 
-    if (compareStore.browserFs) {
-        leftVfs = new LocalGitCommitFileSystem({
-            browserFs: compareStore.browserFs,
-            ref: commitA,
-            filePath,
-        });
-        rightVfs = new LocalGitCommitFileSystem({
-            browserFs: compareStore.browserFs,
-            ref: commitB,
-            filePath,
-        });
-    } else {
-        leftVfs = new GitCommitFileSystem({ repoPath, ref: commitA, filePath });
-        rightVfs = new GitCommitFileSystem({ repoPath, ref: commitB, filePath });
+    // Ensure compare mode is active and layout is ready
+    if (!this.compareActive) {
+        this.compareActive = true;
+        this.hidden = false;
+        this.#viewer_elm ||= this.make_viewer_element();
+        this.#viewer_elm.disableinteraction = false;
+        this.#right_viewer_elm ||= this.make_viewer_element();
+        this.#right_viewer_elm.disableinteraction = false;
+        this.injectCompareLayout();
     }
 
-    await this.startComparisonWithVFS(leftVfs, rightVfs, filePath);
+    // Load left panel only if not already loaded with this ref
+    if (this.#leftLoadedRef !== commitA) {
+        console.log(`[compareGitCommits] Loading left panel (ref changed from ${this.#leftLoadedRef} to ${commitA})`);
+        await this.loadPanelFromCommit('left', repoPath, filePath, commitA);
+    } else {
+        console.log(`[compareGitCommits] Skipping left panel reload (already showing ${commitA})`);
+    }
+
+    // Load right panel only if not already loaded with this ref
+    if (this.#rightLoadedRef !== commitB) {
+        console.log(`[compareGitCommits] Loading right panel (ref changed from ${this.#rightLoadedRef} to ${commitB})`);
+        await this.loadPanelFromCommit('right', repoPath, filePath, commitB);
+    } else {
+        console.log(`[compareGitCommits] Skipping right panel reload (already showing ${commitB})`);
+    }
+
+    // Run diff engine if both panels loaded successfully
+    if (!this.leftFileMissing && !this.rightFileMissing) {
+        const leftDoc = (this.#viewer_elm.viewer as any)?.document;
+        const rightDoc = (this.#right_viewer_elm as any)?.viewer?.document;
+
+        if (leftDoc && rightDoc) {
+            console.log('[compareGitCommits] Running diff engine');
+            const { diff_documents, build_highlight_map } =
+                await import("../../services/diff-engine.js");
+            const diffEntries = diff_documents(leftDoc, rightDoc);
+
+            this.#viewer_elm.viewer.set_diff_highlights(
+                build_highlight_map(diffEntries, "old"),
+            );
+            (this.#right_viewer_elm as any).viewer.set_diff_highlights(
+                build_highlight_map(diffEntries, "new"),
+            );
+
+            this.setupViewportSync();
+            console.log('[compareGitCommits] Diff complete');
+        }
+    }
    }
 
     override render() {

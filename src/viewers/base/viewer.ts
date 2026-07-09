@@ -148,9 +148,6 @@ export abstract class Viewer extends EventTarget {
         // Render all layers in display order (back to front)
         let depth = 0.01;
         const camera = this.viewport.camera.matrix;
-        // highlighted_diff_items.size is intentionally NOT included here;
-        // diff colours are painted onto the overlay layer directly, so the
-        // board should not wash out just because diff mode is active.
         const should_dim =
             this.layers.is_any_layer_highlighted() ||
             this.#selected !== null;
