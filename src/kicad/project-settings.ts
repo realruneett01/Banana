@@ -37,6 +37,17 @@ export class ProjectSettings {
     static load(src: any) {
         const project = new ProjectSettings();
         merge(project, src);
+
+        // KiCad serializes net_settings netclasses as an array called `classes`
+        // (each entry has a `name` + `pcb_color`), not as the `netclasses`
+        // object-map this runtime class uses — merge() copies `classes` in as an
+        // unused stray property since NetSettings has no field by that name, so
+        // convert it explicitly here.
+        project.net_settings.normalize_classes(
+            (src?.net_settings?.classes as unknown[] | undefined) ??
+                (project.net_settings as Record<string, unknown>)["classes"],
+        );
+
         return project;
     }
 }
@@ -63,17 +74,48 @@ export class NetSettings {
     net_colors: Record<string, string> = {};
 
     // Netclass name -> netclass definition (includes pcb_color).
+    // NOTE: populated by normalize_classes(), NOT by the generic merge()
+    // pass, because KiCad actually serializes this as an array (see below).
     netclasses: Record<string, NetClassSettings> = {};
 
     // Wildcard pattern -> netclass assignment, e.g. {netclass: "Power", pattern: "+24V"}
     netclass_patterns: NetClassPatternAssignment[] = [];
 
+    // Net name -> netclass name. This is KiCad's real "Board Setup > Nets"
+    // per-net class assignment map. Can be null in the raw JSON when no nets
+    // have been manually assigned to a class yet.
+    netclass_assignments: Record<string, string> | null = null;
+
     [s: string]: unknown;
 
     /**
+     * Populates `netclasses` from the raw `classes` array that KiCad's
+     * .kicad_pro actually serializes net_settings as — an array of
+     * {name, pcb_color, ...} objects — rather than the object-keyed-by-name
+     * shape (`netclasses`) this class uses at runtime for fast lookup.
+     * The generic merge() in ProjectSettings.load() copies `classes` in as a
+     * raw stray array (since NetSettings has no `classes` field), so this
+     * must be called explicitly afterward to convert it.
+     */
+    normalize_classes(raw_classes?: unknown) {
+        if (!Array.isArray(raw_classes)) {
+            return;
+        }
+        for (const entry of raw_classes) {
+            if (!entry || typeof entry !== "object" || !("name" in entry)) {
+                continue;
+            }
+            const nc = new NetClassSettings();
+            Object.assign(nc, entry);
+            this.netclasses[(entry as { name: string }).name] = nc;
+        }
+    }
+
+    /**
      * Resolve the color to use for a given net name, following KiCad's own
-     * priority: direct per-net override, then pattern-matched netclass
-     * color, then undefined (meaning "use the layer's default color").
+     * priority: direct per-net override, then a direct netclass assignment,
+     * then pattern-matched netclass color, then undefined (meaning "use the
+     * layer's default color").
      */
     color_for(net_name: string | undefined): string | undefined {
         if (!net_name) {
@@ -85,13 +127,22 @@ export class NetSettings {
             return direct;
         }
 
+        // Direct net -> netclass assignment (KiCad's netclass_assignments map).
+        const assigned_class = this.netclass_assignments?.[net_name];
+        if (assigned_class) {
+            const netclass = this.netclasses[assigned_class];
+            if (has_color(netclass?.pcb_color)) {
+                return netclass!.pcb_color;
+            }
+        }
+
         for (const assignment of this.netclass_patterns) {
             if (!wildcard_match(net_name, assignment.pattern)) {
                 continue;
             }
             const netclass = this.netclasses[assignment.netclass];
-            if (netclass?.pcb_color) {
-                return netclass.pcb_color;
+            if (has_color(netclass?.pcb_color)) {
+                return netclass!.pcb_color;
             }
         }
 
@@ -105,6 +156,23 @@ function wildcard_match(text: string, pattern: string): boolean {
     const regex_src =
         "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
     return new RegExp(regex_src, "i").test(text);
+}
+
+/**
+ * KiCad uses alpha=0 rgba colors (e.g. "rgba(0, 0, 0, 0.000)") on the
+ * "Default" netclass to mean "no override, use the layer's default color" —
+ * it's not actually black. Treat those as absent so they fall through
+ * instead of painting nets invisible.
+ */
+function has_color(color: string | undefined): color is string {
+    if (!color) {
+        return false;
+    }
+    const m = color.match(/rgba\([^,]+,[^,]+,[^,]+,\s*([\d.]+)\s*\)/i);
+    if (m && parseFloat(m[1]!) === 0) {
+        return false;
+    }
+    return true;
 }
 
 export class BoardSettings {

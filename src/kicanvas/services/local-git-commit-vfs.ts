@@ -23,10 +23,6 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
         this.filePath = options.filePath;
     }
 
-    override async setup(): Promise<void> {
-        // Setup logic
-    }
-
     /** Resolve a ref or raw OID to a commit OID. */
     private async resolveCommitOid(ref: string): Promise<string> {
         // If the ref is already a 40-char hex OID, use it directly

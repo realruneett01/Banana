@@ -22,10 +22,6 @@ export class GitCommitFileSystem extends FileSystemBase {
         this.filePath = options.filePath;
     }
 
-    override async setup(): Promise<void> {
-        // Setup logic
-    }
-
     override async enumerate(base_dir: string): Promise<FileEntry[]> {
         if (this.filePath) {
             return [{

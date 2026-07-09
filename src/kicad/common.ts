@@ -478,7 +478,6 @@ export function isNetInfo(obj: any): obj is HasNetInfo {
 export function getNetNumber(item: HasNetInfo): number {
     if (typeof item.net === "number") {
         return item.net;
-    } else {
-        return item.net.number;
     }
+    return item.net?.number ?? -1;   // -1 = "no net", matches KiCad's own sentinel
 }

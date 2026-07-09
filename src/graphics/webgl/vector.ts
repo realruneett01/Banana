@@ -256,7 +256,7 @@ class Tesselator {
  * A set of filled circles.
  */
 export class CircleSet implements IDisposable {
-    static shader: ShaderProgram;
+    private static shaders = new WeakMap<WebGL2RenderingContext, ShaderProgram>();
     shader: ShaderProgram;
     vao: VertexArray;
     position_buf: Buffer;
@@ -270,11 +270,14 @@ export class CircleSet implements IDisposable {
     static async load_shader(gl: WebGL2RenderingContext) {
         // This re-uses the same shader that polyline uses, since the polyline
         // is pill-shaped, circle is just a special case of a zero-length polyline.
-        this.shader = await ShaderProgram.load(
+        this.shaders.set(
             gl,
-            "polyline",
-            polyline_vert_shader_src,
-            polyline_frag_shader_src,
+            await ShaderProgram.load(
+                gl,
+                "polyline",
+                polyline_vert_shader_src,
+                polyline_frag_shader_src,
+            ),
         );
     }
 
@@ -286,7 +289,7 @@ export class CircleSet implements IDisposable {
         public gl: WebGL2RenderingContext,
         shader?: ShaderProgram,
     ) {
-        this.shader = shader ?? CircleSet.shader;
+        this.shader = shader ?? CircleSet.shaders.get(gl)!;
         this.vao = new VertexArray(gl);
         this.position_buf = this.vao.buffer(this.shader["a_position"], 2);
         this.cap_region_buf = this.vao.buffer(this.shader["a_cap_region"], 1);
@@ -329,7 +332,7 @@ export class CircleSet implements IDisposable {
  * A set of stroked polylines
  */
 export class PolylineSet implements IDisposable {
-    static shader: ShaderProgram;
+    private static shaders = new WeakMap<WebGL2RenderingContext, ShaderProgram>();
     shader: ShaderProgram;
     vao: VertexArray;
     position_buf: Buffer;
@@ -341,11 +344,14 @@ export class PolylineSet implements IDisposable {
      * Load the shader program required to render this primitive.
      */
     static async load_shader(gl: WebGL2RenderingContext) {
-        this.shader = await ShaderProgram.load(
+        this.shaders.set(
             gl,
-            "polyline",
-            polyline_vert_shader_src,
-            polyline_frag_shader_src,
+            await ShaderProgram.load(
+                gl,
+                "polyline",
+                polyline_vert_shader_src,
+                polyline_frag_shader_src,
+            ),
         );
     }
 
@@ -358,7 +364,7 @@ export class PolylineSet implements IDisposable {
         public gl: WebGL2RenderingContext,
         shader?: ShaderProgram,
     ) {
-        this.shader = shader ?? PolylineSet.shader;
+        this.shader = shader ?? PolylineSet.shaders.get(gl)!;
         this.vao = new VertexArray(gl);
         this.position_buf = this.vao.buffer(this.shader["a_position"], 2);
         this.cap_region_buf = this.vao.buffer(this.shader["a_cap_region"], 1);
@@ -430,7 +436,7 @@ export class PolylineSet implements IDisposable {
  * A set of filled polygons
  */
 export class PolygonSet implements IDisposable {
-    static shader: ShaderProgram;
+    private static shaders = new WeakMap<WebGL2RenderingContext, ShaderProgram>();
     shader: ShaderProgram;
     vao: VertexArray;
     position_buf: Buffer;
@@ -441,11 +447,14 @@ export class PolygonSet implements IDisposable {
      * Load the shader program required to render this primitive.
      */
     static async load_shader(gl: WebGL2RenderingContext) {
-        this.shader = await ShaderProgram.load(
+        this.shaders.set(
             gl,
-            "polygon",
-            polygon_vert_shader_src,
-            polygon_frag_shader_src,
+            await ShaderProgram.load(
+                gl,
+                "polygon",
+                polygon_vert_shader_src,
+                polygon_frag_shader_src,
+            ),
         );
     }
 
@@ -458,7 +467,7 @@ export class PolygonSet implements IDisposable {
         public gl: WebGL2RenderingContext,
         shader?: ShaderProgram,
     ) {
-        this.shader = shader ?? PolygonSet.shader;
+        this.shader = shader ?? PolygonSet.shaders.get(gl)!;
         this.vao = new VertexArray(gl);
         this.position_buf = this.vao.buffer(this.shader["a_position"], 2);
         this.color_buf = this.vao.buffer(this.shader["a_color"], 4);

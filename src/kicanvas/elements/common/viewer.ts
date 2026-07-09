@@ -22,6 +22,8 @@ export abstract class KCViewerElement<
     viewer: ViewerT;
     selected: any[] = [];
 
+    #viewer_setup_promise: Promise<void> | null = null;
+
     @attribute({ type: Boolean })
     loaded: boolean;
 
@@ -32,7 +34,7 @@ export abstract class KCViewerElement<
     disableinteraction: boolean;
 
     override initialContentCallback() {
-        (async () => {
+        this.#viewer_setup_promise = (async () => {
             this.viewer = this.addDisposable(this.make_viewer());
 
             await this.viewer.setup();
@@ -76,6 +78,10 @@ export abstract class KCViewerElement<
 
     async load(src: ProjectPage) {
         this.loaded = false;
+        // Wait for the WebGL context (and everything else initialContentCallback
+        // sets up) to actually finish before touching the viewer - fixes a race
+        // where load() could run before the renderer's setup() resolved.
+        await this.#viewer_setup_promise;
         await this.viewer.load(src.document);
     }
 
