@@ -7,9 +7,9 @@ import type { KicadPCB } from "../../kicad/board";
 import type { KicadSch } from "../../kicad/schematic";
 
 export const DiffColors = {
-    added: Color.from_css("#22c55e"),
-    removed: Color.from_css("#ef4444"),
-    modified: Color.from_css("#f59e0b"),
+    added: Color.from_css("#22c55e"),    // green
+    removed: Color.from_css("#ef4444"),  // red
+    modified: Color.from_css("#eab308"), // yellow
 } as const;
 
 export type DiffStatus = keyof typeof DiffColors;
@@ -56,7 +56,11 @@ function index_by_uuid(doc: Diffable): Map<string, any> {
 
 function fingerprint(item: any): string {
     const seen = new WeakSet<object>();
-    const SKIP_KEYS = new Set(["parent", "project", "board", "sheet"]);
+    const SKIP_KEYS = new Set([
+        "parent", "project", "board", "sheet",
+        "filled_polygons",   // recomputed by zone-fill, not authored data
+        "net",               // net index is volatile; fingerprint netname instead
+    ]);
 
     function walk(value: any): any {
         if (value === null || typeof value !== "object") return value;
@@ -72,6 +76,8 @@ function fingerprint(item: any): string {
             if (SKIP_KEYS.has(key)) continue;
             out[key] = walk(value[key]);
         }
+        // Include netname instead of volatile net index
+        if (typeof value.netname === "string") out["netname"] = value.netname;
         return out;
     }
 

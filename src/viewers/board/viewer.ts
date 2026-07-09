@@ -30,6 +30,8 @@ export class BoardViewer extends DocumentViewer<
 > {
     #contextMenuCallback: ContextMenuCallback | null = null;
     #net_settings: import("../../kicad").NetSettings | null = null;
+    #selected_diff_item: unknown | null = null;
+    #pre_dim_opacities: Map<ViewLayer, number> | null = null;
 
     get board(): board_items.KicadPCB {
         return this.document;
@@ -93,13 +95,14 @@ export class BoardViewer extends DocumentViewer<
                 selectableItems.set(`Footprint: ${item.reference}`, item);
             } else if (kicad_common.isNetInfo(item)) {
                 selectableItems.set(`Net: ${item.netname}`, item);
-            } else {
-                console.log(item);
+            } else if (this.highlighted_diff_items.has(item)) {
+                selectableItems.set(`Changed item`, item);
             }
         }
 
         if (selectableItems.size === 0) {
             this.select(null);
+            this.select_diff_item(null); // click empty space clears isolate mode
         } else if (selectableItems.size === 1 || !this.#contextMenuCallback) {
             this.handleItemClick(selectableItems.values().next().value);
         } else {
@@ -115,7 +118,18 @@ export class BoardViewer extends DocumentViewer<
             this.select(item);
         } else if (kicad_common.isNetInfo(item)) {
             this.highlight_net(kicad_common.getNetNumber(item));
+        } else if (this.highlighted_diff_items.has(item)) {
+            this.select_diff_item(item);
         }
+    }
+
+    get selected_diff_item() {
+        return this.#selected_diff_item;
+    }
+
+    select_diff_item(item: unknown | null) {
+        this.#selected_diff_item = item;
+        this.draw();
     }
 
     override select(item: board_items.Footprint | string | BBox | null) {
@@ -166,14 +180,59 @@ export class BoardViewer extends DocumentViewer<
         }
 
         // Diff items — render geometry with swapped color on the overlay
-        for (const [item, color] of this.highlighted_diff_items) {
-            for (const layer_name of this.painter.layers_for(item)) {
-                const target_layer = this.layers.by_name(layer_name);
-                if (!target_layer) continue;
-                const original_color = target_layer.color;
-                target_layer.color = color;
-                this.painter.paint_item(target_layer, item);
-                target_layer.color = original_color;
+        if (this.#selected_diff_item) {
+            // Entering or staying in isolate mode: dim everything once.
+            if (!this.#pre_dim_opacities) {
+                this.#pre_dim_opacities = new Map();
+                for (const real_layer of this.layers.query(() => true)) {
+                    if (real_layer === layer) continue; // don't dim the overlay itself
+                    this.#pre_dim_opacities.set(real_layer, real_layer.opacity);
+                    real_layer.opacity = 0.15;
+                }
+            }
+
+            const color = this.highlighted_diff_items.get(this.#selected_diff_item);
+            if (color) {
+                for (const layer_name of this.painter.layers_for(this.#selected_diff_item)) {
+                    const target_layer = this.layers.by_name(layer_name);
+                    if (!target_layer) continue;
+                    const original_color = target_layer.color;
+                    const original_opacity = target_layer.opacity;
+                    target_layer.color = color;
+                    target_layer.opacity = 1; // full strength just for the isolated item
+                    this.painter.paint_item(target_layer, this.#selected_diff_item);
+                    target_layer.color = original_color;
+                    target_layer.opacity = original_opacity;
+                }
+            }
+        } else if (this.#pre_dim_opacities) {
+            // Leaving isolate mode: restore exactly what the user had before.
+            for (const [real_layer, opacity] of this.#pre_dim_opacities) {
+                real_layer.opacity = opacity;
+            }
+            this.#pre_dim_opacities = null;
+
+            for (const [item, color] of this.highlighted_diff_items) {
+                for (const layer_name of this.painter.layers_for(item)) {
+                    const target_layer = this.layers.by_name(layer_name);
+                    if (!target_layer) continue;
+                    const original_color = target_layer.color;
+                    target_layer.color = color;
+                    this.painter.paint_item(target_layer, item);
+                    target_layer.color = original_color;
+                }
+            }
+        } else {
+            // Never entered isolate mode — normal full diff paint, as before.
+            for (const [item, color] of this.highlighted_diff_items) {
+                for (const layer_name of this.painter.layers_for(item)) {
+                    const target_layer = this.layers.by_name(layer_name);
+                    if (!target_layer) continue;
+                    const original_color = target_layer.color;
+                    target_layer.color = color;
+                    this.painter.paint_item(target_layer, item);
+                    target_layer.color = original_color;
+                }
             }
         }
 

@@ -76,6 +76,8 @@ export class LocalGitCommitFileSystem extends FileSystemBase {
             if (i === parts.length - 1) {
                 console.log('[local-git-commit-vfs] calling readBlob with dir=', JSON.stringify(''), 'oid=', entry.oid);
                 const { blob } = await git.readBlob({ fs: this.browserFs.promises, dir: '', oid: entry.oid });
+                // DEBUG: Log file load with byte length for cross-panel debugging
+                console.log(`[load_file] path=${path} ref=${this.ref} bytes=${(blob as Uint8Array).byteLength}`);
                 return new File([blob as any], path.split("/").pop() ?? "file");
             }
             treeOid = entry.oid;

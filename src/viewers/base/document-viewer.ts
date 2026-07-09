@@ -62,7 +62,13 @@ export abstract class DocumentViewer<
         log.info(`Loading ${src.filename} into viewer`);
 
         this.document = src;
+        // DEBUG: Timestamp before paint() for cross-panel race detection
+        const panelId = (this as any).__debug_panel_id || this.constructor?.name || 'unknown';
+        const beforePaint = performance.now();
+        console.log(`[load] panel=${panelId} before paint() ts=${beforePaint.toFixed(2)}ms`);
         this.paint();
+        const afterPaint = performance.now();
+        console.log(`[load] panel=${panelId} after paint() ts=${afterPaint.toFixed(2)}ms (paint took ${(afterPaint - beforePaint).toFixed(2)}ms)`);
 
         // Wait for a valid viewport size
         later(async () => {
@@ -83,7 +89,12 @@ export abstract class DocumentViewer<
             }
 
             // Draw
+            // DEBUG: Timestamp after draw() for cross-panel race detection
+            const beforeDraw = performance.now();
+            console.log(`[load] panel=${panelId} before draw() ts=${beforeDraw.toFixed(2)}ms`);
             this.draw();
+            const afterDraw = performance.now();
+            console.log(`[load] panel=${panelId} after draw() ts=${afterDraw.toFixed(2)}ms (draw took ${(afterDraw - beforeDraw).toFixed(2)}ms)`);
         });
     }
 
@@ -110,6 +121,14 @@ export abstract class DocumentViewer<
         // Paint the board
         log.info("Painting items");
         this.painter = this.create_painter();
+        // DEBUG: Pass panel identification to painter
+        (this.painter as any).__debug_panel_id = (this as any).__debug_panel_id;
+
+        // Paint the board
+        log.info("Painting items");
+        this.painter = this.create_painter();
+        // DEBUG: Pass panel identification to painter
+        (this.painter as any).__debug_panel_id = (this as any).__debug_panel_id;
         this.painter.paint(this.document);
 
         // Paint the drawing sheet

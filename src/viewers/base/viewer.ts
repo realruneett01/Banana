@@ -181,7 +181,7 @@ export abstract class Viewer extends EventTarget {
     }
 
     protected on_click(e: MouseEvent) {
-        if (!this.document || !this.layers) return;
+        if (!(this as any).document || !this.layers) return;
         const rect = this.canvas.getBoundingClientRect();
         const mouse_pos = this.viewport.camera.screen_to_world(
             new Vec2(e.clientX - rect.left, e.clientY - rect.top),

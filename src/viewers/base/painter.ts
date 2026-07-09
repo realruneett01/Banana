@@ -72,7 +72,24 @@ export class DocumentPainter {
 
         log.debug("Sorting paintable items into layers");
 
+        // DEBUG: Count items by type for cross-panel debugging
+        const itemCounts = {
+            footprints: 0,
+            tracks: 0,
+            arcs: 0,
+            vias: 0,
+            zones: 0,
+        };
+
         for (const item of document.items()) {
+            // DEBUG: Count item types
+            const itemName = item?.constructor?.name || 'unknown';
+            if (itemName === 'Footprint') itemCounts.footprints++;
+            else if (itemName === 'LineSegment') itemCounts.tracks++;
+            else if (itemName === 'ArcSegment') itemCounts.arcs++;
+            else if (itemName === 'Via') itemCounts.vias++;
+            else if (itemName === 'Zone') itemCounts.zones++;
+
             const painter = this.painter_for(item);
 
             if (!painter) {
@@ -84,6 +101,10 @@ export class DocumentPainter {
                 this.layers.by_name(layer_name)?.items.push(item);
             }
         }
+
+        // DEBUG: Log item counts (panel identification will be set by viewer)
+        const panelId = (this as any).__debug_panel_id || 'unknown';
+        console.log(`[paint] panel=${panelId} footprints=${itemCounts.footprints} tracks=${itemCounts.tracks} arcs=${itemCounts.arcs} vias=${itemCounts.vias} zones=${itemCounts.zones}`);
 
         for (const layer of this.paintable_layers()) {
             log.debug(

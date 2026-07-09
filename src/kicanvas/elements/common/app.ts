@@ -105,7 +105,7 @@ export abstract class KCViewerAppElement<
             // is only assigned inside the child's initialContentCallback().
             // Without this, we race the child's construction and read
             // undefined here.
-            await this.#viewer_elm.updateComplete;
+            await (this.#viewer_elm as any).updateComplete;
 
             // If the project already has an active page, load it.
             if (this.project.active_page) {
@@ -339,6 +339,10 @@ export abstract class KCViewerAppElement<
             this.waitForViewerReady(this.#viewer_elm),
             this.waitForViewerReady(this.#right_viewer_elm),
         ]);
+
+        // DEBUG: Mark panels for logging identification
+        (this.#viewer_elm.viewer as any).__debug_panel_id = 'left(base)';
+        ((this.#right_viewer_elm as any).viewer as any).__debug_panel_id = 'right(head)';
 
         // Load the file into each viewer
         if (!this.leftFileMissing) {
