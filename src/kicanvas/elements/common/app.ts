@@ -330,63 +330,67 @@ export abstract class KCViewerAppElement<
 
     private async initViewerElement(side: 'left' | 'right'): Promise<any> {
         console.log(`[initViewerElement] Initializing ${side} viewer...`);
-        if (side === 'left') {
+
+        // Single-viewer (non-compare) mode is a genuinely different case —
+        // interaction should respect the `controls` attribute, and there's
+        // no split layout to inject. This path is only ever hit for 'left'
+        // before compare mode has been activated.
+        if (side === 'left' && !this.compareActive) {
             this.#left_gen++;
             const gen = this.#left_gen;
-            
+
             if (this.#viewer_elm) {
-                console.log(`[initViewerElement] Disposing existing LEFT viewer`);
+                console.log('[initViewerElement] Disposing existing LEFT viewer (single-view mode)');
                 this.#viewer_elm.remove();
-                if ((this.#viewer_elm as any).dispose) {
-                    (this.#viewer_elm as any).dispose();
-                }
+                (this.#viewer_elm as any).dispose?.();
                 this.#viewer_elm = null as any;
             }
-            
+
             this.#viewer_elm = this.make_viewer_element();
-            this.#viewer_elm.disableinteraction = this.compareActive ? false : (this.controls === "none");
-            
-            if (this.compareActive) {
-                this.injectCompareLayout();
-            }
-            
+            this.#viewer_elm.disableinteraction = this.controls === "none";
+
             await this.waitForViewerReady(this.#viewer_elm);
             if (gen !== this.#left_gen) {
                 throw new Error('Left viewer generation changed during initialization');
             }
-            
-            if (this.compareActive && this.#viewer_elm.viewer) {
-                (this.#viewer_elm.viewer as any).__debug_panel_id = 'left(base)';
-            }
             return this.#viewer_elm;
-        } else {
-            this.#right_gen++;
-            const gen = this.#right_gen;
-            
-            if (this.#right_viewer_elm) {
-                console.log(`[initViewerElement] Disposing existing RIGHT viewer`);
-                this.#right_viewer_elm.remove();
-                if ((this.#right_viewer_elm as any).dispose) {
-                    (this.#right_viewer_elm as any).dispose();
-                }
-                this.#right_viewer_elm = null;
-            }
-            
-            this.#right_viewer_elm = this.make_viewer_element();
-            this.#right_viewer_elm.disableinteraction = false;
-            
-            this.injectCompareLayout();
-            
-            await this.waitForViewerReady(this.#right_viewer_elm);
-            if (gen !== this.#right_gen) {
-                throw new Error('Right viewer generation changed during initialization');
-            }
-            
-            if (this.#right_viewer_elm.viewer) {
-                (this.#right_viewer_elm.viewer as any).__debug_panel_id = 'right(head)';
-            }
-            return this.#right_viewer_elm;
         }
+
+        // Compare mode: left and right are constructed identically, no
+        // per-side conditionals. Whatever happens for one side happens for
+        // the other, in the same order, with the same values.
+        const isLeft = side === 'left';
+
+        if (isLeft) this.#left_gen++; else this.#right_gen++;
+        const gen = isLeft ? this.#left_gen : this.#right_gen;
+
+        const existing = isLeft ? this.#viewer_elm : this.#right_viewer_elm;
+        if (existing) {
+            console.log(`[initViewerElement] Disposing existing ${side.toUpperCase()} viewer`);
+            existing.remove();
+            (existing as any).dispose?.();
+            if (isLeft) this.#viewer_elm = null as any;
+            else this.#right_viewer_elm = null;
+        }
+
+        const fresh = this.make_viewer_element();
+        fresh.disableinteraction = false;
+
+        if (isLeft) this.#viewer_elm = fresh;
+        else this.#right_viewer_elm = fresh;
+
+        this.injectCompareLayout();
+
+        await this.waitForViewerReady(fresh);
+        if (gen !== (isLeft ? this.#left_gen : this.#right_gen)) {
+            throw new Error(`${side} viewer generation changed during initialization`);
+        }
+
+        if (fresh.viewer) {
+            (fresh.viewer as any).__debug_panel_id = isLeft ? 'left(base)' : 'right(head)';
+        }
+
+        return fresh;
     }
 
     private async waitForViewerReady(viewerEl: any) {
