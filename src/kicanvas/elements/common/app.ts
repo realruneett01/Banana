@@ -6,6 +6,7 @@
 
 // BUILD VERIFICATION - Remove after confirming fresh code runs
 console.log("BUILD-CHECK-" + Date.now());
+console.log("APP.TS LOADED - preview-commit handler includes fresh viewer disposal logic");
 
 import { DeferredPromise } from "../../../base/async";
 import { delegate, listen } from "../../../base/events";
@@ -89,6 +90,8 @@ export abstract class KCViewerAppElement<
 
     syncEnabled: boolean = true;
     #right_viewer_elm: any = null;
+    #left_gen = 0;
+    #right_gen = 0;
     _leftViewportListener: any = null;
     _rightViewportListener: any = null;
     #leftLoadedRef: string | null = null;
@@ -194,61 +197,13 @@ export abstract class KCViewerAppElement<
                 this.compareActive = true;
                 this.hidden = false;
                 
-                // Create viewer elements if they don't exist
-                if (!this.#viewer_elm) {
-                    this.#viewer_elm = this.make_viewer_element();
-                    this.#viewer_elm.disableinteraction = false;
-                    console.log('[preview-commit] Created left viewer element');
-                }
-                
-                if (!this.#right_viewer_elm) {
-                    this.#right_viewer_elm = this.make_viewer_element();
-                    this.#right_viewer_elm.disableinteraction = false;
-                    console.log('[preview-commit] Created right viewer element');
-                }
-                
-                // Add viewers to DOM first (this triggers connectedCallback)
-                this.injectCompareLayout();
-                console.log('[preview-commit] Layout injected, viewers added to DOM');
-                
-                // Now wait for both viewers' updateComplete promises
-                // connectedCallback() was triggered by appendChild() in injectCompareLayout()
-                console.log('[preview-commit] Waiting for both viewers to complete initialization...');
                 try {
-                    await Promise.race([
-                        Promise.all([
-                            (this.#viewer_elm as any).updateComplete,
-                            (this.#right_viewer_elm as any).updateComplete
-                        ]),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('Viewer initialization timeout')), 5000))
-                    ]);
-                    console.log('[preview-commit] Both viewers initialized successfully');
-                } catch (error) {
-                    console.error('[preview-commit] ERROR: Viewer initialization failed:', error);
-                    console.error('Left viewer element:', this.#viewer_elm);
-                    console.error('Right viewer element:', this.#right_viewer_elm);
-                    console.error('Left isConnected:', (this.#viewer_elm as any)?.isConnected);
-                    console.error('Right isConnected:', (this.#right_viewer_elm as any)?.isConnected);
+                    await this.initViewerElement('left');
+                    await this.initViewerElement('right');
+                } catch (e) {
+                    console.warn('[preview-commit] Viewer initialization aborted:', e);
                     return;
                 }
-                
-                // Verify both viewers are in the DOM
-                const leftInDom = document.body.contains(this.#viewer_elm);
-                const rightInDom = document.body.contains(this.#right_viewer_elm);
-                const leftQueryable = document.querySelector('.left-pane kc-board-viewer, .left-pane kc-schematic-viewer') !== null;
-                const rightQueryable = document.querySelector('.right-pane kc-board-viewer, .right-pane kc-schematic-viewer') !== null;
-                
-                console.log(`[preview-commit] Viewers in DOM - left: ${leftInDom}, right: ${rightInDom}`);
-                console.log(`[preview-commit] Viewers queryable - left: ${leftQueryable}, right: ${rightQueryable}`);
-                
-                if (!leftInDom || !rightInDom) {
-                    console.error('[preview-commit] ERROR: Viewers not properly attached to DOM!');
-                    console.error('Left viewer:', this.#viewer_elm);
-                    console.error('Right viewer:', this.#right_viewer_elm);
-                    return;
-                }
-                
-                console.log('[preview-commit] Compare mode layout ready');
             }
 
             await this.loadPanelFromCommit(side, repoPath, filePath, commit);
@@ -273,10 +228,22 @@ export abstract class KCViewerAppElement<
     protected abstract can_load(src: ProjectPage): boolean;
 
     async load(src: ProjectPage) {
+        const gen = this.#left_gen;
         await this.viewerReady;
+        if (gen !== this.#left_gen) return;
         if (this.can_load(src)) {
-            await this.waitForViewerReady(this.#viewer_elm);
+            if (!this.#viewer_elm) {
+                try {
+                    await this.initViewerElement('left');
+                } catch (e) {
+                    return;
+                }
+            } else {
+                await this.waitForViewerReady(this.#viewer_elm);
+            }
+            if (gen !== this.#left_gen) return;
             await this.#viewer_elm.load(src);
+            if (gen !== this.#left_gen) return;
             this.hidden = false;
         } else {
             this.hidden = true;
@@ -361,6 +328,67 @@ export abstract class KCViewerAppElement<
         }
     }
 
+    private async initViewerElement(side: 'left' | 'right'): Promise<any> {
+        console.log(`[initViewerElement] Initializing ${side} viewer...`);
+        if (side === 'left') {
+            this.#left_gen++;
+            const gen = this.#left_gen;
+            
+            if (this.#viewer_elm) {
+                console.log(`[initViewerElement] Disposing existing LEFT viewer`);
+                this.#viewer_elm.remove();
+                if ((this.#viewer_elm as any).dispose) {
+                    (this.#viewer_elm as any).dispose();
+                }
+                this.#viewer_elm = null as any;
+            }
+            
+            this.#viewer_elm = this.make_viewer_element();
+            this.#viewer_elm.disableinteraction = this.compareActive ? false : (this.controls === "none");
+            
+            if (this.compareActive) {
+                this.injectCompareLayout();
+            }
+            
+            await this.waitForViewerReady(this.#viewer_elm);
+            if (gen !== this.#left_gen) {
+                throw new Error('Left viewer generation changed during initialization');
+            }
+            
+            if (this.compareActive && this.#viewer_elm.viewer) {
+                (this.#viewer_elm.viewer as any).__debug_panel_id = 'left(base)';
+            }
+            return this.#viewer_elm;
+        } else {
+            this.#right_gen++;
+            const gen = this.#right_gen;
+            
+            if (this.#right_viewer_elm) {
+                console.log(`[initViewerElement] Disposing existing RIGHT viewer`);
+                this.#right_viewer_elm.remove();
+                if ((this.#right_viewer_elm as any).dispose) {
+                    (this.#right_viewer_elm as any).dispose();
+                }
+                this.#right_viewer_elm = null;
+            }
+            
+            this.#right_viewer_elm = this.make_viewer_element();
+            this.#right_viewer_elm.disableinteraction = false;
+            
+            this.injectCompareLayout();
+            
+            await this.waitForViewerReady(this.#right_viewer_elm);
+            if (gen !== this.#right_gen) {
+                throw new Error('Right viewer generation changed during initialization');
+            }
+            
+            if (this.#right_viewer_elm.viewer) {
+                (this.#right_viewer_elm.viewer as any).__debug_panel_id = 'right(head)';
+            }
+            return this.#right_viewer_elm;
+        }
+    }
+
     private async waitForViewerReady(viewerEl: any) {
         console.log('[waitForViewerReady] Checking if viewer element exists...');
         if (!viewerEl) {
@@ -395,6 +423,7 @@ export abstract class KCViewerAppElement<
         ref: string,
     ) {
         console.log(`[loadPanelFromCommit] Loading ${side} panel with ref ${ref}`);
+        const gen = side === 'left' ? this.#left_gen : this.#right_gen;
 
         // Build VFS
         const vfs: IFileSystem = compareStore.browserFs
@@ -409,7 +438,9 @@ export abstract class KCViewerAppElement<
         const project = new Project();
         try {
             await vfs.setup();
+            if ((side === 'left' ? this.#left_gen : this.#right_gen) !== gen) return;
             await project.load(vfs);
+            if ((side === 'left' ? this.#left_gen : this.#right_gen) !== gen) return;
             console.log(`[loadPanelFromCommit] ${side} project loaded, pages:`, [...project.pages()].length);
         } catch (e) {
             console.error(`Failed to load ${side} panel:`, e);
@@ -442,15 +473,13 @@ export abstract class KCViewerAppElement<
             return;
         }
 
-        console.log(`[loadPanelFromCommit] ${side} viewer element:`, viewerElm);
-        console.log(`[loadPanelFromCommit] ${side} viewer.isConnected:`, (viewerElm as any).isConnected);
-        console.log(`[loadPanelFromCommit] ${side} viewer.viewer exists:`, !!(viewerElm as any).viewer);
-
         // Wait for viewer to be ready and load
         console.log(`[loadPanelFromCommit] ${side} waiting for viewer ready...`);
         await this.waitForViewerReady(viewerElm);
+        if ((side === 'left' ? this.#left_gen : this.#right_gen) !== gen) return;
         console.log(`[loadPanelFromCommit] ${side} viewer ready, loading page...`);
         await viewerElm.load(page);
+        if ((side === 'left' ? this.#left_gen : this.#right_gen) !== gen) return;
         console.log(`[loadPanelFromCommit] ${side} page loaded into viewer`);
 
         // Track what ref is loaded
@@ -471,10 +500,6 @@ export abstract class KCViewerAppElement<
         filePath: string,
     ) {
         this.cleanupViewportSync();
-
-        // Dispose old viewer elements if they exist
-        this.#viewer_elm?.remove?.();
-        (this.#right_viewer_elm as any)?.remove?.();
 
         this.leftFileMissing = false;
         this.rightFileMissing = false;
@@ -506,29 +531,18 @@ export abstract class KCViewerAppElement<
             })()
         ]);
 
-        // Create fresh viewer elements
-        this.#viewer_elm = this.make_viewer_element();
-        this.#viewer_elm.disableinteraction = false;
-        this.#right_viewer_elm = this.make_viewer_element();
-        this.#right_viewer_elm.disableinteraction = false;
+        const leftGen = this.#left_gen + 1;
+        const rightGen = this.#right_gen + 1;
 
-        // Instead of calling this.update() (which tears down all child elements
-        // and triggers DisposableStack-already-disposed errors), we directly
-        // inject the split-view layout into the existing kc-ui-view.grow container.
-        this.injectCompareLayout();
+        try {
+            await this.initViewerElement('left');
+            await this.initViewerElement('right');
+        } catch (e) {
+            console.warn('[startComparisonWithVFS] Viewer initialization aborted:', e);
+            return;
+        }
 
-        // Wait for both viewer elements' WebGL setup to complete.
-        // KCViewerElement.initialContentCallback() is async — it creates
-        // this.viewer and awaits viewer.setup(). We must not call .load()
-        // until `viewerEl.viewer` is non-null or we crash with Uninitialized.
-        await Promise.all([
-            this.waitForViewerReady(this.#viewer_elm),
-            this.waitForViewerReady(this.#right_viewer_elm),
-        ]);
-
-        // DEBUG: Mark panels for logging identification
-        (this.#viewer_elm.viewer as any).__debug_panel_id = 'left(base)';
-        ((this.#right_viewer_elm as any).viewer as any).__debug_panel_id = 'right(head)';
+        if (leftGen !== this.#left_gen || rightGen !== this.#right_gen) return;
 
         // Load the file into each viewer
         if (!this.leftFileMissing) {
@@ -540,6 +554,8 @@ export abstract class KCViewerAppElement<
             }
         }
 
+        if (leftGen !== this.#left_gen || rightGen !== this.#right_gen) return;
+
         if (!this.rightFileMissing) {
             const rightPage = this.findPageByPath(rightProject, filePath) || rightProject.first_page;
             if (rightPage) {
@@ -548,6 +564,8 @@ export abstract class KCViewerAppElement<
                 this.rightFileMissing = true;
             }
         }
+
+        if (leftGen !== this.#left_gen || rightGen !== this.#right_gen) return;
 
         // Run AST diff if both loaded
         if (!this.leftFileMissing && !this.rightFileMissing) {
@@ -577,6 +595,9 @@ export abstract class KCViewerAppElement<
      * (side panels, toolbar, etc.) and trigger DisposableStack disposal errors.
      *
      * We find the kc-ui-view.grow container and swap its viewer slot content.
+     * 
+     * This method is idempotent - it can be called multiple times as viewers
+     * are created sequentially.
      */
     private injectCompareLayout() {
         console.log('[injectCompareLayout] Starting layout injection');
@@ -590,62 +611,83 @@ export abstract class KCViewerAppElement<
             return;
         }
 
-        // Remove any existing viewer/split-view from the container
-        const existingViewer = viewContainer.querySelector('kc-board-viewer, kc-schematic-viewer, .split-view-container');
-        if (existingViewer) {
-            console.log('[injectCompareLayout] Removing existing viewer');
-            existingViewer.remove();
+        // Find or create the split-view container
+        let splitContainer = viewContainer.querySelector('.split-view-container') as HTMLElement;
+        
+        if (!splitContainer) {
+            // Remove any existing single viewer
+            const existingViewer = viewContainer.querySelector('kc-board-viewer, kc-schematic-viewer');
+            if (existingViewer) {
+                console.log('[injectCompareLayout] Removing existing single viewer');
+                existingViewer.remove();
+            }
+
+            // Build the split-view container inline
+            splitContainer = document.createElement('div');
+            splitContainer.className = 'split-view-container';
+            splitContainer.style.cssText = 'display:flex;flex-direction:row;width:100%;height:100%;';
+
+            // Append after the top toolbar (first child is typically the toolbar)
+            const topToolbar = viewContainer.querySelector('kc-ui-floating-toolbar');
+            if (topToolbar && topToolbar.nextSibling) {
+                viewContainer.insertBefore(splitContainer, topToolbar.nextSibling);
+            } else {
+                viewContainer.appendChild(splitContainer);
+            }
         }
 
-        // Build the split-view container inline
-        const splitContainer = document.createElement('div');
-        splitContainer.className = 'split-view-container';
-        splitContainer.style.cssText = 'display:flex;flex-direction:row;width:100%;height:100%;';
+        // Find or create left pane
+        let leftPane = splitContainer.querySelector('.left-pane') as HTMLElement;
+        if (!leftPane) {
+            leftPane = document.createElement('div');
+            leftPane.className = 'pane left-pane';
+            leftPane.style.cssText = 'flex:1;height:100%;position:relative;border-right:2px solid var(--border,#2a2833);';
 
-        const leftPane = document.createElement('div');
-        leftPane.className = 'pane left-pane';
-        leftPane.style.cssText = 'flex:1;height:100%;position:relative;border-right:2px solid var(--border,#2a2833);';
+            const leftLabel = document.createElement('div');
+            leftLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#ef4444;font-family:inherit;';
+            leftLabel.textContent = 'Older version (deleted/modified)';
+            leftPane.appendChild(leftLabel);
 
-        const rightPane = document.createElement('div');
-        rightPane.className = 'pane right-pane';
-        rightPane.style.cssText = 'flex:1;height:100%;position:relative;';
+            splitContainer.appendChild(leftPane);
+        }
 
-        // Add pane labels via ::before-equivalent spans (since we can't inject <style> easily here)
-        const leftLabel = document.createElement('div');
-        leftLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#ef4444;font-family:inherit;';
-        leftLabel.textContent = 'Older version (deleted/modified)';
+        // Add left viewer to left pane if it exists and isn't already there
+        if (this.#viewer_elm && !leftPane.contains(this.#viewer_elm)) {
+            leftPane.appendChild(this.#viewer_elm);
+            console.log('[injectCompareLayout] Left viewer added to left pane');
+        }
 
-        const rightLabel = document.createElement('div');
-        rightLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#22c55e;font-family:inherit;';
-        rightLabel.textContent = 'Newer version (added/modified)';
+        // Find or create right pane
+        let rightPane = splitContainer.querySelector('.right-pane') as HTMLElement;
+        if (!rightPane) {
+            rightPane = document.createElement('div');
+            rightPane.className = 'pane right-pane';
+            rightPane.style.cssText = 'flex:1;height:100%;position:relative;';
 
-        leftPane.appendChild(leftLabel);
-        leftPane.appendChild(this.#viewer_elm);
+            const rightLabel = document.createElement('div');
+            rightLabel.style.cssText = 'position:absolute;top:8px;left:8px;padding:4px 8px;background:rgba(22,19,33,0.85);border:1px solid #2a2833;border-radius:4px;font-size:11px;font-weight:600;z-index:10;pointer-events:none;color:#22c55e;font-family:inherit;';
+            rightLabel.textContent = 'Newer version (added/modified)';
+            rightPane.appendChild(rightLabel);
 
-        rightPane.appendChild(rightLabel);
-        rightPane.appendChild(this.#right_viewer_elm);
+            splitContainer.appendChild(rightPane);
+        }
 
-        splitContainer.appendChild(leftPane);
-        splitContainer.appendChild(rightPane);
-
-        // Append after the top toolbar (first child is typically the toolbar)
-        const topToolbar = viewContainer.querySelector('kc-ui-floating-toolbar');
-        if (topToolbar && topToolbar.nextSibling) {
-            viewContainer.insertBefore(splitContainer, topToolbar.nextSibling);
-        } else {
-            viewContainer.appendChild(splitContainer);
+        // Add right viewer to right pane if it exists and isn't already there
+        if (this.#right_viewer_elm && !rightPane.contains(this.#right_viewer_elm)) {
+            rightPane.appendChild(this.#right_viewer_elm);
+            console.log('[injectCompareLayout] Right viewer added to right pane');
         }
 
         console.log('[injectCompareLayout] Layout injection complete');
-        console.log('[injectCompareLayout] Left viewer isConnected:', (this.#viewer_elm as any).isConnected);
-        console.log('[injectCompareLayout] Right viewer isConnected:', (this.#right_viewer_elm as any).isConnected);
+        console.log('[injectCompareLayout] Left viewer isConnected:', (this.#viewer_elm as any)?.isConnected);
+        console.log('[injectCompareLayout] Right viewer isConnected:', (this.#right_viewer_elm as any)?.isConnected);
         
         // Force a synchronous layout to ensure connectedCallback() fires
         // Reading offsetHeight forces a layout calculation
         void splitContainer.offsetHeight;
         
-        console.log('[injectCompareLayout] After layout force - Left viewer isConnected:', (this.#viewer_elm as any).isConnected);
-        console.log('[injectCompareLayout] After layout force - Right viewer isConnected:', (this.#right_viewer_elm as any).isConnected);
+        console.log('[injectCompareLayout] After layout force - Left viewer isConnected:', (this.#viewer_elm as any)?.isConnected);
+        console.log('[injectCompareLayout] After layout force - Right viewer isConnected:', (this.#right_viewer_elm as any)?.isConnected);
     }
 
     private findPageByPath(project: Project, path: string) {

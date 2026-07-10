@@ -271,13 +271,16 @@ export class FetchFileSystem extends FileSystemBase {
 
     #resolve(filepath: string | URL): URL {
         if (typeof filepath === "string") {
-            const cached_url = this.urls.get(filepath);
+            const url = this.resolver(filepath);
+            const ref = url.searchParams.get("ref") || url.searchParams.get("commit") || "";
+            const name = basename(url);
+            const key = ref ? `${name}::${ref}` : name;
+
+            const cached_url = this.urls.get(key);
             if (cached_url) {
                 return cached_url;
             } else {
-                const url = this.resolver(filepath);
-                const name = basename(url);
-                this.urls.set(name, url);
+                this.urls.set(key, url);
                 return url;
             }
         }
