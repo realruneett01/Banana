@@ -43,25 +43,7 @@ const FOCUS_CSS = `
 `;
 
 const DIFF_CSS = `
-
-  /* ==========================================================================
-     SIDE-BY-SIDE OPACITY & UNCHANGED-GREY STYLESHEET
-     Scoped to .mode-side-by-side — Overlay Slider completely unaffected.
-
-     Color highlights (changed/added/deleted) are now applied via inline style
-     in the backend SVG annotator, which beats HTML presentation attributes in
-     the CSS cascade without stripping any native KiCad geometry data.
-
-     This stylesheet is responsible for two things only:
-       1. Fading unchanged elements to ghost grey (opacity tiers).
-       2. Overriding unchanged element paint to a neutral grey so unchanged
-          copper/pads don't show in their original bright KiCad colors.
-     ========================================================================== */
-
-
-  /* ── Tier 1: Modifications — block any inherited opacity fade ───────────────
-   * Inline style already sets opacity:1 on each element, but adding it here
-   * ensures container-level opacity rules cannot cascade downward.            */
+  /* Scoped to .mode-side-by-side — Overlay Slider completely unaffected. */
 
   .mode-side-by-side .diff-changed,
   .mode-side-by-side .diff-added,
@@ -70,83 +52,31 @@ const DIFF_CSS = `
     filter:  none !important;
   }
 
-
-  /* ── Tier 2: Active layer unchanged — 85% opacity crisp grey blueprint ──────
-   * The selected/inspected layer structural guide.                            */
-
-  .mode-side-by-side .layer-active .diff-unchanged {
-    opacity: 0.85 !important;
-    filter:  none  !important;
+  /* Unchanged components and text ('sch-text-glyph') must map to #7a828a at opacity: 0.3 */
+  .mode-side-by-side .diff-unchanged,
+  .mode-side-by-side .sch-text-glyph {
+    opacity: 0.3 !important;
+    filter:  none !important;
   }
 
-  /* Grey override for unchanged open geometry on active layer */
-  .mode-side-by-side .layer-active svg .diff-open.diff-unchanged {
+  .mode-side-by-side svg .diff-open.diff-unchanged,
+  .mode-side-by-side svg .diff-open.sch-text-glyph {
     stroke: #7a828a !important;
     fill:   none    !important;
   }
 
-  /* Grey override for unchanged closed shapes on active layer */
-  .mode-side-by-side .layer-active svg .diff-closed.diff-unchanged {
-    fill:   #4a5058 !important;
-    stroke: none    !important;
-  }
-
-  /* Grey override for text on active layer */
-  .mode-side-by-side .layer-active svg text.diff-unchanged,
-  .mode-side-by-side .layer-active svg text.diff-unchanged tspan,
-  .mode-side-by-side .layer-active svg use.diff-unchanged {
+  .mode-side-by-side svg .diff-closed.diff-unchanged,
+  .mode-side-by-side svg .diff-closed.sch-text-glyph {
     fill:   #7a828a !important;
     stroke: none    !important;
   }
 
-
-  /* ── Tier 3: Background layers unchanged — 15% ghost blueprint matrix ───────
-   * All non-active layers recede into a barely-visible outline grid.          */
-
-  .mode-side-by-side .layer-background .diff-unchanged {
-    opacity: 0.15 !important;
-    filter:  none  !important;
-  }
-
-  /* Grey override for unchanged open geometry on background layers */
-  .mode-side-by-side .layer-background svg .diff-open.diff-unchanged {
-    stroke: #555c66 !important;
-    fill:   none    !important;
-  }
-
-  /* Grey override for unchanged closed shapes on background layers */
-  .mode-side-by-side .layer-background svg .diff-closed.diff-unchanged {
-    fill:   #333840 !important;
-    stroke: none    !important;
-  }
-
-  /* Grey override for text on background layers */
-  .mode-side-by-side .layer-background svg text.diff-unchanged,
-  .mode-side-by-side .layer-background svg text.diff-unchanged tspan,
-  .mode-side-by-side .layer-background svg use.diff-unchanged {
-    fill:   #555c66 !important;
-    stroke: none    !important;
-  }
-
-
-  /* ── Fallback: No tier class present — treat as background ghost ────────────
-   * Safety net for any layer wrapper missing a tier class.                   */
-
-  .mode-side-by-side .diff-unchanged {
-    opacity: 0.15 !important;
-    filter:  none  !important;
-  }
-  .mode-side-by-side svg .diff-open.diff-unchanged {
-    stroke: #7a828a !important;
-    fill:   none    !important;
-  }
-  .mode-side-by-side svg .diff-closed.diff-unchanged {
-    fill:   #7a828a !important;
-    stroke: none    !important;
-  }
   .mode-side-by-side svg text.diff-unchanged,
   .mode-side-by-side svg text.diff-unchanged tspan,
-  .mode-side-by-side svg use.diff-unchanged {
+  .mode-side-by-side svg text.sch-text-glyph,
+  .mode-side-by-side svg text.sch-text-glyph tspan,
+  .mode-side-by-side svg use.diff-unchanged,
+  .mode-side-by-side svg use.sch-text-glyph {
     fill:   #7a828a !important;
     stroke: none    !important;
   }
@@ -576,6 +506,8 @@ export default forwardRef(function SideBySideDiff({
   layerOpacities,
   baseCommit,
   targetCommit,
+  activeAuditIdx,
+  setActiveAuditIdx,
 }, ref) {
   const leftContentRef = useRef(null);
   const rightContentRef = useRef(null);
@@ -621,8 +553,34 @@ export default forwardRef(function SideBySideDiff({
     setTimeout(() => { ring.remove(); }, 2200);
   };
 
+function getScreenCoordsFromSvg(viewportContentEl, coords) {
+  if (!coords) return null;
+  const svg = viewportContentEl.querySelector('svg');
+  if (!svg) return null;
+
+  const svgRect = svg.getBoundingClientRect();
+  const viewBoxStr = svg.getAttribute('viewBox');
+  if (!viewBoxStr) return null;
+
+  const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
+  if (vb.length < 4 || vb[2] <= 0 || vb[3] <= 0) return null;
+
+  const vbW = vb[2];
+  const vbH = vb[3];
+
+  const scaleX = svgRect.width / vbW;
+  const scaleY = svgRect.height / vbH;
+
+  return {
+    left: svgRect.left + (coords.x - vb[0]) * scaleX,
+    top: svgRect.top + (coords.y - vb[1]) * scaleY,
+    width: 0,
+    height: 0
+  };
+}
+
   useImperativeHandle(ref, () => ({
-    focusElement({ diffIdx, side, diffType }) {
+    focusElement({ diffIdx, side, diffType, baseCoords, targetCoords }) {
       if (!leftContentRef.current || !rightContentRef.current) return;
 
       const leftViewport = leftContentRef.current.parentElement;
@@ -631,46 +589,69 @@ export default forwardRef(function SideBySideDiff({
 
       let leftParams = null;
       let rightParams = null;
+      
+      const targetScale = 4.0; // scale = 4.0 as per architectural rules
 
-      if (diffType === 'delete') {
-        const target = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-        if (target) {
+      const normalizedType = diffType === 'delete_layer' ? 'delete'
+                           : diffType === 'add_layer' ? 'add'
+                           : diffType;
+
+      if (normalizedType === 'delete') {
+        let elRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
+        if (!elRect) {
+          const target = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+          if (target) elRect = target.getBoundingClientRect();
+        }
+        if (elRect) {
           leftParams = {
-            elRect: target.getBoundingClientRect(),
+            elRect,
             viewportRect: leftViewport.getBoundingClientRect(),
-            targetScale: 10
+            targetScale
           };
           drawFocusRing(leftContentRef.current, diffIdx, 'diff-deleted');
         }
       }
-      else if (diffType === 'add') {
-        const target = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-        if (target) {
+      else if (normalizedType === 'add') {
+        let elRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
+        if (!elRect) {
+          const target = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+          if (target) elRect = target.getBoundingClientRect();
+        }
+        if (elRect) {
           rightParams = {
-            elRect: target.getBoundingClientRect(),
+            elRect,
             viewportRect: rightViewport.getBoundingClientRect(),
-            targetScale: 10
+            targetScale
           };
           drawFocusRing(rightContentRef.current, diffIdx, 'diff-added');
         }
       }
-      else if (diffType === 'modify') {
-        const leftTarget = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-        const rightTarget = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+      else if (normalizedType === 'modify') {
+        let leftRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
+        if (!leftRect) {
+          const leftTarget = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+          if (leftTarget) leftRect = leftTarget.getBoundingClientRect();
+        }
 
-        if (leftTarget) {
+        let rightRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
+        if (!rightRect) {
+          const rightTarget = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+          if (rightTarget) rightRect = rightTarget.getBoundingClientRect();
+        }
+
+        if (leftRect) {
           leftParams = {
-            elRect: leftTarget.getBoundingClientRect(),
+            elRect: leftRect,
             viewportRect: leftViewport.getBoundingClientRect(),
-            targetScale: 10
+            targetScale
           };
           drawFocusRing(leftContentRef.current, diffIdx, 'diff-changed');
         }
-        if (rightTarget) {
+        if (rightRect) {
           rightParams = {
-            elRect: rightTarget.getBoundingClientRect(),
+            elRect: rightRect,
             viewportRect: rightViewport.getBoundingClientRect(),
-            targetScale: 10
+            targetScale
           };
           drawFocusRing(rightContentRef.current, diffIdx, 'diff-changed');
         }
@@ -698,10 +679,22 @@ export default forwardRef(function SideBySideDiff({
     <>
       <style>{FOCUS_CSS}</style>
       <style>{DIFF_CSS}</style>
+      {activeAuditIdx !== null && (
+        <style>{`
+          .mode-side-by-side.has-focus svg * {
+            opacity: 0.1 !important;
+          }
+          .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"],
+          .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"] * {
+            opacity: 1 !important;
+            filter: none !important;
+          }
+        `}</style>
+      )}
 
       <div
         ref={outerRef}
-        className="mode-side-by-side"
+        className={`mode-side-by-side ${activeAuditIdx !== null ? 'has-focus' : ''}`}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
@@ -744,7 +737,10 @@ export default forwardRef(function SideBySideDiff({
           </div>
 
           <button
-            onClick={resetTransform}
+            onClick={() => {
+              resetTransform();
+              if (setActiveAuditIdx) setActiveAuditIdx(null);
+            }}
             style={{
               background: 'transparent',
               border: '1px solid #333',

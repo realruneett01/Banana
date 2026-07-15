@@ -172,7 +172,10 @@ function injectDiffStyle(elementStr, diffClass, isClosed, tag) {
   } else if (isClosed) {
     // Pads, vias, zone fills, component bodies → paint with semi-transparent fill and solid stroke
     // This ensures overlay text and details remain highly visible and readable.
-    styleProps = `fill:${color};fill-opacity:0.2;stroke:${color};stroke-width:1.5;opacity:1;`;
+    const fillAlphaColor = diffClass === 'diff-changed' ? 'rgba(255, 255, 0, 0.2)'
+                         : diffClass === 'diff-added' ? 'rgba(0, 255, 102, 0.2)'
+                         : 'rgba(255, 51, 102, 0.2)';
+    styleProps = `fill:${fillAlphaColor};stroke:${color};stroke-width:1.5;opacity:1;`;
   } else {
     // Copper tracks, lines, ratsnest → stroke-only, fill:none preserves exact line weight
     styleProps = `fill:none;stroke:${color};opacity:1;`;
@@ -410,7 +413,7 @@ export function processSvgDiff(baseSvg, targetSvg) {
   const stillUnmatchedBase = unmatchedBase.filter(el => !matchedBase.has(el));
   const stillUnmatchedTarget = unmatchedTarget.filter(el => !matchedTarget.has(el));
 
-  const PROXIMITY_THRESHOLD = 50.0;
+  const PROXIMITY_THRESHOLD = 5.0;
 
   for (const tEl of stillUnmatchedTarget) {
     if (matchedTarget.has(tEl)) continue;

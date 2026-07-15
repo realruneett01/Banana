@@ -73,6 +73,7 @@ export default function App() {
   const [diffData, setDiffData] = useState(null);
   // Per-layer opacity: { 'F.Cu': 1, 'B.Cu': 1, ... } — 0 to 1
   const [layerOpacities, setLayerOpacities] = useState({});
+  const [activeAuditIdx, setActiveAuditIdx] = useState(null);
 
   // Check health and load repo info on mount
   useEffect(() => {
@@ -409,6 +410,8 @@ export default function App() {
           // Navigation: use the first modification's DOM index and panel side
           diffIdx: mod.diffIdx,
           side:    mod.side ?? 'target',
+          baseCoords: mod.baseCoords,
+          targetCoords: mod.targetCoords,
         };
       } else {
         grouped[groupKey].count += 1;
@@ -517,6 +520,8 @@ export default function App() {
         diffIdx: group.diffIdx,
         side:    group.side,
         rawType: group.type,   // 'add' | 'delete' | 'modify'
+        baseCoords: group.baseCoords,
+        targetCoords: group.targetCoords,
       };
     }).sort((a, b) => getPriority(b) - getPriority(a));
   };
@@ -1033,6 +1038,8 @@ export default function App() {
                       layerOpacities={layerOpacities}
                       baseCommit={baseCommit}
                       targetCommit={targetCommit}
+                      activeAuditIdx={activeAuditIdx}
+                      setActiveAuditIdx={setActiveAuditIdx}
                     />
                   ) : (
                     <DiffCanvas
@@ -1101,6 +1108,8 @@ export default function App() {
                               diffIdx:  log.diffIdx,
                               side:     log.side ?? 'target',
                               diffType: log.rawType,
+                              baseCoords: log.baseCoords,
+                              targetCoords: log.targetCoords,
                             });
                           }
                         };
