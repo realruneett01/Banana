@@ -301,6 +301,122 @@ function extractRefDes(el) {
 }
 
 /**
+ * Extracts start and end coordinates of path/line trace segments.
+ */
+function getSegmentEndpoints(el) {
+  const attrs = parseAttributes(el.fullMatch);
+  if (el.tag === 'line') {
+    const x1 = parseFloat(attrs.x1 || 0);
+    const y1 = parseFloat(attrs.y1 || 0);
+    const x2 = parseFloat(attrs.x2 || 0);
+    const y2 = parseFloat(attrs.y2 || 0);
+    return { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } };
+  }
+  if (el.tag === 'path') {
+    const d = attrs.d || '';
+    const coords = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    if (coords && coords.length >= 4) {
+      const x1 = parseFloat(coords[0]);
+      const y1 = parseFloat(coords[1]);
+      const x2 = parseFloat(coords[coords.length - 2]);
+      const y2 = parseFloat(coords[coords.length - 1]);
+      return { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } };
+    }
+  }
+  return null;
+}
+
+/**
+ * Assembles copper trace primitives into contiguous polylines/chains.
+ */
+function assembleTrackChains(elements) {
+  // Filter for trace primitives ('path', 'line') isolated by their copper layer class (e.g. F.Cu, B.Cu)
+  const copperTracks = elements.filter(el => {
+    if (el.isComponent) return false;
+    if (el.tag !== 'path' && el.tag !== 'line') return false;
+    const attrs = parseAttributes(el.fullMatch);
+    const cls = attrs.class || '';
+    return cls.toLowerCase().includes('cu') || cls.toLowerCase().includes('_cu');
+  });
+
+  const nodes = copperTracks.map((el, index) => {
+    const pts = getSegmentEndpoints(el);
+    return {
+      el,
+      index,
+      pts,
+      visited: false
+    };
+  }).filter(node => node.pts !== null);
+
+  const chains = [];
+
+  function isClose(p1, p2) {
+    return Math.hypot(p1.x - p2.x, p1.y - p2.y) <= 0.1;
+  }
+
+  function areConnected(n1, n2) {
+    return isClose(n1.pts.start, n2.pts.start) ||
+           isClose(n1.pts.start, n2.pts.end) ||
+           isClose(n1.pts.end, n2.pts.start) ||
+           isClose(n1.pts.end, n2.pts.end);
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].visited) continue;
+
+    const component = [];
+    const queue = [nodes[i]];
+    nodes[i].visited = true;
+
+    while (queue.length > 0) {
+      const curr = queue.shift();
+      component.push(curr);
+
+      for (let j = 0; j < nodes.length; j++) {
+        if (!nodes[j].visited && areConnected(curr, nodes[j])) {
+          nodes[j].visited = true;
+          queue.push(nodes[j]);
+        }
+      }
+    }
+
+    // Determine terminal/end anchor points of this chain
+    const endpoints = [];
+    for (const node of component) {
+      endpoints.push(node.pts.start, node.pts.end);
+    }
+
+    const terminalAnchors = [];
+    for (let k = 0; k < endpoints.length; k++) {
+      const pt = endpoints[k];
+      let shareCount = 0;
+      for (let m = 0; m < endpoints.length; m++) {
+        if (isClose(pt, endpoints[m])) {
+          shareCount++;
+        }
+      }
+      if (shareCount === 1) {
+        if (!terminalAnchors.some(t => isClose(t, pt))) {
+          terminalAnchors.push(pt);
+        }
+      }
+    }
+
+    const startAnchor = terminalAnchors[0] || component[0].pts.start;
+    const endAnchor = terminalAnchors[1] || component[component.length - 1].pts.end;
+
+    chains.push({
+      startAnchor,
+      endAnchor,
+      subSegments: component.map(node => node.el)
+    });
+  }
+
+  return chains;
+}
+
+/**
  * Calculates the exact physical coordinate center of primitive SVG shapes.
  */
 function getElementCenter(el) {
@@ -397,10 +513,82 @@ export function processSvgDiff(baseSvg, targetSvg) {
   const matchedTargetToBase = new Map();
   const matchedBaseToTarget = new Map();
 
+  let diffIdx = 0;
+  const modifications = [];
+
+  // --- PASS 0: Contiguous Track Chain Assembly & Topological Matching ---
+  const baseChains = assembleTrackChains(baseElements);
+  const targetChains = assembleTrackChains(targetElements);
+
+  const matchedBaseChains = new Set();
+
+  for (const tChain of targetChains) {
+    let bestBaseChain = null;
+    let minD = Infinity;
+
+    for (const bChain of baseChains) {
+      if (matchedBaseChains.has(bChain)) continue;
+
+      const d1 = Math.hypot(bChain.startAnchor.x - tChain.startAnchor.x, bChain.startAnchor.y - tChain.startAnchor.y) +
+                 Math.hypot(bChain.endAnchor.x - tChain.endAnchor.x, bChain.endAnchor.y - tChain.endAnchor.y);
+
+      const d2 = Math.hypot(bChain.startAnchor.x - tChain.endAnchor.x, bChain.startAnchor.y - tChain.endAnchor.y) +
+                 Math.hypot(bChain.endAnchor.x - tChain.startAnchor.x, bChain.endAnchor.y - tChain.startAnchor.y);
+
+      const dTerminals = Math.min(d1, d2);
+      if (dTerminals < minD && dTerminals <= 5.0) {
+        minD = dTerminals;
+        bestBaseChain = bChain;
+      }
+    }
+
+    if (bestBaseChain) {
+      matchedBaseChains.add(bestBaseChain);
+      
+      const sharedIdx = diffIdx++;
+      
+      // Calculate midpoints for centering/navigation
+      const baseCenter = {
+        x: (bestBaseChain.startAnchor.x + bestBaseChain.endAnchor.x) / 2,
+        y: (bestBaseChain.startAnchor.y + bestBaseChain.endAnchor.y) / 2
+      };
+      const targetCenter = {
+        x: (tChain.startAnchor.x + tChain.endAnchor.x) / 2,
+        y: (tChain.startAnchor.y + tChain.endAnchor.y) / 2
+      };
+
+      // Add a single modifications log item for the assembled track chain
+      modifications.push({
+        type: 'modify',
+        class: 'track_chain',
+        label: 'Re-routed Track Layout',
+        tag: 'path',
+        id: `track_chain_${sharedIdx}`,
+        diffIdx: sharedIdx,
+        segmentCount: tChain.subSegments.length,
+        baseCoords: baseCenter,
+        targetCoords: targetCenter
+      });
+
+      // Mark all base sub-segments as panned/modified and lock them
+      for (const el of bestBaseChain.subSegments) {
+        matchedBase.add(el);
+        baseClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+      }
+
+      // Mark all target sub-segments as panned/modified and lock them
+      for (const el of tChain.subSegments) {
+        matchedTarget.add(el);
+        targetClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+      }
+    }
+  }
+
   // --- PASS 1: Relational Key Lookup (RefDes matching) ---
   for (const tEl of targetElements) {
+    if (matchedTarget.has(tEl)) continue;
     if (tEl.isComponent && tEl.refDes) {
-      const bEl = baseElements.find(b => b.isComponent && b.refDes === tEl.refDes);
+      const bEl = baseElements.find(b => !matchedBase.has(b) && b.isComponent && b.refDes === tEl.refDes);
       if (bEl) {
         matchedBase.add(bEl);
         matchedTarget.add(tEl);
@@ -483,10 +671,7 @@ export function processSvgDiff(baseSvg, targetSvg) {
     }
   }
 
-  let diffIdx = 0;
-  const modifications = [];
-
-  // Assign diffIdx and construct modification logs
+  // Assign diffIdx and construct modifications logs for standard (non-chain) additions/deletions/modifications
   for (const el of baseElements) {
     const classification = baseClassifications.get(el);
     if (classification.diffClass === 'diff-deleted') {
@@ -537,33 +722,37 @@ export function processSvgDiff(baseSvg, targetSvg) {
         targetCoords: center
       });
     } else if (classification.diffClass === 'diff-changed') {
-      const bEl = matchedTargetToBase.get(el);
-      const bClassification = baseClassifications.get(bEl);
-      
-      const sharedIdx = diffIdx++;
-      classification.diffIdx = sharedIdx;
-      bClassification.diffIdx = sharedIdx;
-      
-      const baseCenter = getElementCenter(bEl);
-      const targetCenter = getElementCenter(el);
-      
-      let label = el.refDes || el.id || el.tag;
-      if (el.text && !label.includes(el.text)) {
-        label += ` ${el.text}`;
-      }
+      // If it is already panned from Pass 0 (track chain matches), it already has a modifications item.
+      // So only process Pass 1 & Pass 3 modifications here:
+      if (matchedTargetToBase.has(el)) {
+        const bEl = matchedTargetToBase.get(el);
+        const bClassification = baseClassifications.get(bEl);
+        
+        const sharedIdx = diffIdx++;
+        classification.diffIdx = sharedIdx;
+        bClassification.diffIdx = sharedIdx;
+        
+        const baseCenter = getElementCenter(bEl);
+        const targetCenter = getElementCenter(el);
+        
+        let label = el.refDes || el.id || el.tag;
+        if (el.text && !label.includes(el.text)) {
+          label += ` ${el.text}`;
+        }
 
-      modifications.push({
-        type: 'modify',
-        component: getComponentType(el.refDes),
-        label: `Changed ${label}`,
-        tag: el.tag,
-        id: el.id,
-        text: el.text,
-        side: 'target',
-        diffIdx: sharedIdx,
-        baseCoords: baseCenter,
-        targetCoords: targetCenter
-      });
+        modifications.push({
+          type: 'modify',
+          component: getComponentType(el.refDes),
+          label: `Changed ${label}`,
+          tag: el.tag,
+          id: el.id,
+          text: el.text,
+          side: 'target',
+          diffIdx: sharedIdx,
+          baseCoords: baseCenter,
+          targetCoords: targetCenter
+        });
+      }
     }
   }
 

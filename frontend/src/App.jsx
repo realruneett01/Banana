@@ -393,15 +393,19 @@ export default function App() {
       const hasUniqueId = !isGenericId;
       
       // Create a grouping key
-      const groupKey = hasUniqueId 
-        ? `unique-${mod.type}-${mod.id}-${layerName}`
-        : `generic-${mod.type}-${mod.tag}-${layerName}`;
+      const groupKey = mod.class === 'track_chain'
+        ? `track_chain-${mod.diffIdx}`
+        : (hasUniqueId 
+            ? `unique-${mod.type}-${mod.id}-${layerName}`
+            : `generic-${mod.type}-${mod.tag}-${layerName}`);
 
       if (!grouped[groupKey]) {
         grouped[groupKey] = {
           type: mod.type,
           tag: mod.tag,
           id: mod.id,
+          class: mod.class,
+          segmentCount: mod.segmentCount,
           label: mod.label,
           component: mod.component,
           text: mod.text,
@@ -492,7 +496,10 @@ export default function App() {
         if (group.texts.length > 0) desc += ` Text: "${group.texts.join(', ')}".`;
       } else if (group.type === 'modify') {
         color = '#ffff00'; // golden yellow
-        if (group.component && group.component !== 'Component') {
+        if (group.class === 'track_chain') {
+          title = `Re-routed Track Layout near MCU`;
+          desc = `Adjusted trace layout structure (${group.segmentCount} segments) on layer ${group.layerName}.`;
+        } else if (group.component && group.component !== 'Component') {
           title = group.label || `Modified ${group.id}`;
           desc = `Modified ${group.component} layout/values on layer ${group.layerName}.`;
         } else if (isCopper && isTrack) {
