@@ -566,6 +566,38 @@ export function processSvgDiff(baseSvg, targetSvg) {
     }
     annotatedTarget = annotatedTarget.replace(el.fullMatch, annotated);
   }
+  // Temporary Diagnostic Injection Code
+  console.log("--- BANANA 2.0 AUDIT ENGINE LOG ---");
+  let misclassifiedCount = 0;
+  let droppedCount = 0;
+
+  targetElements.forEach(el => {
+    const classification = targetClassifications.get(el);
+    const diffClass = classification ? classification.diffClass : null;
+    const elRef = extractRefDes(el);
+
+    // Check if an item is being called an addition but shares structural text characteristics with the base
+    if (diffClass === 'diff-added') {
+      const potentialBaseTwin = baseElements.find(b => {
+        const bRef = extractRefDes(b);
+        return (elRef && bRef && bRef === elRef) || (b.text && b.text === el.text);
+      });
+      if (potentialBaseTwin) {
+        console.warn(`[MISCLASSIFICATION DETECTED]: Element tagged as ADDED, but a twin exists in Base! Label: ${el.text || elRef}`);
+        misclassifiedCount++;
+      }
+    }
+    
+    // Track elements that are completely bypassed by the audit list payload generator
+    if (!diffClass || diffClass === 'diff-unchanged') {
+      // If it's a major primitive shape but missing from the final audit payload logs
+      if (el.tag === 'g' || el.tag === 'rect' || el.tag === 'polygon') {
+        droppedCount++;
+      }
+    }
+  });
+
+  console.log(`Diagnostic Results -> Misclassified Modifications: ${misclassifiedCount}, Dropped: ${droppedCount}`);
 
   return { baseSvg: annotatedBase, targetSvg: annotatedTarget, modifications };
 }
