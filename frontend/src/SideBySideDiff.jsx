@@ -80,6 +80,57 @@ const DIFF_CSS = `
     fill:   #7a828a !important;
     stroke: none    !important;
   }
+
+  /* Component Container Group cascading styles */
+  .mode-side-by-side .diff-changed *,
+  .mode-side-by-side [class*="diff-changed"] * {
+    stroke: #ffff00 !important;
+  }
+  .mode-side-by-side .diff-added *,
+  .mode-side-by-side [class*="diff-added"] * {
+    stroke: #00ff66 !important;
+  }
+  .mode-side-by-side .diff-deleted *,
+  .mode-side-by-side [class*="diff-deleted"] * {
+    stroke: #ff3366 !important;
+  }
+
+  /* Fills for closed shapes inside highlighted component groups */
+  .mode-side-by-side .diff-changed .diff-closed,
+  .mode-side-by-side .diff-changed circle,
+  .mode-side-by-side .diff-changed rect,
+  .mode-side-by-side .diff-changed polygon {
+    fill: rgba(255, 255, 0, 0.2) !important;
+  }
+  .mode-side-by-side .diff-added .diff-closed,
+  .mode-side-by-side .diff-added circle,
+  .mode-side-by-side .diff-added rect,
+  .mode-side-by-side .diff-added polygon {
+    fill: rgba(0, 255, 102, 0.2) !important;
+  }
+  .mode-side-by-side .diff-deleted .diff-closed,
+  .mode-side-by-side .diff-deleted circle,
+  .mode-side-by-side .diff-deleted rect,
+  .mode-side-by-side .diff-deleted polygon {
+    fill: rgba(255, 51, 102, 0.2) !important;
+  }
+
+  /* Text inside highlighted component groups */
+  .mode-side-by-side .diff-changed text,
+  .mode-side-by-side .diff-changed tspan {
+    fill: #ffff00 !important;
+    stroke: none !important;
+  }
+  .mode-side-by-side .diff-added text,
+  .mode-side-by-side .diff-added tspan {
+    fill: #00ff66 !important;
+    stroke: none !important;
+  }
+  .mode-side-by-side .diff-deleted text,
+  .mode-side-by-side .diff-deleted tspan {
+    fill: #ff3366 !important;
+    stroke: none !important;
+  }
 `;
 
 // ─── Layer matching helper ────────────────────────────────────────────────────
