@@ -568,12 +568,14 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
   const vbW = vb[2];
   const vbH = vb[3];
 
-  const scaleX = svgRect.width / vbW;
-  const scaleY = svgRect.height / vbH;
+  // KiCad SVGs preserve aspect ratio (xMidYMid meet)
+  const scale = Math.min(svgRect.width / vbW, svgRect.height / vbH);
+  const offsetX = (svgRect.width - vbW * scale) / 2;
+  const offsetY = (svgRect.height - vbH * scale) / 2;
 
   return {
-    left: svgRect.left + (coords.x - vb[0]) * scaleX,
-    top: svgRect.top + (coords.y - vb[1]) * scaleY,
+    left: svgRect.left + offsetX + (coords.x - vb[0]) * scale,
+    top: svgRect.top + offsetY + (coords.y - vb[1]) * scale,
     width: 0,
     height: 0
   };
