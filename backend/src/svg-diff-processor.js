@@ -189,55 +189,102 @@ function injectDiffStyle(elementStr, diffClass, isClosed, tag) {
 /**
  * Extracts geometric endpoints or centroids from SVG elements for matching.
  */
-function getEndpoints(el) {
-  if (el.tag === 'line') {
-    const attrs = parseAttributes(el.fullMatch);
-    const x1 = parseFloat(attrs.x1 || 0);
-    const y1 = parseFloat(attrs.y1 || 0);
-    const x2 = parseFloat(attrs.x2 || 0);
-    const y2 = parseFloat(attrs.y2 || 0);
-    return { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } };
+/**
+ * Helper to extract RefDes (Reference Designator) from element properties.
+ */
+function extractRefDes(el) {
+  if (el.tag === 'text' && el.text) {
+    const txt = el.text.trim();
+    if (/^[A-Z]+\d+$/i.test(txt)) return txt.toUpperCase();
+    return txt;
   }
-  if (el.tag === 'path') {
-    const attrs = parseAttributes(el.fullMatch);
-    const d = attrs.d || '';
-    const coords = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
-    if (coords && coords.length >= 4) {
-      const x1 = parseFloat(coords[0]);
-      const y1 = parseFloat(coords[1]);
-      const x2 = parseFloat(coords[coords.length - 2]);
-      const y2 = parseFloat(coords[coords.length - 1]);
-      return { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } };
-    }
-  }
-  const attrs = parseAttributes(el.fullMatch);
-  if (attrs.cx !== undefined && attrs.cy !== undefined) {
-    const cx = parseFloat(attrs.cx);
-    const cy = parseFloat(attrs.cy);
-    return { start: { x: cx, y: cy }, end: { x: cx, y: cy } };
-  }
-  if (attrs.x !== undefined && attrs.y !== undefined) {
-    const x = parseFloat(attrs.x);
-    const y = parseFloat(attrs.y);
-    const w = parseFloat(attrs.width || 0);
-    const h = parseFloat(attrs.height || 0);
-    const cx = x + w / 2;
-    const cy = y + h / 2;
-    return { start: { x: cx, y: cy }, end: { x: cx, y: cy } };
-  }
+  const id = el.id || '';
+  const label = el.label || '';
+  const refDesRegex = /(?:^|[^a-zA-Z0-9])([A-Z]+\d+)(?:[^a-zA-Z0-9]|$)/i;
+  let match = id.match(refDesRegex) || label.match(refDesRegex);
+  if (match) return match[1].toUpperCase();
   return null;
 }
 
 /**
- * Computes geometric distance between two trace endpoints.
+ * Calculates the exact physical coordinate center of SVG shapes (paths, lines, circles, rects, text, etc.) using their geometry attributes.
  */
-function getTraceDistance(pt1, pt2) {
-  if (!pt1 || !pt2) return Infinity;
-  const d1 = Math.hypot(pt1.start.x - pt2.start.x, pt1.start.y - pt2.start.y) +
-             Math.hypot(pt1.end.x - pt2.end.x, pt1.end.y - pt2.end.y);
-  const d2 = Math.hypot(pt1.start.x - pt2.end.x, pt1.start.y - pt2.end.y) +
-             Math.hypot(pt1.end.x - pt2.start.x, pt1.end.y - pt2.start.y);
-  return Math.min(d1, d2);
+function getElementCenter(el) {
+  const attrs = parseAttributes(el.fullMatch);
+  if (el.tag === 'path') {
+    const d = attrs.d || '';
+    const coords = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    if (coords && coords.length >= 2) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < coords.length - 1; i += 2) {
+        const x = parseFloat(coords[i]);
+        const y = parseFloat(coords[i+1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      if (minX !== Infinity) {
+        return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+      }
+    }
+  }
+  if (el.tag === 'line') {
+    const x1 = parseFloat(attrs.x1 || 0);
+    const y1 = parseFloat(attrs.y1 || 0);
+    const x2 = parseFloat(attrs.x2 || 0);
+    const y2 = parseFloat(attrs.y2 || 0);
+    return { x: (x1 + x2) / 2, y: (y1 + y2) / 2 };
+  }
+  if (el.tag === 'circle' || el.tag === 'ellipse') {
+    const cx = parseFloat(attrs.cx || 0);
+    const cy = parseFloat(attrs.cy || 0);
+    return { x: cx, y: cy };
+  }
+  if (el.tag === 'rect') {
+    const x = parseFloat(attrs.x || 0);
+    const y = parseFloat(attrs.y || 0);
+    const w = parseFloat(attrs.width || 0);
+    const h = parseFloat(attrs.height || 0);
+    return { x: x + w / 2, y: y + h / 2 };
+  }
+  if (el.tag === 'polygon' || el.tag === 'polyline') {
+    const pointsStr = attrs.points || '';
+    const coords = pointsStr.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    if (coords && coords.length >= 2) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      for (let i = 0; i < coords.length - 1; i += 2) {
+        const x = parseFloat(coords[i]);
+        const y = parseFloat(coords[i+1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      if (minX !== Infinity) {
+        return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+      }
+    }
+  }
+  // Text or others
+  const x = parseFloat(attrs.x || 0);
+  const y = parseFloat(attrs.y || 0);
+  return { x, y };
+}
+
+/**
+ * Computes geometric distance between two element centers.
+ */
+function getDistance(el1, el2) {
+  const c1 = getElementCenter(el1);
+  const c2 = getElementCenter(el2);
+  return Math.hypot(c1.x - c2.x, c1.y - c2.y);
 }
 
 /**
@@ -253,27 +300,18 @@ export function processSvgDiff(baseSvg, targetSvg) {
   const baseElements   = extractElements(baseSvg);
   const targetElements = extractElements(targetSvg);
 
-  // --- Diagnostic console logs (Requirement 3) ---
+  // --- Diagnostic console logs ---
   const totalPathsBase = baseElements.filter(el => el.tag === 'path').length;
   const totalPathsTarget = targetElements.filter(el => el.tag === 'path').length;
   console.log(`[Diagnostic] Total <path> tags in base: ${totalPathsBase}, target: ${totalPathsTarget}`);
-
-  const sampleTrace = targetElements.find(el => el.tag === 'path');
-  if (sampleTrace) {
-    console.log(`[Diagnostic] Sample trace element properties:`, {
-      tag: sampleTrace.tag,
-      id: sampleTrace.id,
-      fullKey: sampleTrace.fullKey.substring(0, 100) + '...',
-      idKey: sampleTrace.idKey,
-      geoKey: sampleTrace.geoKey.substring(0, 100) + '...'
-    });
-  }
 
   const baseClassifications = new Map();
   const targetClassifications = new Map();
 
   const matchedBase = new Set();
   const matchedTarget = new Set();
+  const matchedTargetToBase = new Map();
+  const matchedBaseToTarget = new Map();
 
   // 1. Pass 1: Exact matches (same tag, attributes, and geometry) paired 1-to-1
   const baseKeyGroups = new Map();
@@ -293,67 +331,108 @@ export function processSvgDiff(baseSvg, targetSvg) {
     }
   }
 
-  // 2. Pass 2: Match by unique ID
+  // 2. Pass 2: Match by identity (ID, RefDes, or text content)
   const unmatchedBase = baseElements.filter(el => !matchedBase.has(el));
   const unmatchedTarget = targetElements.filter(el => !matchedTarget.has(el));
 
-  const baseIdMap = new Map();
-  for (const el of unmatchedBase) {
-    if (el.id) baseIdMap.set(el.id, el);
-  }
-
+  // Match by exact ID
   for (const tEl of unmatchedTarget) {
-    if (tEl.id && baseIdMap.has(tEl.id)) {
-      const bEl = baseIdMap.get(tEl.id);
-      matchedBase.add(bEl);
-      matchedTarget.add(tEl);
-      baseClassifications.set(bEl, { diffClass: 'diff-changed' });
-      targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+    if (matchedTarget.has(tEl)) continue;
+    if (tEl.id) {
+      const bEl = unmatchedBase.find(el => !matchedBase.has(el) && el.id === tEl.id);
+      if (bEl) {
+        matchedBase.add(bEl);
+        matchedTarget.add(tEl);
+        matchedTargetToBase.set(tEl, bEl);
+        matchedBaseToTarget.set(bEl, tEl);
+        baseClassifications.set(bEl, { diffClass: 'diff-changed' });
+        targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+      }
     }
   }
 
-  // 3. Pass 3: Geometric endpoint/proximity matching for raw traces/tracks/vias (Requirement 2)
+  // Match by RefDes (Reference Designator)
+  for (const tEl of unmatchedTarget) {
+    if (matchedTarget.has(tEl)) continue;
+    const tRef = extractRefDes(tEl);
+    if (tRef) {
+      const candidates = unmatchedBase.filter(bEl => !matchedBase.has(bEl) && bEl.tag === tEl.tag && extractRefDes(bEl) === tRef);
+      if (candidates.length > 0) {
+        let bestMatch = null;
+        let minDistance = Infinity;
+        for (const bEl of candidates) {
+          const dist = getDistance(tEl, bEl);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestMatch = bEl;
+          }
+        }
+        if (bestMatch) {
+          matchedBase.add(bestMatch);
+          matchedTarget.add(tEl);
+          matchedTargetToBase.set(tEl, bestMatch);
+          matchedBaseToTarget.set(bestMatch, tEl);
+          baseClassifications.set(bestMatch, { diffClass: 'diff-changed' });
+          targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+        }
+      }
+    }
+  }
+
+  // Match text elements by text content
+  for (const tEl of unmatchedTarget) {
+    if (matchedTarget.has(tEl) || tEl.tag !== 'text') continue;
+    if (tEl.text) {
+      const candidates = unmatchedBase.filter(bEl => !matchedBase.has(bEl) && bEl.tag === 'text' && bEl.text === tEl.text);
+      if (candidates.length > 0) {
+        let bestMatch = null;
+        let minDistance = Infinity;
+        for (const bEl of candidates) {
+          const dist = getDistance(tEl, bEl);
+          if (dist < minDistance) {
+            minDistance = dist;
+            bestMatch = bEl;
+          }
+        }
+        if (bestMatch) {
+          matchedBase.add(bestMatch);
+          matchedTarget.add(tEl);
+          matchedTargetToBase.set(tEl, bestMatch);
+          matchedBaseToTarget.set(bestMatch, tEl);
+          baseClassifications.set(bestMatch, { diffClass: 'diff-changed' });
+          targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+        }
+      }
+    }
+  }
+
+  // 3. Pass 3: Proximity matching for raw traces/vias/pads
   const stillUnmatchedBase = unmatchedBase.filter(el => !matchedBase.has(el));
   const stillUnmatchedTarget = unmatchedTarget.filter(el => !matchedTarget.has(el));
 
-  const baseEndpoints = new Map();
-  for (const el of stillUnmatchedBase) {
-    const pts = getEndpoints(el);
-    if (pts) baseEndpoints.set(el, pts);
-  }
-
-  const targetEndpoints = new Map();
-  for (const el of stillUnmatchedTarget) {
-    const pts = getEndpoints(el);
-    if (pts) targetEndpoints.set(el, pts);
-  }
-
-  const GEOM_THRESHOLD = 5.0; // Max geometric distance to qualify as a modification of the same trace/pad
+  const PROXIMITY_THRESHOLD = 50.0;
 
   for (const tEl of stillUnmatchedTarget) {
-    const tPts = targetEndpoints.get(tEl);
-    if (!tPts) continue;
-
-    let bestMatch = null;
-    let minDistance = Infinity;
-
-    for (const bEl of stillUnmatchedBase) {
-      if (matchedBase.has(bEl) || bEl.tag !== tEl.tag) continue;
-      const bPts = baseEndpoints.get(bEl);
-      if (!bPts) continue;
-
-      const dist = getTraceDistance(tPts, bPts);
-      if (dist < minDistance && dist < GEOM_THRESHOLD) {
-        minDistance = dist;
-        bestMatch = bEl;
+    if (matchedTarget.has(tEl)) continue;
+    const candidates = stillUnmatchedBase.filter(bEl => !matchedBase.has(bEl) && bEl.tag === tEl.tag);
+    if (candidates.length > 0) {
+      let bestMatch = null;
+      let minDistance = Infinity;
+      for (const bEl of candidates) {
+        const dist = getDistance(tEl, bEl);
+        if (dist < minDistance && dist < PROXIMITY_THRESHOLD) {
+          minDistance = dist;
+          bestMatch = bEl;
+        }
       }
-    }
-
-    if (bestMatch) {
-      matchedBase.add(bestMatch);
-      matchedTarget.add(tEl);
-      baseClassifications.set(bestMatch, { diffClass: 'diff-changed' });
-      targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+      if (bestMatch) {
+        matchedBase.add(bestMatch);
+        matchedTarget.add(tEl);
+        matchedTargetToBase.set(tEl, bestMatch);
+        matchedBaseToTarget.set(bestMatch, tEl);
+        baseClassifications.set(bestMatch, { diffClass: 'diff-changed' });
+        targetClassifications.set(tEl, { diffClass: 'diff-changed' });
+      }
     }
   }
 
@@ -373,62 +452,85 @@ export function processSvgDiff(baseSvg, targetSvg) {
   let diffIdx = 0;
   const modifications = [];
 
-  // Write base classifications and build deleted modifications
+  // Assign diffIdx to all non-unchanged elements, ensuring matched pairs share the same index
   for (const el of baseElements) {
     const classification = baseClassifications.get(el);
-    let diffClass = classification.diffClass;
+    if (classification.diffClass === 'diff-deleted') {
+      classification.diffIdx = diffIdx++;
+      
+      const center = getElementCenter(el);
+      let label = extractRefDes(el) || el.id || el.tag;
+      if (el.text && !label.includes(el.text)) {
+        label += ` ${el.text}`;
+      }
 
-    if (diffClass === 'diff-deleted') {
       modifications.push({
         type: 'delete',
         tag: el.tag,
         id: el.id,
-        label: el.label,
+        label: `Deleted ${label}`,
         text: el.text,
         side: 'base',
-        diffIdx: diffIdx,
+        diffIdx: classification.diffIdx,
+        baseCoords: center,
+        targetCoords: null
       });
-    }
-
-    if (diffClass !== 'diff-unchanged') {
-      classification.diffIdx = diffIdx;
-      diffIdx++;
     }
   }
 
-  // Write target classifications and build added/modified modifications
   for (const el of targetElements) {
     const classification = targetClassifications.get(el);
-    let diffClass = classification.diffClass;
+    if (classification.diffClass === 'diff-added') {
+      classification.diffIdx = diffIdx++;
+      
+      const center = getElementCenter(el);
+      let label = extractRefDes(el) || el.id || el.tag;
+      if (el.text && !label.includes(el.text)) {
+        label += ` ${el.text}`;
+      }
 
-    if (diffClass === 'diff-changed') {
-      modifications.push({
-        type: 'modify',
-        tag: el.tag,
-        id: el.id,
-        label: el.label,
-        text: el.text,
-        side: 'target',
-        diffIdx: diffIdx,
-      });
-    } else if (diffClass === 'diff-added') {
       modifications.push({
         type: 'add',
         tag: el.tag,
         id: el.id,
-        label: el.label,
+        label: `Added ${label}`,
         text: el.text,
         side: 'target',
-        diffIdx: diffIdx,
+        diffIdx: classification.diffIdx,
+        baseCoords: null,
+        targetCoords: center
       });
-    }
+    } else if (classification.diffClass === 'diff-changed') {
+      const bEl = matchedTargetToBase.get(el);
+      const bClassification = baseClassifications.get(bEl);
+      
+      const sharedIdx = diffIdx++;
+      classification.diffIdx = sharedIdx;
+      bClassification.diffIdx = sharedIdx;
+      
+      const baseCenter = getElementCenter(bEl);
+      const targetCenter = getElementCenter(el);
+      
+      let label = extractRefDes(el) || el.id || el.tag;
+      if (el.text && !label.includes(el.text)) {
+        label += ` ${el.text}`;
+      }
 
-    if (diffClass !== 'diff-unchanged') {
-      classification.diffIdx = diffIdx;
-      diffIdx++;
+      modifications.push({
+        type: 'modify',
+        tag: el.tag,
+        id: el.id,
+        label: `Changed ${label}`,
+        text: el.text,
+        side: 'target',
+        diffIdx: sharedIdx,
+        baseCoords: baseCenter,
+        targetCoords: targetCenter
+      });
     }
   }
 
+  // Annotate base SVG
   let annotatedBase = baseSvg;
   for (const el of baseElements) {
     const classification = baseClassifications.get(el);
@@ -445,6 +547,7 @@ export function processSvgDiff(baseSvg, targetSvg) {
     annotatedBase = annotatedBase.replace(el.fullMatch, annotated);
   }
 
+  // Annotate target SVG
   let annotatedTarget = targetSvg;
   for (const el of targetElements) {
     const classification = targetClassifications.get(el);

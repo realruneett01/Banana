@@ -439,7 +439,7 @@ export default function App() {
     return Object.values(grouped).map((group) => {
       let title = '';
       let desc = '';
-      let color = '#fadb14'; // yellow (modify)
+      let color = '#ffff00'; // yellow (modify)
 
       const countStr = group.count > 1 ? ` (${group.count}x)` : '';
       const isPlural = group.count > 1;
@@ -449,7 +449,7 @@ export default function App() {
       const isViaOrPad = ['circle', 'ellipse', 'rect'].includes(group.tag);
 
       if (group.type === 'add') {
-        color = '#52c41a'; // green
+        color = '#00ff66'; // neon green
         if (isCopper && isTrack) {
           title = `Added Copper Track${isPlural ? 's' : ''}${countStr}`;
           desc = `New trace connection segment routed on layer ${group.layerName}.`;
@@ -465,7 +465,7 @@ export default function App() {
         }
         if (group.texts.length > 0) desc += ` Text: "${group.texts.join(', ')}".`;
       } else if (group.type === 'delete') {
-        color = '#ff4d4f'; // red
+        color = '#ff3366'; // crimson red
         if (isCopper && isTrack) {
           title = `Removed Copper Track${isPlural ? 's' : ''}${countStr}`;
           desc = `Removed trace connection segment from layer ${group.layerName}.`;
@@ -481,7 +481,7 @@ export default function App() {
         }
         if (group.texts.length > 0) desc += ` Text: "${group.texts.join(', ')}".`;
       } else if (group.type === 'modify') {
-        color = '#fadb14'; // yellow
+        color = '#ffff00'; // golden yellow
         if (isCopper && isTrack) {
           title = `Shifted Track Segment${isPlural ? 's' : ''}${countStr}`;
           desc = `Adjusted trace routing layout/geometry on layer ${group.layerName}.`;
@@ -499,11 +499,11 @@ export default function App() {
       } else if (group.type === 'add_layer') {
         title = `Added Layer`;
         desc = `Entire layer file ${group.id} was added.`;
-        color = '#52c41a';
+        color = '#00ff66';
       } else if (group.type === 'delete_layer') {
         title = `Removed Layer`;
         desc = `Entire layer file ${group.id} was removed.`;
-        color = '#ff4d4f';
+        color = '#ff3366';
       }
 
       return {
@@ -1093,33 +1093,51 @@ export default function App() {
                       key={index}
                       size="small" 
                       onClick={() => {
-                        // Navigate the side-by-side canvas to the clicked element
-                        if (
-                          diffMode === 'Side by Side' &&
-                          sideBySideRef.current &&
-                          log.diffIdx !== undefined
-                        ) {
-                          sideBySideRef.current.focusElement({
-                            diffIdx:  log.diffIdx,
-                            side:     log.side ?? 'target',
-                            diffType: log.rawType,
-                          });
+                        if (log.diffIdx === undefined) return;
+                        
+                        const triggerFocus = () => {
+                          if (sideBySideRef.current) {
+                            sideBySideRef.current.focusElement({
+                              diffIdx:  log.diffIdx,
+                              side:     log.side ?? 'target',
+                              diffType: log.rawType,
+                            });
+                          }
+                        };
+
+                        if (diffMode !== 'Side by Side') {
+                          setDiffMode('Side by Side');
+                          setTimeout(triggerFocus, 100);
+                        } else {
+                          triggerFocus();
                         }
                       }}
                       style={{ 
                         background: '#0f1015', 
                         borderColor: '#232738',
-                        cursor: diffMode === 'Side by Side' && log.diffIdx !== undefined
-                          ? 'pointer'
-                          : 'default',
+                        cursor: log.diffIdx !== undefined ? 'pointer' : 'default',
                         transition: 'border-color 0.15s',
                       }}
-                      hoverable={diffMode === 'Side by Side' && log.diffIdx !== undefined}
-                      title={<Text strong style={{ fontSize: 13, color: log.color }}>{log.title}</Text>}
+                      hoverable={log.diffIdx !== undefined}
+                      title={
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
+                          <span style={{
+                            display: 'inline-block',
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '50%',
+                            backgroundColor: log.color,
+                            marginRight: '8px',
+                            boxShadow: `0 0 6px ${log.color}`,
+                            flexShrink: 0,
+                          }} />
+                          <Text strong style={{ fontSize: 13, color: '#f5f5f5' }}>{log.title}</Text>
+                        </div>
+                      }
                       extra={<Text type="secondary" style={{ fontSize: 11 }}>{log.time}</Text>}
                     >
                       <Text style={{ fontSize: 12, color: '#a6adbb' }}>{log.desc}</Text>
-                      {diffMode === 'Side by Side' && log.diffIdx !== undefined && (
+                      {log.diffIdx !== undefined && (
                         <div style={{ marginTop: 4 }}>
                           <Text style={{ fontSize: 10, color: '#555c66' }}>
                             Click to navigate →

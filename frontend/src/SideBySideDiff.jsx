@@ -183,11 +183,18 @@ function isLayerSolo(filename, soloLayer) {
 }
 
 // ─── Synchronized Pan/Zoom Engine ────────────────────────────────────────────
-// Supports two independent viewports (leftTransformRef and rightTransformRef).
+// Supports two independent viewports.
 // Panning and zooming can be locked together (synced === true) or decoupled (synced === false).
-function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
-  const leftTransformRef = useRef({ scale: 1, x: 0, y: 0 });
-  const rightTransformRef = useRef({ scale: 1, x: 0, y: 0 });
+function useSyncedTransform(
+  baseTransform,
+  setBaseTransform,
+  targetTransform,
+  setTargetTransform,
+  leftContentRef,
+  rightContentRef,
+  outerRef,
+  synced
+) {
   const dragRef = useRef({
     active: false,
     startX: 0,
@@ -199,17 +206,16 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
     isLeft: true
   });
 
-  const applyTransform = useCallback(() => {
-    const left = leftTransformRef.current;
-    const right = rightTransformRef.current;
+  const baseTransformRef = useRef(baseTransform);
+  const targetTransformRef = useRef(targetTransform);
 
-    if (leftContentRef.current) {
-      leftContentRef.current.style.transform = `translate3d(${left.x}px, ${left.y}px, 0px) scale(${left.scale})`;
-    }
-    if (rightContentRef.current) {
-      rightContentRef.current.style.transform = `translate3d(${right.x}px, ${right.y}px, 0px) scale(${right.scale})`;
-    }
-  }, [leftContentRef, rightContentRef]);
+  useEffect(() => {
+    baseTransformRef.current = baseTransform;
+  }, [baseTransform]);
+
+  useEffect(() => {
+    targetTransformRef.current = targetTransform;
+  }, [targetTransform]);
 
   const onWheel = useCallback((e) => {
     e.preventDefault();
@@ -222,30 +228,41 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
     const factor = e.deltaY < 0 ? 1.12 : 0.90;
 
     if (synced) {
-      const leftState = leftTransformRef.current;
+      const leftState = baseTransformRef.current;
       const newScale = Math.min(80, Math.max(0.02, leftState.scale * factor));
 
       const newLeftX = mouseX - (mouseX - leftState.x) * (newScale / leftState.scale);
       const newLeftY = e.clientY - rect.top - (e.clientY - rect.top - leftState.y) * (newScale / leftState.scale);
 
-      leftTransformRef.current = { scale: newScale, x: newLeftX, y: newLeftY };
-      rightTransformRef.current = { scale: newScale, x: newLeftX, y: newLeftY };
+      const nextVal = { scale: newScale, x: newLeftX, y: newLeftY };
+      setBaseTransform(nextVal);
+      setTargetTransform(nextVal);
     } else {
-      const transformRef = isLeft ? leftTransformRef : rightTransformRef;
-      const state = transformRef.current;
-      const newScale = Math.min(80, Math.max(0.02, state.scale * factor));
+      if (isLeft) {
+        const state = baseTransformRef.current;
+        const newScale = Math.min(80, Math.max(0.02, state.scale * factor));
 
-      const panelOffset = isLeft ? 0 : rect.width / 2;
-      const relMouseX = mouseX - panelOffset;
-      const relMouseY = e.clientY - rect.top;
+        const relMouseX = mouseX;
+        const relMouseY = e.clientY - rect.top;
 
-      const newX = relMouseX - (relMouseX - state.x) * (newScale / state.scale);
-      const newY = relMouseY - (relMouseY - state.y) * (newScale / state.scale);
+        const newX = relMouseX - (relMouseX - state.x) * (newScale / state.scale);
+        const newY = relMouseY - (relMouseY - state.y) * (newScale / state.scale);
 
-      transformRef.current = { scale: newScale, x: newX, y: newY };
+        setBaseTransform({ scale: newScale, x: newX, y: newY });
+      } else {
+        const state = targetTransformRef.current;
+        const newScale = Math.min(80, Math.max(0.02, state.scale * factor));
+
+        const relMouseX = mouseX - rect.width / 2;
+        const relMouseY = e.clientY - rect.top;
+
+        const newX = relMouseX - (relMouseX - state.x) * (newScale / state.scale);
+        const newY = relMouseY - (relMouseY - state.y) * (newScale / state.scale);
+
+        setTargetTransform({ scale: newScale, x: newX, y: newY });
+      }
     }
-    applyTransform();
-  }, [applyTransform, outerRef, synced]);
+  }, [outerRef, synced, setBaseTransform, setTargetTransform]);
 
   const onMouseDown = useCallback((e) => {
     if (e.button !== 0 || !outerRef.current) return;
@@ -258,10 +275,10 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
       active: true,
       startX: e.clientX,
       startY: e.clientY,
-      originLeftX: leftTransformRef.current.x,
-      originLeftY: leftTransformRef.current.y,
-      originRightX: rightTransformRef.current.x,
-      originRightY: rightTransformRef.current.y,
+      originLeftX: baseTransformRef.current.x,
+      originLeftY: baseTransformRef.current.y,
+      originRightX: targetTransformRef.current.x,
+      originRightY: targetTransformRef.current.y,
       isLeft
     };
     e.currentTarget.style.cursor = 'grabbing';
@@ -274,21 +291,32 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
     const deltaY = e.clientY - dragRef.current.startY;
 
     if (synced) {
-      leftTransformRef.current.x = dragRef.current.originLeftX + deltaX;
-      leftTransformRef.current.y = dragRef.current.originLeftY + deltaY;
-      rightTransformRef.current.x = dragRef.current.originRightX + deltaX;
-      rightTransformRef.current.y = dragRef.current.originRightY + deltaY;
+      setBaseTransform({
+        scale: baseTransformRef.current.scale,
+        x: dragRef.current.originLeftX + deltaX,
+        y: dragRef.current.originLeftY + deltaY
+      });
+      setTargetTransform({
+        scale: targetTransformRef.current.scale,
+        x: dragRef.current.originRightX + deltaX,
+        y: dragRef.current.originRightY + deltaY
+      });
     } else {
       if (dragRef.current.isLeft) {
-        leftTransformRef.current.x = dragRef.current.originLeftX + deltaX;
-        leftTransformRef.current.y = dragRef.current.originLeftY + deltaY;
+        setBaseTransform({
+          scale: baseTransformRef.current.scale,
+          x: dragRef.current.originLeftX + deltaX,
+          y: dragRef.current.originLeftY + deltaY
+        });
       } else {
-        rightTransformRef.current.x = dragRef.current.originRightX + deltaX;
-        rightTransformRef.current.y = dragRef.current.originRightY + deltaY;
+        setTargetTransform({
+          scale: targetTransformRef.current.scale,
+          x: dragRef.current.originRightX + deltaX,
+          y: dragRef.current.originRightY + deltaY
+        });
       }
     }
-    applyTransform();
-  }, [applyTransform, synced]);
+  }, [synced, setBaseTransform, setTargetTransform]);
 
   const onMouseUp = useCallback((e) => {
     dragRef.current.active = false;
@@ -296,17 +324,17 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
   }, []);
 
   const resetTransform = useCallback(() => {
-    leftTransformRef.current = { scale: 1, x: 0, y: 0 };
-    rightTransformRef.current = { scale: 1, x: 0, y: 0 };
-    applyTransform();
-  }, [applyTransform]);
+    const defaultVal = { scale: 1, x: 0, y: 0 };
+    setBaseTransform(defaultVal);
+    setTargetTransform(defaultVal);
+  }, [setBaseTransform, setTargetTransform]);
 
   const animateTo = useCallback((leftParams, rightParams, durationMs = 550) => {
     const startTime = performance.now();
     const easeInOut = (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 
-    const leftStart = leftParams ? { ...leftTransformRef.current } : null;
-    const rightStart = rightParams ? { ...rightTransformRef.current } : null;
+    const leftStart = leftParams ? { ...baseTransformRef.current } : null;
+    const rightStart = rightParams ? { ...targetTransformRef.current } : null;
 
     let leftTarget = null;
     if (leftParams) {
@@ -345,22 +373,24 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
       const e = easeInOut(t);
 
       if (leftStart && leftTarget) {
-        leftTransformRef.current = {
+        const nextBase = {
           scale: leftStart.scale + (leftTarget.scale - leftStart.scale) * e,
           x: leftStart.x + (leftTarget.x - leftStart.x) * e,
           y: leftStart.y + (leftTarget.y - leftStart.y) * e,
         };
+        baseTransformRef.current = nextBase;
+        setBaseTransform(nextBase);
       }
 
       if (rightStart && rightTarget) {
-        rightTransformRef.current = {
+        const nextTarget = {
           scale: rightStart.scale + (rightTarget.scale - rightStart.scale) * e,
           x: rightStart.x + (rightTarget.x - rightStart.x) * e,
           y: rightStart.y + (rightTarget.y - rightStart.y) * e,
         };
+        targetTransformRef.current = nextTarget;
+        setTargetTransform(nextTarget);
       }
-
-      applyTransform();
 
       if (t < 1) {
         requestAnimationFrame(tick);
@@ -368,7 +398,7 @@ function useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced) {
     };
 
     requestAnimationFrame(tick);
-  }, [applyTransform]);
+  }, [setBaseTransform, setTargetTransform]);
 
   return { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo };
 }
@@ -420,7 +450,7 @@ const SideBySideSvgLayer = React.memo(({ filename, content, side, layerTier, opa
 });
 
 // ─── SvgPanel ────────────────────────────────────────────────────────────────
-function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, side, commitLabel }) {
+function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, side, commitLabel, transform }) {
   const filtered = (svgs || []).filter(svg => isLayerActive(svg.filename, activeLayers));
 
   const panelLabel = side === 'base'
@@ -497,6 +527,7 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
             position: 'relative',
             willChange: 'transform',
             backfaceVisibility: 'hidden',
+            transform: `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`
           }}
         >
           {filtered.length === 0 ? (
@@ -551,8 +582,20 @@ export default forwardRef(function SideBySideDiff({
   const outerRef = useRef(null);
   const [synced, setSynced] = useState(true);
 
+  const [baseTransform, setBaseTransform] = useState({ scale: 1, x: 0, y: 0 });
+  const [targetTransform, setTargetTransform] = useState({ scale: 1, x: 0, y: 0 });
+
   const { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo } =
-    useSyncedTransform(leftContentRef, rightContentRef, outerRef, synced);
+    useSyncedTransform(
+      baseTransform,
+      setBaseTransform,
+      targetTransform,
+      setTargetTransform,
+      leftContentRef,
+      rightContentRef,
+      outerRef,
+      synced
+    );
 
   const drawFocusRing = (contentEl, idx, ringColorClass) => {
     const target = contentEl.querySelector(`[data-diff-idx="${idx}"]`);
@@ -726,6 +769,7 @@ export default forwardRef(function SideBySideDiff({
             contentRef={leftContentRef}
             side="base"
             commitLabel={baseCommit ? `Commit: ${String(baseCommit).substring(0, 10)}` : 'Base'}
+            transform={baseTransform}
           />
 
           <div style={{
@@ -744,6 +788,7 @@ export default forwardRef(function SideBySideDiff({
             contentRef={rightContentRef}
             side="target"
             commitLabel={targetCommit ? `Commit: ${String(targetCommit).substring(0, 10)}` : 'Target'}
+            transform={targetTransform}
           />
         </div>
       </div>
