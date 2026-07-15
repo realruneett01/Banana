@@ -403,6 +403,7 @@ export default function App() {
           tag: mod.tag,
           id: mod.id,
           label: mod.label,
+          component: mod.component,
           text: mod.text,
           layerName,
           count: 1,
@@ -453,7 +454,10 @@ export default function App() {
 
       if (group.type === 'add') {
         color = '#00ff66'; // neon green
-        if (isCopper && isTrack) {
+        if (group.component && group.component !== 'Component') {
+          title = group.label || `Added ${group.id}`;
+          desc = `New ${group.component} placed on layer ${group.layerName}.`;
+        } else if (isCopper && isTrack) {
           title = `Added Copper Track${isPlural ? 's' : ''}${countStr}`;
           desc = `New trace connection segment routed on layer ${group.layerName}.`;
         } else if (isCopper && isViaOrPad) {
@@ -469,7 +473,10 @@ export default function App() {
         if (group.texts.length > 0) desc += ` Text: "${group.texts.join(', ')}".`;
       } else if (group.type === 'delete') {
         color = '#ff3366'; // crimson red
-        if (isCopper && isTrack) {
+        if (group.component && group.component !== 'Component') {
+          title = group.label || `Deleted ${group.id}`;
+          desc = `Removed ${group.component} from layer ${group.layerName}.`;
+        } else if (isCopper && isTrack) {
           title = `Removed Copper Track${isPlural ? 's' : ''}${countStr}`;
           desc = `Removed trace connection segment from layer ${group.layerName}.`;
         } else if (isCopper && isViaOrPad) {
@@ -485,7 +492,10 @@ export default function App() {
         if (group.texts.length > 0) desc += ` Text: "${group.texts.join(', ')}".`;
       } else if (group.type === 'modify') {
         color = '#ffff00'; // golden yellow
-        if (isCopper && isTrack) {
+        if (group.component && group.component !== 'Component') {
+          title = group.label || `Modified ${group.id}`;
+          desc = `Modified ${group.component} layout/values on layer ${group.layerName}.`;
+        } else if (isCopper && isTrack) {
           title = `Shifted Track Segment${isPlural ? 's' : ''}${countStr}`;
           desc = `Adjusted trace routing layout/geometry on layer ${group.layerName}.`;
         } else if (isCopper && isViaOrPad) {
