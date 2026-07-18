@@ -4,3 +4,20 @@ body {
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
 }
+
+/* ─── Pad/Net Label Overlay ─────────────────────────────────────────────────── */
+
+/* Base: labels are never interactive, never selectable */
+.pad-label {
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Zoom gate: hide labels when CSS-transform scale is below threshold.
+   The class 'pad-labels-hidden' is toggled by PadLabelOverlay.jsx on
+   the content div (leftContentRef / rightContentRef) based on
+   baseTransform.scale / targetTransform.scale vs. ZOOM_THRESHOLD (3.0). */
+.pad-labels-hidden .pad-label {
+  display: none;
+}

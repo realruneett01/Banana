@@ -5,6 +5,8 @@ import {
   ArrowRightOutlined,
   SwapOutlined
 } from '@ant-design/icons';
+import PadLabelOverlay from './PadLabelOverlay.jsx';
+
 
 const { Text } = Typography;
 
@@ -559,6 +561,7 @@ export default forwardRef(function SideBySideDiff({
   targetCommit,
   activeAuditIdx,
   setActiveAuditIdx,
+  padLabelProps,   // { repoPath, baseCommit, targetCommit, relativeFilePath } | null
 }, ref) {
   const leftContentRef = useRef(null);
   const rightContentRef = useRef(null);
@@ -840,6 +843,23 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
             transform={targetTransform}
           />
         </div>
+
+        {/* Pad/net label overlay — rendered for PCB diffs when padLabelProps is provided */}
+        {padLabelProps && (
+          <PadLabelOverlay
+            repoPath={padLabelProps.repoPath}
+            baseCommit={padLabelProps.baseCommit}
+            targetCommit={padLabelProps.targetCommit}
+            relativeFilePath={padLabelProps.relativeFilePath}
+            leftContentRef={leftContentRef}
+            rightContentRef={rightContentRef}
+            activeLayers={activeLayers}
+            soloLayer={soloLayer}
+            layerOpacities={layerOpacities}
+            baseTransformScale={baseTransform.scale}
+            targetTransformScale={targetTransform.scale}
+          />
+        )}
       </div>
     </>
   );

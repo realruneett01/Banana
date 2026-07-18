@@ -1057,6 +1057,11 @@ export default function App() {
                       targetCommit={targetCommit}
                       activeAuditIdx={activeAuditIdx}
                       setActiveAuditIdx={setActiveAuditIdx}
+                      padLabelProps={
+                        relativeFilePath.endsWith('.kicad_pcb')
+                          ? { repoPath, baseCommit, targetCommit, relativeFilePath }
+                          : null
+                      }
                     />
                   ) : (
                     <DiffCanvas

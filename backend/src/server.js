@@ -7,6 +7,7 @@ import { config } from './config.js';
 import { extractFileFromCommit } from './git-extractor.js';
 import { renderKicadFile } from './kicad-renderer.js';
 import { processSvgDiff } from './svg-diff-processor.js';
+import { parseKiCadBoard } from './kicad-pcb-parser.js';
 
 const app = express();
 
@@ -456,6 +457,89 @@ app.post('/api/diff/process', async (req, res) => {
     }
     if (targetRenders && targetRenders.outputDir && fs.existsSync(targetRenders.outputDir)) {
       try { fs.rmSync(targetRenders.outputDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  }
+});
+
+/**
+ * POST /api/board/pads
+ *
+ * Extracts a .kicad_pcb file from a git commit and returns parsed pad data
+ * (absolute coordinates, size, net names, layer membership) for the
+ * frontend pad/net label overlay.
+ *
+ * Request body: { repoPath, commit, relativeFilePath }
+ * Response:     { footprints: [{ reference, layer, pads: [{ number, net, absAt, size, layers }] }] }
+ */
+app.post('/api/board/pads', async (req, res) => {
+  const { repoPath, commit, relativeFilePath } = req.body;
+
+  if (!repoPath || !commit || !relativeFilePath) {
+    return res.status(400).json({
+      error: 'Missing required fields: repoPath, commit, relativeFilePath'
+    });
+  }
+
+  if (!relativeFilePath.endsWith('.kicad_pcb')) {
+    return res.status(400).json({
+      error: 'Only .kicad_pcb files are supported by this endpoint'
+    });
+  }
+
+  const uniqueId = `pads_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const fileBasename = path.basename(relativeFilePath);
+  const tempName = path.join(uniqueId, fileBasename);
+  let tempFilePath = null;
+
+  try {
+    try {
+      tempFilePath = await extractFileFromCommit(repoPath, commit, relativeFilePath, tempName);
+    } catch (err) {
+      return res.status(500).json({
+        error: `Failed to extract file at commit (${commit})`,
+        details: err.message
+      });
+    }
+
+    let board;
+    try {
+      board = parseKiCadBoard(tempFilePath);
+    } catch (err) {
+      return res.status(500).json({
+        error: 'Failed to parse .kicad_pcb file',
+        details: err.message
+      });
+    }
+
+    // Serialize only the fields needed by the label overlay
+    const footprints = board.footprints.map(fp => ({
+      reference: fp.reference?.text ?? '',
+      layer: fp.layer,
+      pads: fp.pads.map(pad => ({
+        number: pad.number,
+        net: pad.net ?? '',
+        absAt: { x: pad.absAt.x, y: pad.absAt.y },
+        size: { w: pad.size?.w ?? 0.5, h: pad.size?.h ?? 0.5 },
+        layers: pad.layers ?? []
+      }))
+    }));
+
+    res.json({ footprints });
+
+  } catch (error) {
+    res.status(500).json({
+      error: 'Unexpected error during pad extraction',
+      details: error.message
+    });
+  } finally {
+    // Clean up temp directory
+    if (tempFilePath) {
+      try {
+        const tempDir = path.join(process.cwd(), 'temp_storage', uniqueId);
+        if (fs.existsSync(tempDir)) {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+      } catch (_) {}
     }
   }
 });
