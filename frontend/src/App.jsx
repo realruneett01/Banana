@@ -56,7 +56,7 @@ export default function App() {
   
   // Controls states
   const [diffMode, setDiffMode] = useState('Overlay Slider');
-  const [selectedLayers, setSelectedLayers] = useState(['F.Cu', 'F.SilkS', 'Edge.Cuts']);
+  const [selectedLayers, setSelectedLayers] = useState(['F.Cu', 'F.SilkS', 'F.Courtyard', 'Edge.Cuts']);
   const [layerFilter, setLayerFilter] = useState('');
   const [sliderValue, setSliderValue] = useState(50);
   const [leftCollapsed, setLeftCollapsed] = useState(false);

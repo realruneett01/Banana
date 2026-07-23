@@ -27,7 +27,7 @@ export async function renderKicadFile(filePath, isPcb) {
     const filePathArg = filePath.replace(/\\/g, '/');
 
     if (isPcb) {
-      command = `"${cliPath}" pcb export svg --mode-multi --layers "F.Cu,B.Cu,F.SilkS,Edge.Cuts" --output "${outputDirArg}" "${filePathArg}"`;
+      command = `"${cliPath}" pcb export svg --mode-multi --layers "F.Cu,B.Cu,F.SilkS,B.SilkS,F.Courtyard,B.Courtyard,Edge.Cuts" --output "${outputDirArg}" "${filePathArg}"`;
     } else {
       command = `"${cliPath}" sch export svg --output "${outputDirArg}" "${filePathArg}"`;
     }

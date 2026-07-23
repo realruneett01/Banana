@@ -15,7 +15,8 @@ const isLayerActive = (filename, activeLayers) => {
     !name.includes('edge_cuts') &&
     !name.includes('silks') &&
     !name.includes('mask') &&
-    !name.includes('paste')
+    !name.includes('paste') &&
+    !name.includes('courtyard')
   ) {
     return true;
   }
