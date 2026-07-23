@@ -283,3 +283,92 @@ assembleTrackChains() checked attrs.class for 'cu' on SVG path/line elements,
 but KiCad SVG output never puts a class attribute on those elements —
 so Pass 0 returned [] silently for every real board diff, causing all copper traces
 to be misclassified as fragmented green/yellow/red pieces instead of unified chains.
+
+---
+
+## SEMANTIC LABELING & CLICK-TO-CENTER NAVIGATION AUDIT
+
+### Step 1 — Current Label Construction & Backend `net` Audit
+
+#### 1. Frontend Label Generation (Verbatim from `frontend/src/App.jsx` lines 499–517):
+```javascript
+if (group.class === 'track_chain') {
+  title = `Re-routed Track Layout near MCU`;
+  desc = `Adjusted trace layout structure (${group.segmentCount} segments) on layer ${group.layerName}.`;
+} else if (group.component && group.component !== 'Component') {
+  title = group.label || `Modified ${group.id}`;
+  desc = `Modified ${group.component} layout/values on layer ${group.layerName}.`;
+} else if (isCopper && isTrack) {
+  title = `Shifted Track Segment${isPlural ? 's' : ''}${countStr}`;
+  desc = `Adjusted trace routing layout/geometry on layer ${group.layerName}.`;
+} else if (isCopper && isViaOrPad) {
+  title = `Adjusted Pad / Via${isPlural ? 's' : ''}${countStr}`;
+  desc = `Modified pad/via sizing, shape or positional alignment on layer ${group.layerName}.`;
+} else if (group.id && group.count === 1) {
+  title = `Modified ${group.id}`;
+  desc = `Updated component/shape ${group.tag} on layer ${group.layerName}.`;
+} else {
+  title = `Modified ${group.tag.toUpperCase()}s${countStr}`;
+  desc = `Modified layout of ${group.count} ${group.tag} element(s) on layer ${group.layerName}.`;
+}
+```
+
+#### 2. Backend `net` Field API Response Check:
+In `backend/src/svg-diff-processor.js` (Pass 0 `modifications.push`):
+```javascript
+modifications.push({
+  type: 'modify',
+  class: 'track_chain',
+  label: 'Re-routed Track Layout',
+  tag: 'path',
+  id: `track_chain_${sharedIdx}`,
+  diffIdx: sharedIdx,
+  segmentCount: tChain.subSegments.length,
+  baseCoords: baseCenter,
+  targetCoords: targetCenter
+});
+```
+- **Finding:** The SVG diff engine (`processSvgDiff`) operates on exported SVG markup, which carries **no net attributes**. The `net` property on Pass 0 entries returned in `/api/diff/process` response payload was `undefined`.
+- **Label Fix:** We updated `App.jsx` so:
+  - If `group.net` is present: displays `${group.net} re-routed` (e.g. `SPI2_CS re-routed`).
+  - If `group.net` is null / undefined: displays `Unidentified trace re-routed` rather than hardcoding `"Re-routed Track Layout near MCU"`.
+  - Non-track items (components like `R5`, text like `D11`) preserve their `group.label` / `group.id` / `group.text` without regression.
+- **Grouping Logic Note:** Generic primitives (e.g., `Modified PATHs (25x)`) group by `generic-${type}-${tag}-${layerName}` because SVG primitives lack net IDs. Grouping generic primitives by PCB net requires cross-referencing `.kicad_pcb` S-expression net tables with SVG coordinates, flagged for follow-up.
+
+---
+
+### Step 3 — Click-to-Center Navigation Audit & Implementation
+
+#### 1. Navigation Handler Mechanism:
+- **Location:** `SideBySideDiff.jsx` (`focusElement` imperative method called via `sideBySideRef.current.focusElement(...)` from `App.jsx` `Card.onClick`).
+- **Mechanism:** Does **not** use standard browser scroll-into-view. Instead, it calculates the viewport center offset `(vpCX, vpCY)` from target point coordinates `baseCoords` / `targetCoords` (or fallback DOM `getBoundingClientRect()`), and animates the container transform `translate3d(x, y, 0) scale(scale)` at scale = 4.0 using `requestAnimationFrame`.
+
+#### 2. Coordinate Centering Formula (`animateTo` in `SideBySideDiff.jsx`):
+```javascript
+// Unscaled content coordinate relative to SVG container origin (0,0):
+const contentX = (elCX - start.x) / start.scale;
+const contentY = (elCY - start.y) / start.scale;
+
+// Target pan translate offsets for exact visual centering:
+target = {
+  scale: targetScale,
+  x: vpCX - contentX * targetScale,
+  y: vpCY - contentY * targetScale
+};
+```
+
+#### 3. Sync Views Alignment Fix:
+- **Issue Identified:** Previously, for single-sided actions like `delete` (base only) or `add` (target only), `leftParams` or `rightParams` was null, so only one viewport animated. When Sync Views (`synced === true`) was enabled, this caused the two viewports to become desynchronized!
+- **Fix Implemented:** In `SideBySideDiff.jsx` (`animateTo`), when `synced === true`:
+  ```javascript
+  if (synced) {
+    if (leftTarget && !rightTarget) {
+      rightTarget = { ...leftTarget };
+      rightStart = { ...targetTransformRef.current };
+    } else if (rightTarget && !leftTarget) {
+      leftTarget = { ...rightTarget };
+      leftStart = { ...baseTransformRef.current };
+    }
+  }
+  ```
+  Now, when clicking any audit log item while Sync Views is enabled, **both base and target viewports smoothly animate together in lockstep**, centering the exact coordinate on both panels simultaneously.
