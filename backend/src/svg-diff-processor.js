@@ -327,16 +327,38 @@ function getSegmentEndpoints(el) {
 }
 
 /**
- * Assembles copper trace primitives into contiguous polylines/chains.
+ * FIX (a): Determine if a given SVG filename belongs to a copper layer.
+ * KiCad CLI --mode-multi exports one SVG per layer, named e.g.
+ * "boardname-F_Cu.svg", "boardname-B_Cu.svg", "boardname-In1_Cu.svg".
+ * Individual <path>/<line> elements inside those SVGs have NO class attribute,
+ * so we must use the filename itself to gate chain assembly.
  */
-function assembleTrackChains(elements) {
-  // Filter for trace primitives ('path', 'line') isolated by their copper layer class (e.g. F.Cu, B.Cu)
+function isCopperLayerFilename(layerFilename) {
+  return /\b(F_Cu|B_Cu|In\d+_Cu)\b/i.test(layerFilename || '');
+}
+
+/**
+ * Assembles copper trace primitives into contiguous polylines/chains.
+ * @param {Array} elements  - extracted element list from extractElements()
+ * @param {string} layerFilename - basename of the SVG file being processed
+ *                                 (used to gate copper detection; KiCad path/line
+ *                                 elements carry no class attr in their SVG output)
+ */
+function assembleTrackChains(elements, layerFilename) {
+  // FIX (a): Only attempt chain assembly when the SVG file IS a copper layer.
+  // The old code checked `attrs.class` for 'cu'/'_cu', but KiCad SVG <path>/<line>
+  // elements never have a class attribute — so that filter always returned []
+  // and Pass 0 was silently dead for every real board diff.
+  if (!isCopperLayerFilename(layerFilename)) {
+    return [];
+  }
+
+  // On a copper layer SVG, every non-closed open path/line IS a copper trace segment.
+  // (Closed paths = pads/vias/fills — excluded via isClosedPath)
   const copperTracks = elements.filter(el => {
     if (el.isComponent) return false;
     if (el.tag !== 'path' && el.tag !== 'line') return false;
-    const attrs = parseAttributes(el.fullMatch);
-    const cls = attrs.class || '';
-    return cls.toLowerCase().includes('cu') || cls.toLowerCase().includes('_cu');
+    return !el.isClosedPath;
   });
 
   const nodes = copperTracks.map((el, index) => {
@@ -501,7 +523,7 @@ function getDistance(el1, el2) {
 /**
  * Core diff processor.
  */
-export function processSvgDiff(baseSvg, targetSvg) {
+export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   const baseElements   = extractElements(baseSvg);
   const targetElements = extractElements(targetSvg);
 
@@ -517,8 +539,11 @@ export function processSvgDiff(baseSvg, targetSvg) {
   const modifications = [];
 
   // --- PASS 0: Contiguous Track Chain Assembly & Topological Matching ---
-  const baseChains = assembleTrackChains(baseElements);
-  const targetChains = assembleTrackChains(targetElements);
+  // FIX (a): layerFilename is now threaded through so assembleTrackChains
+  // can correctly identify copper layers by filename rather than the broken
+  // class attribute check (KiCad SVG path/line elements have no class attr).
+  const baseChains = assembleTrackChains(baseElements, layerFilename);
+  const targetChains = assembleTrackChains(targetElements, layerFilename);
 
   const matchedBaseChains = new Set();
 
@@ -544,42 +569,63 @@ export function processSvgDiff(baseSvg, targetSvg) {
 
     if (bestBaseChain) {
       matchedBaseChains.add(bestBaseChain);
-      
-      const sharedIdx = diffIdx++;
-      
-      // Calculate midpoints for centering/navigation
-      const baseCenter = {
-        x: (bestBaseChain.startAnchor.x + bestBaseChain.endAnchor.x) / 2,
-        y: (bestBaseChain.startAnchor.y + bestBaseChain.endAnchor.y) / 2
-      };
-      const targetCenter = {
-        x: (tChain.startAnchor.x + tChain.endAnchor.x) / 2,
-        y: (tChain.startAnchor.y + tChain.endAnchor.y) / 2
-      };
 
-      // Add a single modifications log item for the assembled track chain
-      modifications.push({
-        type: 'modify',
-        class: 'track_chain',
-        label: 'Re-routed Track Layout',
-        tag: 'path',
-        id: `track_chain_${sharedIdx}`,
-        diffIdx: sharedIdx,
-        segmentCount: tChain.subSegments.length,
-        baseCoords: baseCenter,
-        targetCoords: targetCenter
-      });
+      // FIX (c): Geometry equality check before assigning diff-changed.
+      // Use geoKey (coordinate-only) not fullKey — fullKey encodes non-geometric
+      // attributes (style, inkscape-label, etc.) that differ between renders of
+      // the same trace, causing false positives.
+      const bKeys = bestBaseChain.subSegments.map(el => el.geoKey).sort();
+      const tKeys = tChain.subSegments.map(el => el.geoKey).sort();
+      const chainsIdentical = bKeys.length === tKeys.length && bKeys.every((k, i) => k === tKeys[i]);
 
-      // Mark all base sub-segments as panned/modified and lock them
-      for (const el of bestBaseChain.subSegments) {
-        matchedBase.add(el);
-        baseClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
-      }
+      if (chainsIdentical) {
+        // Chains are geometrically identical — classify as unchanged, no modification entry
+        for (const el of bestBaseChain.subSegments) {
+          matchedBase.add(el);
+          baseClassifications.set(el, { diffClass: 'diff-unchanged' });
+        }
+        for (const el of tChain.subSegments) {
+          matchedTarget.add(el);
+          targetClassifications.set(el, { diffClass: 'diff-unchanged' });
+        }
+      } else {
+        // Chains differ — classify as changed and emit one modification entry
+        const sharedIdx = diffIdx++;
 
-      // Mark all target sub-segments as panned/modified and lock them
-      for (const el of tChain.subSegments) {
-        matchedTarget.add(el);
-        targetClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+        // Calculate midpoints for centering/navigation
+        const baseCenter = {
+          x: (bestBaseChain.startAnchor.x + bestBaseChain.endAnchor.x) / 2,
+          y: (bestBaseChain.startAnchor.y + bestBaseChain.endAnchor.y) / 2
+        };
+        const targetCenter = {
+          x: (tChain.startAnchor.x + tChain.endAnchor.x) / 2,
+          y: (tChain.startAnchor.y + tChain.endAnchor.y) / 2
+        };
+
+        // Add a single modifications log item for the assembled track chain
+        modifications.push({
+          type: 'modify',
+          class: 'track_chain',
+          label: 'Re-routed Track Layout',
+          tag: 'path',
+          id: `track_chain_${sharedIdx}`,
+          diffIdx: sharedIdx,
+          segmentCount: tChain.subSegments.length,
+          baseCoords: baseCenter,
+          targetCoords: targetCenter
+        });
+
+        // Mark all base sub-segments as changed and lock them
+        for (const el of bestBaseChain.subSegments) {
+          matchedBase.add(el);
+          baseClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+        }
+
+        // Mark all target sub-segments as changed and lock them
+        for (const el of tChain.subSegments) {
+          matchedTarget.add(el);
+          targetClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+        }
       }
     }
   }
@@ -596,7 +642,8 @@ export function processSvgDiff(baseSvg, targetSvg) {
         matchedBaseToTarget.set(bEl, tEl);
 
         const dist = getDistance(bEl, tEl);
-        const geoChanged = bEl.fullKey !== tEl.fullKey || bEl.geoKey !== tEl.geoKey || dist > 0.05;
+        // Compare geoKey only — fullKey includes non-geometric attrs that vary between renders
+        const geoChanged = bEl.geoKey !== tEl.geoKey || dist > 0.05;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
         baseClassifications.set(bEl, { diffClass: stateClass });
@@ -649,7 +696,8 @@ export function processSvgDiff(baseSvg, targetSvg) {
         matchedBaseToTarget.set(bestMatch, tEl);
 
         const dist = getDistance(bestMatch, tEl);
-        const geoChanged = bestMatch.fullKey !== tEl.fullKey || bestMatch.geoKey !== tEl.geoKey || dist > 0.05;
+        // Compare geoKey only — fullKey includes non-geometric attrs that vary between renders
+        const geoChanged = bestMatch.geoKey !== tEl.geoKey || dist > 0.05;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
         baseClassifications.set(bestMatch, { diffClass: stateClass });

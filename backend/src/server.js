@@ -367,8 +367,12 @@ app.post('/api/diff/process', async (req, res) => {
 
       if (matchingTarget) {
         try {
+          // FIX (a): Pass the layer filename so processSvgDiff can correctly detect copper layers.
+          // KiCad --mode-multi exports one SVG per layer; the filename encodes the layer name
+          // (e.g. "boardname-F_Cu.svg"). Individual path/line elements have no class attribute,
+          // so the filename is the only reliable copper layer indicator.
           const { baseSvg: annotatedBase, targetSvg: annotatedTarget, modifications: layerMods } =
-            processSvgDiff(baseSvg.content, matchingTarget.content);
+            processSvgDiff(baseSvg.content, matchingTarget.content, baseSvg.filename);
 
           // Enrich modifications with the layer filename
           const enrichedMods = (layerMods || []).map(m => ({
