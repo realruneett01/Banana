@@ -405,6 +405,7 @@ export default function App() {
           tag: mod.tag,
           id: mod.id,
           class: mod.class,
+          net: mod.net ?? null,        // net name for track chains (null if backend doesn't supply)
           segmentCount: mod.segmentCount,
           label: mod.label,
           component: mod.component,
@@ -497,14 +498,17 @@ export default function App() {
       } else if (group.type === 'modify') {
         color = '#ffff00'; // golden yellow
         if (group.class === 'track_chain') {
-          title = `Re-routed Track Layout near MCU`;
-          desc = `Adjusted trace layout structure (${group.segmentCount} segments) on layer ${group.layerName}.`;
+          // Use net name if backend supplies it; otherwise be honest — don't fabricate a location.
+          const netLabel = group.net && group.net.trim() ? group.net.trim() : null;
+          const segInfo = group.segmentCount ? ` (${group.segmentCount} segs)` : '';
+          title = netLabel ? `${netLabel} re-routed${segInfo}` : `Trace re-routed${segInfo}`;
+          desc = `Adjusted track chain on layer ${group.layerName}.`;
         } else if (group.component && group.component !== 'Component') {
           title = group.label || `Modified ${group.id}`;
           desc = `Modified ${group.component} layout/values on layer ${group.layerName}.`;
         } else if (isCopper && isTrack) {
           title = `Shifted Track Segment${isPlural ? 's' : ''}${countStr}`;
-          desc = `Adjusted trace routing layout/geometry on layer ${group.layerName}.`;
+          desc = `Adjusted trace routing geometry on layer ${group.layerName}.`;
         } else if (isCopper && isViaOrPad) {
           title = `Adjusted Pad / Via${isPlural ? 's' : ''}${countStr}`;
           desc = `Modified pad/via sizing, shape or positional alignment on layer ${group.layerName}.`;
