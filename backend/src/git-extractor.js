@@ -27,7 +27,7 @@ export async function extractFileFromCommit(repoPath, commitHash, relativeFilePa
 
   return new Promise((resolve, reject) => {
     // Standardize path separators for git (uses forward slashes)
-    const gitFilePath = relativeFilePath.replace(/\\/g, '/');
+    const gitFilePath = relativeFilePath.split(/[/\\]/).join('/');
     const gitIdentifier = `${commitHash}:${gitFilePath}`;
 
     const child = spawn('git', ['show', gitIdentifier], { cwd: repoPath });

@@ -34,6 +34,7 @@ import {
 } from '@ant-design/icons';
 import DiffCanvas from './DiffCanvas';
 import SideBySideDiff from './SideBySideDiff';
+import { API_BASE_URL } from './config.js';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -49,7 +50,14 @@ export default function App() {
   const [kicadVersion, setKicadVersion] = useState('');
 
   // Form states (controlled inputs)
-  const [repoPath, setRepoPath] = useState('c:\\Users\\realr\\OneDrive\\Desktop\\Banana');
+  const [repoPath, setRepoPath] = useState(
+    localStorage.getItem('banana:lastRepoPath') || ''
+  );
+
+  useEffect(() => {
+    if (repoPath) localStorage.setItem('banana:lastRepoPath', repoPath);
+  }, [repoPath]);
+
   const [baseCommit, setBaseCommit] = useState('ab691fc');
   const [targetCommit, setTargetCommit] = useState('ab691fc');
   const [relativeFilePath, setRelativeFilePath] = useState('debug/examples/starfish.kicad_pcb');
@@ -87,7 +95,7 @@ export default function App() {
       if (!repoPath || !relativeFilePath) return;
 
       try {
-        const response = await fetch(`http://localhost:5000/api/git/commits?repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`);
+        const response = await fetch(`${API_BASE_URL}/api/git/commits?repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`);
         if (response.ok) {
           const data = await response.json();
           setRepoInfo(prev => {
@@ -133,7 +141,7 @@ export default function App() {
   const loadRepoInfo = async (path, silent = false) => {
     if (!path) return;
     try {
-      const response = await fetch('http://localhost:5000/api/git/init', {
+      const response = await fetch(`${API_BASE_URL}/api/git/init`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -171,7 +179,7 @@ export default function App() {
   const fetchChangedFiles = async (path, base, target) => {
     if (!path || !base || !target) return;
     try {
-      const response = await fetch('http://localhost:5000/api/git/diff-files', {
+      const response = await fetch(`${API_BASE_URL}/api/git/diff-files`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -180,7 +188,7 @@ export default function App() {
       });
       if (response.ok) {
         const data = await response.json();
-        setChangedFiles(data.files);
+        setChangedFiles(data.files || []);
         if (data.files.length > 0) {
           setRelativeFilePath(data.files[0]);
           form.setFieldValue('relativeFilePath', data.files[0]);
@@ -256,7 +264,7 @@ export default function App() {
   const checkHealth = async () => {
     setBackendStatus('checking');
     try {
-      const res = await fetch('http://localhost:5000/api/health-check');
+      const res = await fetch(`${API_BASE_URL}/api/health-check`);
       if (res.ok) {
         const data = await res.json();
         if (data.status === 'healthy') {
@@ -278,7 +286,7 @@ export default function App() {
     const hideLoadingMsg = message.loading('Extracting and rendering commits...', 0);
     
     try {
-      const response = await fetch('http://localhost:5000/api/diff/process', {
+      const response = await fetch(`${API_BASE_URL}/api/diff/process`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -1,8 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { config } from './config.js';
 import { extractFileFromCommit } from './git-extractor.js';
 import { renderKicadFile } from './kicad-renderer.js';
@@ -17,10 +18,7 @@ app.use(express.json());
 app.get('/api/health-check', (req, res) => {
   const cliPath = config.kicadCliPath;
 
-  // Wrap cliPath in quotes to handle directory names with spaces (e.g. "Program Files")
-  const command = `"${cliPath}" --version`;
-
-  exec(command, (error, stdout, stderr) => {
+  execFile(cliPath, ['--version'], (error, stdout, stderr) => {
     if (error) {
       // Provide a descriptive error response
       return res.status(500).json({
@@ -29,7 +27,7 @@ app.get('/api/health-check', (req, res) => {
         message: error.message,
         cliPath: cliPath,
         code: error.code,
-        stderr: stderr.trim()
+        stderr: stderr ? stderr.trim() : ''
       });
     }
 
@@ -39,7 +37,7 @@ app.get('/api/health-check', (req, res) => {
         status: "unhealthy",
         error: "KiCad CLI did not output any version information",
         cliPath: cliPath,
-        stderr: stderr.trim()
+        stderr: stderr ? stderr.trim() : ''
       });
     }
 
@@ -52,12 +50,12 @@ app.get('/api/health-check', (req, res) => {
 
 function getGitBranches(repoPath) {
   return new Promise((resolve) => {
-    exec('git branch -a --format="%(refname:short)"', { cwd: repoPath }, (error, stdout) => {
+    execFile('git', ['branch', '-a', '--format=%(refname:short)'], { cwd: repoPath }, (error, stdout) => {
       if (error) {
         return resolve(['main', 'master', 'HEAD']);
       }
       const branches = stdout
-        .split('\n')
+        .split(/\r?\n/)
         .map(b => b.trim())
         .filter(b => b.length > 0 && !b.startsWith('origin/HEAD'));
       resolve(branches.length > 0 ? branches : ['main', 'master', 'HEAD']);
@@ -67,12 +65,13 @@ function getGitBranches(repoPath) {
 
 function getGitCommits(repoPath) {
   return new Promise((resolve) => {
-    exec('git log -n 100 --format="%H|%an|%ad|%s" --date=short', { cwd: repoPath }, (error, stdout) => {
+    execFile('git', ['log', '-n', '100', '--format=%H|%an|%ad|%s', '--date=short'], { cwd: repoPath }, (error, stdout) => {
       if (error) {
         return resolve([]);
       }
       const commits = stdout
-        .split('\n')
+        .split(/\r?\n/)
+        .filter(line => line.length > 0)
         .map(line => {
           const parts = line.split('|');
           if (parts.length < 4) return null;
@@ -91,12 +90,12 @@ function getGitCommits(repoPath) {
 
 function getKicadFiles(repoPath) {
   return new Promise((resolve) => {
-    exec('git ls-files', { cwd: repoPath }, (error, stdout) => {
+    execFile('git', ['ls-files'], { cwd: repoPath }, (error, stdout) => {
       if (error) {
         return resolve([]);
       }
       const files = stdout
-        .split('\n')
+        .split(/\r?\n/)
         .map(f => f.trim())
         .filter(f => f.endsWith('.kicad_pcb') || f.endsWith('.kicad_sch'));
       resolve(files);
@@ -114,9 +113,11 @@ app.post('/api/git/init', async (req, res) => {
   // If repoPath is not an absolute path or doesn't exist, try to search standard desktop/user folders
   if (!path.isAbsolute(repoPath) || !fs.existsSync(repoPath)) {
     const folderName = path.basename(repoPath);
+    const defaultRepoBrowseDir = path.join(os.homedir(), 'Desktop');
+    const startDir = fs.existsSync(defaultRepoBrowseDir) ? defaultRepoBrowseDir : os.homedir();
     const searchDirs = [
-      path.join('C:', 'Users', 'realr', 'OneDrive', 'Desktop'),
-      path.join('C:', 'Users', 'realr'),
+      startDir,
+      os.homedir(),
       process.cwd(),
       path.dirname(process.cwd())
     ];
@@ -174,14 +175,13 @@ app.post('/api/git/diff-files', async (req, res) => {
   }
 
   try {
-    // Run git diff --name-only baseRef targetRef
-    exec(`git diff --name-only "${baseRef}" "${targetRef}"`, { cwd: repoPath }, (error, stdout) => {
+    execFile('git', ['diff', '--name-only', baseRef, targetRef], { cwd: repoPath }, (error, stdout) => {
       if (error) {
         return res.json({ files: [] });
       }
       
       const files = stdout
-        .split('\n')
+        .split(/\r?\n/)
         .map(f => f.trim())
         .filter(f => f.endsWith('.kicad_pcb') || f.endsWith('.kicad_sch'));
         
@@ -228,28 +228,28 @@ app.get('/api/git/commits', (req, res) => {
     });
   }
 
-  // Determine git log command based on whether filePath is provided
-  let command = 'git log --oneline -n 20 --format="%h|%s"';
+  // Build git log arguments array
+  const args = ['log', '--oneline', '-n', '20', '--format=%h|%s'];
   if (filePath && filePath.trim() !== '') {
-    const cleanFilePath = filePath.trim().replace(/"/g, '');
-    command = `git log --oneline -n 20 --format="%h|%s" -- "${cleanFilePath}"`;
+    args.push('--', filePath.trim());
   }
 
   // --- Async non-blocking git log execution ---
-  exec(
-    command,
+  execFile(
+    'git',
+    args,
     { cwd: normalizedPath },
     (error, stdout, stderr) => {
       if (error) {
         return res.status(400).json({
           error: 'Failed to retrieve Git history',
-          details: stderr.trim() || error.message
+          details: stderr ? stderr.trim() : error.message
         });
       }
 
       // Parse output lines into structured objects
       const commits = stdout
-        .split('\n')
+        .split(/\r?\n/)
         .map(line => line.trim())
         .filter(line => line.length > 0)
         .map(line => {

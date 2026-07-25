@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { API_BASE_URL } from './config.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // Labels become visible only above this CSS-transform scale value.
@@ -263,7 +264,7 @@ export default function PadLabelOverlay({
     if (!repoPath || !baseCommit || !relativeFilePath) return;
     let cancelled = false;
 
-    fetch('http://localhost:5000/api/board/pads', {
+    fetch(`${API_BASE_URL}/api/board/pads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath, commit: baseCommit, relativeFilePath }),
@@ -280,7 +281,7 @@ export default function PadLabelOverlay({
     if (!repoPath || !targetCommit || !relativeFilePath) return;
     let cancelled = false;
 
-    fetch('http://localhost:5000/api/board/pads', {
+    fetch(`${API_BASE_URL}/api/board/pads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repoPath, commit: targetCommit, relativeFilePath }),

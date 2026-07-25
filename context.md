@@ -36,16 +36,16 @@ _Last updated: 2026-07-25 (Comprehensive Master Record)_
 
 | # | File Path | Line Number(s) | Hardcoded Value / OS Assumption | Soft-Coding Recommendation |
 |---|---|---|---|---|
-| 1 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L18-L34) | L18–L34, L53–L56 | Hardcoded paths: `C:\Program Files\KiCad\...`, `/Applications/KiCad...`, `/usr/bin/kicad-cli`. | Use `which`/`where` check to dynamically locate `kicad-cli` on `PATH` before falling back to OS-specific arrays or `process.env.KICAD_CLI_PATH`. |
-| 2 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L19-L22) | L19–L22 | Assumes `.exe` extension on Windows without fallback to PATH resolution. | Normalize binary resolution using `os.type()` and `path.join()`, verifying binary execution with `--version`. |
-| 3 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js#L118-L119) | L118–L119 | Hardcoded Windows paths: `path.join('C:', 'Users', 'realr', 'OneDrive', 'Desktop')` and `path.join('C:', 'Users', 'realr')`. | Replace hardcoded drive letters and user names with `os.homedir()` (e.g., `path.join(os.homedir(), 'Desktop')`). |
-| 4 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L52) | L52 | Hardcoded initial state: `const [repoPath, setRepoPath] = useState('c:\\Users\\realr\\OneDrive\\Desktop\\Banana');`. | Set default state to `''` or a dynamic user preference stored in `localStorage`. |
-| 5 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L90) | L90, L136, L174, L259, L281 | Hardcoded backend URL `http://localhost:5000` across all `fetch()` calls. | Extract API base URL into an environment variable (`import.meta.env.VITE_API_URL \|\| 'http://localhost:5000'`). |
-| 6 | [`frontend/src/PadLabelOverlay.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/PadLabelOverlay.jsx#L266) | L266, L283 | Hardcoded API URL `http://localhost:5000/api/board/pads`. | Use shared API configuration helper or relative path / env variable. |
-| 7 | [`backend/src/kicad-renderer.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/kicad-renderer.js#L26-L27) | L26–L27 | Manual string slash conversion `outputDir.replace(/\\/g, '/') + '/'`. | Use `path.normalize()` or `path.resolve()` with quoted arguments. |
-| 8 | [`backend/src/git-extractor.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/git-extractor.js#L30) | L30 | Manual string replacement `relativeFilePath.replace(/\\/g, '/')`. | Use `path.posix.normalize()` for Git internal path formatting. |
-| 9 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js#L55) | L55, L70, L178, L235 | Shell command building with double quotes via `exec()` (e.g. `git log --format="%H|%an|%ad|%s"`). | Replace string `exec()` with `execFile()` or `spawn()` using array arguments to avoid shell-specific quoting issues between Windows `cmd.exe` and Unix `/bin/sh`. |
-| 10 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js#L60) | L60, L75, L99, L184, L253 | Line-ending assumptions using `.split('\n')` on stdout from `exec()`. | Use `.split(/\r?\n/)` to safely handle Windows `\r\n` CRLF line endings without leaving trailing `\r` carriage returns. |
+| 1 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L18-L57) | L18–L57 | Hardcoded paths & startup verification. | Strict fail-fast `execFileSync(KICAD_CLI_PATH, ['--version'])` without `try/catch` ensures the backend halts immediately at boot if `kicad-cli` is unexecutable. |
+| 2 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L16) | L16 | Binary search without PATH resolution. | Uses `where` (win32) / `which` (Unix) via `execFileSync` to locate `kicad-cli` dynamically on `PATH` before trying OS install locations. |
+| 3 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js#L106-L113) | L106–L113 | Hardcoded Windows paths `C:\Users\realr\...`. | Replaced with `os.homedir()`: `const defaultRepoBrowseDir = path.join(os.homedir(), 'Desktop'); const startDir = fs.existsSync(defaultRepoBrowseDir) ? defaultRepoBrowseDir : os.homedir();`. |
+| 4 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L50-L58) | L50–L58 | Hardcoded initial state `c:\Users\realr\...`. | Replaced with `useState(localStorage.getItem('banana:lastRepoPath') \|\| '')` and `useEffect` persistence on `repoPath` change. |
+| 5 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx) | Multiple | Hardcoded API URL `http://localhost:5000`. | Replaced with `${API_BASE_URL}` imported from `frontend/src/config.js` (`import.meta.env.VITE_API_URL \|\| 'http://localhost:5000'`). |
+| 6 | [`frontend/src/PadLabelOverlay.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/PadLabelOverlay.jsx#L264) | L264, L281 | Hardcoded API URL `http://localhost:5000`. | Replaced with `${API_BASE_URL}` imported from `./config.js`. |
+| 7 | [`backend/src/kicad-renderer.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/kicad-renderer.js#L20-L24) | L20–L24 | Manual slash conversion `replace(/\\/g, '/') + '/'`. | Converted `exec()` string commands to `execFile()` with array arguments and `path.resolve()`, eliminating shell string escaping issues. |
+| 8 | [`backend/src/git-extractor.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/git-extractor.js#L30) | L30 | Redundant global regex replacement. | Cleaned up to `relativeFilePath.split(/[/\\]/).join('/')` for explicit cross-platform Git path normalization. |
+| 9 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js) | Multiple | Shell-quoted string commands via `exec()`. | Replaced all `exec()` calls (`git branch`, `git log`, `git ls-files`, `git diff`) with `execFile('git', args, { cwd })` array argument passing. |
+| 10 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js) | Multiple | Line-ending assumptions using `.split('\n')`. | Replaced with `.split(/\r?\n/).filter(line => line.length > 0)` to handle Windows CRLF line endings. |
 
 ---
 
@@ -75,21 +75,3 @@ _Last updated: 2026-07-25 (Comprehensive Master Record)_
    - `diffIdx: 5` — Base $(94.8690, 92.4560) \rightarrow$ Target $(90.4240, 92.4560)$ ($\Delta = 4.445\text{ mm}$) $\rightarrow$ **`diff-changed`**
    - `diffIdx: 6` — Base $(101.2190, 92.4560) \rightarrow$ Target $(102.2350, 95.2500)$ ($\Delta = 2.973\text{ mm}$) $\rightarrow$ **`diff-changed`**
    - `diffIdx: 7` — Base $(103.5050, 92.4560) \rightarrow$ Target $(102.8700, 93.8530)$ ($\Delta = 1.533\text{ mm}$) $\rightarrow$ **`diff-changed`**
-
----
-
-## 4. Summary of Major Applied Fixes
-
-### A. Dark Background & Grayscale Normalization
-- **Schematic Dark Background**: Added `rewriteSchematicBackground()` in `svg-diff-processor.js` to dynamically replace KiCad's exported paper-color rect (`#F5F4EF`) with `#12131e` dark theme canvas.
-- **Grayscale Filter Scoping**: Applied `grayscale(1) brightness(1.15) opacity(0.5)` to `.diff-unchanged` elements in schematic mode, matching PCB mode behavior.
-
-### B. Stroke-Only Highlight & Text Legibility Fix
-- **Stroke-Only Injections**: Updated `injectDiffStyle()` and `DIFF_CSS` in `SideBySideDiff.jsx` to enforce `fill: none !important` across all descendants of `.diff-changed`, `.diff-added`, and `.diff-deleted` groups.
-- **Glyph Stroke Width**: Kept stroke-width at native scale for `<g class="stroked-text">` glyph containers, preventing resistor body rectangles and text labels from rendering as solid yellow filled blocks.
-
-### C. PCB Track Chain Pass 0 & Slicing Fixes
-- **`isCopperLayerFilename()`**: Threaded layer filename through `processSvgDiff()` and added filename-based copper layer detection (`/\b(F_Cu\|B_Cu\|In\d+_Cu)\b/i`).
-- **Pass 0 Geometry Check**: Added geometry comparison before emitting `diff-changed` for track chains, preventing identical traces from generating false positive modification cards.
-- **Back-to-Front Character Index Slicing**: Replaced string replacement in `extractElements()` with descending character index slicing to cleanly remove matched component `<g>` blocks from `remainingSvg`.
-- **Title Block Exclude**: Added `isWorksheetFrameElement()` to exclude title block metadata region ($X > 180\text{ mm}, Y > 140\text{ mm}$) from emitting audit modification cards.

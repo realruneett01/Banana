@@ -1,62 +1,62 @@
 import dotenv from 'dotenv';
+import { execFileSync } from 'child_process';
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 
 dotenv.config();
 
-function getKiCadCliPath() {
-  const envPath = process.env.KICAD_CLI_PATH;
-  if (envPath && envPath.trim() !== '') {
-    return envPath.trim();
+function resolveKicadCliPath() {
+  // 1. Explicit override always wins
+  if (process.env.KICAD_CLI_PATH && fs.existsSync(process.env.KICAD_CLI_PATH)) {
+    return process.env.KICAD_CLI_PATH;
   }
 
-  // Define default paths based on OS
-  const platform = process.platform;
-  const possiblePaths = [];
+  // 2. Try PATH resolution first (works if user installed via package manager)
+  const finder = os.platform() === 'win32' ? 'where' : 'which';
+  try {
+    const result = execFileSync(finder, ['kicad-cli'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+    if (result && fs.existsSync(result)) return result;
+  } catch {
+    // not on PATH, fall through to known install locations
+  }
 
-  if (platform === 'win32') {
-    possiblePaths.push(
+  // 3. OS-specific known install locations (still checked dynamically, not assumed)
+  const candidates = {
+    win32: [
+      'C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe',
+      'C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe',
       'C:\\Program Files\\KiCad\\8.0\\bin\\kicad-cli.exe',
       'C:\\Program Files\\KiCad\\7.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe'
-    );
-  } else if (platform === 'darwin') {
-    possiblePaths.push(
-      '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'
-    );
-  } else {
-    // Linux and other Unix-like systems
-    possiblePaths.push(
+      'C:\\Program Files\\KiCad\\bin\\kicad-cli.exe',
+    ],
+    darwin: [
+      '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
+    ],
+    linux: [
       '/usr/bin/kicad-cli',
       '/usr/local/bin/kicad-cli',
-      'kicad-cli' // Fallback to running directly if in PATH
-    );
+      '/snap/bin/kicad-cli',
+    ],
+  };
+  const platformCandidates = candidates[os.platform()] || [];
+  for (const candidate of platformCandidates) {
+    if (fs.existsSync(candidate)) return candidate;
   }
 
-  // Search for the first path that actually exists
-  for (const p of possiblePaths) {
-    if (p === 'kicad-cli') {
-      return p;
-    }
-    try {
-      if (fs.existsSync(p)) {
-        return p;
-      }
-    } catch (e) {
-      // Ignore checks that fail
-    }
-  }
-
-  // If none exists, default to OS specific primary default
-  return platform === 'win32'
-    ? 'C:\\Program Files\\KiCad\\8.0\\bin\\kicad-cli.exe'
-    : platform === 'darwin'
-      ? '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli'
-      : 'kicad-cli';
+  throw new Error(
+    'kicad-cli not found. Set KICAD_CLI_PATH env var, or ensure kicad-cli ' +
+    'is on your system PATH.'
+  );
 }
+
+export const KICAD_CLI_PATH = resolveKicadCliPath();
+
+// Fail-fast verification at startup: throw immediately if KiCad CLI cannot execute
+execFileSync(KICAD_CLI_PATH, ['--version'], { encoding: 'utf8' });
 
 export const config = {
   port: process.env.PORT || 5000,
-  kicadCliPath: getKiCadCliPath()
+  kicadCliPath: KICAD_CLI_PATH
 };
+
