@@ -113,14 +113,22 @@ app.post('/api/git/init', async (req, res) => {
   // If repoPath is not an absolute path or doesn't exist, try to search standard desktop/user folders
   if (!path.isAbsolute(repoPath) || !fs.existsSync(repoPath)) {
     const folderName = path.basename(repoPath);
-    const defaultRepoBrowseDir = path.join(os.homedir(), 'Desktop');
-    const startDir = fs.existsSync(defaultRepoBrowseDir) ? defaultRepoBrowseDir : os.homedir();
-    const searchDirs = [
-      startDir,
-      os.homedir(),
+    const home = os.homedir();
+
+    // Build an ordered list of candidate parent directories to search.
+    // OneDrive commonly redirects Desktop on Windows — check both.
+    const candidateParentDirs = [
+      path.join(home, 'OneDrive', 'Desktop'),   // OneDrive-redirected Desktop (common on Windows 10/11)
+      path.join(home, 'Desktop'),                // Standard Desktop
+      path.join(home, 'OneDrive'),               // OneDrive root
+      home,                                       // Home directory
       process.cwd(),
       path.dirname(process.cwd())
-    ];
+    ].filter(d => {
+      try { return fs.existsSync(d); } catch { return false; }
+    });
+
+    const searchDirs = [...new Set(candidateParentDirs)]; // deduplicate
 
     let resolvedPath = null;
     for (const dir of searchDirs) {
@@ -135,7 +143,8 @@ app.post('/api/git/init', async (req, res) => {
       repoPath = resolvedPath;
     } else {
       return res.status(404).json({
-        error: `Could not automatically resolve repository directory for name "${folderName}". Please provide the absolute path.`
+        error: `Could not automatically resolve repository directory for name "${folderName}". Please provide the absolute path.`,
+        searchedIn: searchDirs
       });
     }
   }
