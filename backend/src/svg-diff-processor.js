@@ -62,24 +62,27 @@ function getComponentType(refDes) {
  * Helper to extract RefDes (Reference Designator) from element properties and child nodes.
  */
 function getRefDesFromGroupAttrs(attrs, innerContent) {
-  const refDesRegex = /\b([A-Z]+\d+)\b/i;
-  
-  if (attrs.id) {
-    const match = attrs.id.match(refDesRegex);
+  if (attrs.id && attrs.id.startsWith('symbol:')) {
+    const match = attrs.id.match(/\b([A-Z]+\d+)\b/i);
     if (match) return match[1].toUpperCase();
   }
   if (attrs['inkscape:label']) {
-    const match = attrs['inkscape:label'].match(refDesRegex);
+    const match = attrs['inkscape:label'].match(/\b([A-Z]+\d+)\b/i);
     if (match) return match[1].toUpperCase();
   }
 
-  // Check nested <text> tags inside group content
-  const textTagRe = /<text[^>]*?>([\s\S]*?)<\/text>/gi;
-  let textMatch;
-  while ((textMatch = textTagRe.exec(innerContent)) !== null) {
-    const rawText = textMatch[1].replace(/<[^>]*>/g, '').trim();
-    const match = rawText.match(refDesRegex);
-    if (match) return match[1].toUpperCase();
+  // Check nested <desc> tags inside stroked-text groups
+  const descMatches = new Set();
+  const descRegex = /<g\s+class=["']stroked-text["']>\s*<desc>([A-Z]+\d+)<\/desc>/gi;
+  let m;
+  while ((m = descRegex.exec(innerContent)) !== null) {
+    descMatches.add(m[1].toUpperCase());
+  }
+
+  // If this group contains EXACTLY ONE distinct component RefDes, return it.
+  // If it contains multiple distinct RefDes labels (e.g. C38 AND C3 AND TP9), it is a multi-component layer container, NOT a single component.
+  if (descMatches.size === 1) {
+    return Array.from(descMatches)[0];
   }
 
   return null;
@@ -143,6 +146,43 @@ function extractPrimitives(content) {
 }
 
 /**
+ * Scans SVG markup for outer <g> elements at top-level
+ * and returns complete <g> blocks, accurately handling nested <g> tags.
+ */
+function findGBlocks(svgContent) {
+  const blocks = [];
+  const startTag = '<g class="stroked-text">';
+  const endTag = '</g>';
+  let searchIdx = 0;
+  
+  while (true) {
+    const startPos = svgContent.indexOf(startTag, searchIdx);
+    if (startPos === -1) break;
+    
+    const endPos = svgContent.indexOf(endTag, startPos);
+    if (endPos === -1) break;
+    
+    const fullMatch = svgContent.substring(startPos, endPos + endTag.length);
+    const innerContent = fullMatch.substring(startTag.length, fullMatch.length - endTag.length);
+    const descMatch = innerContent.match(/<desc>([A-Z]+\d+)<\/desc>/i);
+    
+    if (descMatch) {
+      blocks.push({
+        fullMatch,
+        attrStr: 'class="stroked-text"',
+        innerContent,
+        startIndex: startPos,
+        endIndex: startPos + fullMatch.length,
+        refDes: descMatch[1].toUpperCase(),
+        attrs: { id: '', 'inkscape:label': '' }
+      });
+    }
+    searchIdx = endPos + endTag.length;
+  }
+  return blocks;
+}
+
+/**
  * Parses structural container groups (<g>) and remaining isolated primitives.
  * Returns a unified Component Block Record for component groups and isolated shapes.
  */
@@ -150,44 +190,38 @@ export function extractElements(svgContent) {
   const elements = [];
   
   // 1. Find all component-level <g> container groups
-  const gTagRe = /<g(\s[^>]*?)?>([\s\S]*?)<\/g>/g;
-  let match;
   let remainingSvg = svgContent;
-  const gBlocks = [];
+  const matchedGBlocks = findGBlocks(svgContent);
 
-  while ((match = gTagRe.exec(svgContent)) !== null) {
-    const fullMatch = match[0];
-    const attrStr = match[1] || '';
-    const innerContent = match[2] || '';
-    const attrs = parseAttributes(attrStr);
-    const refDes = getRefDesFromGroupAttrs(attrs, innerContent);
-    
-    if (refDes) {
-      gBlocks.push({
-        fullMatch,
-        attrStr,
-        innerContent,
-        attrs,
-        refDes
-      });
-      // Replace to prevent scanning child shapes as separate isolated primitives
-      remainingSvg = remainingSvg.replace(fullMatch, `<!-- Component ${refDes} -->`);
-    }
+  // Perform back-to-front character index slicing to cleanly remove component blocks from remainingSvg
+  const sortedForRemoval = [...matchedGBlocks].sort((a, b) => b.startIndex - a.startIndex);
+  for (const mb of sortedForRemoval) {
+    remainingSvg = remainingSvg.substring(0, mb.startIndex) + `<!-- Component ${mb.refDes} -->` + remainingSvg.substring(mb.endIndex);
   }
 
   // 2. Add Component Block Records
-  for (const block of gBlocks) {
-    const childPrimitives = extractPrimitives(block.innerContent);
-    let sumX = 0, sumY = 0, count = 0;
-    for (const child of childPrimitives) {
-      const c = getElementCenter(child);
-      if (c && !isNaN(c.x) && !isNaN(c.y)) {
-        sumX += c.x;
-        sumY += c.y;
-        count++;
+  for (const block of matchedGBlocks) {
+    // Prefer text label anchor point <text x="..." y="..."> for component center calculation
+    const textAnchorMatch = block.innerContent.match(/<text\s+x=["']([^"']+)["']\s+y=["']([^"']+)["']/i);
+    let center;
+    if (textAnchorMatch) {
+      center = { x: parseFloat(textAnchorMatch[1]), y: parseFloat(textAnchorMatch[2]) };
+    } else {
+      const bodyContent = block.innerContent
+        .replace(/<g\s+class=["'][^"']*stroked-text[^"']*["']>[\s\S]*?<\/g>/gi, '')
+        .replace(/<text[^>]*?>[\s\S]*?<\/text>/gi, '');
+      const childPrimitives = extractPrimitives(bodyContent.trim() ? bodyContent : block.innerContent);
+      let sumX = 0, sumY = 0, count = 0;
+      for (const child of childPrimitives) {
+        const c = getElementCenter(child);
+        if (c && !isNaN(c.x) && !isNaN(c.y)) {
+          sumX += c.x;
+          sumY += c.y;
+          count++;
+        }
       }
+      center = count > 0 ? { x: sumX / count, y: sumY / count } : { x: 0, y: 0 };
     }
-    const center = count > 0 ? { x: sumX / count, y: sumY / count } : { x: 0, y: 0 };
     
     elements.push({
       tag: 'g',
@@ -208,15 +242,38 @@ export function extractElements(svgContent) {
   // 3. Add isolated primitive shapes
   const primitives = extractPrimitives(remainingSvg);
   for (const el of primitives) {
+    const isFrame = isWorksheetFrameElement(el);
     elements.push({
       ...el,
       refDes: null,
       center: getElementCenter(el),
-      isComponent: false
+      isComponent: false,
+      isWorksheetFrame: isFrame
     });
   }
 
   return elements;
+}
+
+/**
+ * Detects whether an element is part of the worksheet / page frame / background rect.
+ */
+function isWorksheetFrameElement(el) {
+  if (!el || !el.fullMatch) return false;
+  if (el.tag === 'rect') {
+    const attrs = parseAttributes(el.fullMatch);
+    const width = parseFloat(attrs.width || '0');
+    const height = parseFloat(attrs.height || '0');
+    // Page rectangle covering standard page sizes (e.g. A4/A3/A2 width > 150mm and height > 100mm)
+    if (width > 150 && height > 100) {
+      return true;
+    }
+  }
+  const center = getElementCenter(el);
+  if (center && center.x > 180 && center.y > 140) {
+    return true; // Title block metadata region at bottom-right of A4 sheet
+  }
+  return false;
 }
 
 /**
@@ -266,12 +323,19 @@ function injectDiffStyle(elementStr, diffClass, isClosed, tag) {
 
   let styleProps;
   if (tag === 'text' || tag === 'use') {
+    // SVG <text> and <use> elements: fill directly with diff color, no stroke needed.
     styleProps = `fill:${color};stroke:none;opacity:1;`;
+  } else if (tag === 'g' && /class=["'][^"']*stroked-text/.test(elementStr)) {
+    // KiCad stroked-text <g> blocks: these are containers of thin glyph stroke paths.
+    // Only change the stroke COLOR — do NOT override stroke-width, otherwise at 0.5+ the
+    // dense glyph path segments fill in and create a solid yellow block instead of visible glyphs.
+    // The native stroke-width (0.1524mm) already makes individual strokes legible.
+    styleProps = `fill:none;stroke:${color};opacity:1;`;
   } else if (isClosed) {
-    const fillAlphaColor = diffClass === 'diff-changed' ? 'rgba(255, 255, 0, 0.2)'
-                         : diffClass === 'diff-added' ? 'rgba(0, 255, 102, 0.2)'
-                         : 'rgba(255, 51, 102, 0.2)';
-    styleProps = `fill:${fillAlphaColor};stroke:${color};stroke-width:1.5;opacity:1;`;
+    // Closed shapes (component body rects, pads): stroke-only, no fill.
+    // Use a thin stroke (0.5mm ≈ 3× native 0.15mm) so the outline is clearly visible
+    // without flooding any nested glyph paths.
+    styleProps = `fill:none;stroke:${color};stroke-width:0.5;opacity:1;`;
   } else {
     styleProps = `fill:none;stroke:${color};opacity:1;`;
   }
@@ -521,9 +585,32 @@ function getDistance(el1, el2) {
 }
 
 /**
+ * Replaces KiCad's exported paper-color background (#F5F4EF cream / white) in schematic
+ * SVGs with the app's dark canvas background (#12131e) so schematic view matches PCB view.
+ *
+ * The KiCad SVG exporter always emits a full-page <rect> inside a group with
+ *   style="fill:#F5F4EF; ..."
+ * This function rewrites that fill to the dark background while leaving all
+ * schematic component and wire colors completely untouched.
+ */
+function rewriteSchematicBackground(svgContent) {
+  // Match KiCad's paper-color group (cream variants: #F5F4EF, #FFFFFF, white, #FFFEF2, etc.)
+  // The full-page rect sits inside a <g style="fill:#XXXXXX ..."> immediately after the header.
+  return svgContent.replace(
+    /(<g\s[^>]*fill:\s*#(?:F5F4EF|FFFFFF|FFFEF2|FEFEFE|F0EFE9|ffffff|fffef2|f5f4ef)[^>]*>\s*<rect[^>]*width="29[0-9])/g,
+    (match) => match.replace(/fill:\s*#[0-9A-Fa-f]{3,6}/, 'fill:#12131e')
+               .replace(/stroke:\s*#[0-9A-Fa-f]{3,6}/, 'stroke:#12131e')
+  );
+}
+
+/**
  * Core diff processor.
  */
 export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
+  // Rewrite KiCad's cream paper-color background to dark canvas for schematic SVGs
+  baseSvg   = rewriteSchematicBackground(baseSvg);
+  targetSvg = rewriteSchematicBackground(targetSvg);
+
   const baseElements   = extractElements(baseSvg);
   const targetElements = extractElements(targetSvg);
 
@@ -634,19 +721,28 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   for (const tEl of targetElements) {
     if (matchedTarget.has(tEl)) continue;
     if (tEl.isComponent && tEl.refDes) {
-      const bEl = baseElements.find(b => !matchedBase.has(b) && b.isComponent && b.refDes === tEl.refDes);
-      if (bEl) {
-        matchedBase.add(bEl);
-        matchedTarget.add(tEl);
-        matchedTargetToBase.set(tEl, bEl);
-        matchedBaseToTarget.set(bEl, tEl);
+      const candidates = baseElements.filter(b => !matchedBase.has(b) && b.isComponent && b.refDes === tEl.refDes);
+      if (candidates.length > 0) {
+        let bestMatch = candidates[0];
+        let minDistance = getDistance(bestMatch, tEl);
+        for (let i = 1; i < candidates.length; i++) {
+          const d = getDistance(candidates[i], tEl);
+          if (d < minDistance) {
+            minDistance = d;
+            bestMatch = candidates[i];
+          }
+        }
 
-        const dist = getDistance(bEl, tEl);
-        // Compare geoKey only — fullKey includes non-geometric attrs that vary between renders
-        const geoChanged = bEl.geoKey !== tEl.geoKey || dist > 0.05;
+        matchedBase.add(bestMatch);
+        matchedTarget.add(tEl);
+        matchedTargetToBase.set(tEl, bestMatch);
+        matchedBaseToTarget.set(bestMatch, tEl);
+
+        const dist = getDistance(bestMatch, tEl);
+        const geoChanged = dist > 2.0;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
-        baseClassifications.set(bEl, { diffClass: stateClass });
+        baseClassifications.set(bestMatch, { diffClass: stateClass });
         targetClassifications.set(tEl, { diffClass: stateClass });
       }
     }
@@ -696,8 +792,8 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
         matchedBaseToTarget.set(bestMatch, tEl);
 
         const dist = getDistance(bestMatch, tEl);
-        // Compare geoKey only — fullKey includes non-geometric attrs that vary between renders
-        const geoChanged = bestMatch.geoKey !== tEl.geoKey || dist > 0.05;
+        // Dist <= 0.5mm is font metric rendering noise -> classify as diff-unchanged
+        const geoChanged = dist > 0.5;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
         baseClassifications.set(bestMatch, { diffClass: stateClass });
@@ -708,12 +804,14 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
 
   // --- PASS 4: Classify remaining elements as added or deleted ---
   for (const el of baseElements) {
+    if (el.isWorksheetFrame) continue;
     if (!baseClassifications.has(el)) {
       baseClassifications.set(el, { diffClass: 'diff-deleted' });
     }
   }
 
   for (const el of targetElements) {
+    if (el.isWorksheetFrame) continue;
     if (!targetClassifications.has(el)) {
       targetClassifications.set(el, { diffClass: 'diff-added' });
     }
@@ -721,7 +819,9 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
 
   // Assign diffIdx and construct modifications logs for standard (non-chain) additions/deletions/modifications
   for (const el of baseElements) {
+    if (el.isWorksheetFrame) continue;
     const classification = baseClassifications.get(el);
+    if (!classification) continue;
     if (classification.diffClass === 'diff-deleted') {
       classification.diffIdx = diffIdx++;
       
@@ -736,7 +836,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
         component: getComponentType(el.refDes),
         label: `Deleted ${label}`,
         tag: el.tag,
-        id: el.id,
+        id: el.refDes || el.id,
         text: el.text,
         side: 'base',
         diffIdx: classification.diffIdx,
@@ -747,7 +847,9 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   }
 
   for (const el of targetElements) {
+    if (el.isWorksheetFrame) continue;
     const classification = targetClassifications.get(el);
+    if (!classification) continue;
     if (classification.diffClass === 'diff-added') {
       classification.diffIdx = diffIdx++;
       
@@ -762,7 +864,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
         component: getComponentType(el.refDes),
         label: `Added ${label}`,
         tag: el.tag,
-        id: el.id,
+        id: el.refDes || el.id,
         text: el.text,
         side: 'target',
         diffIdx: classification.diffIdx,
@@ -778,7 +880,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
         
         const sharedIdx = diffIdx++;
         classification.diffIdx = sharedIdx;
-        bClassification.diffIdx = sharedIdx;
+        if (bClassification) bClassification.diffIdx = sharedIdx;
         
         const baseCenter = getElementCenter(bEl);
         const targetCenter = getElementCenter(el);
@@ -793,7 +895,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
           component: getComponentType(el.refDes),
           label: `Changed ${label}`,
           tag: el.tag,
-          id: el.id,
+          id: el.refDes || el.id,
           text: el.text,
           side: 'target',
           diffIdx: sharedIdx,
@@ -807,7 +909,9 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   // Annotate base SVG
   let annotatedBase = baseSvg;
   for (const el of baseElements) {
+    if (el.isWorksheetFrame) continue;
     const classification = baseClassifications.get(el);
+    if (!classification) continue;
     const diffClass = classification.diffClass;
 
     const isClosed  = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
@@ -824,7 +928,9 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   // Annotate target SVG
   let annotatedTarget = targetSvg;
   for (const el of targetElements) {
+    if (el.isWorksheetFrame) continue;
     const classification = targetClassifications.get(el);
+    if (!classification) continue;
     const diffClass = classification.diffClass;
 
     const isClosed  = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;

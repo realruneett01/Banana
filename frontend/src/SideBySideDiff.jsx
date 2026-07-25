@@ -54,21 +54,17 @@ const DIFF_CSS = `
     filter:  none !important;
   }
 
-  /* Unchanged components and text ('sch-text-glyph') must map to #7a828a at opacity: 0.3 */
-  .mode-side-by-side .diff-unchanged,
-  .mode-side-by-side .sch-text-glyph {
-    opacity: 0.3 !important;
-    filter:  none !important;
+  /* Greyscale desaturation for genuinely unchanged SCHEMATIC elements */
+  .mode-side-by-side.schematic-mode .diff-unchanged {
+    filter:  grayscale(1) brightness(1.15) opacity(0.5) !important;
   }
 
-  .mode-side-by-side svg .diff-open.diff-unchanged,
-  .mode-side-by-side svg .diff-open.sch-text-glyph {
-    stroke: #7a828a !important;
-    fill:   none    !important;
+  /* Neutral grey desaturation for unchanged elements in PCB view only */
+  .mode-side-by-side.pcb-mode .diff-unchanged {
+    filter:  grayscale(1) brightness(1.15) opacity(0.5) !important;
   }
 
-  .mode-side-by-side svg .diff-closed.diff-unchanged,
-  .mode-side-by-side svg .diff-closed.sch-text-glyph {
+  .mode-side-by-side svg .sch-text-glyph {
     fill:   #7a828a !important;
     stroke: none    !important;
   }
@@ -83,55 +79,46 @@ const DIFF_CSS = `
     stroke: none    !important;
   }
 
-  /* Component Container Group cascading styles */
-  .mode-side-by-side .diff-changed *,
-  .mode-side-by-side [class*="diff-changed"] * {
+  /* ── diff-changed (yellow) ──────────────────────────────────────────────── */
+  /* All descendants: stroke = yellow, fill = none.
+     Setting fill:none on the group and all its children clears the inherited
+     fill:#000000 that KiCad's root <g> cascades down — without this the glyph
+     stroke-paths and body rects inherit black and appear as solid dark blocks
+     against the yellow stroke highlight. */
+  .mode-side-by-side .diff-changed,
+  .mode-side-by-side .diff-changed * {
     stroke: #ffff00 !important;
+    fill:   none    !important;
   }
-  .mode-side-by-side .diff-added *,
-  .mode-side-by-side [class*="diff-added"] * {
-    stroke: #00ff66 !important;
-  }
-  .mode-side-by-side .diff-deleted *,
-  .mode-side-by-side [class*="diff-deleted"] * {
-    stroke: #ff3366 !important;
-  }
-
-  /* Fills for closed shapes inside highlighted component groups */
-  .mode-side-by-side .diff-changed .diff-closed,
-  .mode-side-by-side .diff-changed circle,
-  .mode-side-by-side .diff-changed rect,
-  .mode-side-by-side .diff-changed polygon {
-    fill: rgba(255, 255, 0, 0.2) !important;
-  }
-  .mode-side-by-side .diff-added .diff-closed,
-  .mode-side-by-side .diff-added circle,
-  .mode-side-by-side .diff-added rect,
-  .mode-side-by-side .diff-added polygon {
-    fill: rgba(0, 255, 102, 0.2) !important;
-  }
-  .mode-side-by-side .diff-deleted .diff-closed,
-  .mode-side-by-side .diff-deleted circle,
-  .mode-side-by-side .diff-deleted rect,
-  .mode-side-by-side .diff-deleted polygon {
-    fill: rgba(255, 51, 102, 0.2) !important;
-  }
-
-  /* Text inside highlighted component groups */
+  /* SVG native <text>/<tspan> nodes should be filled with diff color (readable) */
   .mode-side-by-side .diff-changed text,
   .mode-side-by-side .diff-changed tspan {
-    fill: #ffff00 !important;
-    stroke: none !important;
+    fill:   #ffff00 !important;
+    stroke: none    !important;
+  }
+
+  /* ── diff-added (green) ─────────────────────────────────────────────────── */
+  .mode-side-by-side .diff-added,
+  .mode-side-by-side .diff-added * {
+    stroke: #00ff66 !important;
+    fill:   none    !important;
   }
   .mode-side-by-side .diff-added text,
   .mode-side-by-side .diff-added tspan {
-    fill: #00ff66 !important;
-    stroke: none !important;
+    fill:   #00ff66 !important;
+    stroke: none    !important;
+  }
+
+  /* ── diff-deleted (red) ─────────────────────────────────────────────────── */
+  .mode-side-by-side .diff-deleted,
+  .mode-side-by-side .diff-deleted * {
+    stroke: #ff3366 !important;
+    fill:   none    !important;
   }
   .mode-side-by-side .diff-deleted text,
   .mode-side-by-side .diff-deleted tspan {
-    fill: #ff3366 !important;
-    stroke: none !important;
+    fill:   #ff3366 !important;
+    stroke: none    !important;
   }
 `;
 
@@ -553,6 +540,7 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default forwardRef(function SideBySideDiff({
+  isSchematic,
   baseSvgs,
   targetSvgs,
   activeLayers,
@@ -564,6 +552,7 @@ export default forwardRef(function SideBySideDiff({
   setActiveAuditIdx,
   padLabelProps,   // { repoPath, baseCommit, targetCommit, relativeFilePath } | null
 }, ref) {
+  const isSchematicMode = isSchematic ?? (!padLabelProps?.relativeFilePath?.endsWith('.kicad_pcb'));
   const leftContentRef = useRef(null);
   const rightContentRef = useRef(null);
   const outerRef = useRef(null);
@@ -751,7 +740,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
 
       <div
         ref={outerRef}
-        className={`mode-side-by-side ${activeAuditIdx !== null ? 'has-focus' : ''}`}
+        className={`mode-side-by-side ${isSchematicMode ? 'schematic-mode' : 'pcb-mode'} ${activeAuditIdx !== null ? 'has-focus' : ''}`}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}

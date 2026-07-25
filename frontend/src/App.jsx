@@ -1052,6 +1052,7 @@ export default function App() {
                   {diffMode === 'Side by Side' ? (
                   <SideBySideDiff
                       ref={sideBySideRef}
+                      isSchematic={relativeFilePath ? relativeFilePath.endsWith('.kicad_sch') : false}
                       baseSvgs={diffData.sideBySide?.base ?? diffData.base?.svgs}
                       targetSvgs={diffData.sideBySide?.target ?? diffData.target?.svgs}
                       activeLayers={selectedLayers}

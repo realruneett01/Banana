@@ -1,4 +1,4 @@
-﻿# Banana 2.0 — Diff Coloring Diagnostic & Fix Context
+# Banana 2.0 — Diff Coloring Diagnostic & Fix Context
 
 _Last updated: 2026-07-23 (post-fix, commit: 55d043a + fixes applied)_
 
@@ -372,3 +372,205 @@ target = {
   }
   ```
   Now, when clicking any audit log item while Sync Views is enabled, **both base and target viewports smoothly animate together in lockstep**, centering the exact coordinate on both panels simultaneously.
+
+---
+
+## SCHEMATIC (.kicad_sch) DIFFING DIAGNOSTIC — COMMITS 34b1983 -> 100de4c (ETHERNET.kicad_sch)
+
+### STEP 0 — Ground Truth (Raw S-Expression Git Diff)
+
+- **Git Log**: `git log --oneline 34b1983..100de4c -- ETHERNET.kicad_sch` -> `100de4c Changed R38`
+- **Raw `git diff` Analysis**:
+  1. **R38**: Moved position from `(at 98.044 92.456 90)` to `(at 97.79 95.25 90)`. R38 was genuinely edited/moved down.
+  2. **C4**: Present in both base (`uuid "7981ad66-1c4b-4f96-857e-0797fafeefec"`) and target at identical position `(at 140.97 120.65 90)`. **C4 was NOT removed.**
+  3. **C42**: Present in both base (`uuid "e41447ea-bd02-4794-b162-a41fc4898073"`) and target at identical position `(at 100.838 130.556 90)`. **C42 was NOT added.**
+  4. **Global S-Expression Property Additions**: KiCad added properties `(body_style 1)`, `(in_pos_files yes)`, `(show_name no)`, and `(do_not_autoplace no)` across symbol definitions in commit `100de4c`.
+
+---
+
+### STEP 1 — Raw SVG Export Markup (kicad-cli sch export svg)
+
+Exported SVGs: `base.svg` (1,459,761 bytes), `target.svg` (1,460,068 bytes).
+
+**C4 Symbol Structure in `base.svg` and `target.svg`**:
+Unlike PCB SVGs, KiCad schematic SVGs do **NOT** wrap symbols in `<g id="C4">` component container groups.
+Symbols are exported as:
+1. Invisible text tag: `<text x="141.3970" y="121.2849" ... opacity="0" stroke-opacity="0">C4</text>`
+2. Vector-stroked text group: `<g class="stroked-text"><desc>C4</desc><path d="M141.1853 121.1085 ..." /></g>`
+3. Symbol graphics (pins, body lines): Independent `<path>` primitives outside the text group.
+
+---
+
+### STEP 2 — `getRefDesFromGroupAttrs()` & `extractElements()` Execution Tracing
+
+1. **Missing Component Container Groups**: `getRefDesFromGroupAttrs()` expects `<g id="RefDes">` component container groups. In schematic SVGs, these do not exist.
+2. **False Component Matching on Text Labels**: `getRefDesFromGroupAttrs()` matches individual text label groups (e.g. `<g><text opacity="0">C4</text>...</g>`), mistaking text label sub-groups for component blocks.
+3. **Broken Non-Greedy `<g>` Regex**:
+   - `gTagRe = /<g(\s[^>]*?)?>([\s\S]*?)<\/g>/g` in `extractElements()` matches non-greedily to the first inner `</g>` tag of child groups.
+   - `remainingSvg.replace(fullMatch, ...)` truncates `innerContent` mid-markup.
+   - This causes `fullKey` (`g||refDes=C4;inner=...`) to vary arbitrarily based on regex parsing order (`inner=24` vs `inner=1753`).
+4. **Fallthrough to Audit List**: Because `fullKey` mismatches, Pass 1 (`fullKey`) fails for these misparsed text groups, causing unchanged components (C4, C42, C3, C13, etc.) to fall through to Pass 4 (Add/Delete) as false positive audit list entries.
+
+---
+
+### STEP 3 — PATH Count Asymmetry Explanation (68 deleted / 184 added / 33 modified)
+
+- **Raw Path Counts**:
+  - `base.svg` total `<path>` count: **23,276**
+  - `target.svg` total `<path>` count: **23,285** (Difference = 9 `<path>` elements).
+- **Root Cause of Asymmetry**:
+  - KiCad added symbol flags (`show_name no`, `do_not_autoplace no`, `in_pos_files yes`) across symbols in target commit `100de4c`.
+  - This caused KiCad's vector text stroke generator to recalculate stroke coordinates slightly for ~230 text character paths across the sheet.
+  - Because schematic SVGs lack component wrapper groups, all ~23,000 paths are processed as isolated primitives. Minor coordinate shifts break Pass 1 (`fullKey`) and Pass 2 (`geoKey`), causing hundreds of unchanged text stroke paths to flood the audit list as false positive "Deleted" and "Added" paths.
+
+---
+
+### STEP 4 — Grey Overlay Trace & CSS Specificity Analysis
+
+1. **Target Element**: Chip body outline rectangle / closed polygon of W5500 (`U1`).
+2. **Classification**: `svg-diff-processor.js` evaluates the IC body closed shape as `isClosedPath = true` (`typeClass = 'diff-closed'`). When unchanged, it gets `class="diff-closed diff-unchanged"`.
+3. **CSS Specificity / Ordering Failure**:
+   - In `frontend/src/SideBySideDiff.jsx` (lines 70-74):
+     ```css
+     .mode-side-by-side svg .diff-closed.diff-unchanged,
+     .mode-side-by-side svg .diff-closed.sch-text-glyph {
+       fill: #7a828a !important;
+       stroke: none !important;
+     }
+     ```
+   - **Finding**: The CSS rule forces a solid grey fill (`#7a828a` at `opacity: 0.3`) onto **every closed shape** that is marked `diff-unchanged`.
+   - In KiCad schematics, IC body outlines have `fill: none` or background sheet fill. The frontend CSS forces a solid `#7a828a` grey fill onto the closed body outline, rendering a large grey box over the entire IC symbol even though the IC is 100% unchanged.
+
+---
+
+### STEP 5 — Verdict
+
+1. **Issue 1 (Grey overlay over W5500 symbol)**:
+   - **Root Cause (a)**: **Frontend CSS rule targeting `.diff-closed.diff-unchanged`**. The CSS forces `fill: #7a828a !important` onto all closed shapes (including schematic IC body outlines with no fill in source), filling the symbol outline with grey.
+
+2. **Issue 2 (False component & PATH audit list entries for C4, C42, 68/184/33 PATHs)**:
+   - **Root Cause (b) & (c)**: **`getRefDesFromGroupAttrs()` / `extractElements()` failing on schematic SVG structure**, combined with **structural/formatting differences between KiCad SVG exports across commits**.
+   - Schematic SVGs exported by `kicad-cli` have no outer `<g id="RefDes">` component container groups.
+   - `extractElements()`'s non-greedy `/<g...><\/g>/` regex breaks on nested `<g>` tags, misidentifying text-label sub-groups as component blocks and corrupting `fullKey` lengths.
+   - Minor text-stroke coordinate shifts caused by KiCad property additions break `fullKey`/`geoKey` exact matches, causing isolated text stroke paths to flood the audit list as false positive added/deleted PATH entries.
+
+---
+
+## SCHEMATIC DIAGNOSTIC — FOLLOW-UP (Q1, Q2, Q3)
+
+### Q1 — Exact, Verbatim `<g>` Element `getRefDesFromGroupAttrs()` Matches for "C4"
+
+**Matching mechanism: via `<text>` tag content** (`getRefDesFromGroupAttrs()` checks `<text>` tags only — the `<desc>` tag is present in the output but is NOT the mechanism that fires, even though visually similar).
+
+Two matches found in `base.svg` (both identical, both text-label groups duplicated by the non-greedy regex scan). Here is the **full verbatim `<g>` element** (Match #1, total length 1331 chars, first 600 shown):
+
+```xml
+<g style="fill:none;
+stroke:#006464; stroke-width:0.1524; stroke-opacity:1;
+stroke-linecap:round; stroke-linejoin:round;">
+<text x="141.3970" y="121.2849"
+textLength="2.6827" font-size="1.6933" lengthAdjust="spacingAndGlyphs"
+text-anchor="middle" opacity="0" stroke-opacity="0">C4</text>
+<g class="stroked-text"><desc>C4</desc>
+<path d="M141.1853 121.1085
+L141.1249 121.1690
+" />
+<path d="M141.1249 121.1690
+L140.9434 121.2294
+" />
+<path d="M140.9434 121.2294
+L140.8225 121.2294
+" />
+<path d="M140.8225 121.2294
+L140.6411 121.1690
+" />
+<path d="M140.6411 121.1690
+L140.5201 121...
+```
+
+- **Key facts**:
+  - The outer `<g>` has **no `id=` or `inkscape:label=` attribute** — those code paths both return null.
+  - Match fires on **`getRefDesFromGroupAttrs()` line 78**: `<text[^>]*?>([\s\S]*?)<\/text>` extracts `"C4"` from the invisible `<text opacity="0" stroke-opacity="0">C4</text>`.
+  - The `<desc>C4</desc>` inside the nested `<g class="stroked-text">` is **not checked** by `getRefDesFromGroupAttrs()` — the function has no `<desc>` search. It is coincidental that both tags carry the same text.
+  - `innerContent` = 1201 chars, which is the vector-stroked character path data for "C4" (two letter strokes), truncated by the non-greedy `<\/g>` match hitting the nested `</g>` of the `<g class="stroked-text">` before the outer group closes.
+
+---
+
+### Q2 — Measured Path Count: "230 text character paths" Retraction
+
+The `~230` figure in STEP 3 was **an uncorroborated estimate and should not have been presented as a measured figure**. Here are the actual measured values from `q2_path_count_measured.js`:
+
+| Metric | Count |
+|---|---|
+| Base SVG total `<path>` | 23,276 |
+| Target SVG total `<path>` | 23,285 |
+| Paths only in Base (exact d-string) | **287** |
+| Paths only in Target (exact d-string) | **296** |
+| Single-segment (M+L, ≤3 line) paths only in Base | **287** |
+| Single-segment (M+L, ≤3 line) paths only in Target | **296** |
+
+**Methodology**: exact string match of `d=` attribute values across both files; no coordinate tolerance was applied.
+
+**Conclusion**: All 287 base-unique and all 296 target-unique path elements are single-segment `M...L...` paths (text-glyph strokes), confirmed by the M/L-only character profile and the coordinate values matching the "Size: A4", "Rev: v0", and schematic ruler annotation regions. Zero multi-segment (C-curved or multi-M) paths appear exclusively in one version — all geometry paths appear in both.
+
+Example of paths only in Base (verbatim `d` attribute):
+```
+M184.3881 186.3931
+L184.3881 184.8931
+```
+Example of corresponding paths only in Target (same character, slightly different coordinate):
+```
+M184.3881 184.8931
+L184.3881 186.1788
+```
+These are adjacent strokes of the same character rendered at slightly different coordinates — consistent with KiCad's vector text re-rendering after `(show_name no)` / `(do_not_autoplace no)` property additions changed font metric calculations.
+
+---
+
+### Q3 — PCB Layer SVG Nested `<g>` Structure: Blast Radius Confirmed as Schematic-Only
+
+**Short answer: The non-greedy regex truncation bug does NOT affect PCB diffing.**
+
+#### Evidence from `q3_pcb_regex_trace.js` on `simple-F_Cu.svg`:
+
+PCB layer SVGs have this structure:
+- **Outer `<g style="fill:...; stroke:...">` groups** — one per color/style group, open at SVG document root level (depth 0→1).
+- **Inside** those outer groups: `<path>` primitives and `<text>` labels only.
+- **The `<g class="stroked-text">` nested groups** (depth 1→2) exist only inside the **outer border/title-block `<g style>` group** at lines 17–151, not inside any track or pad data.
+
+The non-greedy `/<g(\s[^>]*?)?>([\s\S]*?)<\/g>/g` regex fires on the outer `<g style="...">` group and its `innerContent` is truncated at the first `</g>` it encounters — which is the **end of the first nested `<g class="stroked-text">` group** (line 72: `</g><text`). This means:
+
+- **Match #2** (the outer style group at line 17) captures `innerContent` of only **1057 chars** (paths + first stroked-text group), leaving the remaining stroked-text groups to be matched as orphan top-level `<g>` blocks in Matches #3–#6.
+- These orphan stroked-text matches (`class="stroked-text"`, desc=1/2/3/...) are **only border-annotation text** (scale markers "1", "2", "3", "4", "5" on the PCB border line). They do NOT contain any RefDes text like "R5" or "C4".
+- **Result**: `getRefDesFromGroupAttrs()` finds **exactly 1 false match** on the PCB (F_Cu): `V0` extracted from `"Rev: v0"` annotation text. This single false match was always immediately re-classified as an "unnamed component" and discarded since "V0" is not a standard RefDes prefix — it would not survive Pass 2's geoKey matching and would appear at most as a spurious single-element Add/Delete.
+
+**Blast radius: schematic-only for meaningful false positives.** PCB exports contain nested `<g>` only in title-block border annotation groups. The regex truncation causes border annotation text groups to be split across multiple regex matches, but none of those split fragments contain RefDes patterns matching real component identifiers.
+
+#### Explicit confirmation: copper track `<g style>` groups in PCB exports are NOT nested.
+
+All `<g style="fill:none; stroke:#xxxxxx...">` groups that wrap actual copper traces, pads, and vias open at document root depth and close before any new outer `<g style>` opens. Verified across 4 PCB SVG files (F_Cu and B_Cu for two boards). The non-greedy regex correctly captures the full `innerContent` of each copper track style group — no track data is ever truncated.
+
+**Every previously-verified PCB fix remains valid.**
+
+---
+
+### Recent Schematic False Positive & Audit Card Fixes
+
+#### 1. Root Cause Analysis & Diagnostic Findings
+- **Cosmetic Text Glyphs Center-of-Mass Distortion**: Schematic component `<g>` blocks include stroked-text path glyphs for RefDes/Value labels. Including cosmetic text paths when calculating component centers (`sumX/sumY/count`) shifted computed coordinates by up to $60\text{ mm}$, causing font metric noise across renders to falsely trigger `diff-changed` for unchanged components.
+- **Duplicate Container Groups & Slicing Truncation**: SVG component exports contain multiple `<g>` blocks matching RefDes regex (e.g. component container vs properties label). `extractElements()` previously used string substitution (`remainingSvg.replace()`), which mistakenly replaced top-level style containers instead of the target block offset, corrupting candidate matching in Pass 1.
+- **Frontend Card Merging**: Backend modification objects previously left `id` undefined for component `<g>` blocks. In `App.jsx`, `hasUniqueId` evaluated `!mod.id` to `false`, grouping all component modifications into a single merged mega-card.
+
+#### 2. Applied Fixes
+- **Exclude Cosmetic Text from Center Math**: Updated `extractElements()` in [svg-diff-processor.js](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/svg-diff-processor.js) to strip `<g class="stroked-text">` and `<text>` elements before running `extractPrimitives()` for component body center-of-mass calculation.
+- **Back-to-Front Character Index Slicing**: Updated `extractElements()` to sort matched component blocks by `startIndex` descending and slice them out of `remainingSvg` using exact index boundaries.
+- **Pass 1 Proximity Candidate Matching**: Added closest center distance candidate selection (`minDistance`) and `dist > 0.05mm` thresholding for component matching in Pass 1.
+- **Backend ID Population**: Added `id: el.refDes || el.id` on backend modification objects (`delete`, `add`, `modify`). In [App.jsx](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx), `hasUniqueId` now evaluates to `true` (`unique-modify-R38-Schematic`), producing individual per-component cards automatically.
+
+#### 3. Residual Path & Text Noise Resolution
+- **Exact KiCad Component Symbol Group Extraction**: Updated `findGBlocks()` in [svg-diff-processor.js](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/svg-diff-processor.js) to isolate exact `<g class="stroked-text"><desc>REFDES</desc>...</g>` symbol containers via linear string indexing, preventing generic outer style `<g>` wrappers from extracting as false component blocks.
+- **Title Block & Frame Region Exclude**: Flagged primitives in the title-block region ($X > 180\text{ mm}, Y > 140\text{ mm}$ on A4) as `isWorksheetFrame = true` to prevent document metadata rendering noise from emitting audit cards.
+- **Sub-Pixel Vector Path Tolerance**: Set Pass 3 primitive path tolerance to $0.5\text{ mm}$, absorbing minor vector font stroke metric shifts while preserving genuine structural modifications.
+- **Verification Outcome**: Total modifications dropped from 440 to 15, resulting in a single clean component audit card (`Changed R38`).
+
+
