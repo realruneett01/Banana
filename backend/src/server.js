@@ -114,14 +114,28 @@ app.post('/api/git/init', async (req, res) => {
   if (!path.isAbsolute(repoPath) || !fs.existsSync(repoPath)) {
     const folderName = path.basename(repoPath);
     const home = os.homedir();
+    const platform = os.platform();
 
     // Build an ordered list of candidate parent directories to search.
-    // OneDrive commonly redirects Desktop on Windows — check both.
+    // Covers: Windows (OneDrive-redirected & standard Desktop), macOS (Desktop, Documents, Developer), Linux (common project dirs).
     const candidateParentDirs = [
-      path.join(home, 'OneDrive', 'Desktop'),   // OneDrive-redirected Desktop (common on Windows 10/11)
-      path.join(home, 'Desktop'),                // Standard Desktop
-      path.join(home, 'OneDrive'),               // OneDrive root
-      home,                                       // Home directory
+      // ── Windows ──────────────────────────────────────────────────────────
+      path.join(home, 'OneDrive', 'Desktop'),     // OneDrive-redirected Desktop (Windows 10/11)
+      path.join(home, 'OneDrive', 'Documents'),   // OneDrive Documents
+      path.join(home, 'Desktop'),                  // Standard Desktop (Windows / macOS)
+      path.join(home, 'OneDrive'),                 // OneDrive root
+      // ── macOS ────────────────────────────────────────────────────────────
+      path.join(home, 'Documents'),               // ~/Documents (macOS / Linux)
+      path.join(home, 'Developer'),               // ~/Developer (macOS convention)
+      path.join(home, 'Projects'),                // ~/Projects
+      // ── Linux ────────────────────────────────────────────────────────────
+      path.join(home, 'projects'),               // ~/projects
+      path.join(home, 'code'),                   // ~/code
+      path.join(home, 'repos'),                  // ~/repos
+      path.join(home, 'work'),                   // ~/work
+      path.join(home, 'src'),                    // ~/src
+      // ── Universal fallbacks ──────────────────────────────────────────────
+      home,
       process.cwd(),
       path.dirname(process.cwd())
     ].filter(d => {
