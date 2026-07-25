@@ -1,6 +1,6 @@
-# Banana 2.0 — Hardware Git Diff Tool
+# Banana — Hardware Git Diff Tool
 
-Banana 2.0 is an advanced visual Git diff tool engineered for KiCad hardware designs, supporting both schematic (`.kicad_sch`) and PCB layout (`.kicad_pcb`) files.
+Banana  is an advanced visual Git diff tool engineered for KiCad hardware designs, supporting both schematic (`.kicad_sch`) and PCB layout (`.kicad_pcb`) files.
 
 ## Features
 
