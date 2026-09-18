@@ -93,54 +93,50 @@ function getRefDesFromGroupAttrs(attrs, innerContent) {
  */
 function extractPrimitives(content) {
   const primitives = [];
-  for (const tag of DIFFABLE_TAGS) {
-    const selfClosingRe = new RegExp(`<${tag}(\\s[^>]*?)?/>`, 'gs');
-    const openTagRe     = new RegExp(`<${tag}(\\s[^>]*?)?>([\\s\\S]*?)<\\/${tag}>`, 'gs');
+  const combinedRe = /<(path|circle|rect|line|polyline|polygon|text|use|ellipse|image)(\s[^>]*?)?(?:\/>|>([\s\S]*?)<\/\1>)/gs;
 
-    for (const re of [selfClosingRe, openTagRe]) {
-      let match;
-      while ((match = re.exec(content)) !== null) {
-        const fullMatch = match[0];
-        const attrStr   = match[1] || '';
-        const attrs = parseAttributes(attrStr);
+  let match;
+  while ((match = combinedRe.exec(content)) !== null) {
+    const tag = match[1];
+    const fullMatch = match[0];
+    const attrStr = match[2] || '';
+    const attrs = parseAttributes(attrStr);
 
-        const GEO_ATTRS = ['d', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
-                           'width', 'height', 'points', 'transform', 'viewBox'];
+    const GEO_ATTRS = ['d', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
+                       'width', 'height', 'points', 'transform', 'viewBox'];
 
-        const geoKey = GEO_ATTRS
-          .filter(a => attrs[a] !== undefined)
-          .map(a => `${a}=${attrs[a]}`)
-          .join(';');
+    const geoKey = GEO_ATTRS
+      .filter(a => attrs[a] !== undefined)
+      .map(a => `${a}=${attrs[a]}`)
+      .join(';');
 
-        const idKey = tag + '|' + Object.keys(attrs)
-          .filter(a => !GEO_ATTRS.includes(a))
-          .sort()
-          .map(a => `${a}=${attrs[a]}`)
-          .join(';');
+    const idKey = tag + '|' + Object.keys(attrs)
+      .filter(a => !GEO_ATTRS.includes(a))
+      .sort()
+      .map(a => `${a}=${attrs[a]}`)
+      .join(';');
 
-        const fullKey = `${tag}||${attrStr.trim()}`;
-        const id = attrs['id'] || '';
-        const label = attrs['inkscape:label'] || '';
-        let text = '';
-        if (tag === 'text') {
-          text = match[2] ? match[2].replace(/<[^>]*>/g, '').trim() : '';
-        }
+    const fullKey = `${tag}||${attrStr.trim()}`;
+    const id = attrs['id'] || '';
+    const label = attrs['inkscape:label'] || '';
+    let text = '';
+    if (tag === 'text') {
+      text = match[3] ? match[3].replace(/<[^>]*>/g, '').trim() : '';
+    }
 
-        let isClosedPath = false;
-        if (tag === 'path') {
-          const fillAttr = attrs['fill'];
-          const styleAttr = attrs['style'] || '';
-          const hasFillAttr = fillAttr && fillAttr !== 'none';
-          const hasStyleFill = styleAttr.includes('fill:') && !styleAttr.includes('fill:none') && !styleAttr.includes('fill: none');
-          const hasStyleFillNone = styleAttr.includes('fill:none') || styleAttr.includes('fill: none');
-          if (hasFillAttr || (hasStyleFill && !hasStyleFillNone)) {
-            isClosedPath = true;
-          }
-        }
-
-        primitives.push({ tag, fullMatch, fullKey, idKey, geoKey, id, label, text, isClosedPath });
+    let isClosedPath = false;
+    if (tag === 'path') {
+      const fillAttr = attrs['fill'];
+      const styleAttr = attrs['style'] || '';
+      const hasFillAttr = fillAttr && fillAttr !== 'none';
+      const hasStyleFill = styleAttr.includes('fill:') && !styleAttr.includes('fill:none') && !styleAttr.includes('fill: none');
+      const hasStyleFillNone = styleAttr.includes('fill:none') || styleAttr.includes('fill: none');
+      if (hasFillAttr || (hasStyleFill && !hasStyleFillNone)) {
+        isClosedPath = true;
       }
     }
+
+    primitives.push({ tag, fullMatch, fullKey, idKey, geoKey, id, label, text, isClosedPath });
   }
   return primitives;
 }
@@ -306,44 +302,63 @@ function injectDataAttr(elementStr, idx) {
   return elementStr.replace(/^(<\w+)/, `$1 data-diff-idx="${idx}"`);
 }
 
-const DIFF_COLORS = {
-  'diff-changed': '#ffff00',
-  'diff-added':   '#00ff66',
-  'diff-deleted': '#ff3366',
+// ─── STRICT COLOR PALETTE ──────────────────────────────────────────────────────
+const DIFF_PALETTE = {
+  CHANGED:   '#FACC15', // Yellow
+  ADDED:     '#22C55E', // Green
+  DELETED:   '#EF4444', // Red
+  UNCHANGED: {
+    TRACE:     '#4B5563',               // Slate grey for signal lines
+    PAD:       '#374151',               // Darker slate grey for filled copper pads
+    COURTYARD: '#FF00FF' // Bright KiCad magenta/pink courtyard outline
+  }
 };
 
 /**
- * Injects inline styles for highlighted elements.
+ * Injects precise color highlights while strictly preserving native KiCad geometry and stroke-widths.
  */
-function injectDiffStyle(elementStr, diffClass, isClosed, tag) {
-  if (diffClass === 'diff-unchanged') return elementStr;
+function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
+  // 1. Detect if the element belongs to the KiCad Courtyard layer (F.CrtYd / B.CrtYd)
+  const isCourtyard = /class="[^"]*(?:CrtYd|courtyard)[^"]*"/i.test(elementHtml) ||
+                      /stroke="[^"]*(?:#E066E0|#C878C8|#DA70D6|magenta|pink)[^"]*"/i.test(elementHtml);
 
-  const color = DIFF_COLORS[diffClass];
-  if (!color) return elementStr;
+  // 2. Strip only existing color definitions; DO NOT touch stroke-width or path data
+  let sanitized = elementHtml
+    .replace(/\bstroke="[^"]*"/gi, '')
+    .replace(/\bfill="[^"]*"/gi, '')
+    .replace(/\bstyle="[^"]*"/gi, '');
 
-  let styleProps;
-  if (tag === 'text' || tag === 'use') {
-    // SVG <text> and <use> elements: fill directly with diff color, no stroke needed.
-    styleProps = `fill:${color};stroke:none;opacity:1;`;
-  } else if (tag === 'g' && /class=["'][^"']*stroked-text/.test(elementStr)) {
-    // KiCad stroked-text <g> blocks: these are containers of thin glyph stroke paths.
-    // Only change the stroke COLOR — do NOT override stroke-width, otherwise at 0.5+ the
-    // dense glyph path segments fill in and create a solid yellow block instead of visible glyphs.
-    // The native stroke-width (0.1524mm) already makes individual strokes legible.
-    styleProps = `fill:none;stroke:${color};opacity:1;`;
-  } else if (isClosed) {
-    // Closed shapes (component body rects, pads): stroke-only, no fill.
-    // Use a thin stroke (0.5mm ≈ 3× native 0.15mm) so the outline is clearly visible
-    // without flooding any nested glyph paths.
-    styleProps = `fill:none;stroke:${color};stroke-width:0.5;opacity:1;`;
+  let styleString = '';
+
+  if (diffClass === 'diff-unchanged') {
+    if (isCourtyard) {
+      // Crisp KiCad Pink Courtyard boundary outline
+      styleString = `stroke: ${DIFF_PALETTE.UNCHANGED.COURTYARD} !important; fill: none !important; opacity: 0.60 !important; pointer-events: none;`;
+    } else if (isClosed) {
+      // Background pads, vias, zones: Filled with muted grey, no artificial stroke added
+      styleString = `fill: ${DIFF_PALETTE.UNCHANGED.PAD} !important; stroke: none !important; opacity: 0.40 !important; pointer-events: none;`;
+    } else {
+      // Native-width signal traces: Colored grey, original stroke-width preserved
+      styleString = `stroke: ${DIFF_PALETTE.UNCHANGED.TRACE} !important; fill: none !important; opacity: 0.40 !important; pointer-events: none;`;
+    }
   } else {
-    styleProps = `fill:none;stroke:${color};opacity:1;`;
+    // ACTIVE DIFF (CHANGED, ADDED, DELETED)
+    const color = diffClass === 'diff-changed'
+      ? DIFF_PALETTE.CHANGED
+      : diffClass === 'diff-added'
+        ? DIFF_PALETTE.ADDED
+        : DIFF_PALETTE.DELETED;
+
+    if (isClosed) {
+      // Changed/Added/Deleted closed pads: Solid color fill with high opacity
+      styleString = `fill: ${color} !important; stroke: none !important; opacity: 1.0 !important;`;
+    } else {
+      // Changed/Added/Deleted traces: Exact native width colored sharply with zero blur filters
+      styleString = `stroke: ${color} !important; fill: none !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
+    }
   }
 
-  if (/style=["']/.test(elementStr)) {
-    return elementStr.replace(/style=["']([^"']*)["']/, `style="${styleProps}$1"`);
-  }
-  return elementStr.replace(/^(<\w+)/, `$1 style="${styleProps}"`);
+  return sanitized.replace(/(\/?>)$/, ` style="${styleString}" $1`);
 }
 
 /**
@@ -441,11 +456,51 @@ function assembleTrackChains(elements, layerFilename) {
     return Math.hypot(p1.x - p2.x, p1.y - p2.y) <= 0.1;
   }
 
-  function areConnected(n1, n2) {
-    return isClose(n1.pts.start, n2.pts.start) ||
-           isClose(n1.pts.start, n2.pts.end) ||
-           isClose(n1.pts.end, n2.pts.start) ||
-           isClose(n1.pts.end, n2.pts.end);
+  // Spatial hash grid (0.2 mm cells) for O(1) neighbor lookups
+  const GRID_SIZE = 0.2;
+  const grid = new Map();
+
+  function gridKey(x, y) {
+    return `${Math.floor(x / GRID_SIZE)},${Math.floor(y / GRID_SIZE)}`;
+  }
+
+  function addToGrid(pt, node) {
+    const key = gridKey(pt.x, pt.y);
+    let arr = grid.get(key);
+    if (!arr) {
+      arr = [];
+      grid.set(key, arr);
+    }
+    arr.push({ pt, node });
+  }
+
+  for (const node of nodes) {
+    addToGrid(node.pts.start, node);
+    addToGrid(node.pts.end, node);
+  }
+
+  function getNeighbors(curr) {
+    const neighbors = [];
+    for (const pt of [curr.pts.start, curr.pts.end]) {
+      const gx = Math.floor(pt.x / GRID_SIZE);
+      const gy = Math.floor(pt.y / GRID_SIZE);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const k = `${gx + dx},${gy + dy}`;
+          const cell = grid.get(k);
+          if (cell) {
+            for (const item of cell) {
+              if (!item.node.visited && item.node !== curr) {
+                if (isClose(pt, item.pt)) {
+                  neighbors.push(item.node);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    return neighbors;
   }
 
   for (let i = 0; i < nodes.length; i++) {
@@ -459,10 +514,11 @@ function assembleTrackChains(elements, layerFilename) {
       const curr = queue.shift();
       component.push(curr);
 
-      for (let j = 0; j < nodes.length; j++) {
-        if (!nodes[j].visited && areConnected(curr, nodes[j])) {
-          nodes[j].visited = true;
-          queue.push(nodes[j]);
+      const neighbors = getNeighbors(curr);
+      for (const n of neighbors) {
+        if (!n.visited) {
+          n.visited = true;
+          queue.push(n);
         }
       }
     }
@@ -604,15 +660,249 @@ function rewriteSchematicBackground(svgContent) {
 }
 
 /**
+ * O(L) Single-Pass SVG Annotation Engine.
+ * Builds an O(1) replacement dictionary keyed by element match string,
+ * then traverses the raw SVG buffer exactly once using regex.
+ */
+function annotateSvgSinglePass(svgContent, elements, classifications) {
+  if (!svgContent || !elements || elements.length === 0) {
+    return svgContent;
+  }
+
+  // 1. Build an O(1) replacement map
+  const replacementMap = new Map();
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (el.isWorksheetFrame) continue;
+
+    const classification = classifications.get(el);
+    if (!classification) continue;
+
+    const diffClass = classification.diffClass;
+    const isClosed = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
+    const typeClass = isClosed ? 'diff-closed' : 'diff-open';
+
+    let annotated = injectClass(el.fullMatch, `${diffClass} ${typeClass}`);
+    annotated = injectDiffStyle(annotated, diffClass, isClosed, el.tag);
+    
+    if (diffClass !== 'diff-unchanged' && classification.diffIdx !== undefined) {
+      annotated = injectDataAttr(annotated, classification.diffIdx);
+    }
+
+    replacementMap.set(el.fullMatch, annotated);
+  }
+
+  // 2. Single-pass regex traversing the SVG buffer once
+  const tagPattern = /<g\s+class=["']stroked-text["'][^>]*>[\s\S]*?<\/g>|<text\b[^>]*>[\s\S]*?<\/text>|<(?:path|circle|rect|line|polyline|polygon|use|ellipse|image)\b[^>]*\/?>/gi;
+  return svgContent.replace(tagPattern, (match) => {
+    return replacementMap.get(match) || match;
+  });
+}
+
+/**
+ * Injects data-diff-idx attributes ONLY on modified elements.
+ * Strictly preserves 100% of native KiCad colors, fills, strokes, and stroke widths.
+ * Used for Overlay Slider and Color Delta Map diff modes.
+ */
+function annotateSvgDataOnly(svgContent, elements, classifications) {
+  if (!svgContent || !elements || elements.length === 0) {
+    return svgContent;
+  }
+
+  const replacementMap = new Map();
+
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i];
+    if (el.isWorksheetFrame) continue;
+
+    const classification = classifications.get(el);
+    if (!classification) continue;
+
+    const diffClass = classification.diffClass;
+    if (diffClass !== 'diff-unchanged' && classification.diffIdx !== undefined) {
+      const annotated = injectDataAttr(el.fullMatch, classification.diffIdx);
+      replacementMap.set(el.fullMatch, annotated);
+    }
+  }
+
+  if (replacementMap.size === 0) return svgContent;
+
+  const tagPattern = /<g\s+class=["']stroked-text["'][^>]*>[\s\S]*?<\/g>|<text\b[^>]*>[\s\S]*?<\/text>|<(?:path|circle|rect|line|polyline|polygon|use|ellipse|image)\b[^>]*\/?>/gi;
+  return svgContent.replace(tagPattern, (match) => {
+    return replacementMap.get(match) || match;
+  });
+}
+
+/**
+ * Normalizes KiCad net names into clean natural identifiers.
+ * e.g. "/ETHERNET/PMODE1" -> "ethernet/pmode1"
+ *      "Net-(U8-Pad61)"   -> "u8_pad61"
+ */
+function cleanNetName(rawNet) {
+  if (!rawNet || rawNet === 'unconnected' || rawNet === '0') return 'signal';
+  return String(rawNet)
+    .replace(/^\//, '')                     // Strip leading root slash
+    .replace(/^unconnected-\((.*?)\)$/i, '$1')
+    .replace(/^Net-\((.*?)\)$/i, '$1')
+    .toLowerCase();
+}
+
+/**
+ * Builds the natural semantic audit phrase: "[action] [name] [trace|component]".
+ * @param {'CHANGED'|'ADDED'|'DELETED'} action
+ * @param {'TRACE'|'COMPONENT'|'GRAPHIC'} type
+ * @param {string} name  - raw net name or ref-des string
+ */
+function formatSemanticTitle(action, type, name) {
+  const verb = action.toLowerCase(); // "changed" | "added" | "deleted"
+
+  if (type === 'TRACE') {
+    return `${verb} ${cleanNetName(name)} trace`;
+  }
+  if (type === 'COMPONENT') {
+    // name may be "R38 (10k)" — keep it as-is, just lower-verb prefix
+    return `${verb} ${name} component`;
+  }
+  return `${verb} ${name.toLowerCase()}`;
+}
+
+/**
+ * Resolves the semantic identity (RefDes or Net name) for a diff element.
+ */
+function resolveSemanticIdentity(diffItem, pcbMetadata) {
+  if (!pcbMetadata) {
+    return { name: diffItem.refDes || 'signal', type: 'TRACE', layer: diffItem.layer || 'F.Cu' };
+  }
+
+  const { footprints = [], segments = [] } = pcbMetadata;
+
+  // 1. Check Component Footprint Match
+  if (diffItem.refDes) {
+    const fp = footprints.find(f => f.ref === diffItem.refDes);
+    return {
+      name: `${diffItem.refDes}${fp?.value ? ` (${fp.value})` : ''}`,
+      type: 'COMPONENT',
+      layer: fp?.layer || diffItem.layer || 'F.Cu'
+    };
+  }
+
+  // 2. Check Track Segment Coordinate Proximity
+  const center = diffItem.center || (diffItem.bbox ? {
+    x: (diffItem.bbox.x1 + diffItem.bbox.x2) / 2,
+    y: (diffItem.bbox.y1 + diffItem.bbox.y2) / 2
+  } : null);
+
+  if (center && segments.length > 0) {
+    let closestNet = null;
+    let minDistance = 3.0; // 3.0 mm tolerance for SVG-to-board coordinate alignment
+
+    for (const seg of segments) {
+      if (!seg.start || !seg.end) continue;
+      const dStart = Math.hypot(seg.start.x - center.x, seg.start.y - center.y);
+      const dEnd   = Math.hypot(seg.end.x - center.x, seg.end.y - center.y);
+      const dMid   = Math.hypot((seg.start.x + seg.end.x) / 2 - center.x, (seg.start.y + seg.end.y) / 2 - center.y);
+      
+      const dist = Math.min(dStart, dEnd, dMid);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestNet = seg.net || seg.netName;
+      }
+    }
+
+    if (closestNet) {
+      return {
+        name: closestNet,
+        type: 'TRACE',
+        layer: diffItem.layer || 'F.Cu'
+      };
+    }
+  }
+
+  return {
+    name: diffItem.netName || diffItem.net || 'signal',
+    type: 'TRACE',
+    layer: diffItem.layer || 'F.Cu'
+  };
+}
+
+/**
+ * Generates structured modification records for the client audit sidebar.
+ */
+function generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata) {
+  const modifications = [];
+  const seenDiffIndices = new Set();
+
+  const processMap = (classMap, defaultSide) => {
+    if (!classMap) return;
+    classMap.forEach((meta, el) => {
+      if (!meta || meta.diffClass === 'diff-unchanged') return;
+      if (meta.diffIdx !== undefined && seenDiffIndices.has(meta.diffIdx)) return;
+      if (meta.diffIdx !== undefined) seenDiffIndices.add(meta.diffIdx);
+
+      const identity = resolveSemanticIdentity(meta, pcbMetadata);
+
+      // Determine strict action verb
+      let action = 'CHANGED';
+      if (meta.diffClass === 'diff-added')   action = 'ADDED';
+      if (meta.diffClass === 'diff-deleted') action = 'DELETED';
+
+      // Build the primary semantic phrase (e.g. "changed spi2_cs trace")
+      const title = formatSemanticTitle(action, identity.type, identity.name);
+
+      // Build concise context detail
+      let detail = '';
+      if (identity.type === 'TRACE') {
+        detail = identity.connection
+          ? `${identity.connection} • Layer ${identity.layer}`
+          : `Layer ${identity.layer}`;
+      } else if (identity.type === 'COMPONENT') {
+        if (action === 'CHANGED' && meta.displacement && meta.displacement > 2.0) {
+          detail = `Relocated by ${meta.displacement.toFixed(2)} mm on ${identity.layer}`;
+        } else {
+          detail = `${identity.layer} • (${meta.center?.x?.toFixed(1) ?? 0}, ${meta.center?.y?.toFixed(1) ?? 0})`;
+        }
+      }
+
+      modifications.push({
+        diffIdx: meta.diffIdx,
+        action,          // 'CHANGED' | 'ADDED' | 'DELETED'
+        title,           // e.g. "changed spi2_cs trace", "deleted r38 component"
+        type: identity.type,
+        name: identity.name,
+        detail,
+        layer: identity.layer || 'F.Cu',
+        bbox: meta.bbox,
+        // Retained for diff-highlight call-site
+        side: meta.side || defaultSide,
+        baseCoords: meta.baseCoords,
+        targetCoords: meta.targetCoords
+      });
+    });
+  };
+
+  processMap(targetClassifications, 'target');
+  processMap(baseClassifications, 'base');
+
+  return modifications;
+}
+
+/**
  * Core diff processor.
  */
-export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
+export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = null) {
+  const tTotalStart = performance.now();
+  
   // Rewrite KiCad's cream paper-color background to dark canvas for schematic SVGs
+  const tBgStart = performance.now();
   baseSvg   = rewriteSchematicBackground(baseSvg);
   targetSvg = rewriteSchematicBackground(targetSvg);
+  const tBg = performance.now() - tBgStart;
 
+  const tExtractStart = performance.now();
   const baseElements   = extractElements(baseSvg);
   const targetElements = extractElements(targetSvg);
+  const tExtract = performance.now() - tExtractStart;
 
   const baseClassifications = new Map();
   const targetClassifications = new Map();
@@ -623,12 +913,9 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
   const matchedBaseToTarget = new Map();
 
   let diffIdx = 0;
-  const modifications = [];
 
   // --- PASS 0: Contiguous Track Chain Assembly & Topological Matching ---
-  // FIX (a): layerFilename is now threaded through so assembleTrackChains
-  // can correctly identify copper layers by filename rather than the broken
-  // class attribute check (KiCad SVG path/line elements have no class attr).
+  const tPass0Start = performance.now();
   const baseChains = assembleTrackChains(baseElements, layerFilename);
   const targetChains = assembleTrackChains(targetElements, layerFilename);
 
@@ -689,35 +976,54 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
           y: (tChain.startAnchor.y + tChain.endAnchor.y) / 2
         };
 
-        // Add a single modifications log item for the assembled track chain
-        modifications.push({
-          type: 'modify',
-          class: 'track_chain',
-          label: 'Re-routed Track Layout',
-          tag: 'path',
-          id: `track_chain_${sharedIdx}`,
-          diffIdx: sharedIdx,
-          segmentCount: tChain.subSegments.length,
-          baseCoords: baseCenter,
-          targetCoords: targetCenter
-        });
+        const bbox = {
+          x1: Math.min(tChain.startAnchor.x, tChain.endAnchor.x),
+          y1: Math.min(tChain.startAnchor.y, tChain.endAnchor.y),
+          x2: Math.max(tChain.startAnchor.x, tChain.endAnchor.x),
+          y2: Math.max(tChain.startAnchor.y, tChain.endAnchor.y),
+        };
 
         // Mark all base sub-segments as changed and lock them
         for (const el of bestBaseChain.subSegments) {
           matchedBase.add(el);
-          baseClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+          baseClassifications.set(el, {
+            diffClass: 'diff-changed',
+            diffIdx: sharedIdx,
+            startPoint: bestBaseChain.startAnchor,
+            endPoint: bestBaseChain.endAnchor,
+            segmentCount: bestBaseChain.subSegments.length,
+            layer: layerFilename,
+            center: baseCenter,
+            baseCoords: baseCenter,
+            targetCoords: targetCenter,
+            bbox
+          });
         }
 
         // Mark all target sub-segments as changed and lock them
         for (const el of tChain.subSegments) {
           matchedTarget.add(el);
-          targetClassifications.set(el, { diffClass: 'diff-changed', diffIdx: sharedIdx });
+          targetClassifications.set(el, {
+            diffClass: 'diff-changed',
+            diffIdx: sharedIdx,
+            startPoint: tChain.startAnchor,
+            endPoint: tChain.endAnchor,
+            segmentCount: tChain.subSegments.length,
+            layer: layerFilename,
+            center: targetCenter,
+            baseCoords: baseCenter,
+            targetCoords: targetCenter,
+            bbox
+          });
         }
       }
     }
   }
 
+  const tPass0 = performance.now() - tPass0Start;
+
   // --- PASS 1: Relational Key Lookup (RefDes matching) ---
+  const tPass1Start = performance.now();
   for (const tEl of targetElements) {
     if (matchedTarget.has(tEl)) continue;
     if (tEl.isComponent && tEl.refDes) {
@@ -747,8 +1053,10 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
       }
     }
   }
+  const tPass1 = performance.now() - tPass1Start;
 
   // --- PASS 2: Exact Primitive Matching (identical geometry + attributes) ---
+  const tPass2Start = performance.now();
   const baseKeyGroups = new Map();
   for (const el of baseElements) {
     if (matchedBase.has(el)) continue;
@@ -767,8 +1075,10 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
       targetClassifications.set(tEl, { diffClass: 'diff-unchanged' });
     }
   }
+  const tPass2 = performance.now() - tPass2Start;
 
   // --- PASS 3: Proximity / Secondary Key matching for unmatched primitives ---
+  const tPass3Start = performance.now();
   const PROXIMITY_THRESHOLD = 5.0;
 
   for (const tEl of targetElements) {
@@ -801,151 +1111,110 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
       }
     }
   }
+  const tPass3 = performance.now() - tPass3Start;
 
   // --- PASS 4: Classify remaining elements as added or deleted ---
+  const tPass4Start = performance.now();
   for (const el of baseElements) {
     if (el.isWorksheetFrame) continue;
     if (!baseClassifications.has(el)) {
-      baseClassifications.set(el, { diffClass: 'diff-deleted' });
+      const center = getElementCenter(el);
+      const endpts = getSegmentEndpoints(el);
+      const delIdx = diffIdx++;
+      baseClassifications.set(el, {
+        diffClass: 'diff-deleted',
+        diffIdx: delIdx,
+        refDes: el.refDes,
+        name: el.text || el.id || el.tag,
+        layer: layerFilename,
+        center,
+        baseCoords: center,
+        startPoint: endpts ? endpts.start : null,
+        endPoint: endpts ? endpts.end : null,
+        bbox: {
+          x1: center.x - 1,
+          y1: center.y - 1,
+          x2: center.x + 1,
+          y2: center.y + 1
+        }
+      });
     }
   }
 
   for (const el of targetElements) {
     if (el.isWorksheetFrame) continue;
     if (!targetClassifications.has(el)) {
-      targetClassifications.set(el, { diffClass: 'diff-added' });
-    }
-  }
-
-  // Assign diffIdx and construct modifications logs for standard (non-chain) additions/deletions/modifications
-  for (const el of baseElements) {
-    if (el.isWorksheetFrame) continue;
-    const classification = baseClassifications.get(el);
-    if (!classification) continue;
-    if (classification.diffClass === 'diff-deleted') {
-      classification.diffIdx = diffIdx++;
-      
       const center = getElementCenter(el);
-      let label = el.refDes || el.id || el.tag;
-      if (el.text && !label.includes(el.text)) {
-        label += ` ${el.text}`;
-      }
-
-      modifications.push({
-        type: 'delete',
-        component: getComponentType(el.refDes),
-        label: `Deleted ${label}`,
-        tag: el.tag,
-        id: el.refDes || el.id,
-        text: el.text,
-        side: 'base',
-        diffIdx: classification.diffIdx,
-        baseCoords: center,
-        targetCoords: null
-      });
-    }
-  }
-
-  for (const el of targetElements) {
-    if (el.isWorksheetFrame) continue;
-    const classification = targetClassifications.get(el);
-    if (!classification) continue;
-    if (classification.diffClass === 'diff-added') {
-      classification.diffIdx = diffIdx++;
-      
-      const center = getElementCenter(el);
-      let label = el.refDes || el.id || el.tag;
-      if (el.text && !label.includes(el.text)) {
-        label += ` ${el.text}`;
-      }
-
-      modifications.push({
-        type: 'add',
-        component: getComponentType(el.refDes),
-        label: `Added ${label}`,
-        tag: el.tag,
-        id: el.refDes || el.id,
-        text: el.text,
-        side: 'target',
-        diffIdx: classification.diffIdx,
-        baseCoords: null,
-        targetCoords: center
-      });
-    } else if (classification.diffClass === 'diff-changed') {
-      // If it is already panned from Pass 0 (track chain matches), it already has a modifications item.
-      // So only process Pass 1 & Pass 3 modifications here:
-      if (matchedTargetToBase.has(el)) {
-        const bEl = matchedTargetToBase.get(el);
-        const bClassification = baseClassifications.get(bEl);
-        
-        const sharedIdx = diffIdx++;
-        classification.diffIdx = sharedIdx;
-        if (bClassification) bClassification.diffIdx = sharedIdx;
-        
-        const baseCenter = getElementCenter(bEl);
-        const targetCenter = getElementCenter(el);
-        
-        let label = el.refDes || el.id || el.tag;
-        if (el.text && !label.includes(el.text)) {
-          label += ` ${el.text}`;
+      const endpts = getSegmentEndpoints(el);
+      const addIdx = diffIdx++;
+      targetClassifications.set(el, {
+        diffClass: 'diff-added',
+        diffIdx: addIdx,
+        refDes: el.refDes,
+        name: el.text || el.id || el.tag,
+        layer: layerFilename,
+        center,
+        targetCoords: center,
+        startPoint: endpts ? endpts.start : null,
+        endPoint: endpts ? endpts.end : null,
+        bbox: {
+          x1: center.x - 1,
+          y1: center.y - 1,
+          x2: center.x + 1,
+          y2: center.y + 1
         }
+      });
+    } else if (targetClassifications.get(el).diffClass === 'diff-changed') {
+      const classification = targetClassifications.get(el);
+      if (classification.diffIdx === undefined) {
+        if (matchedTargetToBase.has(el)) {
+          const bEl = matchedTargetToBase.get(el);
+          const bClassification = baseClassifications.get(bEl);
+          const sharedIdx = diffIdx++;
+          classification.diffIdx = sharedIdx;
+          classification.refDes = el.refDes;
+          classification.name = el.text || el.id || el.tag;
+          classification.layer = layerFilename;
+          classification.center = getElementCenter(el);
+          classification.targetCoords = getElementCenter(el);
+          classification.baseCoords = getElementCenter(bEl);
+          classification.bbox = {
+            x1: Math.min(classification.baseCoords.x, classification.targetCoords.x) - 1,
+            y1: Math.min(classification.baseCoords.y, classification.targetCoords.y) - 1,
+            x2: Math.max(classification.baseCoords.x, classification.targetCoords.x) + 1,
+            y2: Math.max(classification.baseCoords.y, classification.targetCoords.y) + 1
+          };
 
-        modifications.push({
-          type: 'modify',
-          component: getComponentType(el.refDes),
-          label: `Changed ${label}`,
-          tag: el.tag,
-          id: el.refDes || el.id,
-          text: el.text,
-          side: 'target',
-          diffIdx: sharedIdx,
-          baseCoords: baseCenter,
-          targetCoords: targetCenter
-        });
+          if (bClassification) {
+            bClassification.diffIdx = sharedIdx;
+            bClassification.refDes = bEl.refDes;
+            bClassification.name = bEl.text || bEl.id || bEl.tag;
+            bClassification.layer = layerFilename;
+            bClassification.center = getElementCenter(bEl);
+            bClassification.baseCoords = getElementCenter(bEl);
+            bClassification.targetCoords = getElementCenter(el);
+            bClassification.bbox = classification.bbox;
+          }
+        }
       }
     }
   }
+  const tPass4 = performance.now() - tPass4Start;
 
-  // Annotate base SVG
-  let annotatedBase = baseSvg;
-  for (const el of baseElements) {
-    if (el.isWorksheetFrame) continue;
-    const classification = baseClassifications.get(el);
-    if (!classification) continue;
-    const diffClass = classification.diffClass;
+  // Annotate base and target SVGs using O(L) single-pass annotation engine
+  const tAnnotateStart = performance.now();
+  const annotatedBase = annotateSvgSinglePass(baseSvg, baseElements, baseClassifications);
+  const annotatedTarget = annotateSvgSinglePass(targetSvg, targetElements, targetClassifications);
+  // Pure native vector graphics with data-diff-idx injected (no style/color alteration)
+  const cleanBaseSvg = annotateSvgDataOnly(baseSvg, baseElements, baseClassifications);
+  const cleanTargetSvg = annotateSvgDataOnly(targetSvg, targetElements, targetClassifications);
+  const tAnnotate = performance.now() - tAnnotateStart;
 
-    const isClosed  = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
-    const typeClass = isClosed ? 'diff-closed' : 'diff-open';
+  // Generate structured modification records for client audit sidebar
+  const modifications = generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata);
 
-    let annotated = injectClass(el.fullMatch, `${diffClass} ${typeClass}`);
-    annotated = injectDiffStyle(annotated, diffClass, isClosed, el.tag);
-    if (diffClass !== 'diff-unchanged') {
-      annotated = injectDataAttr(annotated, classification.diffIdx);
-    }
-    annotatedBase = annotatedBase.replace(el.fullMatch, annotated);
-  }
-
-  // Annotate target SVG
-  let annotatedTarget = targetSvg;
-  for (const el of targetElements) {
-    if (el.isWorksheetFrame) continue;
-    const classification = targetClassifications.get(el);
-    if (!classification) continue;
-    const diffClass = classification.diffClass;
-
-    const isClosed  = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
-    const typeClass = isClosed ? 'diff-closed' : 'diff-open';
-
-    let annotated = injectClass(el.fullMatch, `${diffClass} ${typeClass}`);
-    annotated = injectDiffStyle(annotated, diffClass, isClosed, el.tag);
-    if (diffClass !== 'diff-unchanged') {
-      annotated = injectDataAttr(annotated, classification.diffIdx);
-    }
-    annotatedTarget = annotatedTarget.replace(el.fullMatch, annotated);
-  }
-
-  // Temporary Diagnostic Injection Code
-  console.log("--- BANANA 2.0 AUDIT ENGINE LOG ---");
+  // Diagnostic Code
+  const tDiagStart = performance.now();
   let misclassifiedCount = 0;
   let droppedCount = 0;
 
@@ -960,7 +1229,6 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
         return (elRef && bRef && bRef === elRef) || (b.text && b.text === el.text);
       });
       if (potentialBaseTwin) {
-        console.warn(`[MISCLASSIFICATION DETECTED]: Element tagged as ADDED, but a twin exists in Base! Label: ${el.text || elRef}`);
         misclassifiedCount++;
       }
     }
@@ -971,8 +1239,35 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename) {
       }
     }
   });
+  const tDiag = performance.now() - tDiagStart;
+  const tTotalDiff = performance.now() - tTotalStart;
 
-  console.log(`Diagnostic Results -> Misclassified Modifications: ${misclassifiedCount}, Dropped: ${droppedCount}`);
+  const telemetry = {
+    tBg,
+    tExtract,
+    tPass0,
+    tPass1,
+    tPass2,
+    tPass3,
+    tPass4,
+    tAnnotate,
+    tDiag,
+    tTotalDiff,
+    baseCount: baseElements.length,
+    targetCount: targetElements.length
+  };
 
-  return { baseSvg: annotatedBase, targetSvg: annotatedTarget, modifications };
+  console.log(`[PERF TIMERS] Diff Breakdown:
+  - Background Rewrite: ${tBg.toFixed(2)} ms
+  - Extract Elements (${baseElements.length}b / ${targetElements.length}t): ${tExtract.toFixed(2)} ms
+  - Pass 0 (Track Chains): ${tPass0.toFixed(2)} ms
+  - Pass 1 (RefDes Match): ${tPass1.toFixed(2)} ms
+  - Pass 2 (Exact Primitives): ${tPass2.toFixed(2)} ms
+  - Pass 3 (Proximity Match): ${tPass3.toFixed(2)} ms
+  - Pass 4 (Residuals & Mods): ${tPass4.toFixed(2)} ms
+  - String Annotation Replace: ${tAnnotate.toFixed(2)} ms
+  - Diagnostic Checks: ${tDiag.toFixed(2)} ms
+  - TOTAL Diff Engine Time: ${tTotalDiff.toFixed(2)} ms`);
+
+  return { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications, telemetry };
 }

@@ -9,6 +9,8 @@
     "dev": "nodemon src/server.js"
   },
   "dependencies": {
+    "ai": "^7.0.106",
+    "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2"

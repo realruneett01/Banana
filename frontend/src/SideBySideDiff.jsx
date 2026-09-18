@@ -54,14 +54,20 @@ const DIFF_CSS = `
     filter:  none !important;
   }
 
-  /* Greyscale desaturation for genuinely unchanged SCHEMATIC elements */
-  .mode-side-by-side.schematic-mode .diff-unchanged {
-    filter:  grayscale(1) brightness(1.15) opacity(0.5) !important;
+  .diff-viewport svg {
+    will-change: transform;
+    contain: layout paint size;
   }
 
-  /* Neutral grey desaturation for unchanged elements in PCB view only */
-  .mode-side-by-side.pcb-mode .diff-unchanged {
-    filter:  grayscale(1) brightness(1.15) opacity(0.5) !important;
+  /* Efficient lightweight styles for unchanged elements (no GPU filter overhead) */
+  .mode-side-by-side.schematic-mode .diff-unchanged,
+  .mode-side-by-side.pcb-mode .diff-unchanged,
+  .mode-side-by-side .diff-unchanged {
+    opacity: 0.45 !important;
+    stroke: #808080 !important;
+    fill: none !important;
+    filter: none !important;
+    pointer-events: none;
   }
 
   .mode-side-by-side svg .sch-text-glyph {
@@ -78,6 +84,7 @@ const DIFF_CSS = `
     fill:   #7a828a !important;
     stroke: none    !important;
   }
+
 
   /* ── diff-changed (yellow) ──────────────────────────────────────────────── */
   /* All descendants: stroke = yellow, fill = none.
@@ -120,6 +127,35 @@ const DIFF_CSS = `
     fill:   #ff3366 !important;
     stroke: none    !important;
   }
+
+  /* ── Interactive Hover Highlight ───────────────────────────────────────── */
+  .mode-side-by-side [data-diff-hovered="true"],
+  .mode-side-by-side .diff-highlighted {
+    stroke-width: 0.8mm !important;
+    filter: drop-shadow(0 0 6px #ffffff) !important;
+    opacity: 1 !important;
+  }
+
+  /* ── Focus Ring Pulse Animation ────────────────────────────────────────── */
+  .diff-focus-ring {
+    fill: none;
+    animation: pulse-ring 2s infinite ease-in-out;
+  }
+
+  @keyframes pulse-ring {
+    0% {
+      stroke-width: 0.5mm;
+      stroke-opacity: 1;
+    }
+    50% {
+      stroke-width: 1.2mm;
+      stroke-opacity: 0.6;
+    }
+    100% {
+      stroke-width: 0.5mm;
+      stroke-opacity: 1;
+    }
+  }
 `;
 
 // ─── Layer matching helper ────────────────────────────────────────────────────
@@ -153,6 +189,13 @@ function isLayerSolo(filename, soloLayer) {
   return name.includes(nl);
 }
 
+// ─── Direct GPU transform helper (bypasses React virtual DOM reconciliation) ───
+const applyTransformToDom = (element, transform) => {
+  if (element) {
+    element.style.transform = `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`;
+  }
+};
+
 // ─── Synchronized Pan/Zoom Engine ────────────────────────────────────────────
 // Supports two independent viewports.
 // Panning and zooming can be locked together (synced === true) or decoupled (synced === false).
@@ -182,11 +225,13 @@ function useSyncedTransform(
 
   useEffect(() => {
     baseTransformRef.current = baseTransform;
-  }, [baseTransform]);
+    applyTransformToDom(leftContentRef.current, baseTransform);
+  }, [baseTransform, leftContentRef]);
 
   useEffect(() => {
     targetTransformRef.current = targetTransform;
-  }, [targetTransform]);
+    applyTransformToDom(rightContentRef.current, targetTransform);
+  }, [targetTransform, rightContentRef]);
 
   const onWheel = useCallback((e) => {
     e.preventDefault();
@@ -206,6 +251,10 @@ function useSyncedTransform(
       const newLeftY = e.clientY - rect.top - (e.clientY - rect.top - leftState.y) * (newScale / leftState.scale);
 
       const nextVal = { scale: newScale, x: newLeftX, y: newLeftY };
+      baseTransformRef.current = nextVal;
+      targetTransformRef.current = nextVal;
+      applyTransformToDom(leftContentRef.current, nextVal);
+      applyTransformToDom(rightContentRef.current, nextVal);
       setBaseTransform(nextVal);
       setTargetTransform(nextVal);
     } else {
@@ -219,7 +268,10 @@ function useSyncedTransform(
         const newX = relMouseX - (relMouseX - state.x) * (newScale / state.scale);
         const newY = relMouseY - (relMouseY - state.y) * (newScale / state.scale);
 
-        setBaseTransform({ scale: newScale, x: newX, y: newY });
+        const nextVal = { scale: newScale, x: newX, y: newY };
+        baseTransformRef.current = nextVal;
+        applyTransformToDom(leftContentRef.current, nextVal);
+        setBaseTransform(nextVal);
       } else {
         const state = targetTransformRef.current;
         const newScale = Math.min(80, Math.max(0.02, state.scale * factor));
@@ -230,10 +282,13 @@ function useSyncedTransform(
         const newX = relMouseX - (relMouseX - state.x) * (newScale / state.scale);
         const newY = relMouseY - (relMouseY - state.y) * (newScale / state.scale);
 
-        setTargetTransform({ scale: newScale, x: newX, y: newY });
+        const nextVal = { scale: newScale, x: newX, y: newY };
+        targetTransformRef.current = nextVal;
+        applyTransformToDom(rightContentRef.current, nextVal);
+        setTargetTransform(nextVal);
       }
     }
-  }, [outerRef, synced, setBaseTransform, setTargetTransform]);
+  }, [outerRef, synced, setBaseTransform, setTargetTransform, leftContentRef, rightContentRef]);
 
   const onMouseDown = useCallback((e) => {
     if (e.button !== 0 || !outerRef.current) return;
@@ -255,6 +310,7 @@ function useSyncedTransform(
     e.currentTarget.style.cursor = 'grabbing';
   }, [outerRef]);
 
+  // 2. Ref-driven pointer move handler (bypasses React virtual DOM reconciliation during drag)
   const onMouseMove = useCallback((e) => {
     if (!dragRef.current.active) return;
 
@@ -262,37 +318,46 @@ function useSyncedTransform(
     const deltaY = e.clientY - dragRef.current.startY;
 
     if (synced) {
-      setBaseTransform({
+      const updated = {
         scale: baseTransformRef.current.scale,
         x: dragRef.current.originLeftX + deltaX,
         y: dragRef.current.originLeftY + deltaY
-      });
-      setTargetTransform({
-        scale: targetTransformRef.current.scale,
-        x: dragRef.current.originRightX + deltaX,
-        y: dragRef.current.originRightY + deltaY
-      });
+      };
+      baseTransformRef.current = updated;
+      targetTransformRef.current = updated;
+
+      applyTransformToDom(leftContentRef.current, updated);
+      applyTransformToDom(rightContentRef.current, updated);
     } else {
       if (dragRef.current.isLeft) {
-        setBaseTransform({
+        const updated = {
           scale: baseTransformRef.current.scale,
           x: dragRef.current.originLeftX + deltaX,
           y: dragRef.current.originLeftY + deltaY
-        });
+        };
+        baseTransformRef.current = updated;
+        applyTransformToDom(leftContentRef.current, updated);
       } else {
-        setTargetTransform({
+        const updated = {
           scale: targetTransformRef.current.scale,
           x: dragRef.current.originRightX + deltaX,
           y: dragRef.current.originRightY + deltaY
-        });
+        };
+        targetTransformRef.current = updated;
+        applyTransformToDom(rightContentRef.current, updated);
       }
     }
-  }, [synced, setBaseTransform, setTargetTransform]);
+  }, [synced, leftContentRef, rightContentRef]);
 
+  // 3. Sync to React state on mouse up
   const onMouseUp = useCallback((e) => {
+    if (!dragRef.current.active) return;
     dragRef.current.active = false;
-    if (e.currentTarget) e.currentTarget.style.cursor = 'grab';
-  }, []);
+    if (e && e.currentTarget) e.currentTarget.style.cursor = 'grab';
+    if (outerRef.current) outerRef.current.style.cursor = 'grab';
+    setBaseTransform({ ...baseTransformRef.current });
+    setTargetTransform({ ...targetTransformRef.current });
+  }, [setBaseTransform, setTargetTransform, outerRef]);
 
   const resetTransform = useCallback(() => {
     const defaultVal = { scale: 1, x: 0, y: 0 };
@@ -350,7 +415,7 @@ function useSyncedTransform(
           y: leftStart.y + (leftTarget.y - leftStart.y) * e,
         };
         baseTransformRef.current = nextBase;
-        setBaseTransform(nextBase);
+        applyTransformToDom(leftContentRef.current, nextBase);
       }
 
       if (rightStart && rightTarget) {
@@ -360,18 +425,25 @@ function useSyncedTransform(
           y: rightStart.y + (rightTarget.y - rightStart.y) * e,
         };
         targetTransformRef.current = nextTarget;
-        setTargetTransform(nextTarget);
+        applyTransformToDom(rightContentRef.current, nextTarget);
       }
 
       if (t < 1) {
         requestAnimationFrame(tick);
+      } else {
+        if (leftStart && leftTarget) {
+          setBaseTransform(baseTransformRef.current);
+        }
+        if (rightStart && rightTarget) {
+          setTargetTransform(targetTransformRef.current);
+        }
       }
     };
 
     requestAnimationFrame(tick);
-  }, [setBaseTransform, setTargetTransform]);
+  }, [leftContentRef, rightContentRef, setBaseTransform, setTargetTransform]);
 
-  return { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo };
+  return { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo, baseTransformRef, targetTransformRef };
 }
 
 // ─── Per-layer opacity helper ─────────────────────────────────────────────────
@@ -561,7 +633,7 @@ export default forwardRef(function SideBySideDiff({
   const [baseTransform, setBaseTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [targetTransform, setTargetTransform] = useState({ scale: 1, x: 0, y: 0 });
 
-  const { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo } =
+  const { onWheel, onMouseDown, onMouseMove, onMouseUp, resetTransform, animateTo, baseTransformRef, targetTransformRef } =
     useSyncedTransform(
       baseTransform,
       setBaseTransform,
@@ -573,6 +645,32 @@ export default forwardRef(function SideBySideDiff({
       synced
     );
 
+  /**
+   * Smoothly centers and zooms the viewport on a specific element's bounding box.
+   */
+  const focusOnBoundingBox = useCallback((bbox, containerWidth, containerHeight) => {
+    if (!bbox) return;
+
+    const targetScale = 2.5; // Zoom in for detail
+    const centerX = (bbox.x1 + bbox.x2) / 2;
+    const centerY = (bbox.y1 + bbox.y2) / 2;
+
+    // Convert SVG coordinates to viewport transform offsets
+    const newX = containerWidth / 2 - centerX * targetScale;
+    const newY = containerHeight / 2 - centerY * targetScale;
+
+    const newTransform = { scale: targetScale, x: newX, y: newY };
+
+    baseTransformRef.current = newTransform;
+    targetTransformRef.current = newTransform;
+
+    setBaseTransform(newTransform);
+    setTargetTransform(newTransform);
+
+    applyTransformToDom(leftContentRef.current, newTransform);
+    applyTransformToDom(rightContentRef.current, newTransform);
+  }, [leftContentRef, rightContentRef, setBaseTransform, setTargetTransform, baseTransformRef, targetTransformRef]);
+
   const drawFocusRing = (contentEl, idx, ringColorClass) => {
     const target = contentEl.querySelector(`[data-diff-idx="${idx}"]`);
     if (!target) return;
@@ -581,20 +679,34 @@ export default forwardRef(function SideBySideDiff({
     const hostSvg = target.closest('svg');
     if (!hostSvg) return;
 
-    const svgRect = hostSvg.getBoundingClientRect();
-    const cx = elRect.left + elRect.width / 2 - svgRect.left;
-    const cy = elRect.top + elRect.height / 2 - svgRect.top;
-    const rBase = Math.max(elRect.width, elRect.height) / 2 + 4;
+    const viewBoxStr = hostSvg.getAttribute('viewBox');
+    if (viewBoxStr) {
+      const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
+      if (vb.length >= 4 && vb[2] > 0 && vb[3] > 0) {
+        const svgRect = hostSvg.getBoundingClientRect();
+        const scale = Math.min(svgRect.width / vb[2], svgRect.height / vb[3]);
+        const offsetX = (svgRect.width - vb[2] * scale) / 2;
+        const offsetY = (svgRect.height - vb[3] * scale) / 2;
 
-    const ns = 'http://www.w3.org/2000/svg';
-    const ring = document.createElementNS(ns, 'circle');
-    ring.setAttribute('cx', cx);
-    ring.setAttribute('cy', cy);
-    ring.setAttribute('r', rBase);
-    ring.setAttribute('class', `diff-focus-ring ${ringColorClass}`);
-    hostSvg.appendChild(ring);
+        const cx_px = (elRect.left + elRect.width / 2) - svgRect.left;
+        const cy_px = (elRect.top + elRect.height / 2) - svgRect.top;
 
-    setTimeout(() => { ring.remove(); }, 2200);
+        const cx_vb = vb[0] + (cx_px - offsetX) / scale;
+        const cy_vb = vb[1] + (cy_px - offsetY) / scale;
+        const r_vb = Math.max(3, Math.max(elRect.width, elRect.height) / (2 * scale) + 2.5);
+
+        const ns = 'http://www.w3.org/2000/svg';
+        const ring = document.createElementNS(ns, 'circle');
+        ring.setAttribute('cx', cx_vb);
+        ring.setAttribute('cy', cy_vb);
+        ring.setAttribute('r', r_vb);
+        ring.setAttribute('class', `diff-focus-ring ${ringColorClass || 'diff-changed'}`);
+        ring.setAttribute('style', `stroke-width: ${Math.max(0.4, r_vb * 0.08)}mm; pointer-events: none;`);
+        hostSvg.appendChild(ring);
+
+        setTimeout(() => { ring.remove(); }, 2500);
+      }
+    }
   };
 
 function getScreenCoordsFromSvg(viewportContentEl, coords) {
@@ -626,86 +738,105 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
 }
 
   useImperativeHandle(ref, () => ({
-    focusElement({ diffIdx, side, diffType, baseCoords, targetCoords }) {
+    focusElement({ diffIdx, side, diffType, baseCoords, targetCoords, bbox }) {
       if (!leftContentRef.current || !rightContentRef.current) return;
 
       const leftViewport = leftContentRef.current.parentElement;
       const rightViewport = rightContentRef.current.parentElement;
       if (!leftViewport || !rightViewport) return;
 
+      const targetScale = 3.5;
+
+      // 1. Locate DOM element with data-diff-idx
+      let leftTarget = leftContentRef.current ? leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`) : null;
+      let rightTarget = rightContentRef.current ? rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`) : null;
+
+      let leftRect = leftTarget ? leftTarget.getBoundingClientRect() : null;
+      let rightRect = rightTarget ? rightTarget.getBoundingClientRect() : null;
+
+      // 2. Fallback to coordinate mapping if not in DOM
+      if (!leftRect && baseCoords && leftContentRef.current) {
+        leftRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
+      }
+      if (!rightRect && targetCoords && rightContentRef.current) {
+        rightRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
+      }
+
       let leftParams = null;
       let rightParams = null;
-      
-      const targetScale = 4.0; // scale = 4.0 as per architectural rules
 
-      const normalizedType = diffType === 'delete_layer' ? 'delete'
-                           : diffType === 'add_layer' ? 'add'
-                           : diffType;
-
-      if (normalizedType === 'delete') {
-        let elRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
-        if (!elRect) {
-          const target = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-          if (target) elRect = target.getBoundingClientRect();
-        }
-        if (elRect) {
-          leftParams = {
-            elRect,
-            viewportRect: leftViewport.getBoundingClientRect(),
-            targetScale
-          };
-          drawFocusRing(leftContentRef.current, diffIdx, 'diff-deleted');
-        }
+      if (leftRect) {
+        leftParams = {
+          elRect: leftRect,
+          viewportRect: leftViewport.getBoundingClientRect(),
+          targetScale
+        };
+        drawFocusRing(leftContentRef.current, diffIdx, diffType === 'delete' ? 'diff-deleted' : 'diff-changed');
       }
-      else if (normalizedType === 'add') {
-        let elRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
-        if (!elRect) {
-          const target = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-          if (target) elRect = target.getBoundingClientRect();
-        }
-        if (elRect) {
+
+      if (rightRect) {
+        rightParams = {
+          elRect: rightRect,
+          viewportRect: rightViewport.getBoundingClientRect(),
+          targetScale
+        };
+        drawFocusRing(rightContentRef.current, diffIdx, diffType === 'add' ? 'diff-added' : 'diff-changed');
+      }
+
+      // 3. In synchronized mode, ensure both panels center on the modification
+      if (synced) {
+        if (leftParams && !rightParams) {
           rightParams = {
-            elRect,
-            viewportRect: rightViewport.getBoundingClientRect(),
-            targetScale
-          };
-          drawFocusRing(rightContentRef.current, diffIdx, 'diff-added');
-        }
-      }
-      else if (normalizedType === 'modify') {
-        let leftRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
-        if (!leftRect) {
-          const leftTarget = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-          if (leftTarget) leftRect = leftTarget.getBoundingClientRect();
-        }
-
-        let rightRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
-        if (!rightRect) {
-          const rightTarget = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-          if (rightTarget) rightRect = rightTarget.getBoundingClientRect();
-        }
-
-        if (leftRect) {
-          leftParams = {
             elRect: leftRect,
-            viewportRect: leftViewport.getBoundingClientRect(),
-            targetScale
-          };
-          drawFocusRing(leftContentRef.current, diffIdx, 'diff-changed');
-        }
-        if (rightRect) {
-          rightParams = {
-            elRect: rightRect,
             viewportRect: rightViewport.getBoundingClientRect(),
             targetScale
           };
-          drawFocusRing(rightContentRef.current, diffIdx, 'diff-changed');
+        } else if (rightParams && !leftParams) {
+          leftParams = {
+            elRect: rightRect,
+            viewportRect: leftViewport.getBoundingClientRect(),
+            targetScale
+          };
         }
       }
 
-      animateTo(leftParams, rightParams, 550);
+      if (leftParams || rightParams) {
+        animateTo(leftParams, rightParams, 450);
+      } else if (bbox && outerRef.current) {
+        const rect = outerRef.current.getBoundingClientRect();
+        focusOnBoundingBox(bbox, rect.width / 2, rect.height);
+      }
+    },
+
+    focusOnBoundingBox(bbox) {
+      if (!outerRef.current) return;
+      const rect = outerRef.current.getBoundingClientRect();
+      focusOnBoundingBox(bbox, rect.width / 2, rect.height);
+    },
+
+    setHoveredDiff(diffIdx) {
+      const clearHover = (rootEl) => {
+        if (!rootEl) return;
+        rootEl.querySelectorAll('[data-diff-hovered="true"]').forEach(el => {
+          el.removeAttribute('data-diff-hovered');
+        });
+      };
+
+      clearHover(leftContentRef.current);
+      clearHover(rightContentRef.current);
+
+      if (diffIdx !== undefined && diffIdx !== null) {
+        const applyHover = (rootEl) => {
+          if (!rootEl) return;
+          rootEl.querySelectorAll(`[data-diff-idx="${diffIdx}"]`).forEach(el => {
+            el.setAttribute('data-diff-hovered', 'true');
+          });
+        };
+        applyHover(leftContentRef.current);
+        applyHover(rightContentRef.current);
+      }
     }
-  }), [animateTo]);
+  }), [animateTo, focusOnBoundingBox]);
 
   useEffect(() => {
     const el = outerRef.current;

@@ -57,6 +57,9 @@ execFileSync(KICAD_CLI_PATH, ['--version'], { encoding: 'utf8' });
 
 export const config = {
   port: process.env.PORT || 5000,
-  kicadCliPath: KICAD_CLI_PATH
+  kicadCliPath: KICAD_CLI_PATH,
+  geminiApiKey: process.env.GEMINI_API_KEY || '',
+  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-flash-preview'
 };
+
 

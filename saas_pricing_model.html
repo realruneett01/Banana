@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Banana 2.0 - SaaS Pricing Model & Strategy</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+    @page {
+      size: A4 portrait;
+      margin: 12mm 14mm;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
+      padding: 0;
+      color: #0f172a;
+      background: #ffffff;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    /* ─── Header ──────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #0f172a;
+      padding-bottom: 12px;
+      margin-bottom: 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-badge {
+      width: 34px;
+      height: 34px;
+      background: #facc15;
+      color: #0f172a;
+      font-weight: 800;
+      font-size: 18px;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .title-group h1 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: #0f172a;
+    }
+
+    .title-group p {
+      margin: 2px 0 0 0;
+      font-size: 10.5px;
+      color: #64748b;
+      font-weight: 500;
+    }
+
+    .meta-badge {
+      text-align: right;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 9.5px;
+      color: #475569;
+    }
+
+    .meta-badge span {
+      display: inline-block;
+      background: #f1f5f9;
+      padding: 3px 8px;
+      border-radius: 4px;
+      border: 1px solid #e2e8f0;
+      font-weight: 600;
+    }
+
+    /* ─── Typography & Structure ─────────────────────────────────────────── */
+    h2 {
+      font-size: 12.5px;
+      font-weight: 700;
+      color: #0f172a;
+      border-left: 3.5px solid #facc15;
+      padding-left: 8px;
+      margin: 14px 0 8px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    p {
+      margin: 0 0 7px 0;
+      color: #334155;
+    }
+
+    /* ─── Highlights / Callouts ───────────────────────────────────────────── */
+    .callout-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-left: 4px solid #3b82f6;
+      border-radius: 6px;
+      padding: 9px 12px;
+      margin-bottom: 12px;
+      font-size: 10.5px;
+      color: #1e293b;
+    }
+
+    .callout-box strong {
+      color: #0f172a;
+    }
+
+    /* ─── Pricing Cards Grid ─────────────────────────────────────────────── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 9px;
+      margin-bottom: 14px;
+    }
+
+    .pricing-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 7px;
+      padding: 10px;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .pricing-card.highlight {
+      border: 2px solid #f59e0b;
+      background: #fffbeb;
+    }
+
+    .tier-badge {
+      font-size: 8.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #64748b;
+      margin-bottom: 3px;
+    }
+
+    .highlight .tier-badge {
+      color: #b45309;
+    }
+
+    .tier-name {
+      font-size: 13px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 4px;
+    }
+
+    .tier-price {
+      font-size: 18px;
+      font-weight: 800;
+      color: #0f172a;
+      margin-bottom: 3px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .tier-price span {
+      font-size: 9.5px;
+      font-weight: 500;
+      color: #64748b;
+    }
+
+    .tier-desc {
+      font-size: 9.5px;
+      color: #64748b;
+      margin-bottom: 8px;
+      min-height: 26px;
+      line-height: 1.35;
+    }
+
+    .tier-features {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      font-size: 9.5px;
+      color: #334155;
+      flex: 1;
+    }
+
+    .tier-features li {
+      position: relative;
+      padding-left: 13px;
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+
+    .tier-features li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: #10b981;
+      font-weight: 700;
+    }
+
+    /* ─── Feature Comparison Table ────────────────────────────────────────── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 14px;
+      font-size: 9.5px;
+    }
+
+    th, td {
+      padding: 5px 8px;
+      text-align: left;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    th {
+      background: #0f172a;
+      color: #ffffff;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    tr:nth-child(even) td {
+      background: #f8fafc;
+    }
+
+    td.check {
+      color: #10b981;
+      font-weight: 700;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    td.cross {
+      color: #cbd5e1;
+      text-align: center;
+    }
+
+    td.center {
+      text-align: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 500;
+    }
+
+    /* ─── Two Column Layout ───────────────────────────────────────────────── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .info-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 9px 11px;
+    }
+
+    .info-card h3 {
+      margin: 0 0 5px 0;
+      font-size: 11px;
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .info-card ul {
+      margin: 0;
+      padding-left: 15px;
+      font-size: 9.5px;
+      color: #475569;
+    }
+
+    .info-card li {
+      margin-bottom: 3px;
+    }
+
+    /* ─── Footer ──────────────────────────────────────────────────────────── */
+    .footer {
+      border-top: 1px solid #e2e8f0;
+      padding-top: 6px;
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      font-size: 8.5px;
+      color: #94a3b8;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 1px 5px;
+      border-radius: 8px;
+      font-size: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .pill-green { background: #dcfce7; color: #15803d; }
+    .pill-amber { background: #fef3c7; color: #b45309; }
+    .pill-blue  { background: #dbeafe; color: #1d4ed8; }
+
+    .page-break {
+      page-break-before: always;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- PAGE 1 -->
+  <div class="header">
+    <div class="brand">
+      <div class="logo-badge">B</div>
+      <div class="title-group">
+        <h1>Banana 2.0 • SaaS Commercialization Plan</h1>
+        <p>Strategic Architecture, Packaging, Monetization Model & Financial Projections</p>
+      </div>
+    </div>
+    <div class="meta-badge">
+      <div>CONFIDENTIAL & PROPRIETARY</div>
+      <span>VERSION 2.0 • 2026</span>
+    </div>
+  </div>
+
+  <div class="callout-box">
+    <strong>Executive Value Proposition:</strong> In software engineering, code diffs and PR reviews are instantaneous. In hardware engineering, teams still rely on manual screenshots, Word documents, and red pen markups. A single unnoticed PCB routing or pin assignment error causes a factory fabrication re-spin costing <strong>$2,000 to $20,000+ and 3 to 4 weeks in project delay</strong>. Banana 2.0 eliminates this risk with automated visual Git diffs, interactive overlay sliders, and semantic audit tracking.
+  </div>
+
+  <h2>1. Commercial Pricing Tiers</h2>
+  <div class="pricing-grid">
+    <!-- Free -->
+    <div class="pricing-card">
+      <div class="tier-badge">Community</div>
+      <div class="tier-name">Free</div>
+      <div class="tier-price">$0</div>
+      <div class="tier-desc">For hobbyists, students, and open-source hardware creators.</div>
+      <ul class="tier-features">
+        <li>Unlimited public GitHub repos</li>
+        <li>Drag & drop comparisons (3/mo)</li>
+        <li>Side-by-side visual diff</li>
+        <li>Overlay slider & delta maps</li>
+        <li>Pan & zoom vector navigation</li>
+        <li>KiCad 7, 8, 9 & 10 support</li>
+      </ul>
+    </div>
+
+    <!-- Pro -->
+    <div class="pricing-card">
+      <div class="tier-badge">Solo Engineer</div>
+      <div class="tier-name">Pro</div>
+      <div class="tier-price">$19 <span>/ mo</span></div>
+      <div class="tier-desc">For freelance electrical engineers and hardware consultants.</div>
+      <ul class="tier-features">
+        <li><strong>Unlimited private repos</strong></li>
+        <li>Unlimited drag-and-drop diffs</li>
+        <li><strong>Full Semantic Audit Log</strong></li>
+        <li>Net displacement & trace tracking</li>
+        <li>Export Design Review PDFs</li>
+        <li>Client shareable view links</li>
+        <li>Standard email support</li>
+      </ul>
+    </div>
+
+    <!-- Team (Highlighted) -->
+    <div class="pricing-card highlight">
+      <div class="tier-badge">Startups & Labs</div>
+      <div class="tier-name">Team</div>
+      <div class="tier-price">$49 <span>/ seat / mo</span></div>
+      <div class="tier-desc">For robotics, IoT, and electronics engineering teams (min 3 seats).</div>
+      <ul class="tier-features">
+        <li><strong>GitHub & GitLab PR Bot</strong></li>
+        <li><strong>Pin-point review comments</strong></li>
+        <li>PR approval status gates</li>
+        <li>Cross-layer difference filters</li>
+        <li>Team roles & permissions</li>
+        <li>Priority serverless render queue</li>
+        <li>Slack / Discord notifications</li>
+      </ul>
+    </div>
+
+    <!-- Enterprise -->
+    <div class="pricing-card">
+      <div class="tier-badge">Defense & MedTech</div>
+      <div class="tier-name">Enterprise</div>
+      <div class="tier-price">$2,500+ <span>/ yr</span></div>
+      <div class="tier-desc">For aerospace, automotive, medical, and defense contractors.</div>
+      <ul class="tier-features">
+        <li><strong>On-Prem / VPC Docker Runner</strong></li>
+        <li><strong>Zero IP leaves client network</strong></li>
+        <li>ITAR & NDA compliance ready</li>
+        <li>SAML SSO (Okta, Azure AD)</li>
+        <li>Custom audit logs & retention</li>
+        <li>Dedicated account manager</li>
+        <li>99.9% Uptime SLA</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>2. Detailed Feature Matrix</h2>
+  <table>
+    <thead>
+      <tr>
+        <th style="width: 38%;">Feature / Capability</th>
+        <th style="width: 15%; text-align: center;">Free</th>
+        <th style="width: 15%; text-align: center;">Pro ($19)</th>
+        <th style="width: 16%; text-align: center;">Team ($49/seat)</th>
+        <th style="width: 16%; text-align: center;">Enterprise</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Public GitHub Repositories</strong></td>
+        <td class="center">Unlimited</td>
+        <td class="center">Unlimited</td>
+        <td class="center">Unlimited</td>
+        <td class="center">Unlimited</td>
+      </tr>
+      <tr>
+        <td><strong>Private Repositories & Local Uploads</strong></td>
+        <td class="center">3 / month</td>
+        <td class="center">Unlimited</td>
+        <td class="center">Unlimited</td>
+        <td class="center">Unlimited</td>
+      </tr>
+      <tr>
+        <td><strong>Visual Modes</strong> (Side-by-Side, Slider, Delta)</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>High-Speed Vector Diffing</strong> (Sub-second)</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>Semantic Audit Log & Net Identification</strong></td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>Automated GitHub / GitLab PR Bot</strong></td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>Collaborative PCB Comment Pins</strong></td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>Design Review Sign-off PDF Export</strong></td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>PR Merge Gates & Status Checks</strong></td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>Self-Hosted VPC Runner (Zero Cloud Storage)</strong></td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+      </tr>
+      <tr>
+        <td><strong>SAML SSO & Custom Security Controls</strong></td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="cross">—</td>
+        <td class="check">✓</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="two-col">
+    <div class="info-card">
+      <h3>🚀 The "Killer Feature": PR Visual Bot</h3>
+      <p style="margin: 0; font-size: 9.5px; color: #475569;">
+        When an engineer opens a GitHub Pull Request modifying <code>.kicad_pcb</code>, the Banana Bot comments with a rich interactive summary:
+      </p>
+      <div style="background: #0f172a; color: #e2e8f0; font-family: 'JetBrains Mono', monospace; font-size: 8.5px; padding: 6px 8px; border-radius: 4px; margin-top: 5px;">
+        <span style="color: #facc15;">● Banana Bot:</span> Detected 4 modifications:<br>
+        • Changed SPI2_CS trace (+0.4mm spacing)<br>
+        • Added C14 bypass capacitor on 3V3 rail<br>
+        <span style="color: #38bdf8;">[Click to Review Interactive Visual Diff →]</span>
+      </div>
+    </div>
+
+    <div class="info-card">
+      <h3>🔒 Intellectual Property & Security</h3>
+      <p style="margin: 0 0 3px 0; font-size: 9.5px; color: #475569;">
+        Hardware schematics are proprietary trade secrets. Banana addresses this through a tiered security architecture:
+      </p>
+      <ul>
+        <li><strong>Ephemeral Cloud Workers:</strong> Raw files processed in isolated memory and discarded immediately after rendering.</li>
+        <li><strong>On-Premise VPC Runners:</strong> For defense & healthcare, Docker runners execute inside the client's AWS/GCP perimeter.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Banana 2.0 • Hardware Version Control & Visual Review SaaS</span>
+    <span>Page 1 of 2</span>
+  </div>
+
+  <!-- PAGE 2 -->
+  <div class="page-break"></div>
+
+  <div class="header">
+    <div class="brand">
+      <div class="logo-badge">B</div>
+      <div class="title-group">
+        <h1>Banana 2.0 • Technical Architecture & Unit Economics</h1>
+        <p>Deployment Topology, Cost Structure, Revenue Projections & Roadmap</p>
+      </div>
+    </div>
+    <div class="meta-badge">
+      <div>CONFIDENTIAL & PROPRIETARY</div>
+      <span>FINANCIAL BLUEPRINT</span>
+    </div>
+  </div>
+
+  <h2>3. Cloud Deployment Architecture</h2>
+  <p style="font-size: 10px; margin-bottom: 9px;">
+    Banana 2.0 achieves <strong>93%+ gross margins</strong> by decoupling static edge frontend delivery from serverless containerized compute that automatically scales to zero when idle.
+  </p>
+
+  <div class="two-col" style="margin-bottom: 10px;">
+    <div class="info-card">
+      <h3>🌐 Edge Frontend Layer (Cloudflare Pages)</h3>
+      <ul>
+        <li><strong>Global CDN Hosting:</strong> React + Vite frontend distributed across 300+ global edge nodes.</li>
+        <li><strong>Instant Zero-Latency Loading:</strong> Sub-50ms initial load times globally.</li>
+        <li><strong>Bandwidth Cost:</strong> <strong>$0 / month</strong> (Included in Cloudflare's unlimited bandwidth tier).</li>
+        <li><strong>Custom Domains & SSL:</strong> Automated SSL for <code>app.banana-diff.com</code>.</li>
+      </ul>
+    </div>
+
+    <div class="info-card">
+      <h3>⚡ Serverless Compute Layer (Google Cloud Run / Fly.io)</h3>
+      <ul>
+        <li><strong>Containerized KiCad CLI:</strong> Ubuntu Linux Docker image with native <code>kicad</code> package pre-installed.</li>
+        <li><strong>Scale-to-Zero:</strong> Zero CPU or RAM costs during idle periods.</li>
+        <li><strong>High-Speed Render:</strong> 2 vCPU / 2GB RAM container executes KiCad SVG exports in <strong>0.8 to 1.5 seconds</strong>.</li>
+        <li><strong>Deterministic Caching:</strong> SHA-256 disk cache prevents redundant re-rendering of unchanged commits.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>4. Unit Economics & Margin Analysis</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>Cost / Value</th>
+        <th>Explanation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Cloudflare Pages Hosting</strong></td>
+        <td class="center" style="color: #10b981;">$0.00 / mo</td>
+        <td>Free edge CDN distribution with unlimited requests.</td>
+      </tr>
+      <tr>
+        <td><strong>Compute Cost per Diff Execution</strong></td>
+        <td class="center" style="color: #10b981;">~$0.00012</td>
+        <td>2 vCPU running for 1.2s on Google Cloud Run ($0.00002400/vCPU-sec).</td>
+      </tr>
+      <tr>
+        <td><strong>Average Monthly Compute per Active User</strong></td>
+        <td class="center" style="color: #10b981;">~$0.048 / mo</td>
+        <td>Assuming an active engineer triggers 400 diff comparisons per month.</td>
+      </tr>
+      <tr>
+        <td><strong>Storage & Database (Supabase / Cloudflare R2)</strong></td>
+        <td class="center" style="color: #10b981;">~$5.00 / mo</td>
+        <td>Diff vector cache and team authorization records.</td>
+      </tr>
+      <tr>
+        <td><strong>Gross Margin on Pro Plan ($19/mo)</strong></td>
+        <td class="center" style="color: #10b981; font-weight: 700;">97.4%</td>
+        <td>Revenue $19.00 — Infrastructure cost ~$0.50.</td>
+      </tr>
+      <tr>
+        <td><strong>Gross Margin on Team Plan ($49/seat/mo)</strong></td>
+        <td class="center" style="color: #10b981; font-weight: 700;">96.8%</td>
+        <td>Revenue $49.00 — Infrastructure & API cost ~$1.55.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>5. 12-Month Financial Projections (ARR Trajectory)</h2>
+  <div class="two-col" style="margin-bottom: 12px;">
+    <div>
+      <p style="font-size: 9.5px; color: #475569; margin-bottom: 5px;">
+        Growth model based on viral GitHub bot adoption across hardware hackathons, robotics incubators, and KiCad community channels:
+      </p>
+      <table style="font-size: 9px; margin-bottom: 0;">
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th style="text-align: center;">Pro Users</th>
+            <th style="text-align: center;">Teams (Avg 4 seats)</th>
+            <th style="text-align: center;">MRR</th>
+            <th style="text-align: center;">ARR</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Month 3 (Beta Launch)</strong></td>
+            <td class="center">40</td>
+            <td class="center">5 ($980)</td>
+            <td class="center">$1,740</td>
+            <td class="center">$20,880</td>
+          </tr>
+          <tr>
+            <td><strong>Month 6 (GitHub App Launch)</strong></td>
+            <td class="center">150</td>
+            <td class="center">25 ($4,900)</td>
+            <td class="center">$7,750</td>
+            <td class="center">$93,000</td>
+          </tr>
+          <tr>
+            <td><strong>Month 9 (Enterprise Expansion)</strong></td>
+            <td class="center">350</td>
+            <td class="center">70 ($13,720)</td>
+            <td class="center">$20,370</td>
+            <td class="center">$244,440</td>
+          </tr>
+          <tr>
+            <td><strong>Month 12 (Scale)</strong></td>
+            <td class="center">750</td>
+            <td class="center">160 ($31,360)</td>
+            <td class="center"><strong>$45,610</strong></td>
+            <td class="center" style="color: #10b981; font-weight: 800;"><strong>$547,320</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="info-card">
+      <h3>📈 Viral Growth Mechanics</h3>
+      <ul>
+        <li><strong>Free PR Billboard:</strong> Every automated GitHub PR comment introduces Banana to reviewers, firmware devs, and managers.</li>
+        <li><strong>Open Source Goodwill:</strong> Free tier for open-source hardware builds deep developer loyalty (like Altium's opposite reputation).</li>
+        <li><strong>Fabrication Partnerships:</strong> Co-marketing opportunities with fab houses (JLCPCB, PCBWay, MacroFab) offering "Verify with Banana" before ordering.</li>
+        <li><strong>Zero Software Lock-in:</strong> Works directly with native KiCad files without proprietary project formats.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>6. Implementation Roadmap (30-Day MVP Plan)</h2>
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 10px;">
+    <div style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 7px 9px; background: #ffffff;">
+      <span class="pill pill-blue">Phase 1: Week 1-2</span>
+      <h4 style="margin: 3px 0; font-size: 10.5px; color: #0f172a;">Containerization & Deploy</h4>
+      <p style="margin: 0; font-size: 9px; color: #64748b;">
+        • Package backend in Docker with Ubuntu KiCad CLI.<br>
+        • Deploy to Google Cloud Run.<br>
+        • Connect Cloudflare Pages to frontend.
+      </p>
+    </div>
+
+    <div style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 7px 9px; background: #ffffff;">
+      <span class="pill pill-amber">Phase 2: Week 3</span>
+      <h4 style="margin: 3px 0; font-size: 10.5px; color: #0f172a;">GitHub OAuth & Webhooks</h4>
+      <p style="margin: 0; font-size: 9px; color: #64748b;">
+        • Add "Login with GitHub".<br>
+        • Repository picker & branch selector.<br>
+        • Webhook listener for automated PR diff comments.
+      </p>
+    </div>
+
+    <div style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 7px 9px; background: #ffffff;">
+      <span class="pill pill-green">Phase 3: Week 4</span>
+      <h4 style="margin: 3px 0; font-size: 10.5px; color: #0f172a;">Billing & Public Launch</h4>
+      <p style="margin: 0; font-size: 9px; color: #64748b;">
+        • Integrate Stripe Customer Portal & checkout.<br>
+        • Launch on Product Hunt, Hacker News, & r/KiCad.<br>
+        • Onboard first 50 beta teams.
+      </p>
+    </div>
+  </div>
+
+  <div class="footer">
+    <span>Banana 2.0 • Hardware Version Control & Visual Review SaaS</span>
+    <span>Page 2 of 2</span>
+  </div>
+
+</body>
+</html>

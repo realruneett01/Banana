@@ -30,10 +30,16 @@ import {
   HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  InboxOutlined
+  InboxOutlined,
+  RobotOutlined
 } from '@ant-design/icons';
 import DiffCanvas from './DiffCanvas';
 import SideBySideDiff from './SideBySideDiff';
+import { AuditSidebar } from './AuditSidebar';
+import ChatbotDrawer from './ChatbotDrawer';
+import WorkspaceShell from './WorkspaceShell';
+import CircuitBuilderCanvas from './CircuitBuilderCanvas';
+import ComponentSourcingHub from './ComponentSourcingHub';
 import { API_BASE_URL } from './config.js';
 
 const { Header, Sider, Content } = Layout;
@@ -44,6 +50,8 @@ export default function App() {
   const repoLoadTimeoutRef = useRef(null);
   // Ref to the SideBySideDiff component — used to call focusElement() imperatively
   const sideBySideRef = useRef(null);
+  // Ref to the DiffCanvas component — used for Overlay Slider and Color Delta Map pan/zoom
+  const diffCanvasRef = useRef(null);
   
   // State for connection status
   const [backendStatus, setBackendStatus] = useState('checking'); // checking | healthy | unhealthy
@@ -82,6 +90,32 @@ export default function App() {
   // Per-layer opacity: { 'F.Cu': 1, 'B.Cu': 1, ... } — 0 to 1
   const [layerOpacities, setLayerOpacities] = useState({});
   const [activeAuditIdx, setActiveAuditIdx] = useState(null);
+  const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+  const [activeStudio, setActiveStudio] = useState('diff'); // 'diff' | 'builder' | 'sourcing'
+  const [circuits, setCircuits] = useState([]);
+  const [activeCircuitId, setActiveCircuitId] = useState(null);
+  const [copilotMode, setCopilotMode] = useState('chat');
+
+  const fetchWorkspace = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/workspace`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.circuits && data.circuits.length > 0) {
+          setCircuits(data.circuits);
+          setActiveCircuitId(prev => prev || data.circuits[0].id);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch workspace data:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchWorkspace();
+  }, []);
+
+  const activeCircuit = circuits.find(c => c.id === activeCircuitId) || circuits[0] || null;
 
   // Check health and load repo info on mount
   useEffect(() => {
@@ -555,6 +589,50 @@ export default function App() {
     }).sort((a, b) => getPriority(b) - getPriority(a));
   };
 
+  const handleAuditItemSelect = (item, idx) => {
+    if (!item) return;
+    setActiveAuditIdx(idx);
+
+    let layerWasMissing = false;
+    const itemLayer = item.layer || item.time;
+    if (itemLayer && !selectedLayers.includes(itemLayer)) {
+      layerWasMissing = true;
+      setSelectedLayers(prev => [...prev, itemLayer]);
+    }
+
+    const rawType = item.type || item.diffType || item.rawType || '';
+    const diffType = rawType.startsWith('add')
+      ? 'add'
+      : rawType.startsWith('delete')
+      ? 'delete'
+      : 'change';
+
+    const focusPayload = {
+      diffIdx: item.diffIdx,
+      side: item.side ?? (diffType === 'delete' ? 'base' : 'target'),
+      diffType,
+      baseCoords: item.baseCoords,
+      targetCoords: item.targetCoords,
+      bbox: item.bbox,
+    };
+
+    const triggerFocus = () => {
+      if (diffMode === 'Side by Side') {
+        if (sideBySideRef.current) {
+          sideBySideRef.current.focusElement(focusPayload);
+        }
+      } else {
+        if (diffCanvasRef.current) {
+          diffCanvasRef.current.focusElement(focusPayload);
+        }
+      }
+    };
+
+    triggerFocus();
+    if (layerWasMissing) {
+      setTimeout(triggerFocus, 60);
+    }
+  };
 
   return (
     <ConfigProvider
@@ -569,75 +647,30 @@ export default function App() {
     >
       <Layout style={{ minHeight: '100vh', background: '#0f1015' }}>
         {/* Header */}
-        <Header style={{ 
-          background: '#161821', 
-          borderBottom: '1px solid #232738', 
-          padding: '0 20px', 
-          display: 'flex', 
-          alignItems: 'center', 
-          justifyContent: 'space-between' 
-        }}>
-          <Space align="center" size="middle">
-            <div style={{
-              width: 32,
-              height: 32,
-              background: '#fadb14',
-              borderRadius: '50%',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontWeight: 'bold',
-              color: '#000',
-              fontSize: 16
-            }}>B</div>
-            <Title level={4} style={{ margin: 0, color: '#f5f5f5' }}>Banana 2.0 - Hardware Git Diff Tool</Title>
-            <Button 
-              type="text" 
-              icon={leftCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />} 
-              onClick={() => setLeftCollapsed(!leftCollapsed)}
-              style={{ color: '#faad14', marginLeft: '10px' }}
-            />
-          </Space>
-          
-          <Space size="large">
-            {backendStatus === 'healthy' && (
-              <Badge count={`KiCad ${kicadVersion || '10.0.x'}`} style={{ backgroundColor: '#52c41a' }} />
-            )}
-            
-            <Space size="small">
-              {backendStatus === 'checking' && (
-                <>
-                  <SyncOutlined spin style={{ color: '#faad14' }} />
-                  <Text type="warning">Connecting to backend...</Text>
-                </>
-              )}
-              {backendStatus === 'healthy' && (
-                <>
-                  <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                  <Text type="success">Backend connected</Text>
-                </>
-              )}
-              {backendStatus === 'unhealthy' && (
-                <>
-                  <CloseCircleOutlined style={{ color: '#f5222d' }} />
-                  <Text type="danger" onClick={checkHealth} style={{ cursor: 'pointer' }}>Connection failed (Retry)</Text>
-                </>
-              )}
-            </Space>
+        <WorkspaceShell
+          activeStudio={activeStudio}
+          onSelectStudio={setActiveStudio}
+          circuits={circuits}
+          activeCircuitId={activeCircuitId}
+          onSelectCircuit={setActiveCircuitId}
+          onNewCircuit={() => {
+            setCopilotMode('builder');
+            setIsCopilotOpen(true);
+          }}
+          onOpenCopilot={(targetMode) => {
+            const mode = targetMode || (activeStudio === 'builder' ? 'builder' : 'chat');
+            setCopilotMode(mode);
+            setIsCopilotOpen(true);
+          }}
+          kicadVersion={kicadVersion}
+          backendStatus={backendStatus}
+        />
 
-            <Button 
-              type="text" 
-              icon={rightCollapsed ? <MenuFoldOutlined /> : <MenuUnfoldOutlined />} 
-              onClick={() => setRightCollapsed(!rightCollapsed)}
-              style={{ color: '#faad14' }}
-            />
-          </Space>
-        </Header>
-
-        <Layout>
-          {/* Left Sidebar - Controls */}
-          <Sider 
-            width={340} 
+        {activeStudio === 'diff' && (
+          <Layout>
+            {/* Left Sidebar - Controls */}
+            <Sider 
+              width={340} 
             collapsible 
             collapsed={leftCollapsed} 
             collapsedWidth={0}
@@ -1078,13 +1111,19 @@ export default function App() {
                     />
                   ) : (
                     <DiffCanvas
+                      ref={diffCanvasRef}
                       baseSvgs={diffData.base?.svgs}
                       targetSvgs={diffData.target?.svgs}
                       diffMode={diffMode}
                       activeLayers={selectedLayers}
                       sliderValue={sliderValue}
+                      onSliderChange={setSliderValue}
                       soloLayer={soloLayer}
                       layerOpacities={layerOpacities}
+                      baseCommit={baseCommit}
+                      targetCommit={targetCommit}
+                      activeAuditIdx={activeAuditIdx}
+                      setActiveAuditIdx={setActiveAuditIdx}
                     />
                   )}
                 </div>
@@ -1116,86 +1155,184 @@ export default function App() {
             collapsedWidth={0}
             trigger={null}
             style={{ 
-              background: '#161821', 
-              borderLeft: rightCollapsed ? 'none' : '1px solid #232738', 
-              padding: rightCollapsed ? 0 : '20px',
-              overflowY: 'auto',
+              background: 'rgba(15, 23, 42, 0.95)', 
+              borderLeft: rightCollapsed ? 'none' : '1px solid #1e293b', 
+              padding: 0,
+              overflowY: 'hidden',
               height: 'calc(100vh - 64px)',
               transition: 'all 0.2s'
             }}
           >
             {!rightCollapsed && (
-              <>
-                <Title level={5} style={{ marginTop: 0, color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <HistoryOutlined /> Audit Modifications
-                </Title>
-                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-                {getAuditLogs().map((log, index) => (
-                    <Card 
-                      key={index}
-                      size="small" 
-                      onClick={() => {
-                        if (log.diffIdx === undefined) return;
-                        
-                        const triggerFocus = () => {
-                          if (sideBySideRef.current) {
-                            sideBySideRef.current.focusElement({
-                              diffIdx:  log.diffIdx,
-                              side:     log.side ?? 'target',
-                              diffType: log.rawType,
-                              baseCoords: log.baseCoords,
-                              targetCoords: log.targetCoords,
-                            });
-                          }
-                        };
+              <AuditSidebar
+                modifications={
+                  diffData?.modifications && diffData.modifications.length > 0
+                    ? diffData.modifications
+                    : (() => {
+                        const logs = getAuditLogs();
+                        if (!logs || logs.length === 0 || logs[0].type === 'info') return [];
 
-                        if (diffMode !== 'Side by Side') {
-                          setDiffMode('Side by Side');
-                          setTimeout(triggerFocus, 100);
-                        } else {
-                          triggerFocus();
-                        }
-                      }}
-                      style={{ 
-                        background: '#0f1015', 
-                        borderColor: '#232738',
-                        cursor: log.diffIdx !== undefined ? 'pointer' : 'default',
-                        transition: 'border-color 0.15s',
-                      }}
-                      hoverable={log.diffIdx !== undefined}
-                      title={
-                        <div style={{ display: 'flex', alignItems: 'center' }}>
-                          <span style={{
-                            display: 'inline-block',
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            backgroundColor: log.color,
-                            marginRight: '8px',
-                            boxShadow: `0 0 6px ${log.color}`,
-                            flexShrink: 0,
-                          }} />
-                          <Text strong style={{ fontSize: 13, color: '#f5f5f5' }}>{log.title}</Text>
-                        </div>
+                        return logs.map((log) => {
+                          const action = log.rawType === 'add' || log.rawType === 'add_layer'
+                            ? 'ADDED'
+                            : (log.rawType === 'delete' || log.rawType === 'delete_layer' ? 'DELETED' : 'CHANGED');
+
+                          return {
+                            action,
+                            layer: log.time || 'F.Cu',
+                            name: log.title,
+                            title: log.title,
+                            detail: log.desc,
+                            diffIdx: log.diffIdx,
+                            side: log.side ?? 'target',
+                            rawType: log.rawType,
+                            baseCoords: log.baseCoords,
+                            targetCoords: log.targetCoords,
+                            bbox: log.bbox
+                          };
+                        });
+                      })()
+                }
+                activeDiffIdx={activeAuditIdx}
+                onHoverDiff={(diffIdx) => {
+                  if (diffMode === 'Side by Side') {
+                    if (sideBySideRef.current) {
+                      sideBySideRef.current.setHoveredDiff(diffIdx);
+                    }
+                  } else {
+                    if (diffCanvasRef.current) {
+                      diffCanvasRef.current.setHoveredDiff(diffIdx);
+                    }
+                  }
+                }}
+                onSelectDiff={(item) => {
+                  setActiveAuditIdx(item.diffIdx);
+
+                  // Ensure layer containing this diff is active in selectedLayers
+                  const cleanLayer = getCleanLayerName(item.layer);
+                  const layerWasMissing = cleanLayer && cleanLayer !== 'Unknown' && !selectedLayers.includes(cleanLayer);
+                  if (layerWasMissing) {
+                    setSelectedLayers(prev => [...prev, cleanLayer]);
+                  }
+
+                  const rawAction = (item.action ? item.action.toLowerCase() : item.rawType) || 'changed';
+                  const diffType = rawAction === 'added' ? 'add' : (rawAction === 'deleted' ? 'delete' : rawAction);
+
+                  const focusPayload = {
+                    diffIdx: item.diffIdx,
+                    side: item.side ?? (diffType === 'delete' ? 'base' : 'target'),
+                    diffType,
+                    baseCoords: item.baseCoords,
+                    targetCoords: item.targetCoords,
+                    bbox: item.bbox,
+                  };
+
+                  const triggerFocus = () => {
+                    if (diffMode === 'Side by Side') {
+                      if (sideBySideRef.current) {
+                        sideBySideRef.current.focusElement(focusPayload);
                       }
-                      extra={<Text type="secondary" style={{ fontSize: 11 }}>{log.time}</Text>}
-                    >
-                      <Text style={{ fontSize: 12, color: '#a6adbb' }}>{log.desc}</Text>
-                      {log.diffIdx !== undefined && (
-                        <div style={{ marginTop: 4 }}>
-                          <Text style={{ fontSize: 10, color: '#555c66' }}>
-                            Click to navigate →
-                          </Text>
-                        </div>
-                      )}
-                    </Card>
-                  ))}
-                </Space>
-              </>
+                    } else {
+                      if (diffCanvasRef.current) {
+                        diffCanvasRef.current.focusElement(focusPayload);
+                      }
+                    }
+                  };
+
+                  triggerFocus();
+                  if (layerWasMissing) {
+                    setTimeout(triggerFocus, 60);
+                  }
+                }}
+              />
             )}
           </Sider>
         </Layout>
-      </Layout>
-    </ConfigProvider>
+      )}
+
+      {/* Circuit Builder Studio Viewport */}
+      {activeStudio === 'builder' && (
+        <div style={{ height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
+          <CircuitBuilderCanvas
+            circuit={activeCircuit}
+            onOpenSourcingHub={() => setActiveStudio('sourcing')}
+            onExportKicad={() => {}}
+          />
+        </div>
+      )}
+
+      {/* Component Sourcing Hub Viewport */}
+      {activeStudio === 'sourcing' && (
+        <div style={{ height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
+          <ComponentSourcingHub
+            activeCircuit={activeCircuit}
+            onSubstituteComponent={(origPart, alt) => {
+              if (activeCircuit) {
+                const updatedComps = (activeCircuit.components || []).map(c => {
+                  if (c.value === origPart || c.name === origPart) {
+                    return {
+                      ...c,
+                      value: alt.partNumber,
+                      name: alt.partNumber,
+                      package: alt.package || c.package,
+                      unitPrice: alt.unitPrice || c.unitPrice
+                    };
+                  }
+                  return c;
+                });
+                const updatedCircuit = { ...activeCircuit, components: updatedComps };
+                setCircuits(prev => prev.map(c => c.id === updatedCircuit.id ? updatedCircuit : c));
+              }
+            }}
+          />
+        </div>
+      )}
+
+      {/* Floating Copilot Button */}
+      {!isCopilotOpen && (
+        <div
+          className="copilot-float-btn"
+          onClick={() => setIsCopilotOpen(true)}
+          style={{
+            right: rightCollapsed ? '24px' : '300px'
+          }}
+          title="Open Banana Hardware Copilot (Gemini 3 Flash Preview)"
+        >
+          <span className="copilot-dot-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }}></span>
+          <span>Copilot ✨</span>
+        </div>
+      )}
+
+      {/* AI Hardware Copilot Drawer */}
+      <ChatbotDrawer
+        open={isCopilotOpen}
+        onClose={() => setIsCopilotOpen(false)}
+        copilotMode={copilotMode}
+        onSetCopilotMode={setCopilotMode}
+        boardContext={{
+          relativeFilePath,
+          baseCommit,
+          targetCommit,
+          selectedLayers,
+          diffMode,
+          modifications: diffData?.modifications || [],
+          pcbMetadata: diffData?.pcbMetadata
+        }}
+        onSelectModification={(modId, label) => {
+          const mods = diffData?.modifications || [];
+          const idx = mods.findIndex(m => m.id === modId || (label && (m.label?.includes(label) || m.text?.includes(label))));
+          if (idx !== -1) {
+            handleAuditItemSelect(mods[idx], idx);
+          }
+        }}
+        onCircuitBuilt={(newCircuit) => {
+          setCircuits(prev => [newCircuit, ...prev.filter(c => c.id !== newCircuit.id)]);
+          setActiveCircuitId(newCircuit.id);
+          setActiveStudio('builder');
+          message.success(`Circuit "${newCircuit.title}" ready in Studio!`);
+        }}
+      />
+    </Layout>
+  </ConfigProvider>
   );
 }

@@ -25,6 +25,18 @@ export async function extractFileFromCommit(repoPath, commitHash, relativeFilePa
     fs.mkdirSync(parentDir, { recursive: true });
   }
 
+  // If file for this exact commit already exists with non-zero size, return immediately
+  if (fs.existsSync(outputPath)) {
+    try {
+      const stats = fs.statSync(outputPath);
+      if (stats.size > 0) {
+        return outputPath;
+      }
+    } catch (_) {}
+  }
+
+  const tStart = performance.now();
+
   return new Promise((resolve, reject) => {
     // Standardize path separators for git (uses forward slashes)
     const gitFilePath = relativeFilePath.split(/[/\\]/).join('/');
@@ -61,6 +73,7 @@ export async function extractFileFromCommit(repoPath, commitHash, relativeFilePa
         const cleanStderr = stderrData.trim();
         reject(new Error(`Git show failed with exit code ${code}. Stderr: ${cleanStderr || 'No stderr output'}`));
       } else {
+        const durationMs = performance.now() - tStart;
         resolve(outputPath);
       }
     });

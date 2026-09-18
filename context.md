@@ -1,46 +1,89 @@
-# Banana 2.0 — Hardware Git Diff Engine & Technical Context
+# Banana 2.0 — System Architecture & Technical Context
 
-_Last updated: 2026-07-25 (Comprehensive Master Record)_
-
----
-
-## 1. System Architecture Map & Component Responsibilities
-
-### Top-Level Directories
-- **`backend/`**: Express.js server providing REST endpoints for repository discovery (`/api/git/*`), executing KiCad CLI operations (`kicad-cli`), handling SVG file extraction from Git commits, running the multi-pass diff engine, and parsing `.kicad_pcb` S-expressions for pad/net overlay metadata.
-  - **`backend/src/`**: Primary server source code (SVG diffing, PCB parsing, process management, API routes).
-  - **`backend/temp_storage/`**: Ephemeral workspace for checked-out commit files, rendered SVG layers, and diagnostic scripts.
-- **`frontend/`**: Vite + React single-page web application providing interactive visual diff viewports, synchronized pan/zoom controls, slider overlays, layer selection toggles, and an automated audit trail log sidebar.
-  - **`frontend/src/`**: UI components (`App.jsx`, `SideBySideDiff.jsx`, `DiffCanvas.jsx`, `PadLabelOverlay.jsx`) and global styles (`App.css`, `index.css`).
-
-### Main Data Flow Architecture
-1. **User Input & API Dispatch**: The user selects a local repository path, `baseCommit`, `targetCommit`, and a design file (`.kicad_sch` or `.kicad_pcb`) in `frontend/src/App.jsx`. The frontend issues a `POST /api/diff/process` request to the Express backend.
-2. **File Extraction**: `backend/src/server.js` calls `extractFileFromCommit()` in `backend/src/git-extractor.js`, which spawns `git show <commit>:<filepath>` to extract the Base and Target design files into `backend/temp_storage/`.
-3. **SVG Vector Rendering**: `backend/src/server.js` passes extracted files to `renderKicadFile()` in `backend/src/kicad-renderer.js`, shelling out to `kicad-cli pcb export svg` or `kicad-cli sch export svg` to export vector layers.
-4. **Semantic Diff Processing**: `backend/src/server.js` passes the exported SVGs to `processSvgDiff()` in `backend/src/svg-diff-processor.js`. The 5-pass matching engine annotates SVG nodes with diff classes (`diff-changed`, `diff-added`, `diff-deleted`, `diff-unchanged`) and constructs a structured `modifications` log array.
-5. **Frontend Viewport & Highlights**: `backend/src/server.js` responds with annotated SVGs and modification metadata. `frontend/src/SideBySideDiff.jsx` mounts SVGs in dual `<svg>` viewports, applies `DIFF_CSS` styling, synchronizes pan/zoom transforms, and updates the Audit Modifications sidebar.
-
-### Key File Inventory
-1. **Diff Classification Logic**: [`backend/src/svg-diff-processor.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/svg-diff-processor.js) (element extraction `extractElements()`, track chain assembly `assembleTrackChains()`, 5-pass classification `processSvgDiff()`, and style injection `injectDiffStyle()`).
-2. **External Tool Execution & I/O**:
-   - [`backend/src/kicad-renderer.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/kicad-renderer.js) (shells out to `kicad-cli`).
-   - [`backend/src/git-extractor.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/git-extractor.js) (spawns `git show`).
-   - [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js) (resolves `kicad-cli` binary location).
-   - [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js) (REST route handlers, `git log`/`git diff` execution, temp directory cleanup).
-   - [`backend/src/kicad-pcb-parser.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/kicad-pcb-parser.js) (parses `.kicad_pcb` S-expressions for pad/net overlays).
-3. **Frontend Viewport Component**: [`frontend/src/SideBySideDiff.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/SideBySideDiff.jsx) (dual SVG viewport, `DIFF_CSS` injection, linked pan/zoom, and grayscale filter scoping).
+_Last updated: 2026-08-19_
 
 ---
 
-## 2. Cross-Platform Audit Findings (Windows / macOS / Linux)
+## 1. Project Identity & Objective
+
+- **Project Name / Domain**: Banana 2.0 — Hardware Git Visual & Semantic Diff Engine (EDA / KiCad Electronics Design Automation).
+- **Core Problem Solved**: Git and traditional diff tools treat hardware design files (`.kicad_sch` schematics and `.kicad_pcb` board layouts) as opaque text or raw S-expressions, resulting in unreadable merge conflicts and zero spatial/visual insight. Banana 2.0 provides an automated visual and topological diff engine that extracts revision pairs directly from Git history, converts them to vector layers via `kicad-cli`, performs a multi-pass semantic/geometric diff (categorizing additions, deletions, modifications, and component relocations while suppressing font/rendering noise), and presents them in synchronized side-by-side / overlay viewports with an automated audit log.
+- **Current Stage**: Functional prototype / MVP with audited core diffing engine, currently transitioning toward web-hosted server-side deployment (BullMQ, Redis, PostgreSQL/Drizzle, Docker) and cross-platform desktop capabilities.
+
+---
+
+## 2. Architecture & Tech Stack
+
+- **Primary Languages & Frameworks**:
+  - **Frontend**: React 18, Vite, Ant Design (`antd`), Lucide Icons (`lucide-react`), Vanilla CSS / custom SVG viewport transforms (`@panzoom/panzoom` / custom matrix transforms).
+  - **Backend**: Node.js, Express.js (`cors`, `express`), child process execution (`child_process.execFile`).
+  - **Web Deployment Stack**: BullMQ + Redis (asynchronous worker queue), PostgreSQL with Drizzle ORM, Dockerized `kicad-cli` runtime.
+- **Key Models / Algorithms / Databases**:
+  - **5-Pass Topological Matching Engine (`backend/src/svg-diff-processor.js`)**:
+    - *Pass 1*: Exact Element Matching (hash/path identity).
+    - *Pass 2*: Substring / Attribute & Spatial Vicinity Matching.
+    - *Pass 3*: Component & Reference Designator Association (bounding box & center proximity).
+    - *Pass 4*: Track / Net Chain Assembly & Segment Routing Diff (graph traversal of interconnected copper segments).
+    - *Pass 5*: Bounding-box cluster matching, displacement calculation (e.g. $2.0\text{ mm}$ movement threshold), and residual classification (`diff-changed`, `diff-added`, `diff-deleted`, `diff-unchanged`).
+  - **S-Expression PCB Parser (`backend/src/kicad-pcb-parser.js`)**: Parses native `.kicad_pcb` tokens for pad centers, footprints, and net assignments to generate interactive overlay labels.
+  - **Database (Web Phase)**: PostgreSQL for diff job tracking, repository metadata, and caching.
+- **Compute & Hosting Environment**:
+  - **Local/Desktop**: Node.js runtime with local `kicad-cli` system installation (Windows / macOS / Linux).
+  - **Cloud/Container**: Docker container running headless Ubuntu with `kicad-cli` (KiCad 8.0+), Express REST API, and Redis/BullMQ worker instances.
+
+---
+
+## 3. Data Flow & Processing Pipeline
+
+- **Input Modality / Format**:
+  - Git repository path or remote GitHub App connection.
+  - Git commit SHAs (`baseCommit`, `targetCommit`).
+  - Hardware design files: KiCad Schematics (`.kicad_sch`) and PCB Layouts (`.kicad_pcb`).
+- **Step-by-Step Pipeline**:
+  1. **Ingestion & Git Extraction**:
+     - Frontend requests commit history or submits diff job via `POST /api/diff/process` with `{ repoPath, baseCommit, targetCommit, filePath }`.
+     - `git-extractor.js` uses `git show <commit>:<filePath>` to extract base and target file revisions into isolated subdirectories in `temp_storage/`.
+  2. **Vector Rendering (`kicad-cli`)**:
+     - `kicad-renderer.js` executes `kicad-cli sch export svg` or `kicad-cli pcb export svg` (with layer flags) to render high-precision vector SVG files for both revisions.
+  3. **Semantic Diff & Topological Matching**:
+     - `svg-diff-processor.js` parses the SVGs, extracts vector paths, texts, component symbols, and copper tracks into structured AST/DOM representations.
+     - Runs the 5-pass matching algorithm: associates matching elements, detects geometric shifts (> 2.0 mm), identifies newly added or deleted wires/components, and annotates SVG nodes with diff classes (`diff-changed`, `diff-added`, `diff-deleted`, `diff-unchanged`).
+     - Simultaneously extracts S-expression metadata (pad/net assignments) via `kicad-pcb-parser.js`.
+  4. **Post-Processing & Output Generation**:
+     - Injects CSS color variables and styling into SVG definitions.
+     - Generates structured `modifications` audit list (changes, moves, additions, deletions with exact coordinates and net names).
+  5. **Client Presentation**:
+     - Frontend mounts annotated SVGs into synchronized dual viewports (`SideBySideDiff.jsx` / `DiffCanvas.jsx`) with pan/zoom locks, layer toggles, visual highlight filters, and real-time audit sidebar updates.
+- **Final Output / Deliverable**: Interactive synchronized visual diff canvas with element-level highlights (Yellow = Changed, Green = Added, Red = Deleted, Grayscale = Unchanged) paired with an automated modification audit log.
+
+---
+
+## 4. Constraints & Boundaries
+
+- **Hardware / Memory Budgets**:
+  - `kicad-cli` subprocess memory footprint during large multi-sheet schematics or complex 8+ layer PCB SVG exports.
+  - Ephemeral disk usage in `temp_storage/` requiring strict lifecycle cleanup per job.
+  - Browser DOM memory limits when rendering complex vector SVGs with thousands of copper trace paths and pad shapes.
+- **Performance Targets**:
+  - Fast end-to-end diff turnaround (< 2–5 seconds for typical schematic sheets; asynchronous BullMQ polling for massive multi-layer PCBs).
+  - 60 FPS smooth synchronized pan/zoom in the client viewport.
+- **Known Non-Negotiables & Strict Invariants**:
+  - **Tool Dependency**: Strict requirement on `kicad-cli` binary availability (v8.0+ recommended) with cross-platform PATH resolution.
+  - **Cross-Platform Compatibility**: No shell-quoted string execution; strict use of `execFile` with array arguments; explicit Windows/Unix path normalization (`/` vs `\`) and CRLF/LF line-ending handling.
+  - **Zero Trust Security (Web Mode)**: No collecting raw GitHub Personal Access Tokens (PATs); use granular GitHub App installation tokens; sanitized input paths preventing directory traversal outside `temp_storage`.
+  - **Noise Suppression**: Font rendering variations, metadata timestamp changes, and minor vector antialiasing artifacts must not trigger false-positive diff classifications.
+
+---
+
+## 5. Cross-Platform Audit Findings (Windows / macOS / Linux)
 
 | # | File Path | Line Number(s) | Hardcoded Value / OS Assumption | Soft-Coding Recommendation |
 |---|---|---|---|---|
 | 1 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L18-L57) | L18–L57 | Hardcoded paths & startup verification. | Strict fail-fast `execFileSync(KICAD_CLI_PATH, ['--version'])` without `try/catch` ensures the backend halts immediately at boot if `kicad-cli` is unexecutable. |
 | 2 | [`backend/src/config.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/config.js#L16) | L16 | Binary search without PATH resolution. | Uses `where` (win32) / `which` (Unix) via `execFileSync` to locate `kicad-cli` dynamically on `PATH` before trying OS install locations. |
 | 3 | [`backend/src/server.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/server.js#L106-L113) | L106–L113 | Hardcoded Windows paths `C:\Users\realr\...`. | Replaced with `os.homedir()`: `const defaultRepoBrowseDir = path.join(os.homedir(), 'Desktop'); const startDir = fs.existsSync(defaultRepoBrowseDir) ? defaultRepoBrowseDir : os.homedir();`. |
-| 4 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L50-L58) | L50–L58 | Hardcoded initial state `c:\Users\realr\...`. | Replaced with `useState(localStorage.getItem('banana:lastRepoPath') \|\| '')` and `useEffect` persistence on `repoPath` change. |
-| 5 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx) | Multiple | Hardcoded API URL `http://localhost:5000`. | Replaced with `${API_BASE_URL}` imported from `frontend/src/config.js` (`import.meta.env.VITE_API_URL \|\| 'http://localhost:5000'`). |
+| 4 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L50-L58) | L50–L58 | Hardcoded initial state `c:\Users\realr\...`. | Replaced with `useState(localStorage.getItem('banana:lastRepoPath') || '')` and `useEffect` persistence on `repoPath` change. |
+| 5 | [`frontend/src/App.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx) | Multiple | Hardcoded API URL `http://localhost:5000`. | Replaced with `${API_BASE_URL}` imported from `frontend/src/config.js` (`import.meta.env.VITE_API_URL || 'http://localhost:5000'`). |
 | 6 | [`frontend/src/PadLabelOverlay.jsx`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/PadLabelOverlay.jsx#L264) | L264, L281 | Hardcoded API URL `http://localhost:5000`. | Replaced with `${API_BASE_URL}` imported from `./config.js`. |
 | 7 | [`backend/src/kicad-renderer.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/kicad-renderer.js#L20-L24) | L20–L24 | Manual slash conversion `replace(/\\/g, '/') + '/'`. | Converted `exec()` string commands to `execFile()` with array arguments and `path.resolve()`, eliminating shell string escaping issues. |
 | 8 | [`backend/src/git-extractor.js`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/backend/src/git-extractor.js#L30) | L30 | Redundant global regex replacement. | Cleaned up to `relativeFilePath.split(/[/\\]/).join('/')` for explicit cross-platform Git path normalization. |
@@ -49,7 +92,7 @@ _Last updated: 2026-07-25 (Comprehensive Master Record)_
 
 ---
 
-## 3. R38 Diff Classification Trace (34b1983 → 100de4c, ETHERNET.kicad_sch)
+## 6. R38 Diff Classification Trace (34b1983 → 100de4c, ETHERNET.kicad_sch)
 
 ### Coordinates & Distance
 - **Base R38 Center**: $(x = 99.0732\text{ mm},\, y = 92.3740\text{ mm})$

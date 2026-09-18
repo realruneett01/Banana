@@ -573,6 +573,63 @@ function parseGroup(groupNode) {
 }
 
 /**
+ * Extracts and maps all track segments with their resolved net names and coordinates.
+ *
+ * Accepts a raw parsed AST (the result of parseSExpr on a .kicad_pcb file content)
+ * and returns:
+ *   - netIndexMap  Map<netId:number, netName:string>  — full net-index dictionary
+ *   - trackSegments  Array<{ start, end, netId, netName, layer }>  — every (segment …) node
+ *
+ * This is intentionally a lightweight, focused decoder: it does NOT require the
+ * full parseKiCadBoard pipeline and can therefore be used stand-alone by audit
+ * reporters and diff processors that only need net-name resolution for trace diffs.
+ */
+function parsePcbNetSegments(pcbAst) {
+  const netIndexMap = new Map(); // netId -> netName
+  const trackSegments = [];
+
+  // 1. Build Net ID → Net Name dictionary from (net N "NET_NAME") declarations
+  for (const token of pcbAst) {
+    if (
+      Array.isArray(token) &&
+      token[0] === 'net' &&
+      token.length >= 3 &&
+      !isNaN(token[1]) &&
+      typeof token[2] === 'string'
+    ) {
+      netIndexMap.set(parseInt(token[1]), token[2]);
+    }
+  }
+
+  // 2. Extract track segments with resolved net names
+  for (const token of pcbAst) {
+    if (!Array.isArray(token) || token[0] !== 'segment') continue;
+
+    const segProps = Object.fromEntries(
+      token.slice(1).map(item =>
+        Array.isArray(item) ? [item[0], item.slice(1)] : [item, true]
+      )
+    );
+
+    const netId   = segProps.net   ? parseInt(segProps.net[0]) : 0;
+    const netName = netIndexMap.get(netId) || 'unconnected';
+    const layer   = segProps.layer ? segProps.layer[0]        : 'F.Cu';
+    const start   = segProps.start
+      ? { x: parseFloat(segProps.start[0]), y: parseFloat(segProps.start[1]) }
+      : null;
+    const end     = segProps.end
+      ? { x: parseFloat(segProps.end[0]),   y: parseFloat(segProps.end[1]) }
+      : null;
+
+    if (start && end) {
+      trackSegments.push({ start, end, netId, netName, layer });
+    }
+  }
+
+  return { netIndexMap, trackSegments };
+}
+
+/**
  * Main parse function. Takes file path, parses and returns the full typed board representation.
  */
 function parseKiCadBoard(filePath) {
@@ -801,8 +858,69 @@ function parseKiCadBoard(filePath) {
     };
 }
 
+/**
+ * Direct S-Expression regex parser for KiCad PCB tracks, nets, and footprints.
+ *
+ * This is intentionally a lightweight, regex-based extractor that works on raw
+ * file-content strings — no full AST parse required. It is designed to be called
+ * from server.js to populate pcbMetadata before passing it into processSvgDiff.
+ *
+ * Returns:
+ *   netMap     Map<netId:number, netName:string>
+ *   segments   Array<{ start, end, layer, netId, netName }>
+ *   footprints Array<{ ref, value, center: {x,y}, layer }>
+ */
+function parsePcbMetadata(pcbFileContent) {
+  const netMap    = new Map(); // netId (number) -> netName (string)
+  const segments  = [];       // { start:{x,y}, end:{x,y}, netName, layer }
+  const footprints = [];      // { ref, value, center:{x,y}, layer }
+
+  if (!pcbFileContent || typeof pcbFileContent !== 'string') {
+    return { netMap, segments, footprints };
+  }
+
+  // 1. Extract all Net definitions: (net 14 "/ETHERNET/PMODE1")
+  const netRegex = /\(net\s+(\d+)\s+"([^"]+)"\)/g;
+  let netMatch;
+  while ((netMatch = netRegex.exec(pcbFileContent)) !== null) {
+    netMap.set(parseInt(netMatch[1], 10), netMatch[2]);
+  }
+
+  // 2. Extract all Track Segments:
+  //    (segment (start X Y) (end X Y) (width W) (layer "L") (net N))
+  const segRegex = /\(segment\s+\(start\s+([\d.-]+)\s+([\d.-]+)\)\s+\(end\s+([\d.-]+)\s+([\d.-]+)\).*?\(layer\s+"?([^"\s)]+)"?\).*?\(net\s+(\d+)\)/g;
+  let segMatch;
+  while ((segMatch = segRegex.exec(pcbFileContent)) !== null) {
+    const netId = parseInt(segMatch[6], 10);
+    segments.push({
+      start:   { x: parseFloat(segMatch[1]), y: parseFloat(segMatch[2]) },
+      end:     { x: parseFloat(segMatch[3]), y: parseFloat(segMatch[4]) },
+      layer:   segMatch[5],
+      netId,
+      netName: netMap.get(netId) || `Net-${netId}`
+    });
+  }
+
+  // 3. Extract Footprints / Components:
+  //    (footprint "..." (layer "...") (at X Y) ... (fp_text reference "R38" ...) (fp_text value "10k" ...))
+  const fpRegex = /\(footprint\s+"[^"]*"\s+\(layer\s+"?([^"\s)]+)"?\).*?\(at\s+([\d.-]+)\s+([\d.-]+)\).*?\(fp_text\s+reference\s+"([^"]+)"\s+\(at[^)]*\)[^)]*\)\s+\(fp_text\s+value\s+"([^"]+)"/gs;
+  let fpMatch;
+  while ((fpMatch = fpRegex.exec(pcbFileContent)) !== null) {
+    footprints.push({
+      layer:  fpMatch[1],
+      center: { x: parseFloat(fpMatch[2]), y: parseFloat(fpMatch[3]) },
+      ref:    fpMatch[4],
+      value:  fpMatch[5]
+    });
+  }
+
+  return { netMap, segments, footprints };
+}
+
 export {
     parseSExpr,
     toBoardAbsolute,
-    parseKiCadBoard
+    parseKiCadBoard,
+    parsePcbNetSegments,
+    parsePcbMetadata
 };

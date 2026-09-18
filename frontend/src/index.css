@@ -21,3 +21,135 @@ body {
 .pad-labels-hidden .pad-label {
   display: none;
 }
+
+/* ─── Viewport Performance & GPU Containment ────────────────────────────────── */
+.diff-viewport-panel svg,
+.diff-viewport svg {
+  will-change: transform;
+  contain: layout paint size;
+}
+
+.diff-unchanged {
+  opacity: 0.45;
+  stroke: #808080 !important;
+  fill: none;
+  pointer-events: none;
+}
+
+
+/* ─── Interactive Hover Highlight & Focus Ring Animation ─────────────────────── */
+[data-diff-hovered="true"],
+.diff-highlighted {
+  stroke-width: 0.8mm !important;
+  filter: drop-shadow(0 0 6px #ffffff) !important;
+  opacity: 1 !important;
+}
+
+.diff-focus-ring {
+  fill: none;
+  animation: pulse-ring 2s infinite ease-in-out;
+}
+
+.diff-focus-ring.diff-added {
+  stroke: #22c55e !important;
+  filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.8)) !important;
+}
+
+.diff-focus-ring.diff-deleted {
+  stroke: #ef4444 !important;
+  filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.8)) !important;
+}
+
+.diff-focus-ring.diff-changed {
+  stroke: #facc15 !important;
+  filter: drop-shadow(0 0 6px rgba(250, 204, 21, 0.8)) !important;
+}
+
+@keyframes pulse-ring {
+  0% {
+    stroke-width: 0.5mm;
+    stroke-opacity: 1;
+  }
+  50% {
+    stroke-width: 1.2mm;
+    stroke-opacity: 0.6;
+  }
+  100% {
+    stroke-width: 0.5mm;
+    stroke-opacity: 1;
+  }
+}
+
+/* Active element highlight pulse on sidebar click */
+[data-diff-idx].diff-highlight-active,
+[data-diff-selected="true"] {
+  stroke-width: 0.8mm !important;
+  filter: drop-shadow(0 0 6px #FFFFFF) !important;
+}
+
+/* Layer container containment */
+.diff-canvas-container {
+  background: #0B0F19;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ─── Banana AI Copilot Styles ──────────────────────────────────────────────── */
+.copilot-float-btn {
+  position: fixed;
+  bottom: 24px;
+  right: 280px; /* Positioned just inside the viewport left of the audit sidebar */
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 30px;
+  background: linear-gradient(135deg, #1c1e29 0%, #161821 100%);
+  border: 1.5px solid #fadb14;
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 14px rgba(250, 219, 20, 0.25);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.copilot-float-btn:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6), 0 0 20px rgba(250, 219, 20, 0.45);
+  border-color: #ffe58f;
+}
+
+.copilot-float-btn:active {
+  transform: translateY(0) scale(0.98);
+}
+
+.copilot-dot-pulse {
+  display: inline-block;
+  animation: copilot-pulse 1.2s infinite ease-in-out;
+}
+
+@keyframes copilot-pulse {
+  0%, 100% {
+    transform: scale(0.85);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 1;
+    box-shadow: 0 0 8px #fadb14;
+  }
+}
+
+.copilot-message-body code {
+  background: #0f1015;
+  border: 1px solid #232738;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 11px;
+  color: #fadb14;
+}
+

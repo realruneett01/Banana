@@ -9,6 +9,10 @@ import { extractFileFromCommit } from './git-extractor.js';
 import { renderKicadFile } from './kicad-renderer.js';
 import { processSvgDiff } from './svg-diff-processor.js';
 import { parseKiCadBoard } from './kicad-pcb-parser.js';
+import { streamGeminiChat } from './ai-service.js';
+import { WorkspaceDB } from './database.js';
+import { searchComponentAlternatives } from './component-sourcing-service.js';
+import { buildCircuitWithAiAndJev } from './circuit-builder-service.js';
 
 const app = express();
 
@@ -311,8 +315,13 @@ app.post('/api/diff/process', async (req, res) => {
     });
   }
 
-  const baseFolderId = `base_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const targetFolderId = `target_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const tTotalStart = performance.now();
+  const cleanBaseCommit = String(baseCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const cleanTargetCommit = String(targetCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const safeRelPath = relativeFilePath.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  const baseFolderId = `git_${cleanBaseCommit}_${safeRelPath}`;
+  const targetFolderId = `git_${cleanTargetCommit}_${safeRelPath}`;
   const fileBasename = path.basename(relativeFilePath);
 
   const baseTempName = path.join(baseFolderId, fileBasename);
@@ -325,6 +334,7 @@ app.post('/api/diff/process', async (req, res) => {
 
   try {
     // 1. Extract files from Git
+    const tGitStart = performance.now();
     try {
       basePath = await extractFileFromCommit(repoPath, baseCommit, relativeFilePath, baseTempName);
     } catch (err) {
@@ -342,25 +352,23 @@ app.post('/api/diff/process', async (req, res) => {
         details: err.message
       });
     }
+    const tGit = performance.now() - tGitStart;
 
-    // 2. Render files using KiCad CLI
+    // 2. Render files concurrently using KiCad CLI
+    const tCliStart = performance.now();
     try {
-      baseRenders = await renderKicadFile(basePath, isPcb);
+      [baseRenders, targetRenders] = await Promise.all([
+        renderKicadFile(basePath, isPcb),
+        renderKicadFile(targetPath, isPcb)
+      ]);
     } catch (err) {
+      console.error('[Banana API] Concurrent KiCad rendering error:', err);
       return res.status(500).json({
-        error: `Failed to render base file SVG`,
+        error: 'Failed to render KiCad SVG files concurrently',
         details: err.message
       });
     }
-
-    try {
-      targetRenders = await renderKicadFile(targetPath, isPcb);
-    } catch (err) {
-      return res.status(500).json({
-        error: `Failed to render target file SVG`,
-        details: err.message
-      });
-    }
+    const tCli = performance.now() - tCliStart;
 
     // 3. Read generated SVGs into memory
     const readSvgs = (renderResult) => {
@@ -380,9 +388,62 @@ app.post('/api/diff/process', async (req, res) => {
 
     // 4. Build semantic SVG diff annotation for Side-by-Side mode
     //    Match layers by filename, process each pair through the diff engine.
+    const tDiffStart = performance.now();
     const sideBySideBase   = [];
     const sideBySideTarget = [];
+    const baseSvgsWithIdx   = [];
+    const targetSvgsWithIdx = [];
     const allModifications = [];
+    const layerTelemetries = [];
+
+    let pcbMetadata = null;
+    if (isPcb && fs.existsSync(targetPath)) {
+      try {
+        const board = parseKiCadBoard(targetPath);
+        
+        // Map footprints with reference designators and values
+        const footprints = (board.footprints || []).map(fp => ({
+          ref: fp.reference?.text || '',
+          value: fp.value?.text || '',
+          layer: fp.layer || 'F.Cu',
+          x: fp.at?.x || 0,
+          y: fp.at?.y || 0
+        }));
+
+        // Map pads with absolute coordinates and net assignments
+        const pads = [];
+        for (const fp of board.footprints || []) {
+          const ref = fp.reference?.text || '';
+          for (const pad of fp.pads || []) {
+            pads.push({
+              refDes: ref,
+              pin: pad.number || '',
+              netName: pad.net || '',
+              x: pad.absAt?.x || 0,
+              y: pad.absAt?.y || 0,
+              layers: pad.layers || []
+            });
+          }
+        }
+
+        // Supply all 1,100+ native AST tracks with resolved net strings
+        pcbMetadata = {
+          footprints,
+          pads,
+          segments: (board.tracks || []).map(t => ({
+            start: t.start,
+            end: t.end,
+            width: t.width,
+            layer: t.layer || 'F.Cu',
+            net: t.net || 'unconnected',
+            netName: t.net || 'unconnected'
+          })),
+          nets: Array.from(board.nets ? board.nets.values() : [])
+        };
+      } catch (parseErr) {
+        console.warn('[Banana API] Warning: Failed to parse PCB AST:', parseErr.message);
+      }
+    }
 
     for (const baseSvg of baseSvgs) {
       // Find the matching target layer by filename
@@ -390,12 +451,12 @@ app.post('/api/diff/process', async (req, res) => {
 
       if (matchingTarget) {
         try {
-          // FIX (a): Pass the layer filename so processSvgDiff can correctly detect copper layers.
-          // KiCad --mode-multi exports one SVG per layer; the filename encodes the layer name
-          // (e.g. "boardname-F_Cu.svg"). Individual path/line elements have no class attribute,
-          // so the filename is the only reliable copper layer indicator.
-          const { baseSvg: annotatedBase, targetSvg: annotatedTarget, modifications: layerMods } =
-            processSvgDiff(baseSvg.content, matchingTarget.content, baseSvg.filename);
+          const { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications: layerMods, telemetry: layerTel } =
+            processSvgDiff(baseSvg.content, matchingTarget.content, baseSvg.filename, pcbMetadata);
+
+          if (layerTel) {
+            layerTelemetries.push({ layer: baseSvg.filename, ...layerTel });
+          }
 
           // Enrich modifications with the layer filename
           const enrichedMods = (layerMods || []).map(m => ({
@@ -406,15 +467,21 @@ app.post('/api/diff/process', async (req, res) => {
 
           sideBySideBase.push({ filename: baseSvg.filename, content: annotatedBase });
           sideBySideTarget.push({ filename: matchingTarget.filename, content: annotatedTarget });
+
+          baseSvgsWithIdx.push({ filename: baseSvg.filename, content: cleanBaseSvg || baseSvg.content });
+          targetSvgsWithIdx.push({ filename: matchingTarget.filename, content: cleanTargetSvg || matchingTarget.content });
         } catch (diffErr) {
           // Fall back to unannotated SVGs if the diff processor fails on a specific layer
           console.warn(`SVG diff annotation failed for layer ${baseSvg.filename}:`, diffErr.message);
           sideBySideBase.push(baseSvg);
           sideBySideTarget.push(matchingTarget);
+          baseSvgsWithIdx.push(baseSvg);
+          targetSvgsWithIdx.push(matchingTarget);
         }
       } else {
         // Layer only in base — entire SVG is "deleted"
         sideBySideBase.push(baseSvg);
+        baseSvgsWithIdx.push(baseSvg);
         allModifications.push({
           type: 'delete_layer',
           layer: baseSvg.filename,
@@ -431,6 +498,7 @@ app.post('/api/diff/process', async (req, res) => {
       const inBase = baseSvgs.some(b => b.filename === targetSvg.filename);
       if (!inBase) {
         sideBySideTarget.push(targetSvg);
+        targetSvgsWithIdx.push(targetSvg);
         allModifications.push({
           type: 'add_layer',
           layer: targetSvg.filename,
@@ -441,22 +509,32 @@ app.post('/api/diff/process', async (req, res) => {
         });
       }
     }
+    const tDiff = performance.now() - tDiffStart;
+    const tTotal = performance.now() - tTotalStart;
 
-    // 5. Return SVG content in structured response
+    // 5. Return SVG content in structured response with telemetry
     res.json({
       base: {
         commit: baseCommit,
-        svgs: baseSvgs
+        svgs: baseSvgsWithIdx
       },
       target: {
         commit: targetCommit,
-        svgs: targetSvgs
+        svgs: targetSvgsWithIdx
       },
       sideBySide: {
         base: sideBySideBase,
         target: sideBySideTarget
       },
-      modifications: allModifications
+      modifications: allModifications,
+      telemetry: {
+        tGit: Number(tGit.toFixed(2)),
+        tCli: Number(tCli.toFixed(2)),
+        tDiff: Number(tDiff.toFixed(2)),
+        tTotal: Number(tTotal.toFixed(2)),
+        layersProcessed: baseSvgs.length,
+        layerTelemetries
+      }
     });
 
   } catch (error) {
@@ -568,6 +646,133 @@ app.post('/api/board/pads', async (req, res) => {
         }
       } catch (_) {}
     }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI Hardware Copilot Endpoints (Powered by Gemini 2.0 Flash)
+// ---------------------------------------------------------------------------
+
+app.get('/api/ai/status', (req, res) => {
+  const serverKeyConfigured = Boolean(config.geminiApiKey || process.env.GEMINI_API_KEY);
+  res.json({
+    status: 'ok',
+    serverKeyConfigured,
+    model: config.geminiModel || 'gemini-2.0-flash-preview'
+  });
+});
+
+app.post('/api/ai/chat', async (req, res) => {
+  const { messages, boardContext, model } = req.body;
+  const clientApiKey = req.headers['x-gemini-api-key'];
+
+  // Set headers for Server-Sent Events streaming
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    const result = await streamGeminiChat({
+      messages: messages || [],
+      boardContext: boardContext || {},
+      apiKey: clientApiKey,
+      model,
+      onChunk: (chunk) => {
+        res.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
+      }
+    });
+
+    res.write(`data: ${JSON.stringify({ done: true, modelUsed: result.modelUsed })}\n\n`);
+    res.end();
+  } catch (err) {
+    console.error('[Banana Copilot] Chat error:', err.message);
+    res.write(`data: ${JSON.stringify({
+      error: err.message,
+      isKeyRequired: err.message.includes('GEMINI_API_KEY_REQUIRED')
+    })}\n\n`);
+    res.end();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Workspace & Circuit Builder Endpoints (SQLite + Gemini 3 Flash + Jev)
+// ---------------------------------------------------------------------------
+
+// GET Workspace State & Projects
+app.get('/api/workspace', (req, res) => {
+  try {
+    const ws = WorkspaceDB.getWorkspace();
+    const projects = WorkspaceDB.getAllProjects();
+    const circuits = WorkspaceDB.getAllCircuits();
+    res.json({ workspace: ws, projects, circuits });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET All Saved Circuits
+app.get('/api/workspace/circuits', (req, res) => {
+  try {
+    const { projectId } = req.query;
+    const circuits = WorkspaceDB.getAllCircuits(projectId || null);
+    res.json({ circuits });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET Single Circuit by ID
+app.get('/api/workspace/circuits/:id', (req, res) => {
+  try {
+    const circuit = WorkspaceDB.getCircuit(req.params.id);
+    if (!circuit) return res.status(404).json({ error: 'Circuit not found' });
+    res.json({ circuit });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST Build Circuit (Autonomous Streaming Pipeline)
+app.post('/api/circuit/build', async (req, res) => {
+  const { prompt, boardContext, projectId } = req.body;
+
+  if (!prompt || !prompt.trim()) {
+    return res.status(400).json({ error: 'Prompt is required' });
+  }
+
+  // Set SSE streaming headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  try {
+    const circuit = await buildCircuitWithAiAndJev({
+      prompt: prompt.trim(),
+      boardContext: boardContext || {},
+      projectId: projectId || 'default',
+      onProgress: (progress) => {
+        res.write(`data: ${JSON.stringify({ progress })}\n\n`);
+      }
+    });
+
+    res.write(`data: ${JSON.stringify({ done: true, circuit })}\n\n`);
+    res.end();
+  } catch (err) {
+    console.error('[Circuit Builder] Build error:', err.message);
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// GET Component Alternatives (Web Sourcing)
+app.get('/api/components/alternatives', async (req, res) => {
+  try {
+    const { part } = req.query;
+    if (!part) return res.status(400).json({ error: 'part query param required' });
+    const alternatives = await searchComponentAlternatives(part);
+    res.json({ part, alternatives });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
