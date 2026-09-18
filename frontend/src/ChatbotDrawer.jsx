@@ -123,23 +123,7 @@ export default function ChatbotDrawer({
     return [
       {
         role: 'model',
-        content: `👋 **Welcome to Banana Hardware Copilot!**
-
-I have two dedicated operating modes:
-
-💬 **1. Normal Chat (Active)**:
-Unlimited free conversation powered strictly by **Gemini 3 Flash Preview**. Ask anything about:
-- Explaining detected changes on your active PCB diff
-- Checking DRC clearances, solder bridging, and trace limits
-- How to use Banana 2.0 features (Side-by-Side, Overlay Slider, Color Delta Map, Layer Soloing)
-- Electronics engineering calculations & KiCad advice
-
-⚡ **2. Builder Mode**:
-Switch to **Builder** mode above to autonomously synthesize complete circuits!
-- Generates schematics with **Gemini 3 Flash Preview**
-- Validates voltages & thermal safety with **TypeSafe AI Jev**
-- Scrapes live **LCSC / JLCPCB** web stock for the best alternatives
-- Auto-saves to your local **SQLite workspace** and renders on the **Circuit Builder Studio** canvas!`,
+        content: `Hey! What are we checking or working on today?`,
         timestamp: Date.now()
       }
     ];
@@ -202,7 +186,9 @@ Switch to **Builder** mode above to autonomously synthesize complete circuits!
     const welcomeMsg = [
       {
         role: 'model',
-        content: `Chat history cleared. How can I help you inspect your KiCad board revisions today?`,
+        content: isBuilder
+          ? 'Hey! What circuit do you want to build?'
+          : 'Hey! What are we checking or working on today?',
         timestamp: Date.now()
       }
     ];
@@ -788,14 +774,24 @@ Switch to **Builder** mode above to autonomously synthesize complete circuits!
         </div>
 
         {/* Quick Prompts Carousel/Pills */}
-        <div style={{
-          padding: '8px 0',
-          display: 'flex',
-          gap: '6px',
-          overflowX: 'auto',
-          whiteSpace: 'nowrap',
-          borderTop: '1px solid #1f2330'
-        }}>
+        <div
+          className="copilot-prompts-scroll"
+          onWheel={(e) => {
+            if (e.deltaY !== 0) {
+              e.currentTarget.scrollLeft += e.deltaY;
+            }
+          }}
+          style={{
+            padding: '8px 0',
+            display: 'flex',
+            gap: '6px',
+            overflowX: 'auto',
+            whiteSpace: 'nowrap',
+            borderTop: '1px solid #1f2330',
+            scrollbarWidth: 'none',
+            msOverflowStyle: 'none'
+          }}
+        >
           {(isBuilder ? BUILDER_PROMPTS : NORMAL_CHAT_PROMPTS).map((qp, qIdx) => (
             <Button
               key={`quick-prompt-${qIdx}`}

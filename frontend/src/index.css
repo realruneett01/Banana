@@ -153,3 +153,37 @@ body {
   color: #fadb14;
 }
 
+/* ─── Clean Dark Scrollbars & Hide Horizontal White Bars ─────────────────── */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #232738;
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #3b4252;
+}
+
+/* Hide scrollbars completely on prompt pills & carousels */
+.copilot-prompts-scroll,
+.hide-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+.copilot-prompts-scroll::-webkit-scrollbar,
+.hide-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+
