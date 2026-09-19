@@ -318,11 +318,16 @@ const DIFF_PALETTE = {
  * Injects precise color highlights while strictly preserving native KiCad geometry and stroke-widths.
  */
 function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
+  // If unchanged, preserve 100% of native KiCad colors, fills, and strokes
+  if (diffClass === 'diff-unchanged') {
+    return elementHtml;
+  }
+
   // 1. Detect if the element belongs to the KiCad Courtyard layer (F.CrtYd / B.CrtYd)
   const isCourtyard = /class="[^"]*(?:CrtYd|courtyard)[^"]*"/i.test(elementHtml) ||
                       /stroke="[^"]*(?:#E066E0|#C878C8|#DA70D6|magenta|pink)[^"]*"/i.test(elementHtml);
 
-  // 2. Strip only existing color definitions; DO NOT touch stroke-width or path data
+  // 2. Strip only existing color definitions for modified elements; DO NOT touch stroke-width or path data
   let sanitized = elementHtml
     .replace(/\bstroke="[^"]*"/gi, '')
     .replace(/\bfill="[^"]*"/gi, '')
@@ -330,32 +335,19 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
 
   let styleString = '';
 
-  if (diffClass === 'diff-unchanged') {
-    if (isCourtyard) {
-      // Crisp KiCad Pink Courtyard boundary outline
-      styleString = `stroke: ${DIFF_PALETTE.UNCHANGED.COURTYARD} !important; fill: none !important; opacity: 0.60 !important; pointer-events: none;`;
-    } else if (isClosed) {
-      // Background pads, vias, zones: Filled with muted grey, no artificial stroke added
-      styleString = `fill: ${DIFF_PALETTE.UNCHANGED.PAD} !important; stroke: none !important; opacity: 0.40 !important; pointer-events: none;`;
-    } else {
-      // Native-width signal traces: Colored grey, original stroke-width preserved
-      styleString = `stroke: ${DIFF_PALETTE.UNCHANGED.TRACE} !important; fill: none !important; opacity: 0.40 !important; pointer-events: none;`;
-    }
-  } else {
-    // ACTIVE DIFF (CHANGED, ADDED, DELETED)
-    const color = diffClass === 'diff-changed'
-      ? DIFF_PALETTE.CHANGED
-      : diffClass === 'diff-added'
-        ? DIFF_PALETTE.ADDED
-        : DIFF_PALETTE.DELETED;
+  // ACTIVE DIFF (CHANGED, ADDED, DELETED)
+  const color = diffClass === 'diff-changed'
+    ? DIFF_PALETTE.CHANGED
+    : diffClass === 'diff-added'
+      ? DIFF_PALETTE.ADDED
+      : DIFF_PALETTE.DELETED;
 
-    if (isClosed) {
-      // Changed/Added/Deleted closed pads: Solid color fill with high opacity
-      styleString = `fill: ${color} !important; stroke: none !important; opacity: 1.0 !important;`;
-    } else {
-      // Changed/Added/Deleted traces: Exact native width colored sharply with zero blur filters
-      styleString = `stroke: ${color} !important; fill: none !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
-    }
+  if (isClosed) {
+    // Changed/Added/Deleted closed pads: Solid color fill with high opacity
+    styleString = `fill: ${color} !important; stroke: ${color} !important; opacity: 1.0 !important;`;
+  } else {
+    // Changed/Added/Deleted traces: Exact native width colored sharply with zero blur filters
+    styleString = `stroke: ${color} !important; fill: none !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
   }
 
   return sanitized.replace(/(\/?>)$/, ` style="${styleString}" $1`);
@@ -683,10 +675,16 @@ function annotateSvgSinglePass(svgContent, elements, classifications) {
     const isClosed = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
     const typeClass = isClosed ? 'diff-closed' : 'diff-open';
 
+    if (diffClass === 'diff-unchanged') {
+      let annotated = injectClass(el.fullMatch, `${diffClass} ${typeClass}`);
+      replacementMap.set(el.fullMatch, annotated);
+      continue;
+    }
+
     let annotated = injectClass(el.fullMatch, `${diffClass} ${typeClass}`);
     annotated = injectDiffStyle(annotated, diffClass, isClosed, el.tag);
     
-    if (diffClass !== 'diff-unchanged' && classification.diffIdx !== undefined) {
+    if (classification.diffIdx !== undefined) {
       annotated = injectDataAttr(annotated, classification.diffIdx);
     }
 

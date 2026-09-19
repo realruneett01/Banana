@@ -59,43 +59,23 @@ const DIFF_CSS = `
     contain: layout paint size;
   }
 
-  /* Efficient lightweight styles for unchanged elements (no GPU filter overhead) */
+  /* Unchanged elements preserve native KiCad styling and colors */
   .mode-side-by-side.schematic-mode .diff-unchanged,
   .mode-side-by-side.pcb-mode .diff-unchanged,
   .mode-side-by-side .diff-unchanged {
-    opacity: 0.45 !important;
-    stroke: #808080 !important;
-    fill: none !important;
-    filter: none !important;
     pointer-events: none;
   }
 
-  .mode-side-by-side svg .sch-text-glyph {
-    fill:   #7a828a !important;
-    stroke: none    !important;
-  }
-
-  .mode-side-by-side svg text.diff-unchanged,
-  .mode-side-by-side svg text.diff-unchanged tspan,
-  .mode-side-by-side svg text.sch-text-glyph,
-  .mode-side-by-side svg text.sch-text-glyph tspan,
-  .mode-side-by-side svg use.diff-unchanged,
-  .mode-side-by-side svg use.sch-text-glyph {
-    fill:   #7a828a !important;
-    stroke: none    !important;
-  }
-
-
   /* ── diff-changed (yellow) ──────────────────────────────────────────────── */
-  /* All descendants: stroke = yellow, fill = none.
-     Setting fill:none on the group and all its children clears the inherited
-     fill:#000000 that KiCad's root <g> cascades down — without this the glyph
-     stroke-paths and body rects inherit black and appear as solid dark blocks
-     against the yellow stroke highlight. */
-  .mode-side-by-side .diff-changed,
-  .mode-side-by-side .diff-changed * {
+  .mode-side-by-side .diff-changed.diff-open,
+  .mode-side-by-side .diff-changed:not(.diff-closed) {
     stroke: #ffff00 !important;
     fill:   none    !important;
+  }
+  .mode-side-by-side .diff-changed.diff-closed,
+  .mode-side-by-side .diff-changed.diff-closed * {
+    fill:   #ffff00 !important;
+    stroke: #ffff00 !important;
   }
   /* SVG native <text>/<tspan> nodes should be filled with diff color (readable) */
   .mode-side-by-side .diff-changed text,
@@ -105,10 +85,15 @@ const DIFF_CSS = `
   }
 
   /* ── diff-added (green) ─────────────────────────────────────────────────── */
-  .mode-side-by-side .diff-added,
-  .mode-side-by-side .diff-added * {
+  .mode-side-by-side .diff-added.diff-open,
+  .mode-side-by-side .diff-added:not(.diff-closed) {
     stroke: #00ff66 !important;
     fill:   none    !important;
+  }
+  .mode-side-by-side .diff-added.diff-closed,
+  .mode-side-by-side .diff-added.diff-closed * {
+    fill:   #00ff66 !important;
+    stroke: #00ff66 !important;
   }
   .mode-side-by-side .diff-added text,
   .mode-side-by-side .diff-added tspan {
@@ -117,10 +102,15 @@ const DIFF_CSS = `
   }
 
   /* ── diff-deleted (red) ─────────────────────────────────────────────────── */
-  .mode-side-by-side .diff-deleted,
-  .mode-side-by-side .diff-deleted * {
+  .mode-side-by-side .diff-deleted.diff-open,
+  .mode-side-by-side .diff-deleted:not(.diff-closed) {
     stroke: #ff3366 !important;
     fill:   none    !important;
+  }
+  .mode-side-by-side .diff-deleted.diff-closed,
+  .mode-side-by-side .diff-deleted.diff-closed * {
+    fill:   #ff3366 !important;
+    stroke: #ff3366 !important;
   }
   .mode-side-by-side .diff-deleted text,
   .mode-side-by-side .diff-deleted tspan {

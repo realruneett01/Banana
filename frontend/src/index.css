@@ -30,9 +30,6 @@ body {
 }
 
 .diff-unchanged {
-  opacity: 0.45;
-  stroke: #808080 !important;
-  fill: none;
   pointer-events: none;
 }
 
