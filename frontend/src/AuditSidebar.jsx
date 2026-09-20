@@ -4,7 +4,8 @@ export const AuditSidebar = ({
   modifications = [], 
   onSelectDiff, 
   activeDiffIdx,
-  onHoverDiff
+  onHoverDiff,
+  onCollapse
 }) => {
   const getActionBadge = (action) => {
     switch (action) {
@@ -80,19 +81,44 @@ export const AuditSidebar = ({
             Audit Modifications
           </h3>
         </div>
-        <span 
-          className="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full"
-          style={{
-            fontSize: '12px',
-            fontFamily: 'monospace',
-            backgroundColor: '#1e293b',
-            color: '#94a3b8',
-            padding: '2px 8px',
-            borderRadius: '9999px'
-          }}
-        >
-          {modifications.length}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span 
+            className="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full"
+            style={{
+              fontSize: '12px',
+              fontFamily: 'monospace',
+              backgroundColor: '#1e293b',
+              color: '#94a3b8',
+              padding: '2px 8px',
+              borderRadius: '9999px'
+            }}
+          >
+            {modifications.length}
+          </span>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              title="Hide Audit Panel"
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#94a3b8',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                padding: '4px',
+                borderRadius: '4px',
+                transition: 'color 0.15s, background 0.15s'
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = '#fadb14'; e.currentTarget.style.background = 'rgba(250, 219, 20, 0.1)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.background = 'transparent'; }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="9 18 15 12 9 6"></polyline>
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Modifications List */}

@@ -55,8 +55,8 @@ const DIFF_CSS = `
   }
 
   .diff-viewport svg {
-    will-change: transform;
-    contain: layout paint size;
+    shape-rendering: geometricPrecision;
+    text-rendering: geometricPrecision;
   }
 
   /* Unchanged elements preserve native KiCad styling and colors */
@@ -182,7 +182,7 @@ function isLayerSolo(filename, soloLayer) {
 // ─── Direct GPU transform helper (bypasses React virtual DOM reconciliation) ───
 const applyTransformToDom = (element, transform) => {
   if (element) {
-    element.style.transform = `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`;
+    element.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
   }
 };
 
@@ -466,9 +466,6 @@ const SideBySideSvgLayer = React.memo(({ filename, content, side, layerTier, opa
         filter: filterStyle,
         transition: 'opacity 0.15s, filter 0.2s',
         pointerEvents: 'none',
-        transform: 'translate3d(0px, 0px, 0px)',
-        willChange: 'transform, opacity, filter',
-        backfaceVisibility: 'hidden',
       }}
       dangerouslySetInnerHTML={{
         __html: content.replace(/<svg/, '<svg style="width:100%;height:100%;position:absolute;"')
@@ -558,9 +555,7 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
             height: '100%',
             transformOrigin: '0 0',
             position: 'relative',
-            willChange: 'transform',
-            backfaceVisibility: 'hidden',
-            transform: `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`
           }}
         >
           {filtered.length === 0 ? (

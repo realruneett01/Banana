@@ -689,9 +689,19 @@ export default function App() {
             {!leftCollapsed && (
               <Space direction="vertical" size="large" style={{ width: '100%' }}>
                 <div>
-                  <Title level={5} style={{ marginTop: 0, color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <SettingOutlined /> Repository Configuration
-                  </Title>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                    <Title level={5} style={{ margin: 0, color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <SettingOutlined /> Repository Configuration
+                    </Title>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<MenuFoldOutlined />}
+                      onClick={() => setLeftCollapsed(true)}
+                      title="Hide Controls (Left Panel)"
+                      style={{ color: '#94a3b8' }}
+                    />
+                  </div>
                   <Upload.Dragger
                     directory
                     multiple={false}
@@ -1048,8 +1058,69 @@ export default function App() {
             justifyContent: 'center', 
             alignItems: 'center',
             height: 'calc(100vh - 64px)',
-            overflow: 'hidden'
+            overflow: 'hidden',
+            position: 'relative'
           }}>
+            {/* Left Edge Tab to Unhide Left Panel */}
+            {leftCollapsed && (
+              <div
+                onClick={() => setLeftCollapsed(false)}
+                title="Show Controls Panel"
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 200,
+                  background: '#161821',
+                  border: '1px solid #fadb14',
+                  borderLeft: 'none',
+                  borderRadius: '0 6px 6px 0',
+                  padding: '10px 5px',
+                  cursor: 'pointer',
+                  boxShadow: '2px 0 10px rgba(0,0,0,0.5)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '4px',
+                  color: '#fadb14'
+                }}
+              >
+                <MenuUnfoldOutlined style={{ fontSize: '14px' }} />
+                <span style={{ writingMode: 'vertical-rl', fontSize: '10px', letterSpacing: '1px', fontWeight: 700 }}>CONTROLS</span>
+              </div>
+            )}
+
+            {/* Right Edge Tab to Unhide Right Panel */}
+            {rightCollapsed && (
+              <div
+                onClick={() => setRightCollapsed(false)}
+                title="Show Audit Modifications Panel"
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  zIndex: 200,
+                  background: '#161821',
+                  border: '1px solid #fadb14',
+                  borderRight: 'none',
+                  borderRadius: '6px 0 0 6px',
+                  padding: '10px 5px',
+                  cursor: 'pointer',
+                  boxShadow: '-2px 0 10px rgba(0,0,0,0.5)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '4px',
+                  color: '#fadb14'
+                }}
+              >
+                <MenuFoldOutlined style={{ fontSize: '14px' }} />
+                <span style={{ writingMode: 'vertical-rl', fontSize: '10px', letterSpacing: '1px', fontWeight: 700 }}>AUDIT</span>
+              </div>
+            )}
+
             {!diffData ? (
               <Card style={{ 
                 width: '100%', 
@@ -1072,7 +1143,64 @@ export default function App() {
               </Card>
             ) : (
               <Card 
-                title={<span style={{ color: '#faad14' }}>Diff Viewport ({relativeFilePath})</span>}
+                title={
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={leftCollapsed ? <MenuUnfoldOutlined style={{ color: '#fadb14' }} /> : <MenuFoldOutlined style={{ color: '#a6adbb' }} />}
+                        onClick={() => setLeftCollapsed(!leftCollapsed)}
+                        style={{
+                          background: leftCollapsed ? 'rgba(250, 219, 20, 0.15)' : '#1e2230',
+                          border: '1px solid',
+                          borderColor: leftCollapsed ? '#fadb14' : '#2a2f42',
+                          color: leftCollapsed ? '#fadb14' : '#cbd5e1',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '2px 8px',
+                          height: '26px',
+                          borderRadius: '4px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{ fontSize: '11px', fontWeight: 600 }}>
+                          {leftCollapsed ? 'Show Controls' : 'Hide Controls'}
+                        </span>
+                      </Button>
+                      <span style={{ color: '#faad14', fontWeight: 600, fontSize: '13px' }}>
+                        Diff Viewport ({relativeFilePath})
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={rightCollapsed ? <MenuFoldOutlined style={{ color: '#fadb14' }} /> : <MenuUnfoldOutlined style={{ color: '#a6adbb' }} />}
+                        onClick={() => setRightCollapsed(!rightCollapsed)}
+                        style={{
+                          background: rightCollapsed ? 'rgba(250, 219, 20, 0.15)' : '#1e2230',
+                          border: '1px solid',
+                          borderColor: rightCollapsed ? '#fadb14' : '#2a2f42',
+                          color: rightCollapsed ? '#fadb14' : '#cbd5e1',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '2px 8px',
+                          height: '26px',
+                          borderRadius: '4px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <span style={{ fontSize: '11px', fontWeight: 600 }}>
+                          {rightCollapsed ? 'Show Audit' : 'Hide Audit'}
+                        </span>
+                      </Button>
+                    </div>
+                  </div>
+                }
                 style={{ 
                   width: '100%', 
                   height: '100%', 
@@ -1244,6 +1372,7 @@ export default function App() {
                     setTimeout(triggerFocus, 60);
                   }
                 }}
+                onCollapse={() => setRightCollapsed(true)}
               />
             )}
           </Sider>

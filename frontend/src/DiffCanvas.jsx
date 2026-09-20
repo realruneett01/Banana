@@ -79,10 +79,10 @@ const getLayerOpacity = (filename, layerOpacities) => {
   return 1;
 };
 
-// Direct GPU transform update bypassing virtual DOM reconciliation
+// Direct 2D transform update avoiding 3D layer raster freeze
 const applyTransformToDom = (element, transform) => {
   if (element) {
-    element.style.transform = `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`;
+    element.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
   }
 };
 
@@ -100,9 +100,6 @@ const SvgLayer = React.memo(({ filename, content, isBase, filterStyle, opacitySt
         mixBlendMode,
         transition: 'filter 0.25s ease, opacity 0.25s ease',
         pointerEvents: 'none',
-        transform: 'translate3d(0px, 0px, 0px)',
-        willChange: 'transform, opacity, filter',
-        backfaceVisibility: 'hidden',
       }}
       dangerouslySetInnerHTML={{
         __html: content.replace(/<svg/, '<svg style="width:100%; height:100%; position:absolute;"')
@@ -686,9 +683,7 @@ const DiffCanvas = forwardRef(function DiffCanvas({
             width: '100%',
             height: '100%',
             transformOrigin: '0 0',
-            transform: `translate3d(${transform.x}px, ${transform.y}px, 0px) scale(${transform.scale})`,
-            willChange: 'transform',
-            backfaceVisibility: 'hidden',
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
           }}
         >
           {/* Base Layer */}
