@@ -327,6 +327,22 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
   const isCourtyard = /class="[^"]*(?:CrtYd|courtyard)[^"]*"/i.test(elementHtml) ||
                       /stroke="[^"]*(?:#E066E0|#C878C8|#DA70D6|magenta|pink)[^"]*"/i.test(elementHtml);
 
+  // Extract native stroke-width from style or presentation attribute so it is never lost
+  let nativeStrokeWidth = null;
+  const styleMatch = elementHtml.match(/\bstyle=["']([^"']*)["']/i);
+  if (styleMatch) {
+    const swMatch = styleMatch[1].match(/\bstroke-width\s*:\s*([^;]+)/i);
+    if (swMatch) {
+      nativeStrokeWidth = swMatch[1].trim();
+    }
+  }
+  if (!nativeStrokeWidth) {
+    const attrMatch = elementHtml.match(/\bstroke-width=["']([^"']*)["']/i);
+    if (attrMatch) {
+      nativeStrokeWidth = attrMatch[1].trim();
+    }
+  }
+
   // 2. Strip only existing color definitions for modified elements; DO NOT touch stroke-width or path data
   let sanitized = elementHtml
     .replace(/\bstroke="[^"]*"/gi, '')
@@ -342,12 +358,14 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
       ? DIFF_PALETTE.ADDED
       : DIFF_PALETTE.DELETED;
 
+  const strokeWidthCss = nativeStrokeWidth ? ` stroke-width: ${nativeStrokeWidth} !important;` : '';
+
   if (isClosed) {
     // Changed/Added/Deleted closed pads: Solid color fill with high opacity
-    styleString = `fill: ${color} !important; stroke: ${color} !important; opacity: 1.0 !important;`;
+    styleString = `fill: ${color} !important; stroke: ${color} !important;${strokeWidthCss} opacity: 1.0 !important;`;
   } else {
     // Changed/Added/Deleted traces: Exact native width colored sharply with zero blur filters
-    styleString = `stroke: ${color} !important; fill: none !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
+    styleString = `stroke: ${color} !important; fill: none !important;${strokeWidthCss} stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
   }
 
   return sanitized.replace(/(\/?>)$/, ` style="${styleString}" $1`);

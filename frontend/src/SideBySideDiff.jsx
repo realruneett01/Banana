@@ -197,8 +197,7 @@ const DIFF_CSS = `
   /* ── Interactive Hover Highlight ───────────────────────────────────────── */
   .mode-side-by-side [data-diff-hovered="true"],
   .mode-side-by-side .diff-highlighted {
-    stroke-width: 0.8mm !important;
-    filter: drop-shadow(0 0 6px #ffffff) !important;
+    filter: drop-shadow(0 0 6px #ffffff) drop-shadow(0 0 2px #ffffff) !important;
     opacity: 1 !important;
   }
 

@@ -37,8 +37,7 @@ body {
 /* ─── Interactive Hover Highlight & Focus Ring Animation ─────────────────────── */
 [data-diff-hovered="true"],
 .diff-highlighted {
-  stroke-width: 0.8mm !important;
-  filter: drop-shadow(0 0 6px #ffffff) !important;
+  filter: drop-shadow(0 0 6px #ffffff) drop-shadow(0 0 2px #ffffff) !important;
   opacity: 1 !important;
 }
 
@@ -80,8 +79,7 @@ body {
 /* Active element highlight pulse on sidebar click */
 [data-diff-idx].diff-highlight-active,
 [data-diff-selected="true"] {
-  stroke-width: 0.8mm !important;
-  filter: drop-shadow(0 0 6px #FFFFFF) !important;
+  filter: drop-shadow(0 0 6px #FFFFFF) drop-shadow(0 0 2px #FFFFFF) !important;
 }
 
 /* Layer container containment */
