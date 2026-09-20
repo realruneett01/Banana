@@ -302,6 +302,30 @@ function injectDataAttr(elementStr, idx) {
   return elementStr.replace(/^(<\w+)/, `$1 data-diff-idx="${idx}"`);
 }
 
+// ─── SOFTCODED DIFF CONFIGURATION ──────────────────────────────────────────────
+export const DIFF_CONFIG = {
+  DEFAULT_TRACE_WIDTH: '0.200mm', // Standard KiCad trace width 0.200mm / 7.874 mils (~7.9 mils)
+  DEFAULT_TRACE_WIDTH_MM: 0.200,
+  DEFAULT_TRACE_WIDTH_MILS: 7.874,
+  TRACE_WIDTH_CSS_VAR: '--diff-trace-width',
+  MM_TO_MILS: 39.3700787,
+  MILS_TO_MM: 0.0254,
+};
+
+/**
+ * Converts millimeters to mils.
+ */
+export function mmToMils(mm) {
+  return typeof mm === 'number' ? mm * DIFF_CONFIG.MM_TO_MILS : 0;
+}
+
+/**
+ * Converts mils to millimeters.
+ */
+export function milsToMm(mils) {
+  return typeof mils === 'number' ? mils * DIFF_CONFIG.MILS_TO_MM : 0;
+}
+
 // ─── STRICT COLOR PALETTE ──────────────────────────────────────────────────────
 const DIFF_PALETTE = {
   CHANGED:   '#FACC15', // Yellow
@@ -358,14 +382,12 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
       ? DIFF_PALETTE.ADDED
       : DIFF_PALETTE.DELETED;
 
-  const strokeWidthCss = nativeStrokeWidth ? ` stroke-width: ${nativeStrokeWidth} !important;` : '';
-
   if (isClosed) {
-    // Changed/Added/Deleted closed pads: Solid color fill with high opacity
-    styleString = `fill: ${color} !important; stroke: ${color} !important;${strokeWidthCss} opacity: 1.0 !important;`;
+    // Changed/Added/Deleted closed pads: Solid color fill, NO stroke so pads keep exact original dimensions!
+    styleString = `fill: ${color} !important; stroke: none !important; opacity: 1.0 !important;`;
   } else {
-    // Changed/Added/Deleted traces: Exact native width colored sharply with zero blur filters
-    styleString = `stroke: ${color} !important; fill: none !important;${strokeWidthCss} stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
+    // Changed/Added/Deleted traces: Softcoded standard 0.200mm (7.9 mils) width via CSS custom property
+    styleString = `stroke: ${color} !important; fill: none !important; stroke-width: var(${DIFF_CONFIG.TRACE_WIDTH_CSS_VAR}, ${DIFF_CONFIG.DEFAULT_TRACE_WIDTH}) !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
   }
 
   return sanitized.replace(/(\/?>)$/, ` style="${styleString}" $1`);
@@ -648,6 +670,139 @@ function getDistance(el1, el2) {
   const c1 = getElementCenter(el1);
   const c2 = getElementCenter(el2);
   return Math.hypot(c1.x - c2.x, c1.y - c2.y);
+}
+
+/**
+ * Softcoded determination of lengths, widths, and stroke-widths for SVG elements.
+ * Accurately calculates bounding dimensions for paths, circles, rects, lines, polylines,
+ * and component groups without dilating original native geometries.
+ *
+ * @param {Object} el - Element object from extractPrimitives or extractElements
+ * @param {Object} [options] - Configuration overrides (e.g. standardTraceWidth)
+ * @returns {{ width: number, length: number, strokeWidth: number, isClosed: boolean }}
+ */
+export function determineElementDimensions(el, options = {}) {
+  const standardTraceWidth = options.standardTraceWidth ?? DIFF_CONFIG.DEFAULT_TRACE_WIDTH_MM;
+  const attrs = el.attrs || parseAttributes(el.fullMatch || '');
+  
+  // Check if native stroke-width is declared
+  let strokeWidth = 0;
+  const styleStr = attrs.style || '';
+  const swMatch = styleStr.match(/\bstroke-width\s*:\s*([^;]+)/i);
+  if (swMatch) {
+    strokeWidth = parseFloat(swMatch[1]) || 0;
+  } else if (attrs['stroke-width']) {
+    strokeWidth = parseFloat(attrs['stroke-width']) || 0;
+  }
+
+  // 1. Line element: length = distance between endpoints, width = strokeWidth or standardTraceWidth
+  if (el.tag === 'line') {
+    const x1 = parseFloat(attrs.x1 || 0);
+    const y1 = parseFloat(attrs.y1 || 0);
+    const x2 = parseFloat(attrs.x2 || 0);
+    const y2 = parseFloat(attrs.y2 || 0);
+    const length = Math.hypot(x2 - x1, y2 - y1);
+    const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
+    return { width, length, strokeWidth: width, isClosed: false };
+  }
+
+  // 2. Circle / Ellipse (e.g. circular pad or via)
+  if (el.tag === 'circle') {
+    const r = parseFloat(attrs.r || 0);
+    const diameter = 2 * r;
+    return { width: diameter, length: diameter, strokeWidth: 0, isClosed: true };
+  }
+  if (el.tag === 'ellipse') {
+    const rx = parseFloat(attrs.rx || 0);
+    const ry = parseFloat(attrs.ry || 0);
+    return { width: 2 * rx, length: 2 * ry, strokeWidth: 0, isClosed: true };
+  }
+
+  // 3. Rect element (e.g. SMD pad or component outline)
+  if (el.tag === 'rect') {
+    const width = parseFloat(attrs.width || 0);
+    const length = parseFloat(attrs.height || 0);
+    return { width, length, strokeWidth: 0, isClosed: true };
+  }
+
+  // 4. Path element (open trace vs closed pad)
+  if (el.tag === 'path') {
+    const d = attrs.d || '';
+    const isClosed = el.isClosedPath || /z\s*$/i.test(d.trim());
+    const coords = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    
+    if (coords && coords.length >= 2) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      let totalLength = 0;
+      let prevX = null, prevY = null;
+
+      for (let i = 0; i < coords.length - 1; i += 2) {
+        const x = parseFloat(coords[i]);
+        const y = parseFloat(coords[i + 1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+
+          if (prevX !== null && prevY !== null) {
+            totalLength += Math.hypot(x - prevX, y - prevY);
+          }
+          prevX = x;
+          prevY = y;
+        }
+      }
+
+      if (isClosed) {
+        const width = minX !== Infinity ? maxX - minX : 0;
+        const length = minY !== Infinity ? maxY - minY : 0;
+        return { width, length, strokeWidth: 0, isClosed: true };
+      } else {
+        const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
+        return { width, length: totalLength, strokeWidth: width, isClosed: false };
+      }
+    }
+  }
+
+  // 5. Polyline / Polygon
+  if (el.tag === 'polyline' || el.tag === 'polygon') {
+    const pointsStr = attrs.points || '';
+    const coords = pointsStr.match(/[-+]?[0-9]*\.?[0-9]+/g);
+    const isClosed = el.tag === 'polygon';
+    if (coords && coords.length >= 2) {
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
+      let totalLength = 0;
+      let prevX = null, prevY = null;
+
+      for (let i = 0; i < coords.length - 1; i += 2) {
+        const x = parseFloat(coords[i]);
+        const y = parseFloat(coords[i + 1]);
+        if (!isNaN(x) && !isNaN(y)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+
+          if (prevX !== null && prevY !== null) {
+            totalLength += Math.hypot(x - prevX, y - prevY);
+          }
+          prevX = x;
+          prevY = y;
+        }
+      }
+
+      if (isClosed) {
+        return { width: maxX - minX, length: maxY - minY, strokeWidth: 0, isClosed: true };
+      } else {
+        const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
+        return { width, length: totalLength, strokeWidth: width, isClosed: false };
+      }
+    }
+  }
+
+  return { width: 0, length: 0, strokeWidth: 0, isClosed: false };
 }
 
 /**

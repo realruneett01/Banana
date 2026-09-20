@@ -67,7 +67,7 @@ const DIFF_CSS = `
     pointer-events: none;
   }
 
-  /* Unchanged open shapes (traces, tracks, signal lines, arcs, polylines) */
+  /* Unchanged open shapes (traces, tracks, signal lines, arcs, polylines) -> softcoded 0.200mm / 7.9mils */
   .mode-side-by-side .diff-unchanged.diff-open,
   .mode-side-by-side .diff-unchanged:not(.diff-closed):not(g),
   .mode-side-by-side g.diff-open.diff-unchanged > path,
@@ -78,13 +78,15 @@ const DIFF_CSS = `
   .mode-side-by-side polyline.diff-unchanged {
     stroke: #71717a !important;
     fill:   none    !important;
+    stroke-width: var(--diff-trace-width, 0.200mm) !important;
   }
 
-  /* Unchanged closed shapes (pads, vias, copper zones, shapes) */
+  /* Unchanged closed shapes (pads, vias, copper zones, components)
+     Strictly stroke: none so length and width remain 100% original as rendered by KiCad */
   .mode-side-by-side .diff-unchanged.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-unchanged.diff-closed:not(.stroked-text) * {
     fill:   #52525b !important;
-    stroke: #71717a !important;
+    stroke: none    !important;
   }
 
   /* Unchanged native SVG text */
@@ -109,16 +111,18 @@ const DIFF_CSS = `
   .mode-side-by-side .diff-changed:not(.diff-closed):not(g),
   .mode-side-by-side g.diff-open.diff-changed > path,
   .mode-side-by-side g.diff-open.diff-changed > line,
+  .mode-side-by-side g.diff-open.diff-changed > polyline,
   .mode-side-by-side path.diff-changed:not(.diff-closed),
   .mode-side-by-side line.diff-changed,
   .mode-side-by-side polyline.diff-changed {
     stroke: #ffff00 !important;
     fill:   none    !important;
+    stroke-width: var(--diff-trace-width, 0.200mm) !important;
   }
   .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text) * {
     fill:   #ffff00 !important;
-    stroke: #ffff00 !important;
+    stroke: none    !important;
   }
   .mode-side-by-side text.diff-changed,
   .mode-side-by-side text.diff-changed tspan,
@@ -139,16 +143,18 @@ const DIFF_CSS = `
   .mode-side-by-side .diff-added:not(.diff-closed):not(g),
   .mode-side-by-side g.diff-open.diff-added > path,
   .mode-side-by-side g.diff-open.diff-added > line,
+  .mode-side-by-side g.diff-open.diff-added > polyline,
   .mode-side-by-side path.diff-added:not(.diff-closed),
   .mode-side-by-side line.diff-added,
   .mode-side-by-side polyline.diff-added {
     stroke: #00ff66 !important;
     fill:   none    !important;
+    stroke-width: var(--diff-trace-width, 0.200mm) !important;
   }
   .mode-side-by-side .diff-added.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-added.diff-closed:not(.stroked-text) * {
     fill:   #00ff66 !important;
-    stroke: #00ff66 !important;
+    stroke: none    !important;
   }
   .mode-side-by-side text.diff-added,
   .mode-side-by-side text.diff-added tspan,
@@ -169,16 +175,18 @@ const DIFF_CSS = `
   .mode-side-by-side .diff-deleted:not(.diff-closed):not(g),
   .mode-side-by-side g.diff-open.diff-deleted > path,
   .mode-side-by-side g.diff-open.diff-deleted > line,
+  .mode-side-by-side g.diff-open.diff-deleted > polyline,
   .mode-side-by-side path.diff-deleted:not(.diff-closed),
   .mode-side-by-side line.diff-deleted,
   .mode-side-by-side polyline.diff-deleted {
     stroke: #ff3366 !important;
     fill:   none    !important;
+    stroke-width: var(--diff-trace-width, 0.200mm) !important;
   }
   .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text) * {
     fill:   #ff3366 !important;
-    stroke: #ff3366 !important;
+    stroke: none    !important;
   }
   .mode-side-by-side text.diff-deleted,
   .mode-side-by-side text.diff-deleted tspan,
@@ -670,6 +678,30 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
   );
 }
 
+// ─── Softcoded Diff Configuration & Dimension Determination ───────────────────
+export const DIFF_CONFIG = {
+  DEFAULT_TRACE_WIDTH: '0.200mm', // Standard KiCad trace width 0.200mm / 7.874 mils (~7.9 mils)
+  DEFAULT_TRACE_WIDTH_MM: 0.200,
+  DEFAULT_TRACE_WIDTH_MILS: 7.874,
+  TRACE_WIDTH_CSS_VAR: '--diff-trace-width',
+  MM_TO_MILS: 39.3700787,
+  MILS_TO_MM: 0.0254,
+  TRACE_WIDTH_PRESETS: [
+    { label: '0.150mm (5.9 mils)', value: '0.150mm' },
+    { label: '0.200mm (7.9 mils) · Standard', value: '0.200mm' },
+    { label: '0.250mm (9.8 mils)', value: '0.250mm' },
+    { label: '0.300mm (11.8 mils)', value: '0.300mm' },
+  ],
+};
+
+export function mmToMils(mm) {
+  return typeof mm === 'number' ? mm * DIFF_CONFIG.MM_TO_MILS : 0;
+}
+
+export function milsToMm(mils) {
+  return typeof mils === 'number' ? mils * DIFF_CONFIG.MILS_TO_MM : 0;
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default forwardRef(function SideBySideDiff({
   isSchematic,
@@ -683,8 +715,17 @@ export default forwardRef(function SideBySideDiff({
   activeAuditIdx,
   setActiveAuditIdx,
   padLabelProps,   // { repoPath, baseCommit, targetCommit, relativeFilePath } | null
+  traceWidth = DIFF_CONFIG.DEFAULT_TRACE_WIDTH,
 }, ref) {
   const isSchematicMode = isSchematic ?? (!padLabelProps?.relativeFilePath?.endsWith('.kicad_pcb'));
+  const [selectedTraceWidth, setSelectedTraceWidth] = useState(traceWidth || DIFF_CONFIG.DEFAULT_TRACE_WIDTH);
+
+  useEffect(() => {
+    if (traceWidth) {
+      setSelectedTraceWidth(traceWidth);
+    }
+  }, [traceWidth]);
+
   const leftContentRef = useRef(null);
   const rightContentRef = useRef(null);
   const outerRef = useRef(null);
@@ -942,6 +983,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
           width: '100%',
           height: '100%',
           gap: 0,
+          '--diff-trace-width': selectedTraceWidth,
         }}
       >
         <div style={{
@@ -973,24 +1015,62 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
             />
           </div>
 
-          <button
-            onClick={() => {
-              resetTransform();
-              if (setActiveAuditIdx) setActiveAuditIdx(null);
-            }}
-            style={{
-              background: 'transparent',
-              border: '1px solid #333',
-              color: '#fadb14',
-              borderRadius: 4,
-              padding: '2px 10px',
-              fontSize: '11px',
-              cursor: 'pointer',
-              marginLeft: 'auto',
-            }}
-          >
-            Reset View
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
+            <div 
+              style={{ 
+                background: '#161823', 
+                border: '1px solid #2e334d', 
+                color: '#94a3b8', 
+                fontSize: '11px', 
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontFamily: 'monospace',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+                margin: 0
+              }}
+            >
+              <span style={{ color: '#fadb14', fontWeight: 600 }}>Trace:</span>
+              <select
+                value={selectedTraceWidth}
+                onChange={(e) => setSelectedTraceWidth(e.target.value)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#f1f5f9',
+                  fontSize: '11px',
+                  fontFamily: 'monospace',
+                  cursor: 'pointer',
+                  outline: 'none',
+                }}
+              >
+                {DIFF_CONFIG.TRACE_WIDTH_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value} style={{ background: '#1e2030', color: '#e2e8f0' }}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <button
+              onClick={() => {
+                resetTransform();
+                if (setActiveAuditIdx) setActiveAuditIdx(null);
+              }}
+              style={{
+                background: 'transparent',
+                border: '1px solid #333',
+                color: '#fadb14',
+                borderRadius: 4,
+                padding: '2px 10px',
+                fontSize: '11px',
+                cursor: 'pointer',
+              }}
+            >
+              Reset View
+            </button>
+          </div>
         </div>
 
         <div style={{ display: 'flex', flex: 1, gap: '4px', minHeight: 0 }}>

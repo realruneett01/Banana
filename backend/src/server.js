@@ -421,6 +421,8 @@ app.post('/api/diff/process', async (req, res) => {
               netName: pad.net || '',
               x: pad.absAt?.x || 0,
               y: pad.absAt?.y || 0,
+              width: pad.size?.w,
+              length: pad.size?.h,
               layers: pad.layers || []
             });
           }

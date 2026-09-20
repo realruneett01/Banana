@@ -1,3 +1,7 @@
+:root {
+  --diff-trace-width: 0.200mm; /* 0.200mm (~7.9 mils) standard trace width */
+}
+
 body {
   margin: 0;
   padding: 0;
