@@ -59,63 +59,139 @@ const DIFF_CSS = `
     text-rendering: geometricPrecision;
   }
 
-  /* Unchanged elements preserve native KiCad styling and colors */
+  /* ── diff-unchanged (clean architectural grey) ──────────────────────────── */
   .mode-side-by-side.schematic-mode .diff-unchanged,
   .mode-side-by-side.pcb-mode .diff-unchanged,
   .mode-side-by-side .diff-unchanged {
+    opacity: 0.70 !important;
     pointer-events: none;
+  }
+
+  /* Unchanged open shapes (traces, tracks, signal lines, arcs, polylines) */
+  .mode-side-by-side .diff-unchanged.diff-open,
+  .mode-side-by-side .diff-unchanged:not(.diff-closed):not(g),
+  .mode-side-by-side g.diff-open.diff-unchanged > path,
+  .mode-side-by-side g.diff-open.diff-unchanged > line,
+  .mode-side-by-side g.diff-open.diff-unchanged > polyline,
+  .mode-side-by-side path.diff-unchanged:not(.diff-closed),
+  .mode-side-by-side line.diff-unchanged,
+  .mode-side-by-side polyline.diff-unchanged {
+    stroke: #71717a !important;
+    fill:   none    !important;
+  }
+
+  /* Unchanged closed shapes (pads, vias, copper zones, shapes) */
+  .mode-side-by-side .diff-unchanged.diff-closed:not(.stroked-text),
+  .mode-side-by-side .diff-unchanged.diff-closed:not(.stroked-text) * {
+    fill:   #52525b !important;
+    stroke: #71717a !important;
+  }
+
+  /* Unchanged native SVG text */
+  .mode-side-by-side text.diff-unchanged,
+  .mode-side-by-side text.diff-unchanged tspan,
+  .mode-side-by-side .diff-unchanged text,
+  .mode-side-by-side .diff-unchanged tspan {
+    fill:   #94a3b8 !important;
+    stroke: none    !important;
+  }
+
+  /* Unchanged stroked text glyph paths (KiCad rendered text paths in <g class="stroked-text">) */
+  .mode-side-by-side .stroked-text.diff-unchanged,
+  .mode-side-by-side .stroked-text.diff-unchanged path,
+  .mode-side-by-side .stroked-text.diff-unchanged * {
+    stroke: #94a3b8 !important;
+    fill:   none    !important;
   }
 
   /* ── diff-changed (yellow) ──────────────────────────────────────────────── */
   .mode-side-by-side .diff-changed.diff-open,
-  .mode-side-by-side .diff-changed:not(.diff-closed) {
+  .mode-side-by-side .diff-changed:not(.diff-closed):not(g),
+  .mode-side-by-side g.diff-open.diff-changed > path,
+  .mode-side-by-side g.diff-open.diff-changed > line,
+  .mode-side-by-side path.diff-changed:not(.diff-closed),
+  .mode-side-by-side line.diff-changed,
+  .mode-side-by-side polyline.diff-changed {
     stroke: #ffff00 !important;
     fill:   none    !important;
   }
-  .mode-side-by-side .diff-changed.diff-closed,
-  .mode-side-by-side .diff-changed.diff-closed * {
+  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text),
+  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text) * {
     fill:   #ffff00 !important;
     stroke: #ffff00 !important;
   }
-  /* SVG native <text>/<tspan> nodes should be filled with diff color (readable) */
+  .mode-side-by-side text.diff-changed,
+  .mode-side-by-side text.diff-changed tspan,
   .mode-side-by-side .diff-changed text,
   .mode-side-by-side .diff-changed tspan {
     fill:   #ffff00 !important;
     stroke: none    !important;
   }
+  .mode-side-by-side .stroked-text.diff-changed,
+  .mode-side-by-side .stroked-text.diff-changed path,
+  .mode-side-by-side .stroked-text.diff-changed * {
+    stroke: #ffff00 !important;
+    fill:   none    !important;
+  }
 
   /* ── diff-added (green) ─────────────────────────────────────────────────── */
   .mode-side-by-side .diff-added.diff-open,
-  .mode-side-by-side .diff-added:not(.diff-closed) {
+  .mode-side-by-side .diff-added:not(.diff-closed):not(g),
+  .mode-side-by-side g.diff-open.diff-added > path,
+  .mode-side-by-side g.diff-open.diff-added > line,
+  .mode-side-by-side path.diff-added:not(.diff-closed),
+  .mode-side-by-side line.diff-added,
+  .mode-side-by-side polyline.diff-added {
     stroke: #00ff66 !important;
     fill:   none    !important;
   }
-  .mode-side-by-side .diff-added.diff-closed,
-  .mode-side-by-side .diff-added.diff-closed * {
+  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text),
+  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text) * {
     fill:   #00ff66 !important;
     stroke: #00ff66 !important;
   }
+  .mode-side-by-side text.diff-added,
+  .mode-side-by-side text.diff-added tspan,
   .mode-side-by-side .diff-added text,
   .mode-side-by-side .diff-added tspan {
     fill:   #00ff66 !important;
     stroke: none    !important;
   }
+  .mode-side-by-side .stroked-text.diff-added,
+  .mode-side-by-side .stroked-text.diff-added path,
+  .mode-side-by-side .stroked-text.diff-added * {
+    stroke: #00ff66 !important;
+    fill:   none    !important;
+  }
 
   /* ── diff-deleted (red) ─────────────────────────────────────────────────── */
   .mode-side-by-side .diff-deleted.diff-open,
-  .mode-side-by-side .diff-deleted:not(.diff-closed) {
+  .mode-side-by-side .diff-deleted:not(.diff-closed):not(g),
+  .mode-side-by-side g.diff-open.diff-deleted > path,
+  .mode-side-by-side g.diff-open.diff-deleted > line,
+  .mode-side-by-side path.diff-deleted:not(.diff-closed),
+  .mode-side-by-side line.diff-deleted,
+  .mode-side-by-side polyline.diff-deleted {
     stroke: #ff3366 !important;
     fill:   none    !important;
   }
-  .mode-side-by-side .diff-deleted.diff-closed,
-  .mode-side-by-side .diff-deleted.diff-closed * {
+  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text),
+  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text) * {
     fill:   #ff3366 !important;
     stroke: #ff3366 !important;
   }
+  .mode-side-by-side text.diff-deleted,
+  .mode-side-by-side text.diff-deleted tspan,
   .mode-side-by-side .diff-deleted text,
   .mode-side-by-side .diff-deleted tspan {
     fill:   #ff3366 !important;
     stroke: none    !important;
+  }
+  .mode-side-by-side .stroked-text.diff-deleted,
+  .mode-side-by-side .stroked-text.diff-deleted path,
+  .mode-side-by-side .stroked-text.diff-deleted * {
+    stroke: #ff3366 !important;
+    fill:   none    !important;
   }
 
   /* ── Interactive Hover Highlight ───────────────────────────────────────── */
@@ -516,23 +592,23 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
         </Text>
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
           {side === 'base' && (
-            <span style={{ fontSize: '10px', color: '#e74c3c', display: 'flex', alignItems: 'center', gap: '3px' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e74c3c', display: 'inline-block' }} />
+            <span style={{ fontSize: '10px', color: '#ff3366', display: 'flex', alignItems: 'center', gap: '3px' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ff3366', display: 'inline-block' }} />
               Deleted
             </span>
           )}
           {side === 'target' && (
-            <span style={{ fontSize: '10px', color: '#2ecc71', display: 'flex', alignItems: 'center', gap: '3px' }}>
-              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#2ecc71', display: 'inline-block' }} />
+            <span style={{ fontSize: '10px', color: '#00ff66', display: 'flex', alignItems: 'center', gap: '3px' }}>
+              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#00ff66', display: 'inline-block' }} />
               Added
             </span>
           )}
-          <span style={{ fontSize: '10px', color: '#f39c12', display: 'flex', alignItems: 'center', gap: '3px' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#f39c12', display: 'inline-block' }} />
+          <span style={{ fontSize: '10px', color: '#ffff00', display: 'flex', alignItems: 'center', gap: '3px' }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#ffff00', display: 'inline-block' }} />
             Changed
           </span>
-          <span style={{ fontSize: '10px', color: '#44445a', display: 'flex', alignItems: 'center', gap: '3px' }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#44445a', display: 'inline-block' }} />
+          <span style={{ fontSize: '10px', color: '#a1a1aa', display: 'flex', alignItems: 'center', gap: '3px' }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#71717a', display: 'inline-block' }} />
             Unchanged
           </span>
         </div>
