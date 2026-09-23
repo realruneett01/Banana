@@ -458,7 +458,13 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
       ? DIFF_PALETTE.ADDED
       : DIFF_PALETTE.DELETED;
 
-  if (isClosed) {
+  if (isCourtyard) {
+    // Courtyard boundaries are keepout/placement outlines: ALWAYS stroked outline, NEVER filled!
+    const swCss = nativeStrokeWidth
+      ? `stroke-width: ${nativeStrokeWidth} !important; `
+      : `stroke-width: 0.15mm !important; `;
+    styleString = `stroke: ${color} !important; fill: none !important; ${swCss}stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
+  } else if (isClosed) {
     // Changed/Added/Deleted closed pads: Solid color fill, NO stroke so pads keep exact original dimensions!
     styleString = `fill: ${color} !important; stroke: none !important; opacity: 1.0 !important;`;
   } else {
@@ -924,7 +930,7 @@ function annotateSvgSinglePass(svgContent, elements, classifications) {
     if (!classification) continue;
 
     const diffClass = classification.diffClass;
-    const isClosed = ['circle', 'rect', 'polygon', 'ellipse', 'g'].includes(el.tag) || el.isClosedPath;
+    const isClosed = ['circle', 'rect', 'polygon', 'ellipse'].includes(el.tag) || el.isClosedPath;
     const typeClass = isClosed ? 'diff-closed' : 'diff-open';
 
     if (diffClass === 'diff-unchanged') {

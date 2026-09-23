@@ -1363,21 +1363,6 @@ export default function App() {
           </Sider>
         </Layout>
 
-        {/* Floating Copilot Button */}
-        {!isCopilotOpen && (
-          <div
-            className="copilot-float-btn"
-            onClick={() => setIsCopilotOpen(true)}
-            style={{
-              right: rightCollapsed ? '24px' : '300px'
-            }}
-            title="Open Banana Hardware Copilot (Gemini 3 Flash Preview)"
-          >
-            <span className="copilot-dot-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }}></span>
-            <span>Copilot ✨</span>
-          </div>
-        )}
-
         {/* AI Hardware Copilot Drawer */}
         <ChatbotDrawer
           open={isCopilotOpen}

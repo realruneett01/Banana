@@ -509,9 +509,17 @@ app.post('/api/diff/process', async (req, res) => {
       }
     }
 
+    const getLayerSuffix = (fn) => {
+      if (!fn) return '';
+      const baseName = fn.split(/[/\\]/).pop();
+      const lastHyphen = baseName.lastIndexOf('-');
+      return (lastHyphen !== -1 ? baseName.slice(lastHyphen + 1) : baseName).toLowerCase();
+    };
+
     for (const baseSvg of baseSvgs) {
-      // Find the matching target layer by filename
-      const matchingTarget = targetSvgs.find(t => t.filename === baseSvg.filename);
+      // Find the matching target layer by filename or layer suffix
+      const bSuffix = getLayerSuffix(baseSvg.filename);
+      const matchingTarget = targetSvgs.find(t => t.filename === baseSvg.filename || getLayerSuffix(t.filename) === bSuffix);
 
       if (matchingTarget) {
         try {
@@ -559,7 +567,8 @@ app.post('/api/diff/process', async (req, res) => {
 
     // Layers only in target (not in base) — entire SVG is "added"
     for (const targetSvg of targetSvgs) {
-      const inBase = baseSvgs.some(b => b.filename === targetSvg.filename);
+      const tSuffix = getLayerSuffix(targetSvg.filename);
+      const inBase = baseSvgs.some(b => b.filename === targetSvg.filename || getLayerSuffix(b.filename) === tSuffix);
       if (!inBase) {
         sideBySideTarget.push(targetSvg);
         targetSvgsWithIdx.push(targetSvg);

@@ -126,6 +126,18 @@ function injectLabels(contentEl, footprints, activeLayers, soloLayer, layerOpaci
   if (!footprints || footprints.length === 0) return;
 
   for (const fp of footprints) {
+    const refUpper = (fp.ref || '').toUpperCase();
+    const valUpper = (fp.value || '').toUpperCase();
+    const fpNameUpper = (fp.footprint || '').toUpperCase();
+    const isMountingHole =
+      /^M?H\d+$/.test(refUpper) ||
+      refUpper.startsWith('MOUNT') ||
+      valUpper.includes('MOUNTINGHOLE') ||
+      fpNameUpper.includes('MOUNTINGHOLE');
+    if (isMountingHole) {
+      continue;
+    }
+
     for (const pad of fp.pads) {
       if (!padShouldShowLabel(pad.layers, activeLayers, soloLayer, layerOpacities)) {
         continue;

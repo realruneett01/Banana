@@ -35,13 +35,12 @@ const FOCUS_CSS = `
   }
   .diff-focus-ring {
     pointer-events: none;
-    fill: none;
-    stroke-width: 2.5;
-    animation: diff-focus-pulse 1.8s ease-out forwards;
+    fill: none !important;
+    stroke-width: 0.35mm;
   }
-  .diff-focus-ring.diff-changed { stroke: #ffff00; }
-  .diff-focus-ring.diff-added   { stroke: #00ff66; }
-  .diff-focus-ring.diff-deleted { stroke: #ff3366; }
+  .diff-focus-ring.diff-changed { stroke: #ffff00 !important; }
+  .diff-focus-ring.diff-added   { stroke: #00ff66 !important; }
+  .diff-focus-ring.diff-deleted { stroke: #ff3366 !important; }
 `;
 
 const DIFF_CSS = `
@@ -120,10 +119,15 @@ const DIFF_CSS = `
     fill:   none    !important;
     stroke-width: var(--diff-trace-width, inherit);
   }
-  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text),
-  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text) * {
+  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text):not(.diff-focus-ring),
+  .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text):not(.diff-focus-ring) *:not(.diff-focus-ring) {
     fill:   #ffff00 !important;
     stroke: none    !important;
+  }
+  /* Courtyard outlines must never be filled */
+  .mode-side-by-side [class*="CrtYd"],
+  .mode-side-by-side [class*="courtyard"] {
+    fill: none !important;
   }
   .mode-side-by-side text.diff-changed,
   .mode-side-by-side text.diff-changed tspan,
@@ -152,8 +156,8 @@ const DIFF_CSS = `
     fill:   none    !important;
     stroke-width: var(--diff-trace-width, inherit);
   }
-  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text),
-  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text) * {
+  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text):not(.diff-focus-ring),
+  .mode-side-by-side .diff-added.diff-closed:not(.stroked-text):not(.diff-focus-ring) *:not(.diff-focus-ring) {
     fill:   #00ff66 !important;
     stroke: none    !important;
   }
@@ -184,8 +188,8 @@ const DIFF_CSS = `
     fill:   none    !important;
     stroke-width: var(--diff-trace-width, inherit);
   }
-  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text),
-  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text) * {
+  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text):not(.diff-focus-ring),
+  .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text):not(.diff-focus-ring) *:not(.diff-focus-ring) {
     fill:   #ff3366 !important;
     stroke: none    !important;
   }
@@ -212,21 +216,21 @@ const DIFF_CSS = `
 
   /* ── Focus Ring Pulse Animation ────────────────────────────────────────── */
   .diff-focus-ring {
-    fill: none;
+    fill: none !important;
     animation: pulse-ring 2s infinite ease-in-out;
   }
 
   @keyframes pulse-ring {
     0% {
-      stroke-width: 0.5mm;
+      stroke-width: 0.25mm;
       stroke-opacity: 1;
     }
     50% {
-      stroke-width: 1.2mm;
-      stroke-opacity: 0.6;
+      stroke-width: 0.45mm;
+      stroke-opacity: 0.7;
     }
     100% {
-      stroke-width: 0.5mm;
+      stroke-width: 0.25mm;
       stroke-opacity: 1;
     }
   }
@@ -798,18 +802,27 @@ export default forwardRef(function SideBySideDiff({
 
         const cx_vb = vb[0] + (cx_px - offsetX) / scale;
         const cy_vb = vb[1] + (cy_px - offsetY) / scale;
-        const r_vb = Math.max(3, Math.max(elRect.width, elRect.height) / (2 * scale) + 2.5);
+        // Tight, clean ring padding around component (minimum 1.8mm, maximum 5.0mm)
+        const r_vb = Math.max(1.8, Math.min(5.0, Math.max(elRect.width, elRect.height) / (2 * scale) + 0.8));
+
+        const strokeColor = ringColorClass === 'diff-added'
+          ? '#00ff66'
+          : ringColorClass === 'diff-deleted'
+          ? '#ff3366'
+          : '#ffff00';
 
         const ns = 'http://www.w3.org/2000/svg';
         const ring = document.createElementNS(ns, 'circle');
         ring.setAttribute('cx', cx_vb);
         ring.setAttribute('cy', cy_vb);
         ring.setAttribute('r', r_vb);
+        ring.setAttribute('fill', 'none');
+        ring.setAttribute('stroke', strokeColor);
         ring.setAttribute('class', `diff-focus-ring ${ringColorClass || 'diff-changed'}`);
-        ring.setAttribute('style', `stroke-width: ${Math.max(0.4, r_vb * 0.08)}mm; pointer-events: none;`);
+        ring.setAttribute('style', `stroke: ${strokeColor}; stroke-width: 0.3mm; fill: none !important; pointer-events: none;`);
         hostSvg.appendChild(ring);
 
-        setTimeout(() => { ring.remove(); }, 2500);
+        setTimeout(() => { ring.remove(); }, 3000);
       }
     }
   };
@@ -850,21 +863,24 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
       const rightViewport = rightContentRef.current.parentElement;
       if (!leftViewport || !rightViewport) return;
 
-      const targetScale = 3.5;
+      const targetScale = 2.4;
 
-      // 1. Locate DOM element with data-diff-idx
-      let leftTarget = leftContentRef.current ? leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`) : null;
-      let rightTarget = rightContentRef.current ? rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`) : null;
+      // 1. Prioritize exact board/SVG coordinates when provided for rock-solid centering
+      let leftRect = (baseCoords && leftContentRef.current)
+        ? getScreenCoordsFromSvg(leftContentRef.current, baseCoords)
+        : null;
+      let rightRect = (targetCoords && rightContentRef.current)
+        ? getScreenCoordsFromSvg(rightContentRef.current, targetCoords)
+        : null;
 
-      let leftRect = leftTarget ? leftTarget.getBoundingClientRect() : null;
-      let rightRect = rightTarget ? rightTarget.getBoundingClientRect() : null;
-
-      // 2. Fallback to coordinate mapping if not in DOM
-      if (!leftRect && baseCoords && leftContentRef.current) {
-        leftRect = getScreenCoordsFromSvg(leftContentRef.current, baseCoords);
+      // 2. Fallback to locating DOM element with data-diff-idx if coordinate mapping wasn't available
+      if (!leftRect && leftContentRef.current) {
+        const leftTarget = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+        if (leftTarget) leftRect = leftTarget.getBoundingClientRect();
       }
-      if (!rightRect && targetCoords && rightContentRef.current) {
-        rightRect = getScreenCoordsFromSvg(rightContentRef.current, targetCoords);
+      if (!rightRect && rightContentRef.current) {
+        const rightTarget = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
+        if (rightTarget) rightRect = rightTarget.getBoundingClientRect();
       }
 
       let leftParams = null;
@@ -982,7 +998,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
         <style>{`
           .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"],
           .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"] * {
-            filter: drop-shadow(0 0 6px rgba(250, 219, 20, 0.95)) drop-shadow(0 0 12px rgba(250, 219, 20, 0.6)) !important;
+            filter: drop-shadow(0 0 3px rgba(250, 219, 20, 0.85)) !important;
           }
         `}</style>
       )}
