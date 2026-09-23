@@ -5,7 +5,8 @@ export const AuditSidebar = ({
   onSelectDiff, 
   activeDiffIdx,
   onHoverDiff,
-  onCollapse
+  onCollapse,
+  onClearFocus
 }) => {
   const getActionBadge = (action) => {
     switch (action) {
@@ -82,6 +83,28 @@ export const AuditSidebar = ({
           </h3>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {activeDiffIdx !== null && activeDiffIdx !== undefined && onClearFocus && (
+            <button
+              onClick={onClearFocus}
+              title="Clear active focus and restore full view"
+              style={{
+                background: 'rgba(250, 219, 20, 0.15)',
+                border: '1px solid #fadb14',
+                color: '#fadb14',
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontSize: '11px',
+                fontWeight: 600,
+                transition: 'all 0.15s',
+              }}
+            >
+              ✕ Exit Focus
+            </button>
+          )}
           <span 
             className="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full"
             style={{

@@ -343,8 +343,24 @@ const DiffCanvas = forwardRef(function DiffCanvas({
       transformRef.current = defaultVal;
       applyTransformToDom(contentRef.current, defaultVal);
       setTransform(defaultVal);
+      if (setActiveAuditIdx) setActiveAuditIdx(null);
     }
-  }), [animateTo, drawFocusRing, isSlider, onSliderChange]);
+  }), [animateTo, drawFocusRing, isSlider, onSliderChange, setActiveAuditIdx]);
+
+  // Allow pressing Escape to clear active modification focus in Overlay mode
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && activeAuditIdx !== null) {
+        if (setActiveAuditIdx) setActiveAuditIdx(null);
+        const defaultVal = { scale: 1, x: 0, y: 0 };
+        transformRef.current = defaultVal;
+        applyTransformToDom(contentRef.current, defaultVal);
+        setTransform(defaultVal);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeAuditIdx, setActiveAuditIdx]);
 
   // Wheel zoom anchored to cursor
   const onWheel = useCallback((e) => {

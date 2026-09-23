@@ -940,8 +940,13 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
         applyHover(leftContentRef.current);
         applyHover(rightContentRef.current);
       }
+    },
+
+    resetView() {
+      resetTransform();
+      if (setActiveAuditIdx) setActiveAuditIdx(null);
     }
-  }), [animateTo, focusOnBoundingBox]);
+  }), [animateTo, focusOnBoundingBox, resetTransform, setActiveAuditIdx]);
 
   useEffect(() => {
     const el = outerRef.current;
@@ -957,19 +962,27 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
     return () => window.removeEventListener('mouseup', handleGlobalUp);
   }, []);
 
+  // Allow pressing Escape to clear active modification focus and restore full view
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && activeAuditIdx !== null) {
+        resetTransform();
+        if (setActiveAuditIdx) setActiveAuditIdx(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeAuditIdx, resetTransform, setActiveAuditIdx]);
+
   return (
     <>
       <style>{FOCUS_CSS}</style>
       <style>{DIFF_CSS}</style>
       {activeAuditIdx !== null && (
         <style>{`
-          .mode-side-by-side.has-focus svg * {
-            opacity: 0.1 !important;
-          }
           .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"],
           .mode-side-by-side.has-focus svg [data-diff-idx="${activeAuditIdx}"] * {
-            opacity: 1 !important;
-            filter: none !important;
+            filter: drop-shadow(0 0 6px rgba(250, 219, 20, 0.95)) drop-shadow(0 0 12px rgba(250, 219, 20, 0.6)) !important;
           }
         `}</style>
       )}
@@ -1056,6 +1069,31 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
                 ))}
               </select>
             </div>
+
+            {activeAuditIdx !== null && (
+              <button
+                onClick={() => {
+                  resetTransform();
+                  if (setActiveAuditIdx) setActiveAuditIdx(null);
+                }}
+                style={{
+                  background: 'rgba(250, 219, 20, 0.15)',
+                  border: '1px solid #fadb14',
+                  color: '#fadb14',
+                  borderRadius: 4,
+                  padding: '2px 10px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+                title="Exit focused modification and restore full view (Esc)"
+              >
+                ✕ Exit Focus (Esc)
+              </button>
+            )}
 
             <button
               onClick={() => {

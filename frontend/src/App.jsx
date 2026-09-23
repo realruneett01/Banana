@@ -591,6 +591,15 @@ export default function App() {
 
   const handleAuditItemSelect = (item, idx) => {
     if (!item) return;
+    if (activeAuditIdx === idx) {
+      setActiveAuditIdx(null);
+      if (diffMode === 'Side by Side') {
+        if (sideBySideRef.current) sideBySideRef.current.resetView?.();
+      } else {
+        if (diffCanvasRef.current) diffCanvasRef.current.resetView?.();
+      }
+      return;
+    }
     setActiveAuditIdx(idx);
 
     let layerWasMissing = false;
@@ -1334,6 +1343,15 @@ export default function App() {
                   }
                 }}
                 onSelectDiff={(item) => {
+                  if (activeAuditIdx === item.diffIdx) {
+                    setActiveAuditIdx(null);
+                    if (diffMode === 'Side by Side') {
+                      if (sideBySideRef.current) sideBySideRef.current.resetView?.();
+                    } else {
+                      if (diffCanvasRef.current) diffCanvasRef.current.resetView?.();
+                    }
+                    return;
+                  }
                   setActiveAuditIdx(item.diffIdx);
 
                   // Ensure layer containing this diff is active in selectedLayers
@@ -1370,6 +1388,14 @@ export default function App() {
                   triggerFocus();
                   if (layerWasMissing) {
                     setTimeout(triggerFocus, 60);
+                  }
+                }}
+                onClearFocus={() => {
+                  setActiveAuditIdx(null);
+                  if (diffMode === 'Side by Side') {
+                    if (sideBySideRef.current) sideBySideRef.current.resetView?.();
+                  } else {
+                    if (diffCanvasRef.current) diffCanvasRef.current.resetView?.();
                   }
                 }}
                 onCollapse={() => setRightCollapsed(true)}
