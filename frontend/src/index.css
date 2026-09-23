@@ -1,5 +1,5 @@
 :root {
-  --diff-trace-width: 0.200mm; /* 0.200mm (~7.9 mils) standard trace width */
+  --diff-trace-width: inherit; /* Dimension-to-dimension: inherit KiCad's exact native stroke-widths */
 }
 
 body {

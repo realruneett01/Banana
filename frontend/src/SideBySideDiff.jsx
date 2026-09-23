@@ -67,7 +67,8 @@ const DIFF_CSS = `
     pointer-events: none;
   }
 
-  /* Unchanged open shapes (traces, tracks, signal lines, arcs, polylines) -> softcoded 0.200mm / 7.9mils */
+  /* Unchanged open shapes (traces, tracks, signal lines, arcs, polylines)
+     Dimension-to-dimension: preserves 100% of native KiCad stroke-widths */
   .mode-side-by-side .diff-unchanged.diff-open,
   .mode-side-by-side .diff-unchanged:not(.diff-closed):not(g),
   .mode-side-by-side g.diff-open.diff-unchanged > path,
@@ -78,7 +79,7 @@ const DIFF_CSS = `
   .mode-side-by-side polyline.diff-unchanged {
     stroke: #71717a !important;
     fill:   none    !important;
-    stroke-width: var(--diff-trace-width, 0.200mm) !important;
+    stroke-width: var(--diff-trace-width, inherit);
   }
 
   /* Unchanged closed shapes (pads, vias, copper zones, components)
@@ -117,7 +118,7 @@ const DIFF_CSS = `
   .mode-side-by-side polyline.diff-changed {
     stroke: #ffff00 !important;
     fill:   none    !important;
-    stroke-width: var(--diff-trace-width, 0.200mm) !important;
+    stroke-width: var(--diff-trace-width, inherit);
   }
   .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-changed.diff-closed:not(.stroked-text) * {
@@ -149,7 +150,7 @@ const DIFF_CSS = `
   .mode-side-by-side polyline.diff-added {
     stroke: #00ff66 !important;
     fill:   none    !important;
-    stroke-width: var(--diff-trace-width, 0.200mm) !important;
+    stroke-width: var(--diff-trace-width, inherit);
   }
   .mode-side-by-side .diff-added.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-added.diff-closed:not(.stroked-text) * {
@@ -181,7 +182,7 @@ const DIFF_CSS = `
   .mode-side-by-side polyline.diff-deleted {
     stroke: #ff3366 !important;
     fill:   none    !important;
-    stroke-width: var(--diff-trace-width, 0.200mm) !important;
+    stroke-width: var(--diff-trace-width, inherit);
   }
   .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text),
   .mode-side-by-side .diff-deleted.diff-closed:not(.stroked-text) * {
@@ -680,15 +681,18 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
 
 // ─── Softcoded Diff Configuration & Dimension Determination ───────────────────
 export const DIFF_CONFIG = {
-  DEFAULT_TRACE_WIDTH: '0.200mm', // Standard KiCad trace width 0.200mm / 7.874 mils (~7.9 mils)
+  MODE_NATIVE: 'inherit',
+  DEFAULT_TRACE_WIDTH: 'inherit', // 100% native KiCad dimension-to-dimension rendering
+  FALLBACK_TRACE_WIDTH: '0.200mm', // Standard 0.200mm / 7.874 mils (~7.9 mils)
   DEFAULT_TRACE_WIDTH_MM: 0.200,
   DEFAULT_TRACE_WIDTH_MILS: 7.874,
   TRACE_WIDTH_CSS_VAR: '--diff-trace-width',
   MM_TO_MILS: 39.3700787,
   MILS_TO_MM: 0.0254,
   TRACE_WIDTH_PRESETS: [
+    { label: 'Native KiCad (Dimension-to-Dimension)', value: 'inherit' },
+    { label: '0.200mm (7.9 mils) · Standard Uniform', value: '0.200mm' },
     { label: '0.150mm (5.9 mils)', value: '0.150mm' },
-    { label: '0.200mm (7.9 mils) · Standard', value: '0.200mm' },
     { label: '0.250mm (9.8 mils)', value: '0.250mm' },
     { label: '0.300mm (11.8 mils)', value: '0.300mm' },
   ],

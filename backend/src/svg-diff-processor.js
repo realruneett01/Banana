@@ -386,8 +386,11 @@ function injectDiffStyle(elementHtml, diffClass, isClosed, tag) {
     // Changed/Added/Deleted closed pads: Solid color fill, NO stroke so pads keep exact original dimensions!
     styleString = `fill: ${color} !important; stroke: none !important; opacity: 1.0 !important;`;
   } else {
-    // Changed/Added/Deleted traces: Softcoded standard 0.200mm (7.9 mils) width via CSS custom property
-    styleString = `stroke: ${color} !important; fill: none !important; stroke-width: var(${DIFF_CONFIG.TRACE_WIDTH_CSS_VAR}, ${DIFF_CONFIG.DEFAULT_TRACE_WIDTH}) !important; stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
+    // Changed/Added/Deleted traces: Dimension-to-dimension rendering preserving exact native KiCad stroke-width
+    const swCss = nativeStrokeWidth
+      ? `stroke-width: ${nativeStrokeWidth} !important; `
+      : `stroke-width: var(${DIFF_CONFIG.TRACE_WIDTH_CSS_VAR}, inherit) !important; `;
+    styleString = `stroke: ${color} !important; fill: none !important; ${swCss}stroke-linecap: round; stroke-linejoin: round; opacity: 1.0 !important;`;
   }
 
   return sanitized.replace(/(\/?>)$/, ` style="${styleString}" $1`);
