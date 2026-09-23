@@ -7,7 +7,7 @@ import os from 'os';
 import { config } from './config.js';
 import { extractFileFromCommit } from './git-extractor.js';
 import { renderKicadFile } from './kicad-renderer.js';
-import { processSvgDiff } from './svg-diff-processor.js';
+import { processSvgDiff, cleanNetName, cleanLayerName } from './svg-diff-processor.js';
 import { parseKiCadBoard } from './kicad-pcb-parser.js';
 import { streamGeminiChat } from './ai-service.js';
 import { WorkspaceDB } from './database.js';
@@ -397,12 +397,75 @@ app.post('/api/diff/process', async (req, res) => {
     const layerTelemetries = [];
 
     let pcbMetadata = null;
+    const footprintChanges = new Map();
     if (isPcb && fs.existsSync(targetPath)) {
       try {
-        const board = parseKiCadBoard(targetPath);
+        const targetBoard = parseKiCadBoard(targetPath);
+        let baseBoard = null;
+        if (fs.existsSync(basePath)) {
+          try {
+            baseBoard = parseKiCadBoard(basePath);
+          } catch (e) {
+            console.warn('[Banana API] Warning: Failed to parse base PCB AST:', e.message);
+          }
+        }
+
+        if (baseBoard && targetBoard) {
+          const baseFps = new Map((baseBoard.footprints || []).map(f => [f.reference?.text, f]));
+          const targetFps = new Map((targetBoard.footprints || []).map(f => [f.reference?.text, f]));
+
+          for (const [ref, tFp] of targetFps) {
+            if (!ref) continue;
+            const bFp = baseFps.get(ref);
+            if (!bFp) {
+              footprintChanges.set(ref, {
+                action: 'ADDED',
+                refDes: ref,
+                value: tFp.value?.text || '',
+                layer: tFp.layer || 'F.Cu',
+                targetAt: tFp.at,
+                dist: 0
+              });
+            } else {
+              const dx = (tFp.at?.x || 0) - (bFp.at?.x || 0);
+              const dy = (tFp.at?.y || 0) - (bFp.at?.y || 0);
+              const dist = Math.hypot(dx, dy);
+              const dRot = Math.abs((tFp.at?.rotation || 0) - (bFp.at?.rotation || 0));
+              const valChanged = tFp.value?.text !== bFp.value?.text;
+              if (dist > 0.001 || dRot > 0.01 || valChanged) {
+                footprintChanges.set(ref, {
+                  action: 'CHANGED',
+                  refDes: ref,
+                  value: tFp.value?.text || '',
+                  layer: tFp.layer || 'F.Cu',
+                  baseAt: bFp.at,
+                  targetAt: tFp.at,
+                  dist,
+                  dx,
+                  dy,
+                  dRot,
+                  valChanged
+                });
+              }
+            }
+          }
+
+          for (const [ref, bFp] of baseFps) {
+            if (ref && !targetFps.has(ref)) {
+              footprintChanges.set(ref, {
+                action: 'DELETED',
+                refDes: ref,
+                value: bFp.value?.text || '',
+                layer: bFp.layer || 'F.Cu',
+                baseAt: bFp.at,
+                dist: 0
+              });
+            }
+          }
+        }
         
         // Map footprints with reference designators and values
-        const footprints = (board.footprints || []).map(fp => ({
+        const footprints = (targetBoard.footprints || []).map(fp => ({
           ref: fp.reference?.text || '',
           value: fp.value?.text || '',
           layer: fp.layer || 'F.Cu',
@@ -412,7 +475,7 @@ app.post('/api/diff/process', async (req, res) => {
 
         // Map pads with absolute coordinates and net assignments
         const pads = [];
-        for (const fp of board.footprints || []) {
+        for (const fp of targetBoard.footprints || []) {
           const ref = fp.reference?.text || '';
           for (const pad of fp.pads || []) {
             pads.push({
@@ -432,7 +495,7 @@ app.post('/api/diff/process', async (req, res) => {
         pcbMetadata = {
           footprints,
           pads,
-          segments: (board.tracks || []).map(t => ({
+          segments: (targetBoard.tracks || []).map(t => ({
             start: t.start,
             end: t.end,
             width: t.width,
@@ -440,7 +503,8 @@ app.post('/api/diff/process', async (req, res) => {
             net: t.net || 'unconnected',
             netName: t.net || 'unconnected'
           })),
-          nets: Array.from(board.nets ? board.nets.values() : [])
+          nets: Array.from(targetBoard.nets ? targetBoard.nets.values() : []),
+          footprintChanges
         };
       } catch (parseErr) {
         console.warn('[Banana API] Warning: Failed to parse PCB AST:', parseErr.message);
@@ -514,6 +578,105 @@ app.post('/api/diff/process', async (req, res) => {
     const tDiff = performance.now() - tDiffStart;
     const tTotal = performance.now() - tTotalStart;
 
+    // Consolidate and deduplicate audit modifications to eliminate spam:
+    const consolidatedMods = [];
+    const componentMap = new Map();
+    const traceMap = new Map();
+    const graphicMap = new Map();
+
+    for (const mod of allModifications) {
+      if (mod.type === 'COMPONENT' && mod.refDes) {
+        // If ground-truth footprint changes exist and this refDes is NOT in them:
+        if (footprintChanges.size > 0 && !footprintChanges.has(mod.refDes)) {
+          // Stationary component whose attached pad/track changed -> route as trace
+          const netName = mod.net || mod.name || 'signal';
+          const layerClean = cleanLayerName(mod.layer);
+          const key = `${cleanNetName(netName)}@${mod.layer}`;
+          if (!traceMap.has(key)) {
+            traceMap.set(key, {
+              ...mod,
+              type: 'TRACE',
+              name: netName,
+              title: `changed ${cleanNetName(netName)} trace`,
+              detail: `Connected to ${mod.refDes} • Layer ${layerClean}`
+            });
+          }
+          continue;
+        }
+
+        if (!componentMap.has(mod.refDes)) {
+          const fpChange = footprintChanges.get(mod.refDes);
+          const master = {
+            ...mod,
+            action: fpChange ? fpChange.action : mod.action,
+            displacement: fpChange ? fpChange.dist : mod.displacement,
+            detail: fpChange && fpChange.dist > 0.001
+              ? `Relocated by ${fpChange.dist.toFixed(2)} mm on F.Cu • (${fpChange.targetAt.x.toFixed(2)}, ${fpChange.targetAt.y.toFixed(2)})`
+              : mod.detail,
+            layer: mod.layer
+          };
+          componentMap.set(mod.refDes, master);
+        } else {
+          const existing = componentMap.get(mod.refDes);
+          // Prefer copper layer for the master component card so canvas focuses properly
+          if (mod.layer.includes('F_Cu') && !existing.layer.includes('F_Cu')) {
+            existing.layer = mod.layer;
+            existing.diffIdx = mod.diffIdx;
+            existing.bbox = mod.bbox;
+          }
+        }
+      } else if (mod.type === 'TRACE') {
+        const isCopper = (mod.layer || '').includes('Cu');
+        if (!isCopper) {
+          // Absorb non-copper graphics near a moved component
+          let absorbed = false;
+          for (const [ref, fpChange] of footprintChanges) {
+            if (mod.bbox && fpChange.targetAt) {
+              const modCenterX = (mod.bbox.x1 + mod.bbox.x2) / 2;
+              const modCenterY = (mod.bbox.y1 + mod.bbox.y2) / 2;
+              const distToFp = Math.hypot(modCenterX - fpChange.targetAt.x, modCenterY - fpChange.targetAt.y);
+              if (distToFp < 10.0) {
+                absorbed = true;
+                break;
+              }
+            }
+          }
+          if (absorbed) continue;
+        }
+
+        const netKey = cleanNetName(mod.name || mod.net);
+        const key = `${netKey}@${mod.layer}`;
+        if (!traceMap.has(key)) {
+          traceMap.set(key, mod);
+        }
+      } else if (mod.type !== 'add_layer' && mod.type !== 'delete_layer') {
+        const isCopper = (mod.layer || '').includes('Cu');
+        if (!isCopper) {
+          let absorbed = false;
+          for (const [ref, fpChange] of footprintChanges) {
+            if (mod.bbox && fpChange.targetAt) {
+              const modCenterX = (mod.bbox.x1 + mod.bbox.x2) / 2;
+              const modCenterY = (mod.bbox.y1 + mod.bbox.y2) / 2;
+              const distToFp = Math.hypot(modCenterX - fpChange.targetAt.x, modCenterY - fpChange.targetAt.y);
+              if (distToFp < 10.0) {
+                absorbed = true;
+                break;
+              }
+            }
+          }
+          if (absorbed) continue;
+        }
+        const key = `${mod.title}@${mod.layer}`;
+        if (!graphicMap.has(key)) {
+          graphicMap.set(key, mod);
+        }
+      } else {
+        consolidatedMods.push(mod);
+      }
+    }
+
+    consolidatedMods.push(...componentMap.values(), ...traceMap.values(), ...graphicMap.values());
+
     // 5. Return SVG content in structured response with telemetry
     res.json({
       base: {
@@ -528,7 +691,7 @@ app.post('/api/diff/process', async (req, res) => {
         base: sideBySideBase,
         target: sideBySideTarget
       },
-      modifications: allModifications,
+      modifications: consolidatedMods,
       telemetry: {
         tGit: Number(tGit.toFixed(2)),
         tCli: Number(tCli.toFixed(2)),

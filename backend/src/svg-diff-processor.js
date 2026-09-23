@@ -140,7 +140,19 @@ function extractPrimitives(content) {
       }
     }
 
-    primitives.push({ tag, fullMatch, fullKey, idKey, geoKey, id, label, text, isClosedPath });
+    primitives.push({
+      tag,
+      fullMatch,
+      fullKey,
+      idKey,
+      geoKey,
+      id,
+      label,
+      text,
+      isClosedPath,
+      startIndex: match.index,
+      endIndex: match.index + fullMatch.length
+    });
   }
   return primitives;
 }
@@ -183,11 +195,87 @@ function findGBlocks(svgContent) {
 }
 
 /**
+ * Accurately finds all KiCad drawing sheet / worksheet / title block group ranges,
+ * handling nested <g> tags by tracking opening and closing depth.
+ * KiCad exports drawing sheets with style="...stroke:#C872AB...".
+ */
+function findWorksheetRanges(svgContent) {
+  if (!svgContent) return [];
+  const ranges = [];
+  const startRe = /<g\b[^>]*style="[^"]*stroke:#(?:C872AB|c872ab)[^"]*"[^>]*>/gi;
+  let match;
+  while ((match = startRe.exec(svgContent)) !== null) {
+    const startIdx = match.index;
+    let depth = 1;
+    let pos = startIdx + match[0].length;
+    while (depth > 0 && pos < svgContent.length) {
+      const nextOpen = svgContent.indexOf('<g', pos);
+      const nextClose = svgContent.indexOf('</g>', pos);
+      if (nextClose === -1) break;
+      if (nextOpen !== -1 && nextOpen < nextClose) {
+        depth++;
+        pos = nextOpen + 2;
+      } else {
+        depth--;
+        pos = nextClose + 4;
+      }
+    }
+    ranges.push({ start: startIdx, end: pos });
+  }
+  return ranges;
+}
+
+/**
+ * Detects whether an element is part of the worksheet / page frame / background rect.
+ */
+function isWorksheetFrameElement(el, worksheetRanges = []) {
+  if (!el || !el.fullMatch) return false;
+
+  // 1. Explicit non-worksheet stroke or fill color (e.g. #F2EDA1 silkscreen, copper, etc.) -> NEVER worksheet!
+  if (/(?:stroke|fill):\s*#(?!C872AB|c872ab)[0-9A-Fa-f]{6}/i.test(el.fullMatch)) {
+    return false;
+  }
+
+  // 2. Explicit worksheet magenta/pink stroke color in style or stroke attribute (#C872AB)
+  if (/#(?:C872AB|c872ab)/i.test(el.fullMatch)) {
+    return true;
+  }
+
+  // 3. Position within an outer worksheet group <g style="...stroke:#C872AB...">
+  if (el.startIndex !== undefined && worksheetRanges && worksheetRanges.length > 0) {
+    for (const r of worksheetRanges) {
+      if (el.startIndex >= r.start && el.startIndex < r.end) {
+        return true;
+      }
+    }
+  }
+
+  // 4. Page rectangle covering standard page sizes (e.g. A4/A3/A2 width > 150mm and height > 100mm)
+  if (el.tag === 'rect') {
+    const attrs = parseAttributes(el.fullMatch);
+    const width = parseFloat(attrs.width || '0');
+    const height = parseFloat(attrs.height || '0');
+    if (width > 150 && height > 100) {
+      return true;
+    }
+  }
+
+  // 5. Title block metadata region at bottom-right of A4 sheet
+  const center = getElementCenter(el);
+  if (center && center.x > 180 && center.y > 140) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Parses structural container groups (<g>) and remaining isolated primitives.
  * Returns a unified Component Block Record for component groups and isolated shapes.
  */
 export function extractElements(svgContent) {
   const elements = [];
+  const worksheetRanges = findWorksheetRanges(svgContent);
   
   // 1. Find all component-level <g> container groups
   let remainingSvg = svgContent;
@@ -201,6 +289,9 @@ export function extractElements(svgContent) {
 
   // 2. Add Component Block Records
   for (const block of matchedGBlocks) {
+    const isFrame = worksheetRanges.some(r => block.startIndex >= r.start && block.startIndex < r.end);
+    if (isFrame) continue;
+
     // Prefer text label anchor point <text x="..." y="..."> for component center calculation
     const textAnchorMatch = block.innerContent.match(/<text\s+x=["']([^"']+)["']\s+y=["']([^"']+)["']/i);
     let center;
@@ -235,14 +326,16 @@ export function extractElements(svgContent) {
       refDes: block.refDes,
       center,
       isComponent: true,
-      isClosedPath: true
+      isClosedPath: true,
+      isWorksheetFrame: false
     });
   }
 
   // 3. Add isolated primitive shapes
+  const remainingWorksheetRanges = findWorksheetRanges(remainingSvg);
   const primitives = extractPrimitives(remainingSvg);
   for (const el of primitives) {
-    const isFrame = isWorksheetFrameElement(el);
+    const isFrame = isWorksheetFrameElement(el, remainingWorksheetRanges);
     elements.push({
       ...el,
       refDes: null,
@@ -253,27 +346,6 @@ export function extractElements(svgContent) {
   }
 
   return elements;
-}
-
-/**
- * Detects whether an element is part of the worksheet / page frame / background rect.
- */
-function isWorksheetFrameElement(el) {
-  if (!el || !el.fullMatch) return false;
-  if (el.tag === 'rect') {
-    const attrs = parseAttributes(el.fullMatch);
-    const width = parseFloat(attrs.width || '0');
-    const height = parseFloat(attrs.height || '0');
-    // Page rectangle covering standard page sizes (e.g. A4/A3/A2 width > 150mm and height > 100mm)
-    if (width > 150 && height > 100) {
-      return true;
-    }
-  }
-  const center = getElementCenter(el);
-  if (center && center.x > 180 && center.y > 140) {
-    return true; // Title block metadata region at bottom-right of A4 sheet
-  }
-  return false;
 }
 
 /**
@@ -451,7 +523,7 @@ function getSegmentEndpoints(el) {
  * Individual <path>/<line> elements inside those SVGs have NO class attribute,
  * so we must use the filename itself to gate chain assembly.
  */
-function isCopperLayerFilename(layerFilename) {
+export function isCopperLayerFilename(layerFilename) {
   return /\b(F_Cu|B_Cu|In\d+_Cu)\b/i.test(layerFilename || '');
 }
 
@@ -917,7 +989,7 @@ function annotateSvgDataOnly(svgContent, elements, classifications) {
  * e.g. "/ETHERNET/PMODE1" -> "ethernet/pmode1"
  *      "Net-(U8-Pad61)"   -> "u8_pad61"
  */
-function cleanNetName(rawNet) {
+export function cleanNetName(rawNet) {
   if (!rawNet || rawNet === 'unconnected' || rawNet === '0') return 'signal';
   return String(rawNet)
     .replace(/^\//, '')                     // Strip leading root slash
@@ -950,7 +1022,7 @@ function formatSemanticTitle(action, type, name) {
  * e.g. "BE007V1AS1-F_Cu.svg" -> "F.Cu"
  *      "project-B_Silkscreen.svg" -> "B.Silkscreen"
  */
-function cleanLayerName(layer) {
+export function cleanLayerName(layer) {
   if (!layer) return 'F.Cu';
   let cleaned = String(layer).replace(/\.svg$/i, '');
   if (cleaned.includes('-')) {
@@ -961,21 +1033,24 @@ function cleanLayerName(layer) {
 
 /**
  * Resolves the semantic identity (RefDes or Net name) for a diff element.
+ * Incorporates copper layer verification and footprint movement ground truth.
  */
-function resolveSemanticIdentity(diffItem, pcbMetadata) {
+function resolveSemanticIdentity(diffItem, pcbMetadata, isCopper = true) {
   const defaultLayer = cleanLayerName(diffItem.layer);
 
   if (!pcbMetadata) {
-    return { name: diffItem.refDes || 'signal', type: 'TRACE', layer: defaultLayer };
+    return { name: diffItem.refDes || 'signal', type: isCopper ? 'TRACE' : 'GRAPHIC', layer: defaultLayer };
   }
 
-  const { footprints = [], pads = [], segments = [] } = pcbMetadata;
+  const { footprints = [], pads = [], segments = [], footprintChanges } = pcbMetadata;
 
-  // 1. Check Direct Component Footprint Match
+  // 1. Direct Component Footprint Match
   if (diffItem.refDes) {
     const fp = footprints.find(f => f.ref === diffItem.refDes);
+    const valStr = fp?.value ? ` (${fp.value})` : '';
     return {
-      name: `${diffItem.refDes}${fp?.value ? ` (${fp.value})` : ''}`,
+      name: `${diffItem.refDes}${valStr}`,
+      refDes: diffItem.refDes,
       type: 'COMPONENT',
       layer: fp?.layer || defaultLayer
     };
@@ -986,40 +1061,102 @@ function resolveSemanticIdentity(diffItem, pcbMetadata) {
     y: (diffItem.bbox.y1 + diffItem.bbox.y2) / 2
   } : null);
 
-  // 2. Check Pad Coordinate Proximity (resolves copper pads and vias to parent component & net)
-  if (center && pads.length > 0) {
-    let closestPad = null;
-    let minPadDist = 1.5; // Within 1.5mm of pad center
+  // Detect whether this element represents an open wire/chain vs a closed pad
+  const isChainOrOpenTrace = diffItem.segmentCount !== undefined || diffItem.startPoint !== undefined || diffItem.isClosedPath === false;
 
-    for (const p of pads) {
-      const d = Math.hypot(p.x - center.x, p.y - center.y);
-      if (d < minPadDist) {
-        minPadDist = d;
-        closestPad = p;
+  // 2. Copper Layer Handling: Pads, Traces, Net mapping
+  if (isCopper) {
+    let closestPad = null;
+    if (center && pads.length > 0) {
+      let minPadDist = 1.5; // Within 1.5mm of pad center
+      for (const p of pads) {
+        const d = Math.hypot(p.x - center.x, p.y - center.y);
+        if (d < minPadDist) {
+          minPadDist = d;
+          closestPad = p;
+        }
       }
     }
 
+    // A. Electrical Conductor / Open Wire: ALWAYS TRACE, NEVER COMPONENT
+    if (isChainOrOpenTrace) {
+      if (closestPad) {
+        const netName = closestPad.netName && closestPad.netName !== 'unconnected' ? closestPad.netName : 'signal';
+        return {
+          name: netName,
+          refDes: closestPad.refDes,
+          type: 'TRACE',
+          layer: defaultLayer,
+          connection: `Connected to ${closestPad.refDes} Pin ${closestPad.pin}`
+        };
+      }
+      // Check segment proximity
+      if (center && segments.length > 0) {
+        let closestNet = null;
+        let minDistance = 3.0;
+        for (const seg of segments) {
+          if (!seg.start || !seg.end) continue;
+          const dStart = Math.hypot(seg.start.x - center.x, seg.start.y - center.y);
+          const dEnd   = Math.hypot(seg.end.x - center.x, seg.end.y - center.y);
+          const dMid   = Math.hypot((seg.start.x + seg.end.x) / 2 - center.x, (seg.start.y + seg.end.y) / 2 - center.y);
+          const dist = Math.min(dStart, dEnd, dMid);
+          if (dist < minDistance) {
+            minDistance = dist;
+            closestNet = seg.net || seg.netName;
+          }
+        }
+        if (closestNet && closestNet !== 'unconnected') {
+          return {
+            name: closestNet,
+            type: 'TRACE',
+            layer: defaultLayer
+          };
+        }
+      }
+      return {
+        name: diffItem.netName || diffItem.net || 'signal',
+        type: 'TRACE',
+        layer: defaultLayer
+      };
+    }
+
+    // B. Closed copper shape (SMD pad, via, fill):
     if (closestPad) {
       const fp = footprints.find(f => f.ref === closestPad.refDes);
       const valStr = fp?.value ? ` (${fp.value})` : '';
       const pinLabel = closestPad.pin ? `Pin ${closestPad.pin}` : 'Pad';
       const netLabel = closestPad.netName && closestPad.netName !== 'unconnected' ? ` • ${closestPad.netName}` : '';
-      return {
-        name: `${closestPad.refDes}${valStr}`,
-        refDes: closestPad.refDes,
-        pin: closestPad.pin,
-        net: closestPad.netName,
-        type: 'COMPONENT',
-        layer: defaultLayer,
-        connection: `${pinLabel}${netLabel}`
-      };
+
+      // Verify if the component physically moved in the board diff:
+      const fpChanged = footprintChanges ? footprintChanges.has(closestPad.refDes) : true;
+      if (fpChanged) {
+        return {
+          name: `${closestPad.refDes}${valStr}`,
+          refDes: closestPad.refDes,
+          pin: closestPad.pin,
+          net: closestPad.netName,
+          type: 'COMPONENT',
+          layer: defaultLayer,
+          connection: `${pinLabel}${netLabel}`
+        };
+      } else {
+        // Component did NOT move (e.g. U8): this is a net track/pad modification
+        return {
+          name: closestPad.netName || 'signal',
+          refDes: closestPad.refDes,
+          type: 'TRACE',
+          layer: defaultLayer,
+          connection: `Pad ${closestPad.pin} of ${closestPad.refDes}`
+        };
+      }
     }
   }
 
-  // 3. Check Component Footprint Origin Proximity (resolves courtyard, silkscreen outlines to component)
+  // 3. Non-Copper Layers (Silkscreen, Courtyard, Mask, Edge_Cuts):
+  // Never search pads or report traces! Search footprint proximity.
   if (center && footprints.length > 0) {
     let closestFp = null;
-    let minFpDist = 2.5; // Within 2.5mm of footprint origin
+    let minFpDist = 8.0; // Within 8.0 mm radius to catch silkscreen labels and courtyard outlines
     for (const fp of footprints) {
       const d = Math.hypot(fp.x - center.x, fp.y - center.y);
       if (d < minFpDist) {
@@ -1038,36 +1175,9 @@ function resolveSemanticIdentity(diffItem, pcbMetadata) {
     }
   }
 
-  // 4. Check Track Segment Coordinate Proximity
-  if (center && segments.length > 0) {
-    let closestNet = null;
-    let minDistance = 3.0; // 3.0 mm tolerance for SVG-to-board coordinate alignment
-
-    for (const seg of segments) {
-      if (!seg.start || !seg.end) continue;
-      const dStart = Math.hypot(seg.start.x - center.x, seg.start.y - center.y);
-      const dEnd   = Math.hypot(seg.end.x - center.x, seg.end.y - center.y);
-      const dMid   = Math.hypot((seg.start.x + seg.end.x) / 2 - center.x, (seg.start.y + seg.end.y) / 2 - center.y);
-      
-      const dist = Math.min(dStart, dEnd, dMid);
-      if (dist < minDistance) {
-        minDistance = dist;
-        closestNet = seg.net || seg.netName;
-      }
-    }
-
-    if (closestNet) {
-      return {
-        name: closestNet,
-        type: 'TRACE',
-        layer: defaultLayer
-      };
-    }
-  }
-
   return {
-    name: diffItem.netName || diffItem.net || 'signal',
-    type: 'TRACE',
+    name: diffItem.name || 'graphic',
+    type: isCopper ? 'TRACE' : 'GRAPHIC',
     layer: defaultLayer
   };
 }
@@ -1075,18 +1185,21 @@ function resolveSemanticIdentity(diffItem, pcbMetadata) {
 /**
  * Generates structured modification records for the client audit sidebar.
  */
-function generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata) {
+function generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata, layerFilename) {
   const modifications = [];
   const seenDiffIndices = new Set();
+  const defaultLayer = cleanLayerName(layerFilename);
+  const isCopper = isCopperLayerFilename(layerFilename);
 
   const processMap = (classMap, defaultSide) => {
     if (!classMap) return;
     classMap.forEach((meta, el) => {
       if (!meta || meta.diffClass === 'diff-unchanged') return;
+      if (el && el.isWorksheetFrame) return;
       if (meta.diffIdx !== undefined && seenDiffIndices.has(meta.diffIdx)) return;
       if (meta.diffIdx !== undefined) seenDiffIndices.add(meta.diffIdx);
 
-      const identity = resolveSemanticIdentity(meta, pcbMetadata);
+      const identity = resolveSemanticIdentity(meta, pcbMetadata, isCopper);
 
       // Determine strict action verb
       let action = 'CHANGED';
@@ -1109,6 +1222,8 @@ function generatePreciseAuditLog(targetClassifications, baseClassifications, pcb
         } else {
           detail = `${identity.layer} • (${meta.center?.x?.toFixed(1) ?? 0}, ${meta.center?.y?.toFixed(1) ?? 0})${connInfo}`;
         }
+      } else {
+        detail = `Layer ${identity.layer}`;
       }
 
       modifications.push({
@@ -1116,11 +1231,14 @@ function generatePreciseAuditLog(targetClassifications, baseClassifications, pcb
         action,          // 'CHANGED' | 'ADDED' | 'DELETED'
         title,           // e.g. "changed spi2_cs trace", "deleted r38 component"
         type: identity.type,
+        refDes: identity.refDes || meta.refDes || null,
+        pin: identity.pin || meta.pin || null,
+        net: identity.net || meta.net || null,
         name: identity.name,
         detail,
-        layer: identity.layer || 'F.Cu',
+        displacement: meta.displacement,
+        layer: identity.layer || defaultLayer,
         bbox: meta.bbox,
-        // Retained for diff-highlight call-site
         side: meta.side || defaultSide,
         baseCoords: meta.baseCoords,
         targetCoords: meta.targetCoords
@@ -1276,9 +1394,10 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   // --- PASS 1: Relational Key Lookup (RefDes matching) ---
   const tPass1Start = performance.now();
   for (const tEl of targetElements) {
+    if (tEl.isWorksheetFrame) continue;
     if (matchedTarget.has(tEl)) continue;
     if (tEl.isComponent && tEl.refDes) {
-      const candidates = baseElements.filter(b => !matchedBase.has(b) && b.isComponent && b.refDes === tEl.refDes);
+      const candidates = baseElements.filter(b => !b.isWorksheetFrame && !matchedBase.has(b) && b.isComponent && b.refDes === tEl.refDes);
       if (candidates.length > 0) {
         let bestMatch = candidates[0];
         let minDistance = getDistance(bestMatch, tEl);
@@ -1311,12 +1430,14 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   const tPass2Start = performance.now();
   const baseKeyGroups = new Map();
   for (const el of baseElements) {
+    if (el.isWorksheetFrame) continue;
     if (matchedBase.has(el)) continue;
     if (!baseKeyGroups.has(el.fullKey)) baseKeyGroups.set(el.fullKey, []);
     baseKeyGroups.get(el.fullKey).push(el);
   }
 
   for (const tEl of targetElements) {
+    if (tEl.isWorksheetFrame) continue;
     if (matchedTarget.has(tEl)) continue;
     const bEls = baseKeyGroups.get(tEl.fullKey);
     if (bEls && bEls.length > 0) {
@@ -1334,9 +1455,10 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   const PROXIMITY_THRESHOLD = 5.0;
 
   for (const tEl of targetElements) {
+    if (tEl.isWorksheetFrame) continue;
     if (matchedTarget.has(tEl)) continue;
     
-    const candidates = baseElements.filter(bEl => !matchedBase.has(bEl) && bEl.tag === tEl.tag);
+    const candidates = baseElements.filter(bEl => !bEl.isWorksheetFrame && !matchedBase.has(bEl) && bEl.tag === tEl.tag);
     if (candidates.length > 0) {
       let bestMatch = null;
       let minDistance = Infinity;
@@ -1470,7 +1592,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   const tAnnotate = performance.now() - tAnnotateStart;
 
   // Generate structured modification records for client audit sidebar
-  const modifications = generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata);
+  const modifications = generatePreciseAuditLog(targetClassifications, baseClassifications, pcbMetadata, layerFilename);
 
   // Diagnostic Code
   const tDiagStart = performance.now();
