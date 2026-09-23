@@ -38,8 +38,6 @@ import SideBySideDiff from './SideBySideDiff';
 import { AuditSidebar } from './AuditSidebar';
 import ChatbotDrawer from './ChatbotDrawer';
 import WorkspaceShell from './WorkspaceShell';
-import CircuitBuilderCanvas from './CircuitBuilderCanvas';
-import ComponentSourcingHub from './ComponentSourcingHub';
 import { API_BASE_URL } from './config.js';
 
 const { Header, Sider, Content } = Layout;
@@ -91,31 +89,6 @@ export default function App() {
   const [layerOpacities, setLayerOpacities] = useState({});
   const [activeAuditIdx, setActiveAuditIdx] = useState(null);
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
-  const [activeStudio, setActiveStudio] = useState('diff'); // 'diff' | 'builder' | 'sourcing'
-  const [circuits, setCircuits] = useState([]);
-  const [activeCircuitId, setActiveCircuitId] = useState(null);
-  const [copilotMode, setCopilotMode] = useState('chat');
-
-  const fetchWorkspace = async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/workspace`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.circuits && data.circuits.length > 0) {
-          setCircuits(data.circuits);
-          setActiveCircuitId(prev => prev || data.circuits[0].id);
-        }
-      }
-    } catch (err) {
-      console.warn('Could not fetch workspace data:', err);
-    }
-  };
-
-  useEffect(() => {
-    fetchWorkspace();
-  }, []);
-
-  const activeCircuit = circuits.find(c => c.id === activeCircuitId) || circuits[0] || null;
 
   // Check health and load repo info on mount
   useEffect(() => {
@@ -657,26 +630,12 @@ export default function App() {
       <Layout style={{ minHeight: '100vh', background: '#0f1015' }}>
         {/* Header */}
         <WorkspaceShell
-          activeStudio={activeStudio}
-          onSelectStudio={setActiveStudio}
-          circuits={circuits}
-          activeCircuitId={activeCircuitId}
-          onSelectCircuit={setActiveCircuitId}
-          onNewCircuit={() => {
-            setCopilotMode('builder');
-            setIsCopilotOpen(true);
-          }}
-          onOpenCopilot={(targetMode) => {
-            const mode = targetMode || (activeStudio === 'builder' ? 'builder' : 'chat');
-            setCopilotMode(mode);
-            setIsCopilotOpen(true);
-          }}
+          onOpenCopilot={() => setIsCopilotOpen(true)}
           kicadVersion={kicadVersion}
           backendStatus={backendStatus}
         />
 
-        {activeStudio === 'diff' && (
-          <Layout>
+        <Layout>
             {/* Left Sidebar - Controls */}
             <Sider 
               width={340} 
@@ -1403,90 +1362,43 @@ export default function App() {
             )}
           </Sider>
         </Layout>
-      )}
 
-      {/* Circuit Builder Studio Viewport */}
-      {activeStudio === 'builder' && (
-        <div style={{ height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
-          <CircuitBuilderCanvas
-            circuit={activeCircuit}
-            onOpenSourcingHub={() => setActiveStudio('sourcing')}
-            onExportKicad={() => {}}
-          />
-        </div>
-      )}
-
-      {/* Component Sourcing Hub Viewport */}
-      {activeStudio === 'sourcing' && (
-        <div style={{ height: 'calc(100vh - 56px)', overflow: 'hidden' }}>
-          <ComponentSourcingHub
-            activeCircuit={activeCircuit}
-            onSubstituteComponent={(origPart, alt) => {
-              if (activeCircuit) {
-                const updatedComps = (activeCircuit.components || []).map(c => {
-                  if (c.value === origPart || c.name === origPart) {
-                    return {
-                      ...c,
-                      value: alt.partNumber,
-                      name: alt.partNumber,
-                      package: alt.package || c.package,
-                      unitPrice: alt.unitPrice || c.unitPrice
-                    };
-                  }
-                  return c;
-                });
-                const updatedCircuit = { ...activeCircuit, components: updatedComps };
-                setCircuits(prev => prev.map(c => c.id === updatedCircuit.id ? updatedCircuit : c));
-              }
+        {/* Floating Copilot Button */}
+        {!isCopilotOpen && (
+          <div
+            className="copilot-float-btn"
+            onClick={() => setIsCopilotOpen(true)}
+            style={{
+              right: rightCollapsed ? '24px' : '300px'
             }}
-          />
-        </div>
-      )}
+            title="Open Banana Hardware Copilot (Gemini 3 Flash Preview)"
+          >
+            <span className="copilot-dot-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }}></span>
+            <span>Copilot ✨</span>
+          </div>
+        )}
 
-      {/* Floating Copilot Button */}
-      {!isCopilotOpen && (
-        <div
-          className="copilot-float-btn"
-          onClick={() => setIsCopilotOpen(true)}
-          style={{
-            right: rightCollapsed ? '24px' : '300px'
+        {/* AI Hardware Copilot Drawer */}
+        <ChatbotDrawer
+          open={isCopilotOpen}
+          onClose={() => setIsCopilotOpen(false)}
+          boardContext={{
+            relativeFilePath,
+            baseCommit,
+            targetCommit,
+            selectedLayers,
+            diffMode,
+            modifications: diffData?.modifications || [],
+            pcbMetadata: diffData?.pcbMetadata
           }}
-          title="Open Banana Hardware Copilot (Gemini 3 Flash Preview)"
-        >
-          <span className="copilot-dot-pulse" style={{ width: 8, height: 8, borderRadius: '50%', background: '#52c41a' }}></span>
-          <span>Copilot ✨</span>
-        </div>
-      )}
-
-      {/* AI Hardware Copilot Drawer */}
-      <ChatbotDrawer
-        open={isCopilotOpen}
-        onClose={() => setIsCopilotOpen(false)}
-        copilotMode={copilotMode}
-        onSetCopilotMode={setCopilotMode}
-        boardContext={{
-          relativeFilePath,
-          baseCommit,
-          targetCommit,
-          selectedLayers,
-          diffMode,
-          modifications: diffData?.modifications || [],
-          pcbMetadata: diffData?.pcbMetadata
-        }}
-        onSelectModification={(modId, label) => {
-          const mods = diffData?.modifications || [];
-          const idx = mods.findIndex(m => m.id === modId || (label && (m.label?.includes(label) || m.text?.includes(label))));
-          if (idx !== -1) {
-            handleAuditItemSelect(mods[idx], idx);
-          }
-        }}
-        onCircuitBuilt={(newCircuit) => {
-          setCircuits(prev => [newCircuit, ...prev.filter(c => c.id !== newCircuit.id)]);
-          setActiveCircuitId(newCircuit.id);
-          setActiveStudio('builder');
-          message.success(`Circuit "${newCircuit.title}" ready in Studio!`);
-        }}
-      />
+          onSelectModification={(modId, label) => {
+            const mods = diffData?.modifications || [];
+            const idx = mods.findIndex(m => m.id === modId || (label && (m.label?.includes(label) || m.text?.includes(label))));
+            if (idx !== -1) {
+              handleAuditItemSelect(mods[idx], idx);
+            }
+          }}
+        />
     </Layout>
   </ConfigProvider>
   );

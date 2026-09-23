@@ -10,9 +10,7 @@ import { renderKicadFile } from './kicad-renderer.js';
 import { processSvgDiff, cleanNetName, cleanLayerName } from './svg-diff-processor.js';
 import { parseKiCadBoard } from './kicad-pcb-parser.js';
 import { streamGeminiChat } from './ai-service.js';
-import { WorkspaceDB } from './database.js';
-import { searchComponentAlternatives } from './component-sourcing-service.js';
-import { buildCircuitWithAiAndJev } from './circuit-builder-service.js';
+
 
 const app = express();
 
@@ -859,87 +857,7 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------------------------
-// Workspace & Circuit Builder Endpoints (SQLite + Gemini 3 Flash + Jev)
-// ---------------------------------------------------------------------------
 
-// GET Workspace State & Projects
-app.get('/api/workspace', (req, res) => {
-  try {
-    const ws = WorkspaceDB.getWorkspace();
-    const projects = WorkspaceDB.getAllProjects();
-    const circuits = WorkspaceDB.getAllCircuits();
-    res.json({ workspace: ws, projects, circuits });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET All Saved Circuits
-app.get('/api/workspace/circuits', (req, res) => {
-  try {
-    const { projectId } = req.query;
-    const circuits = WorkspaceDB.getAllCircuits(projectId || null);
-    res.json({ circuits });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET Single Circuit by ID
-app.get('/api/workspace/circuits/:id', (req, res) => {
-  try {
-    const circuit = WorkspaceDB.getCircuit(req.params.id);
-    if (!circuit) return res.status(404).json({ error: 'Circuit not found' });
-    res.json({ circuit });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST Build Circuit (Autonomous Streaming Pipeline)
-app.post('/api/circuit/build', async (req, res) => {
-  const { prompt, boardContext, projectId } = req.body;
-
-  if (!prompt || !prompt.trim()) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
-
-  // Set SSE streaming headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-
-  try {
-    const circuit = await buildCircuitWithAiAndJev({
-      prompt: prompt.trim(),
-      boardContext: boardContext || {},
-      projectId: projectId || 'default',
-      onProgress: (progress) => {
-        res.write(`data: ${JSON.stringify({ progress })}\n\n`);
-      }
-    });
-
-    res.write(`data: ${JSON.stringify({ done: true, circuit })}\n\n`);
-    res.end();
-  } catch (err) {
-    console.error('[Circuit Builder] Build error:', err.message);
-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
-    res.end();
-  }
-});
-
-// GET Component Alternatives (Web Sourcing)
-app.get('/api/components/alternatives', async (req, res) => {
-  try {
-    const { part } = req.query;
-    if (!part) return res.status(400).json({ error: 'part query param required' });
-    const alternatives = await searchComponentAlternatives(part);
-    res.json({ part, alternatives });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 const PORT = config.port;
 app.listen(PORT, () => {

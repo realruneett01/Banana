@@ -11,8 +11,7 @@ import {
   Badge,
   Alert,
   Divider,
-  Card,
-  Segmented
+  Card
 } from 'antd';
 import {
   RobotOutlined,
@@ -28,8 +27,6 @@ import {
   ExclamationCircleFilled,
   CompassOutlined,
   SafetyCertificateOutlined,
-  ApiOutlined,
-  BuildOutlined,
   FileSearchOutlined,
   MessageOutlined
 } from '@ant-design/icons';
@@ -38,8 +35,8 @@ import { API_BASE_URL } from './config.js';
 const { Text, Paragraph, Title } = Typography;
 const { TextArea } = Input;
 
-// Pre-defined quick prompt templates for Normal Chat
-const NORMAL_CHAT_PROMPTS = [
+// Pre-defined quick prompt templates for Hardware Copilot
+const QUICK_PROMPTS = [
   {
     icon: <AimOutlined />,
     label: 'Explain detected diffs',
@@ -56,43 +53,14 @@ const NORMAL_CHAT_PROMPTS = [
     prompt: 'How do the 3 diff modes in Banana 2.0 (Side-by-Side, Overlay Slider, Color Delta Map) work and when should I use each?'
   },
   {
-    icon: <RobotOutlined />,
-    label: 'Explain the 2 Copilot modes',
-    prompt: 'Explain how the two Copilot modes (Normal Chat vs Builder) work in Banana 2.0 and how they use Gemini and Jev.'
-  },
-  {
     icon: <BulbOutlined />,
     label: 'Trace width & current rules',
     prompt: 'What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?'
-  }
-];
-
-// Pre-defined quick prompt templates for Builder Mode
-const BUILDER_PROMPTS = [
-  {
-    icon: <ThunderboltOutlined />,
-    label: '5V to 3.3V 1.5A Buck Supply',
-    prompt: 'Build a 5V to 3.3V 1.5A synchronous buck step-down regulator circuit with USB-C power input, ceramic bypass caps, and TVS protection.'
   },
   {
-    icon: <ApiOutlined />,
-    label: 'Audio Active Low-Pass Filter',
-    prompt: 'Build a 2nd-order Sallen-Key active low-pass audio filter with 20kHz cutoff frequency using an operational amplifier.'
-  },
-  {
-    icon: <BuildOutlined />,
-    label: 'Isolated RS-485 Bus Interface',
-    prompt: 'Build an isolated RS-485 transceiver bus interface circuit with 120-ohm termination and TVS surge clamping.'
-  },
-  {
-    icon: <BulbOutlined />,
-    label: 'ESP32-S3 Minimum System',
-    prompt: 'Build an ESP32-S3 microcontroller minimum system circuit with auto-download reset transistor pair and 3.3V LDO.'
-  },
-  {
-    icon: <ThunderboltOutlined />,
-    label: 'USB-C PD 20V Input Front-End',
-    prompt: 'Build a USB-C PD 20V input protection front-end with ideal diode controller, reverse polarity protection, and LC filter.'
+    icon: <FileSearchOutlined />,
+    label: 'Copper weight & stackup',
+    prompt: 'What are the rules of thumb for 1oz vs 2oz copper weights and controlled impedance routing in high-speed KiCad designs?'
   }
 ];
 
@@ -100,16 +68,8 @@ export default function ChatbotDrawer({
   open,
   onClose,
   boardContext = {},
-  onSelectModification,
-  onCircuitBuilt,
-  copilotMode = 'chat',
-  onSetCopilotMode
+  onSelectModification
 }) {
-  const [internalMode, setInternalMode] = useState(copilotMode);
-  const activeMode = onSetCopilotMode ? copilotMode : internalMode;
-  const setMode = onSetCopilotMode || setInternalMode;
-  const isBuilder = activeMode === 'builder';
-  const currentSegment = isBuilder ? 'builder' : 'chat';
 
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem('banana:chatHistory');
@@ -186,9 +146,7 @@ export default function ChatbotDrawer({
     const welcomeMsg = [
       {
         role: 'model',
-        content: isBuilder
-          ? 'Hey! What circuit do you want to build?'
-          : 'Hey! What are we checking or working on today?',
+        content: 'Hey! What are we checking or working on today?',
         timestamp: Date.now()
       }
     ];
@@ -227,99 +185,6 @@ export default function ChatbotDrawer({
       const headers = { 'Content-Type': 'application/json' };
       if (apiKey) {
         headers['x-gemini-api-key'] = apiKey;
-      }
-
-      // If Builder mode, route to autonomous circuit builder endpoint
-      if (activeMode === 'builder') {
-        const response = await fetch(`${API_BASE_URL}/api/circuit/build`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            prompt: messageToSend,
-            boardContext: {
-              relativeFilePath: boardContext.relativeFilePath,
-              baseCommit: boardContext.baseCommit,
-              targetCommit: boardContext.targetCommit,
-            }
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error(`Server returned HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder('utf-8');
-        let accumulatedText = '⚡ **Banana Autonomous Circuit Builder Started**\n\n';
-        let buffer = '';
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) continue;
-
-            const jsonStr = trimmed.slice(5).trim();
-            if (!jsonStr) continue;
-
-            try {
-              const data = JSON.parse(jsonStr);
-
-              if (data.progress) {
-                accumulatedText += `> 🔄 **${data.progress.step}**: ${data.progress.detail}\n`;
-                setMessages(prev => {
-                  const copy = [...prev];
-                  if (copy[assistantIndex]) {
-                    copy[assistantIndex] = {
-                      ...copy[assistantIndex],
-                      content: accumulatedText,
-                      isStreaming: true
-                    };
-                  }
-                  return copy;
-                });
-              }
-
-              if (data.done && data.circuit) {
-                const c = data.circuit;
-                const jevAns = c.jev_evaluation?.answers || {};
-                accumulatedText += `\n\n🎉 **Circuit Successfully Synthesized & Verified!**\n\n` +
-                  `- **Title**: **${c.title}**\n` +
-                  `- **Domain**: ${c.domain}\n` +
-                  `- **Components**: ${c.components?.length} parts (all enriched with web alternatives)\n` +
-                  `- **Jev Safety**: ${((jevAns.isVoltageCompliant?.probability || 0.99) * 100).toFixed(1)}% Safe Operating Area\n` +
-                  `- **Decoupling Integrity**: ${jevAns.isDecouplingAdequate?.value ? 'PASSED' : 'Attention Needed'}\n` +
-                  `- **Thermal Verdict**: ${jevAns.thermalRiskScore?.rating || 'Negligible'}\n` +
-                  `- **Recommended Topology**: ${jevAns.recommendedTopology?.choice || 'Optimal'}\n\n` +
-                  `*Saved to local SQLite database. Open Circuit Builder Studio to view interactive schematic!*`;
-
-                if (onCircuitBuilt) {
-                  onCircuitBuilt(c);
-                }
-              }
-            } catch (e) {}
-          }
-        }
-
-        setMessages(prev => {
-          const copy = [...prev];
-          if (copy[assistantIndex]) {
-            copy[assistantIndex] = {
-              ...copy[assistantIndex],
-              content: accumulatedText,
-              isStreaming: false
-            };
-          }
-          return copy;
-        });
-
-        return;
       }
 
       const response = await fetch(`${API_BASE_URL}/api/ai/chat`, {
@@ -547,28 +412,15 @@ export default function ChatbotDrawer({
               <div>
                 <Text strong style={{ color: '#fff', fontSize: '14px' }}>Banana Hardware Copilot</Text>
                 <div>
-                  {isBuilder ? (
-                    <>
-                      <Tag color="orange" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', margin: 0 }}>
-                        ⚡ Builder Mode
-                      </Tag>
-                      <Tag color="purple" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', marginLeft: 4 }}>
-                        Gemini 3 + Jev evaluate
-                      </Tag>
-                    </>
-                  ) : (
-                    <>
-                      <Tag color="cyan" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', margin: 0 }}>
-                        💬 Normal Chat
-                      </Tag>
-                      <Tag color="gold" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', marginLeft: 4 }}>
-                        {activeModel}
-                      </Tag>
-                      <Tag color="green" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', marginLeft: 4 }}>
-                        Unlimited Free
-                      </Tag>
-                    </>
-                  )}
+                  <Tag color="cyan" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', margin: 0 }}>
+                    💬 Hardware Copilot
+                  </Tag>
+                  <Tag color="gold" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', marginLeft: 4 }}>
+                    {activeModel}
+                  </Tag>
+                  <Tag color="green" style={{ fontSize: '10px', lineHeight: '16px', padding: '0 5px', marginLeft: 4 }}>
+                    Unlimited Free
+                  </Tag>
                 </div>
               </div>
             </Space>
@@ -615,48 +467,23 @@ export default function ChatbotDrawer({
           }
         }}
       >
-        {/* Mode Switcher: Normal Chat vs Builder */}
-        <div style={{ marginBottom: '8px' }}>
-          <Segmented
-            block
-            value={currentSegment}
-            onChange={(val) => setMode(val)}
-            options={[
-              { label: '💬 Normal Chat', value: 'chat', icon: <MessageOutlined /> },
-              { label: '⚡ Builder', value: 'builder', icon: <BuildOutlined /> }
-            ]}
-            style={{ background: '#161821', border: '1px solid #232738' }}
-          />
-        </div>
-
-        {/* Mode Description Banner */}
+        {/* Hardware Copilot Info Banner */}
         <div style={{
-          background: isBuilder ? 'rgba(250, 173, 20, 0.08)' : 'rgba(22, 119, 255, 0.08)',
-          border: `1px solid ${isBuilder ? 'rgba(250, 173, 20, 0.25)' : 'rgba(22, 119, 255, 0.25)'}`,
+          background: 'rgba(22, 119, 255, 0.08)',
+          border: '1px solid rgba(22, 119, 255, 0.25)',
           borderRadius: '6px',
           padding: '6px 10px',
           marginBottom: '8px',
           fontSize: '11px',
-          color: isBuilder ? '#faad14' : '#69b1ff',
+          color: '#69b1ff',
           display: 'flex',
           alignItems: 'center',
           gap: '6px'
         }}>
-          {isBuilder ? (
-            <>
-              <BuildOutlined style={{ fontSize: '13px', flexShrink: 0 }} />
-              <span>
-                <strong>Builder Mode</strong>: Autonomous circuit generator using Gemini 3 Flash + TypeSafe AI Jev evaluate. Synthesizes schematics, verifies constraints, queries web stock, and saves to workspace.
-              </span>
-            </>
-          ) : (
-            <>
-              <MessageOutlined style={{ fontSize: '13px', flexShrink: 0 }} />
-              <span>
-                <strong>Normal Chat Mode</strong>: Unlimited conversational hardware assistant. Ask about Banana 2.0, PCB diffs, KiCad routing tips, DRC rules, and electronics theory.
-              </span>
-            </>
-          )}
+          <MessageOutlined style={{ fontSize: '13px', flexShrink: 0 }} />
+          <span>
+            <strong>AI Hardware Copilot</strong>: Grounded in your active PCB diff context. Ask about layout changes, clearance risks, DRC rules, and electronics design.
+          </span>
         </div>
 
         {/* Context Bar */}
@@ -672,39 +499,21 @@ export default function ChatbotDrawer({
           fontSize: '11px',
           color: '#a6adbb'
         }}>
-          {isBuilder ? (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                <ThunderboltOutlined style={{ color: '#fadb14' }} />
-                <span>
-                  <Text strong style={{ color: '#fadb14' }}>Autonomous Synthesis Pipeline</Text>
-                  <span style={{ color: '#6b6375', marginLeft: 4 }}>• Outputs auto-render in Studio</span>
-                </span>
-              </div>
-              <Badge
-                status="processing"
-                text={<span style={{ fontSize: '10px', color: '#fadb14' }}>Active</span>}
-              />
-            </>
-          ) : (
-            <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                <CompassOutlined style={{ color: '#fadb14' }} />
-                {isGrounded ? (
-                  <span>
-                    <Text strong style={{ color: '#fadb14' }}>{boardContext.relativeFilePath.split(/[/\\]/).pop()}</Text>
-                    <span style={{ color: '#6b6375', marginLeft: 4 }}>({modsCount} diffs on {boardContext.diffMode})</span>
-                  </span>
-                ) : (
-                  <span>No board loaded • General Hardware Assistant</span>
-                )}
-              </div>
-              <Badge
-                status={isGrounded ? "success" : "default"}
-                text={<span style={{ fontSize: '10px', color: '#6b6375' }}>{isGrounded ? 'Grounded' : 'Ready'}</span>}
-              />
-            </>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <CompassOutlined style={{ color: '#fadb14' }} />
+            {isGrounded ? (
+              <span>
+                <Text strong style={{ color: '#fadb14' }}>{boardContext.relativeFilePath?.split(/[/\\]/).pop()}</Text>
+                <span style={{ color: '#6b6375', marginLeft: 4 }}>({modsCount} diffs on {boardContext.diffMode})</span>
+              </span>
+            ) : (
+              <span>No board loaded • General Hardware Assistant</span>
+            )}
+          </div>
+          <Badge
+            status={isGrounded ? "success" : "default"}
+            text={<span style={{ fontSize: '10px', color: '#6b6375' }}>{isGrounded ? 'Grounded' : 'Ready'}</span>}
+          />
         </div>
 
         {/* API Key Missing Warning Banner */}
@@ -792,7 +601,7 @@ export default function ChatbotDrawer({
             msOverflowStyle: 'none'
           }}
         >
-          {(isBuilder ? BUILDER_PROMPTS : NORMAL_CHAT_PROMPTS).map((qp, qIdx) => (
+          {QUICK_PROMPTS.map((qp, qIdx) => (
             <Button
               key={`quick-prompt-${qIdx}`}
               size="small"
@@ -803,7 +612,7 @@ export default function ChatbotDrawer({
               style={{
                 fontSize: '11px',
                 borderColor: '#232738',
-                color: isBuilder ? '#fadb14' : '#a6adbb',
+                color: '#a6adbb',
                 borderRadius: '12px',
                 background: '#161821'
               }}
@@ -825,11 +634,7 @@ export default function ChatbotDrawer({
                 handleSendMessage();
               }
             }}
-            placeholder={
-              isBuilder
-                ? "Describe circuit to build (e.g. '5V to 3.3V 1.5A buck regulator with USB-C and TVS diode')..."
-                : "Ask anything about Banana 2.0, PCB diffs, KiCad, or hardware engineering..."
-            }
+            placeholder="Ask anything about Banana 2.0, PCB diffs, KiCad, or hardware engineering..."
             autoSize={{ minRows: 1, maxRows: 4 }}
             disabled={isStreaming}
             style={{
