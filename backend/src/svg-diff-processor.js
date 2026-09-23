@@ -17,6 +17,10 @@
 // SVG leaf element tags that carry visual geometry we want to diff
 const DIFFABLE_TAGS = ['path', 'circle', 'rect', 'line', 'polyline', 'polygon', 'text', 'use', 'ellipse', 'image'];
 
+// Ultra-high precision physical tolerance threshold: 1 micron (0.001 mm / ~0.04 mils).
+// Eliminates artificial deadbands (e.g. 0.5mm / 2.0mm) while safely filtering float rounding jitter.
+const TOLERANCE_EPSILON = 0.001;
+
 /**
  * Helper to determine a human-readable component type from its RefDes.
  */
@@ -942,31 +946,99 @@ function formatSemanticTitle(action, type, name) {
 }
 
 /**
+ * Normalizes KiCad layer filenames into standard KiCad layer names.
+ * e.g. "BE007V1AS1-F_Cu.svg" -> "F.Cu"
+ *      "project-B_Silkscreen.svg" -> "B.Silkscreen"
+ */
+function cleanLayerName(layer) {
+  if (!layer) return 'F.Cu';
+  let cleaned = String(layer).replace(/\.svg$/i, '');
+  if (cleaned.includes('-')) {
+    cleaned = cleaned.substring(cleaned.lastIndexOf('-') + 1);
+  }
+  return cleaned.replace(/_/g, '.');
+}
+
+/**
  * Resolves the semantic identity (RefDes or Net name) for a diff element.
  */
 function resolveSemanticIdentity(diffItem, pcbMetadata) {
+  const defaultLayer = cleanLayerName(diffItem.layer);
+
   if (!pcbMetadata) {
-    return { name: diffItem.refDes || 'signal', type: 'TRACE', layer: diffItem.layer || 'F.Cu' };
+    return { name: diffItem.refDes || 'signal', type: 'TRACE', layer: defaultLayer };
   }
 
-  const { footprints = [], segments = [] } = pcbMetadata;
+  const { footprints = [], pads = [], segments = [] } = pcbMetadata;
 
-  // 1. Check Component Footprint Match
+  // 1. Check Direct Component Footprint Match
   if (diffItem.refDes) {
     const fp = footprints.find(f => f.ref === diffItem.refDes);
     return {
       name: `${diffItem.refDes}${fp?.value ? ` (${fp.value})` : ''}`,
       type: 'COMPONENT',
-      layer: fp?.layer || diffItem.layer || 'F.Cu'
+      layer: fp?.layer || defaultLayer
     };
   }
 
-  // 2. Check Track Segment Coordinate Proximity
   const center = diffItem.center || (diffItem.bbox ? {
     x: (diffItem.bbox.x1 + diffItem.bbox.x2) / 2,
     y: (diffItem.bbox.y1 + diffItem.bbox.y2) / 2
   } : null);
 
+  // 2. Check Pad Coordinate Proximity (resolves copper pads and vias to parent component & net)
+  if (center && pads.length > 0) {
+    let closestPad = null;
+    let minPadDist = 1.5; // Within 1.5mm of pad center
+
+    for (const p of pads) {
+      const d = Math.hypot(p.x - center.x, p.y - center.y);
+      if (d < minPadDist) {
+        minPadDist = d;
+        closestPad = p;
+      }
+    }
+
+    if (closestPad) {
+      const fp = footprints.find(f => f.ref === closestPad.refDes);
+      const valStr = fp?.value ? ` (${fp.value})` : '';
+      const pinLabel = closestPad.pin ? `Pin ${closestPad.pin}` : 'Pad';
+      const netLabel = closestPad.netName && closestPad.netName !== 'unconnected' ? ` • ${closestPad.netName}` : '';
+      return {
+        name: `${closestPad.refDes}${valStr}`,
+        refDes: closestPad.refDes,
+        pin: closestPad.pin,
+        net: closestPad.netName,
+        type: 'COMPONENT',
+        layer: defaultLayer,
+        connection: `${pinLabel}${netLabel}`
+      };
+    }
+  }
+
+  // 3. Check Component Footprint Origin Proximity (resolves courtyard, silkscreen outlines to component)
+  if (center && footprints.length > 0) {
+    let closestFp = null;
+    let minFpDist = 2.5; // Within 2.5mm of footprint origin
+    for (const fp of footprints) {
+      const d = Math.hypot(fp.x - center.x, fp.y - center.y);
+      if (d < minFpDist) {
+        minFpDist = d;
+        closestFp = fp;
+      }
+    }
+    if (closestFp) {
+      const valStr = closestFp.value ? ` (${closestFp.value})` : '';
+      return {
+        name: `${closestFp.ref}${valStr}`,
+        refDes: closestFp.ref,
+        type: 'COMPONENT',
+        layer: closestFp.layer || defaultLayer
+      };
+    }
+  }
+
+  // 4. Check Track Segment Coordinate Proximity
   if (center && segments.length > 0) {
     let closestNet = null;
     let minDistance = 3.0; // 3.0 mm tolerance for SVG-to-board coordinate alignment
@@ -988,7 +1060,7 @@ function resolveSemanticIdentity(diffItem, pcbMetadata) {
       return {
         name: closestNet,
         type: 'TRACE',
-        layer: diffItem.layer || 'F.Cu'
+        layer: defaultLayer
       };
     }
   }
@@ -996,7 +1068,7 @@ function resolveSemanticIdentity(diffItem, pcbMetadata) {
   return {
     name: diffItem.netName || diffItem.net || 'signal',
     type: 'TRACE',
-    layer: diffItem.layer || 'F.Cu'
+    layer: defaultLayer
   };
 }
 
@@ -1031,10 +1103,11 @@ function generatePreciseAuditLog(targetClassifications, baseClassifications, pcb
           ? `${identity.connection} • Layer ${identity.layer}`
           : `Layer ${identity.layer}`;
       } else if (identity.type === 'COMPONENT') {
-        if (action === 'CHANGED' && meta.displacement && meta.displacement > 2.0) {
-          detail = `Relocated by ${meta.displacement.toFixed(2)} mm on ${identity.layer}`;
+        const connInfo = identity.connection ? ` • ${identity.connection}` : '';
+        if (action === 'CHANGED' && meta.displacement && meta.displacement > TOLERANCE_EPSILON) {
+          detail = `Relocated by ${meta.displacement.toFixed(2)} mm on ${identity.layer}${connInfo}`;
         } else {
-          detail = `${identity.layer} • (${meta.center?.x?.toFixed(1) ?? 0}, ${meta.center?.y?.toFixed(1) ?? 0})`;
+          detail = `${identity.layer} • (${meta.center?.x?.toFixed(1) ?? 0}, ${meta.center?.y?.toFixed(1) ?? 0})${connInfo}`;
         }
       }
 
@@ -1157,6 +1230,8 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
           y2: Math.max(tChain.startAnchor.y, tChain.endAnchor.y),
         };
 
+        const chainDisp = Math.hypot(targetCenter.x - baseCenter.x, targetCenter.y - baseCenter.y);
+
         // Mark all base sub-segments as changed and lock them
         for (const el of bestBaseChain.subSegments) {
           matchedBase.add(el);
@@ -1170,7 +1245,8 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
             center: baseCenter,
             baseCoords: baseCenter,
             targetCoords: targetCenter,
-            bbox
+            bbox,
+            displacement: chainDisp
           });
         }
 
@@ -1187,7 +1263,8 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
             center: targetCenter,
             baseCoords: baseCenter,
             targetCoords: targetCenter,
-            bbox
+            bbox,
+            displacement: chainDisp
           });
         }
       }
@@ -1219,11 +1296,12 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
         matchedBaseToTarget.set(bestMatch, tEl);
 
         const dist = getDistance(bestMatch, tEl);
-        const geoChanged = dist > 2.0;
+        // Pure 1-micron threshold (0.001 mm) catches all sub-millimeter component movements
+        const geoChanged = dist > TOLERANCE_EPSILON;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
-        baseClassifications.set(bestMatch, { diffClass: stateClass });
-        targetClassifications.set(tEl, { diffClass: stateClass });
+        baseClassifications.set(bestMatch, { diffClass: stateClass, displacement: dist });
+        targetClassifications.set(tEl, { diffClass: stateClass, displacement: dist });
       }
     }
   }
@@ -1276,12 +1354,12 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
         matchedBaseToTarget.set(bestMatch, tEl);
 
         const dist = getDistance(bestMatch, tEl);
-        // Dist <= 0.5mm is font metric rendering noise -> classify as diff-unchanged
-        const geoChanged = dist > 0.5;
+        // Distances > TOLERANCE_EPSILON (1 micron / 0.001 mm) are physical layout adjustments
+        const geoChanged = dist > TOLERANCE_EPSILON;
 
         const stateClass = geoChanged ? 'diff-changed' : 'diff-unchanged';
-        baseClassifications.set(bestMatch, { diffClass: stateClass });
-        targetClassifications.set(tEl, { diffClass: stateClass });
+        baseClassifications.set(bestMatch, { diffClass: stateClass, displacement: dist });
+        targetClassifications.set(tEl, { diffClass: stateClass, displacement: dist });
       }
     }
   }
@@ -1358,6 +1436,12 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
             x2: Math.max(classification.baseCoords.x, classification.targetCoords.x) + 1,
             y2: Math.max(classification.baseCoords.y, classification.targetCoords.y) + 1
           };
+          if (!classification.displacement) {
+            classification.displacement = Math.hypot(
+              classification.targetCoords.x - classification.baseCoords.x,
+              classification.targetCoords.y - classification.baseCoords.y
+            );
+          }
 
           if (bClassification) {
             bClassification.diffIdx = sharedIdx;
@@ -1368,6 +1452,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
             bClassification.baseCoords = getElementCenter(bEl);
             bClassification.targetCoords = getElementCenter(el);
             bClassification.bbox = classification.bbox;
+            bClassification.displacement = classification.displacement;
           }
         }
       }
