@@ -19,7 +19,8 @@ import {
   Switch,
   Upload,
   Alert,
-  Timeline
+  Timeline,
+  Tooltip
 } from 'antd';
 import {
   CheckCircleOutlined,
@@ -1395,7 +1396,7 @@ export default function App() {
                       activeAuditIdx={activeAuditIdx}
                       setActiveAuditIdx={setActiveAuditIdx}
                       padLabelProps={
-                        relativeFilePath.endsWith('.kicad_pcb')
+                        relativeFilePath?.endsWith('.kicad_pcb')
                           ? { repoPath, baseCommit, targetCommit, relativeFilePath }
                           : null
                       }
