@@ -303,6 +303,134 @@ app.get('/api/git/commits', (req, res) => {
   );
 });
 
+/**
+ * GET /api/git/evolution
+ * 
+ * Returns the sequential commit path between baseCommit and targetCommit.
+ * Query parameters:
+ *   - repoPath: absolute path to git repository
+ *   - baseCommit: starting commit hash
+ *   - targetCommit: ending commit hash
+ *   - filePath (optional): filter to commits that touched this specific file
+ */
+app.get('/api/git/evolution', async (req, res) => {
+  const { repoPath, baseCommit, targetCommit, filePath } = req.query;
+
+  if (!repoPath || !baseCommit || !targetCommit) {
+    return res.status(400).json({
+      error: 'Missing required query parameters: repoPath, baseCommit, targetCommit'
+    });
+  }
+
+  const normalizedPath = repoPath.trim();
+  if (!fs.existsSync(normalizedPath)) {
+    return res.status(400).json({ error: `Path does not exist: "${normalizedPath}"` });
+  }
+
+  const execGit = (cmdArgs) => {
+    return new Promise((resolve, reject) => {
+      execFile('git', cmdArgs, { cwd: normalizedPath }, (err, stdout, stderr) => {
+        if (err) return reject(new Error(stderr?.trim() || err.message));
+        resolve(stdout.trim());
+      });
+    });
+  };
+
+  try {
+    let fromCommit = baseCommit;
+    let toCommit = targetCommit;
+    let isReversed = false;
+
+    // Check topological ancestry
+    try {
+      await execGit(['merge-base', '--is-ancestor', baseCommit, targetCommit]);
+    } catch {
+      try {
+        await execGit(['merge-base', '--is-ancestor', targetCommit, baseCommit]);
+        fromCommit = targetCommit;
+        toCommit = baseCommit;
+        isReversed = true;
+      } catch {
+        // Commits on diverged branches
+      }
+    }
+
+    const parseCommitLine = (line) => {
+      const parts = line.split('|');
+      if (parts.length < 5) return null;
+      return {
+        hash: parts[0].trim(),
+        shortHash: parts[1].trim(),
+        author: parts[2].trim(),
+        date: parts[3].trim(),
+        message: parts.slice(4).join('|').trim()
+      };
+    };
+
+    // Fetch base commit metadata
+    let baseCommitObj;
+    try {
+      const baseInfoRaw = await execGit(['log', '-1', '--format=%H|%h|%an|%ad|%s', fromCommit]);
+      baseCommitObj = parseCommitLine(baseInfoRaw);
+    } catch {
+      // Fallback
+    }
+
+    if (!baseCommitObj) {
+      baseCommitObj = {
+        hash: fromCommit,
+        shortHash: fromCommit.substring(0, 7),
+        author: 'Git Author',
+        date: '',
+        message: 'Initial state'
+      };
+    }
+
+    // Fetch intermediate and target commits
+    const logArgs = ['log', '--reverse', '--format=%H|%h|%an|%ad|%s'];
+    logArgs.push(`${fromCommit}..${toCommit}`);
+    if (filePath && filePath.trim() !== '') {
+      logArgs.push('--', filePath.trim());
+    }
+
+    let rangeCommits = [];
+    try {
+      const rangeOutput = await execGit(logArgs);
+      rangeCommits = rangeOutput
+        ? rangeOutput.split(/\r?\n/).map(line => parseCommitLine(line.trim())).filter(Boolean)
+        : [];
+    } catch (e) {
+      console.warn('[Banana API] Evolution range fetch fallback:', e.message);
+    }
+
+    let allCommits = [baseCommitObj, ...rangeCommits].map((c, idx) => ({
+      ...c,
+      index: idx
+    }));
+
+    if (isReversed) {
+      allCommits.reverse();
+      allCommits.forEach((c, idx) => { c.index = idx; });
+    }
+
+    res.json({
+      baseCommit,
+      targetCommit,
+      isReversed,
+      commits: allCommits,
+      totalSteps: Math.max(0, allCommits.length - 1),
+      hasIntermediate: allCommits.length > 2
+    });
+
+  } catch (err) {
+    console.error('[Banana API] Evolution path error:', err);
+    res.status(500).json({
+      error: 'Failed to retrieve commit evolution path',
+      details: err.message
+    });
+  }
+});
+
 app.post('/api/diff/process', async (req, res) => {
   const { repoPath, baseCommit, targetCommit, relativeFilePath, isPcb } = req.body;
 

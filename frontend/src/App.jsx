@@ -38,6 +38,7 @@ import SideBySideDiff from './SideBySideDiff';
 import { AuditSidebar } from './AuditSidebar';
 import ChatbotDrawer from './ChatbotDrawer';
 import WorkspaceShell from './WorkspaceShell';
+import EvolutionTimeline from './EvolutionTimeline';
 import { API_BASE_URL } from './config.js';
 
 const { Header, Sider, Content } = Layout;
@@ -89,6 +90,16 @@ export default function App() {
   const [layerOpacities, setLayerOpacities] = useState({});
   const [activeAuditIdx, setActiveAuditIdx] = useState(null);
   const [isCopilotOpen, setIsCopilotOpen] = useState(false);
+
+  // Evolution mode states (single toggle)
+  const [evolutionEnabled, setEvolutionEnabled] = useState(false);
+  const [evolutionData, setEvolutionData] = useState(null);
+  const [evolutionStep, setEvolutionStep] = useState(0);
+  const [evolutionPlaying, setEvolutionPlaying] = useState(false);
+  const [evolutionMode, setEvolutionMode] = useState('step'); // 'step' | 'cumulative'
+  const [evolutionLoading, setEvolutionLoading] = useState(false);
+  const directDiffDataRef = useRef(null);
+  const evolutionCacheRef = useRef({});
 
   // Check health and load repo info on mount
   useEffect(() => {
@@ -144,6 +155,137 @@ export default function App() {
 
     fetchFileCommits();
   }, [repoPath, relativeFilePath, form]);
+
+  // Query evolution path between base and target commits
+  const checkEvolutionPath = async (repo, base, target, file) => {
+    if (!repo || !base || !target) return;
+    try {
+      const q = new URLSearchParams({
+        repoPath: repo,
+        baseCommit: base,
+        targetCommit: target,
+        filePath: file || ''
+      });
+      const res = await fetch(`${API_BASE_URL}/api/git/evolution?${q.toString()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setEvolutionData(data);
+        setEvolutionStep(0);
+      }
+    } catch (e) {
+      console.warn('[Banana] Evolution path check error:', e.message);
+    }
+  };
+
+  useEffect(() => {
+    if (repoPath && baseCommit && targetCommit) {
+      checkEvolutionPath(repoPath, baseCommit, targetCommit, relativeFilePath);
+    }
+  }, [repoPath, baseCommit, targetCommit, relativeFilePath]);
+
+  const loadEvolutionStep = async (stepIndex, targetMode = evolutionMode, evData = evolutionData) => {
+    const dataToUse = evData || evolutionData;
+    if (!dataToUse || !dataToUse.commits || dataToUse.commits.length < 2) return;
+
+    const fromCommit = targetMode === 'cumulative' ? dataToUse.commits[0].hash : dataToUse.commits[stepIndex].hash;
+    const toCommit = dataToUse.commits[stepIndex + 1]?.hash;
+    if (!toCommit) return;
+
+    const cacheKey = `${fromCommit}..${toCommit}`;
+    if (evolutionCacheRef.current[cacheKey]) {
+      setDiffData(evolutionCacheRef.current[cacheKey]);
+      setEvolutionStep(stepIndex);
+      return;
+    }
+
+    setEvolutionLoading(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/diff/process`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath,
+          baseCommit: fromCommit,
+          targetCommit: toCommit,
+          relativeFilePath,
+          isPcb: relativeFilePath ? relativeFilePath.endsWith('.kicad_pcb') : true
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        evolutionCacheRef.current[cacheKey] = data;
+        setDiffData(data);
+        setEvolutionStep(stepIndex);
+      }
+    } catch (e) {
+      message.error(`Failed to load step: ${e.message}`);
+    } finally {
+      setEvolutionLoading(false);
+    }
+  };
+
+  const toggleEvolutionMode = async (enable) => {
+    const nextState = enable !== undefined ? enable : !evolutionEnabled;
+    if (nextState) {
+      let currentEvData = evolutionData;
+      if (!currentEvData || !currentEvData.commits || currentEvData.commits.length < 2) {
+        try {
+          const q = new URLSearchParams({
+            repoPath,
+            baseCommit,
+            targetCommit,
+            filePath: relativeFilePath || ''
+          });
+          const res = await fetch(`${API_BASE_URL}/api/git/evolution?${q.toString()}`);
+          if (res.ok) {
+            currentEvData = await res.json();
+            setEvolutionData(currentEvData);
+          }
+        } catch (e) {
+          console.warn('Failed to query evolution path:', e.message);
+        }
+      }
+
+      if (currentEvData && currentEvData.commits && currentEvData.commits.length >= 2) {
+        if (!directDiffDataRef.current && diffData) {
+          directDiffDataRef.current = diffData;
+        }
+        setEvolutionEnabled(true);
+        setEvolutionStep(0);
+        await loadEvolutionStep(0, evolutionMode, currentEvData);
+      } else {
+        message.info('No intermediate commits found between selected revisions.');
+      }
+    } else {
+      setEvolutionEnabled(false);
+      setEvolutionPlaying(false);
+      if (directDiffDataRef.current) {
+        setDiffData(directDiffDataRef.current);
+      }
+    }
+  };
+
+  // Auto-play interval effect for evolution mode
+  useEffect(() => {
+    if (!evolutionPlaying || !evolutionEnabled || !evolutionData) return;
+    const totalSteps = Math.max(0, evolutionData.commits.length - 1);
+
+    const timer = setInterval(() => {
+      setEvolutionStep(prev => {
+        if (prev < totalSteps - 1) {
+          const next = prev + 1;
+          loadEvolutionStep(next);
+          return next;
+        } else {
+          setEvolutionPlaying(false);
+          return prev;
+        }
+      });
+    }, 2800);
+
+    return () => clearInterval(timer);
+  }, [evolutionPlaying, evolutionEnabled, evolutionData, evolutionMode]);
 
   const loadRepoInfo = async (path, silent = false) => {
     if (!path) return;
@@ -312,7 +454,11 @@ export default function App() {
       if (response.ok) {
         const data = await response.json();
         setDiffData(data);
+        directDiffDataRef.current = data;
+        setEvolutionEnabled(false);
+        setEvolutionPlaying(false);
         message.success('Diff loaded successfully!');
+        checkEvolutionPath(values.repoPath, values.baseCommit, values.targetCommit, values.relativeFilePath);
       } else {
         const errorData = await response.json();
         message.error(`Failed: ${errorData.error || 'Server error'}. ${errorData.details || ''}`, 5);
@@ -1143,7 +1289,55 @@ export default function App() {
                       </span>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      {/* Single Toggle: History Evolution */}
+                      <Tooltip
+                        title={
+                          evolutionData?.hasIntermediate
+                            ? (evolutionEnabled
+                                ? "Evolution Mode ON: Viewing step-by-step history. Click to return to direct snapshot diff."
+                                : "Toggle to follow the commit-by-commit evolution from base to target.")
+                            : "Direct snapshot diff (no intermediate commits between selected revisions)"
+                        }
+                      >
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '3px 10px',
+                            borderRadius: '6px',
+                            background: evolutionEnabled ? 'rgba(59, 130, 246, 0.2)' : '#1e2230',
+                            border: `1px solid ${evolutionEnabled ? '#3b82f6' : '#2a2f42'}`,
+                            cursor: evolutionData?.hasIntermediate ? 'pointer' : 'default',
+                            transition: 'all 0.2s',
+                            opacity: evolutionData?.hasIntermediate ? 1 : 0.6
+                          }}
+                          onClick={() => {
+                            if (evolutionData?.hasIntermediate) {
+                              toggleEvolutionMode();
+                            }
+                          }}
+                        >
+                          <HistoryOutlined style={{ color: evolutionEnabled ? '#60a5fa' : '#94a3b8', fontSize: '13px' }} />
+                          <span style={{ fontSize: '11px', fontWeight: 600, color: evolutionEnabled ? '#93c5fd' : '#cbd5e1' }}>
+                            History Evolution
+                          </span>
+                          <Switch
+                            size="small"
+                            checked={evolutionEnabled}
+                            disabled={!evolutionData?.hasIntermediate}
+                            onChange={(checked, e) => {
+                              e?.stopPropagation?.();
+                              toggleEvolutionMode(checked);
+                            }}
+                            style={{
+                              backgroundColor: evolutionEnabled ? '#3b82f6' : '#334155'
+                            }}
+                          />
+                        </div>
+                      </Tooltip>
+
                       <Button
                         type="text"
                         size="small"
@@ -1221,6 +1415,24 @@ export default function App() {
                       targetCommit={targetCommit}
                       activeAuditIdx={activeAuditIdx}
                       setActiveAuditIdx={setActiveAuditIdx}
+                    />
+                  )}
+
+                  {/* History Evolution Timeline Scrubber (Toggled by Single Button) */}
+                  {evolutionEnabled && evolutionData && evolutionData.commits?.length >= 2 && (
+                    <EvolutionTimeline
+                      commits={evolutionData.commits}
+                      activeStep={evolutionStep}
+                      onStepChange={(stepIdx) => loadEvolutionStep(stepIdx)}
+                      isPlaying={evolutionPlaying}
+                      onTogglePlay={() => setEvolutionPlaying(!evolutionPlaying)}
+                      onClose={() => toggleEvolutionMode(false)}
+                      isLoading={evolutionLoading}
+                      mode={evolutionMode}
+                      onModeChange={(m) => {
+                        setEvolutionMode(m);
+                        loadEvolutionStep(evolutionStep, m);
+                      }}
                     />
                   )}
                 </div>
