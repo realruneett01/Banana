@@ -516,6 +516,7 @@ app.post('/api/diff/process', async (req, res) => {
       return (lastHyphen !== -1 ? baseName.slice(lastHyphen + 1) : baseName).toLowerCase();
     };
 
+    let globalDiffIdx = 0;
     for (const baseSvg of baseSvgs) {
       // Find the matching target layer by filename or layer suffix
       const bSuffix = getLayerSuffix(baseSvg.filename);
@@ -523,8 +524,14 @@ app.post('/api/diff/process', async (req, res) => {
 
       if (matchingTarget) {
         try {
-          const { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications: layerMods, telemetry: layerTel } =
-            processSvgDiff(baseSvg.content, matchingTarget.content, baseSvg.filename, pcbMetadata);
+          const { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications: layerMods, telemetry: layerTel, nextDiffIdx } =
+            processSvgDiff(baseSvg.content, matchingTarget.content, baseSvg.filename, pcbMetadata, globalDiffIdx);
+
+          if (nextDiffIdx !== undefined) {
+            globalDiffIdx = nextDiffIdx;
+          } else {
+            globalDiffIdx += (layerMods?.length || 0) + 1;
+          }
 
           if (layerTel) {
             layerTelemetries.push({ layer: baseSvg.filename, ...layerTel });
@@ -620,16 +627,21 @@ app.post('/api/diff/process', async (req, res) => {
             detail: fpChange && fpChange.dist > 0.001
               ? `Relocated by ${fpChange.dist.toFixed(2)} mm on F.Cu • (${fpChange.targetAt.x.toFixed(2)}, ${fpChange.targetAt.y.toFixed(2)})`
               : mod.detail,
-            layer: mod.layer
+            layer: mod.layer,
+            baseCoords: fpChange?.baseAt ? { x: fpChange.baseAt.x, y: fpChange.baseAt.y } : mod.baseCoords,
+            targetCoords: fpChange?.targetAt ? { x: fpChange.targetAt.x, y: fpChange.targetAt.y } : mod.targetCoords
           };
           componentMap.set(mod.refDes, master);
         } else {
           const existing = componentMap.get(mod.refDes);
+          const fpChange = footprintChanges.get(mod.refDes);
           // Prefer copper layer for the master component card so canvas focuses properly
           if (mod.layer.includes('F_Cu') && !existing.layer.includes('F_Cu')) {
             existing.layer = mod.layer;
             existing.diffIdx = mod.diffIdx;
             existing.bbox = mod.bbox;
+            if (fpChange?.baseAt) existing.baseCoords = { x: fpChange.baseAt.x, y: fpChange.baseAt.y };
+            if (fpChange?.targetAt) existing.targetCoords = { x: fpChange.targetAt.x, y: fpChange.targetAt.y };
           }
         }
       } else if (mod.type === 'TRACE') {

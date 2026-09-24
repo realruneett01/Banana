@@ -596,6 +596,7 @@ export default function App() {
       baseCoords: item.baseCoords,
       targetCoords: item.targetCoords,
       bbox: item.bbox,
+      layer: itemLayer,
     };
 
     const triggerFocus = () => {
@@ -1330,6 +1331,7 @@ export default function App() {
                     baseCoords: item.baseCoords,
                     targetCoords: item.targetCoords,
                     bbox: item.bbox,
+                    layer: item.layer,
                   };
 
                   const triggerFocus = () => {

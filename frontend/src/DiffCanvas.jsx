@@ -227,44 +227,82 @@ const DiffCanvas = forwardRef(function DiffCanvas({
     requestAnimationFrame(tick);
   }, []);
 
+function getScreenCoordsFromSvg(viewportContentEl, coords) {
+  if (!coords) return null;
+  const svg = viewportContentEl.querySelector('svg');
+  if (!svg) return null;
+
+  const svgRect = svg.getBoundingClientRect();
+  const viewBoxStr = svg.getAttribute('viewBox');
+  if (!viewBoxStr) return null;
+
+  const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
+  if (vb.length < 4 || vb[2] <= 0 || vb[3] <= 0) return null;
+
+  const vbW = vb[2];
+  const vbH = vb[3];
+
+  // KiCad SVGs preserve aspect ratio (xMidYMid meet)
+  const scale = Math.min(svgRect.width / vbW, svgRect.height / vbH);
+  const offsetX = (svgRect.width - vbW * scale) / 2;
+  const offsetY = (svgRect.height - vbH * scale) / 2;
+
+  return {
+    left: svgRect.left + offsetX + (coords.x - vb[0]) * scale,
+    top: svgRect.top + offsetY + (coords.y - vb[1]) * scale,
+    width: 0,
+    height: 0
+  };
+}
+
   // Draw glowing focus ring on modified element using native SVG coordinates
-  const drawFocusRing = useCallback((targetElOrRect, ringClass) => {
+  const drawFocusRing = useCallback((targetElOrRect, ringClass, directCoords = null) => {
     if (!contentRef.current) return;
     const isEl = targetElOrRect instanceof Element;
-    const elRect = isEl ? targetElOrRect.getBoundingClientRect() : targetElOrRect;
-    if (!elRect) return;
-
     const hostSvg = isEl ? targetElOrRect.closest('svg') : contentRef.current.querySelector('svg');
     if (!hostSvg) return;
 
     const viewBoxStr = hostSvg.getAttribute('viewBox');
-    if (viewBoxStr) {
-      const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
-      if (vb.length >= 4 && vb[2] > 0 && vb[3] > 0) {
-        const svgRect = hostSvg.getBoundingClientRect();
-        const scale = Math.min(svgRect.width / vb[2], svgRect.height / vb[3]);
-        const offsetX = (svgRect.width - vb[2] * scale) / 2;
-        const offsetY = (svgRect.height - vb[3] * scale) / 2;
+    if (!viewBoxStr) return;
+    const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
+    if (vb.length < 4 || vb[2] <= 0 || vb[3] <= 0) return;
 
-        const cx_px = (elRect.left + elRect.width / 2) - svgRect.left;
-        const cy_px = (elRect.top + elRect.height / 2) - svgRect.top;
+    const svgRect = hostSvg.getBoundingClientRect();
+    const scale = Math.min(svgRect.width / vb[2], svgRect.height / vb[3]);
+    const offsetX = (svgRect.width - vb[2] * scale) / 2;
+    const offsetY = (svgRect.height - vb[3] * scale) / 2;
 
-        const cx_vb = vb[0] + (cx_px - offsetX) / scale;
-        const cy_vb = vb[1] + (cy_px - offsetY) / scale;
-        const r_vb = Math.max(3, Math.max(elRect.width, elRect.height) / (2 * scale) + 2.5);
-
-        const ns = 'http://www.w3.org/2000/svg';
-        const ring = document.createElementNS(ns, 'circle');
-        ring.setAttribute('cx', cx_vb);
-        ring.setAttribute('cy', cy_vb);
-        ring.setAttribute('r', r_vb);
-        ring.setAttribute('class', `diff-focus-ring ${ringClass || 'diff-changed'}`);
-        ring.setAttribute('style', `stroke-width: ${Math.max(0.4, r_vb * 0.08)}mm; pointer-events: none;`);
-        hostSvg.appendChild(ring);
-
-        setTimeout(() => { ring.remove(); }, 2500);
-      }
+    let cx_vb, cy_vb, r_vb;
+    if (directCoords && typeof directCoords.x === 'number' && typeof directCoords.y === 'number') {
+      cx_vb = directCoords.x;
+      cy_vb = directCoords.y;
+      r_vb = 3.0; // 3mm radius focus ring centered exactly on component origin
+    } else {
+      const elRect = isEl ? targetElOrRect.getBoundingClientRect() : targetElOrRect;
+      if (!elRect) return;
+      const cx_px = (elRect.left + elRect.width / 2) - svgRect.left;
+      const cy_px = (elRect.top + elRect.height / 2) - svgRect.top;
+      cx_vb = vb[0] + (cx_px - offsetX) / scale;
+      cy_vb = vb[1] + (cy_px - offsetY) / scale;
+      r_vb = Math.max(2.5, Math.min(5.0, Math.max(elRect.width, elRect.height) / (2 * scale) + 1.0));
     }
+
+    const strokeColor = ringClass === 'diff-added'
+      ? '#00ff66'
+      : ringClass === 'diff-deleted'
+      ? '#ff3366'
+      : '#ffff00';
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const ring = document.createElementNS(ns, 'circle');
+    ring.setAttribute('cx', cx_vb);
+    ring.setAttribute('cy', cy_vb);
+    ring.setAttribute('r', r_vb);
+    ring.setAttribute('class', `diff-focus-ring ${ringClass || 'diff-changed'}`);
+    ring.setAttribute('style', `stroke: ${strokeColor}; stroke-width: ${Math.max(0.35, r_vb * 0.08)}mm; fill: none !important; pointer-events: none;`);
+    hostSvg.appendChild(ring);
+
+    setTimeout(() => { ring.remove(); }, 2500);
   }, []);
 
   // Expose imperative API for zooming to diff elements and hover highlights
@@ -273,18 +311,20 @@ const DiffCanvas = forwardRef(function DiffCanvas({
       if (!outerRef.current || !contentRef.current) return;
 
       const vpRect = outerRef.current.getBoundingClientRect();
-      const targetScale = 3.5;
+      const targetScale = 2.4;
 
-      // 1. Locate DOM element with data-diff-idx
-      let target = contentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
-      let elRect = target ? target.getBoundingClientRect() : null;
+      const coords = targetCoords || baseCoords || (bbox ? { x: (bbox.x1 + bbox.x2) / 2, y: (bbox.y1 + bbox.y2) / 2 } : null);
 
-      // 2. Fallback to coordinate mapping if element is not in DOM
-      if (!elRect) {
-        const coords = targetCoords || baseCoords || (bbox ? { x: (bbox.x1 + bbox.x2) / 2, y: (bbox.y1 + bbox.y2) / 2 } : null);
-        if (coords) {
-          elRect = getScreenCoordsFromSvg(contentRef.current, coords);
-        }
+      // 1. Prioritize exact board/SVG coordinates when provided for rock-solid centering
+      let elRect = coords ? getScreenCoordsFromSvg(contentRef.current, coords) : null;
+
+      // 2. Fallback to locating DOM element with data-diff-idx if coordinate mapping wasn't available
+      let target = (diffIdx !== undefined && diffIdx !== null)
+        ? contentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`)
+        : null;
+
+      if (!elRect && target) {
+        elRect = target.getBoundingClientRect();
       }
 
       // 3. If target element or coordinates resolved, smoothly zoom to it
@@ -322,7 +362,7 @@ const DiffCanvas = forwardRef(function DiffCanvas({
           onSliderChange(idealSplit);
         }
 
-        drawFocusRing(target || elRect, diffType === 'delete' ? 'diff-deleted' : (diffType === 'add' ? 'diff-added' : 'diff-changed'));
+        drawFocusRing(target || elRect, diffType === 'delete' ? 'diff-deleted' : (diffType === 'add' ? 'diff-added' : 'diff-changed'), coords);
       }
     },
 

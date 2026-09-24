@@ -780,51 +780,59 @@ export default forwardRef(function SideBySideDiff({
     applyTransformToDom(rightContentRef.current, newTransform);
   }, [leftContentRef, rightContentRef, setBaseTransform, setTargetTransform, baseTransformRef, targetTransformRef]);
 
-  const drawFocusRing = (contentEl, idx, ringColorClass) => {
-    const target = contentEl.querySelector(`[data-diff-idx="${idx}"]`);
-    if (!target) return;
+  const drawFocusRing = (contentEl, idx, ringColorClass, directCoords = null) => {
+    let target = null;
+    if (idx !== undefined && idx !== null) {
+      target = contentEl.querySelector(`[data-diff-idx="${idx}"]`);
+    }
 
-    const elRect = target.getBoundingClientRect();
-    const hostSvg = target.closest('svg');
+    const hostSvg = target ? target.closest('svg') : contentEl.querySelector('svg');
     if (!hostSvg) return;
 
     const viewBoxStr = hostSvg.getAttribute('viewBox');
-    if (viewBoxStr) {
-      const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
-      if (vb.length >= 4 && vb[2] > 0 && vb[3] > 0) {
-        const svgRect = hostSvg.getBoundingClientRect();
-        const scale = Math.min(svgRect.width / vb[2], svgRect.height / vb[3]);
-        const offsetX = (svgRect.width - vb[2] * scale) / 2;
-        const offsetY = (svgRect.height - vb[3] * scale) / 2;
+    if (!viewBoxStr) return;
+    const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
+    if (vb.length < 4 || vb[2] <= 0 || vb[3] <= 0) return;
 
-        const cx_px = (elRect.left + elRect.width / 2) - svgRect.left;
-        const cy_px = (elRect.top + elRect.height / 2) - svgRect.top;
+    const svgRect = hostSvg.getBoundingClientRect();
+    const scale = Math.min(svgRect.width / vb[2], svgRect.height / vb[3]);
+    const offsetX = (svgRect.width - vb[2] * scale) / 2;
+    const offsetY = (svgRect.height - vb[3] * scale) / 2;
 
-        const cx_vb = vb[0] + (cx_px - offsetX) / scale;
-        const cy_vb = vb[1] + (cy_px - offsetY) / scale;
-        // Tight, clean ring padding around component (minimum 1.8mm, maximum 5.0mm)
-        const r_vb = Math.max(1.8, Math.min(5.0, Math.max(elRect.width, elRect.height) / (2 * scale) + 0.8));
-
-        const strokeColor = ringColorClass === 'diff-added'
-          ? '#00ff66'
-          : ringColorClass === 'diff-deleted'
-          ? '#ff3366'
-          : '#ffff00';
-
-        const ns = 'http://www.w3.org/2000/svg';
-        const ring = document.createElementNS(ns, 'circle');
-        ring.setAttribute('cx', cx_vb);
-        ring.setAttribute('cy', cy_vb);
-        ring.setAttribute('r', r_vb);
-        ring.setAttribute('fill', 'none');
-        ring.setAttribute('stroke', strokeColor);
-        ring.setAttribute('class', `diff-focus-ring ${ringColorClass || 'diff-changed'}`);
-        ring.setAttribute('style', `stroke: ${strokeColor}; stroke-width: 0.3mm; fill: none !important; pointer-events: none;`);
-        hostSvg.appendChild(ring);
-
-        setTimeout(() => { ring.remove(); }, 3000);
-      }
+    let cx_vb, cy_vb, r_vb;
+    if (directCoords && typeof directCoords.x === 'number' && typeof directCoords.y === 'number') {
+      cx_vb = directCoords.x;
+      cy_vb = directCoords.y;
+      r_vb = 3.0; // 3mm radius focus ring centered exactly on component origin
+    } else if (target) {
+      const elRect = target.getBoundingClientRect();
+      const cx_px = (elRect.left + elRect.width / 2) - svgRect.left;
+      const cy_px = (elRect.top + elRect.height / 2) - svgRect.top;
+      cx_vb = vb[0] + (cx_px - offsetX) / scale;
+      cy_vb = vb[1] + (cy_px - offsetY) / scale;
+      r_vb = Math.max(1.8, Math.min(5.0, Math.max(elRect.width, elRect.height) / (2 * scale) + 0.8));
+    } else {
+      return;
     }
+
+    const strokeColor = ringColorClass === 'diff-added'
+      ? '#00ff66'
+      : ringColorClass === 'diff-deleted'
+      ? '#ff3366'
+      : '#ffff00';
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const ring = document.createElementNS(ns, 'circle');
+    ring.setAttribute('cx', cx_vb);
+    ring.setAttribute('cy', cy_vb);
+    ring.setAttribute('r', r_vb);
+    ring.setAttribute('fill', 'none');
+    ring.setAttribute('stroke', strokeColor);
+    ring.setAttribute('class', `diff-focus-ring ${ringColorClass || 'diff-changed'}`);
+    ring.setAttribute('style', `stroke: ${strokeColor}; stroke-width: 0.35mm; fill: none !important; pointer-events: none;`);
+    hostSvg.appendChild(ring);
+
+    setTimeout(() => { ring.remove(); }, 3000);
   };
 
 function getScreenCoordsFromSvg(viewportContentEl, coords) {
@@ -874,11 +882,11 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
         : null;
 
       // 2. Fallback to locating DOM element with data-diff-idx if coordinate mapping wasn't available
-      if (!leftRect && leftContentRef.current) {
+      if (!leftRect && leftContentRef.current && diffIdx !== undefined && diffIdx !== null) {
         const leftTarget = leftContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
         if (leftTarget) leftRect = leftTarget.getBoundingClientRect();
       }
-      if (!rightRect && rightContentRef.current) {
+      if (!rightRect && rightContentRef.current && diffIdx !== undefined && diffIdx !== null) {
         const rightTarget = rightContentRef.current.querySelector(`[data-diff-idx="${diffIdx}"]`);
         if (rightTarget) rightRect = rightTarget.getBoundingClientRect();
       }
@@ -892,7 +900,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
           viewportRect: leftViewport.getBoundingClientRect(),
           targetScale
         };
-        drawFocusRing(leftContentRef.current, diffIdx, diffType === 'delete' ? 'diff-deleted' : 'diff-changed');
+        drawFocusRing(leftContentRef.current, diffIdx, diffType === 'delete' ? 'diff-deleted' : 'diff-changed', baseCoords);
       }
 
       if (rightRect) {
@@ -901,7 +909,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
           viewportRect: rightViewport.getBoundingClientRect(),
           targetScale
         };
-        drawFocusRing(rightContentRef.current, diffIdx, diffType === 'add' ? 'diff-added' : 'diff-changed');
+        drawFocusRing(rightContentRef.current, diffIdx, diffType === 'add' ? 'diff-added' : 'diff-changed', targetCoords);
       }
 
       // 3. In synchronized mode, ensure both panels center on the modification

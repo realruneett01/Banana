@@ -1261,7 +1261,7 @@ function generatePreciseAuditLog(targetClassifications, baseClassifications, pcb
 /**
  * Core diff processor.
  */
-export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = null) {
+export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = null, startDiffIdx = 0) {
   const tTotalStart = performance.now();
   
   // Rewrite KiCad's cream paper-color background to dark canvas for schematic SVGs
@@ -1283,7 +1283,7 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   const matchedTargetToBase = new Map();
   const matchedBaseToTarget = new Map();
 
-  let diffIdx = 0;
+  let diffIdx = startDiffIdx;
 
   // --- PASS 0: Contiguous Track Chain Assembly & Topological Matching ---
   const tPass0Start = performance.now();
@@ -1656,5 +1656,5 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
   - Diagnostic Checks: ${tDiag.toFixed(2)} ms
   - TOTAL Diff Engine Time: ${tTotalDiff.toFixed(2)} ms`);
 
-  return { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications, telemetry };
+  return { baseSvg: annotatedBase, targetSvg: annotatedTarget, cleanBaseSvg, cleanTargetSvg, modifications, telemetry, nextDiffIdx: diffIdx };
 }
