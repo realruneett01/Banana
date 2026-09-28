@@ -13,6 +13,8 @@ claude.md
 
 # Temporary and local output
 temp_storage
+**/temp_storage
+backend/temp_storage
 scratch
 dist
 frontend/dist

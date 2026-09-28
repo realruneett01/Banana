@@ -67,8 +67,14 @@ COPY backend ./backend
 # Copy built frontend assets from builder stage
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
-# Create storage directory for temporary PCB diff file extractions
-RUN mkdir -p /app/temp_storage
+# Set up user 1000 and directories for Hugging Face Spaces & security
+RUN (id -u 1000 >/dev/null 2>&1 || useradd -m -u 1000 user) && \
+    mkdir -p /app/temp_storage /home/user/.config/kicad /home/user/.cache/kicad && \
+    chown -R 1000:1000 /app /home/user && \
+    chmod -R 775 /app /home/user
+
+USER 1000
+ENV HOME=/home/user
 
 # Expose default port (Render will dynamically supply PORT at runtime)
 EXPOSE 5000

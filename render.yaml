@@ -3,7 +3,7 @@ services:
     name: banana2
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     region: oregon
     healthCheckPath: /api/health-check
     envVars:
