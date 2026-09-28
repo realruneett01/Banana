@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Layout,
   Typography,
-  Badge,
   Form,
   Input,
   Button,
@@ -23,16 +22,14 @@ import {
   Tooltip
 } from 'antd';
 import {
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  SyncOutlined,
   FileSearchOutlined,
   SettingOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   InboxOutlined,
-  RobotOutlined
+  GithubOutlined,
+  DesktopOutlined
 } from '@ant-design/icons';
 import DiffCanvas from './DiffCanvas';
 import SideBySideDiff from './SideBySideDiff';
@@ -40,9 +37,11 @@ import { AuditSidebar } from './AuditSidebar';
 import ChatbotDrawer from './ChatbotDrawer';
 import WorkspaceShell from './WorkspaceShell';
 import EvolutionTimeline from './EvolutionTimeline';
+import GithubConnectModal from './components/GithubConnectModal';
+import GithubControls from './components/GithubControls';
 import { API_BASE_URL } from './config.js';
 
-const { Header, Sider, Content } = Layout;
+const { Sider, Content } = Layout;
 const { Title, Text } = Typography;
 
 export default function App() {
@@ -56,6 +55,19 @@ export default function App() {
   // State for connection status
   const [backendStatus, setBackendStatus] = useState('checking'); // checking | healthy | unhealthy
   const [kicadVersion, setKicadVersion] = useState('');
+
+  // Source mode: 'local' (Local Git repo) vs 'github' (GitHub Cloud remote repo)
+  const [sourceMode, setSourceMode] = useState(
+    localStorage.getItem('banana:sourceMode') || 'local'
+  );
+
+  // GitHub Auth state
+  const [githubToken, setGithubToken] = useState(
+    localStorage.getItem('banana:githubToken') || ''
+  );
+  const [githubUser, setGithubUser] = useState(null);
+  const [githubModalOpen, setGithubModalOpen] = useState(false);
+  const [selectedRemoteRepo, setSelectedRemoteRepo] = useState(null);
 
   // Form states (controlled inputs)
   const [repoPath, setRepoPath] = useState(
@@ -102,10 +114,60 @@ export default function App() {
   const directDiffDataRef = useRef(null);
   const evolutionCacheRef = useRef({});
 
-  // Check health and load repo info on mount
+  // Verify GitHub token
+  const verifyGithubToken = async (token) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/github/verify`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.authenticated) {
+          setGithubUser(data.user);
+        } else {
+          handleDisconnectGithub();
+        }
+      } else {
+        handleDisconnectGithub();
+      }
+    } catch (e) {
+      console.warn('GitHub token verify error:', e.message);
+    }
+  };
+
+  const handleDisconnectGithub = () => {
+    localStorage.removeItem('banana:githubToken');
+    setGithubToken('');
+    setGithubUser(null);
+    setSelectedRemoteRepo(null);
+    setSourceMode('local');
+    localStorage.setItem('banana:sourceMode', 'local');
+  };
+
+  // Check OAuth callback parameters and health on mount
   useEffect(() => {
     checkHealth();
     loadRepoInfo(repoPath, true);
+
+    const params = new URLSearchParams(window.location.search);
+    const tokenFromUrl = params.get('github_token');
+    const errorFromUrl = params.get('github_error');
+
+    if (tokenFromUrl) {
+      localStorage.setItem('banana:githubToken', tokenFromUrl);
+      setGithubToken(tokenFromUrl);
+      setSourceMode('github');
+      localStorage.setItem('banana:sourceMode', 'github');
+      verifyGithubToken(tokenFromUrl);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      message.success('GitHub OAuth login successful!');
+    } else if (errorFromUrl) {
+      message.error(`GitHub login error: ${errorFromUrl}`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (githubToken) {
+      verifyGithubToken(githubToken);
+    }
   }, []);
 
   // Fetch file-specific commit history when repoPath or relativeFilePath changes
@@ -426,7 +488,7 @@ export default function App() {
       } else {
         setBackendStatus('unhealthy');
       }
-    } catch (e) {
+    } catch {
       setBackendStatus('unhealthy');
     }
   };
@@ -467,6 +529,53 @@ export default function App() {
     } catch (e) {
       hideLoadingMsg();
       message.error(`Connection error: ${e.message}`, 5);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFetchRemoteDiff = async ({ owner, repo, baseCommit: bCommit, targetCommit: tCommit, filePath, isPcb }) => {
+    if (!githubToken) {
+      setGithubModalOpen(true);
+      return;
+    }
+
+    setLoading(true);
+    const hideLoadingMsg = message.loading(`Downloading & rendering ${filePath} from GitHub...`, 0);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/github/diff/process`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${githubToken}`
+        },
+        body: JSON.stringify({
+          owner,
+          repo,
+          baseCommit: bCommit,
+          targetCommit: tCommit,
+          filePath,
+          isPcb: isPcb !== undefined ? isPcb : filePath.endsWith('.kicad_pcb')
+        })
+      });
+
+      hideLoadingMsg();
+
+      if (response.ok) {
+        const data = await response.json();
+        setDiffData(data);
+        directDiffDataRef.current = data;
+        setEvolutionEnabled(false);
+        setEvolutionPlaying(false);
+        message.success(`Remote GitHub diff loaded! (${data.telemetry?.tTotal || 0}ms total)`);
+      } else {
+        const errorData = await response.json();
+        message.error(`GitHub Diff Failed: ${errorData.error || 'Server error'}. ${errorData.details || ''}`, 6);
+      }
+    } catch (e) {
+      hideLoadingMsg();
+      message.error(`Connection error: ${e.message}`, 6);
     } finally {
       setLoading(false);
     }
@@ -781,6 +890,8 @@ export default function App() {
           onOpenCopilot={() => setIsCopilotOpen(true)}
           kicadVersion={kicadVersion}
           backendStatus={backendStatus}
+          githubUser={githubUser}
+          onOpenGithubModal={() => setGithubModalOpen(true)}
         />
 
         <Layout>
@@ -805,9 +916,9 @@ export default function App() {
             {!leftCollapsed && (
               <Space direction="vertical" size="large" style={{ width: '100%' }}>
                 <div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
                     <Title level={5} style={{ margin: 0, color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <SettingOutlined /> Repository Configuration
+                      <SettingOutlined /> Repository Source
                     </Title>
                     <Button
                       type="text"
@@ -818,231 +929,267 @@ export default function App() {
                       style={{ color: '#94a3b8' }}
                     />
                   </div>
-                  <Upload.Dragger
-                    directory
-                    multiple={false}
-                    showUploadList={false}
-                    beforeUpload={(file) => {
-                      handleFileDraggedOrDropped(file);
-                      return false;
+
+                  {/* Mode switcher: Local Git vs GitHub Cloud */}
+                  <Segmented
+                    block
+                    options={[
+                      { label: 'Local Git', value: 'local', icon: <DesktopOutlined /> },
+                      { label: 'GitHub Cloud', value: 'github', icon: <GithubOutlined /> }
+                    ]}
+                    value={sourceMode}
+                    onChange={val => {
+                      setSourceMode(val);
+                      localStorage.setItem('banana:sourceMode', val);
                     }}
-                    style={{ 
-                      background: '#0f1015', 
-                      borderColor: '#232738',
-                      borderRadius: '4px',
-                      marginBottom: '15px',
-                      padding: '10px 0'
-                    }}
-                  >
-                    <p className="ant-upload-drag-icon" style={{ color: '#faad14', margin: 0 }}>
-                      <InboxOutlined style={{ fontSize: '24px' }} />
-                    </p>
-                    <p className="ant-upload-text" style={{ fontSize: '12px', color: '#f5f5f5', margin: '4px 0 0' }}>
-                      Drag KiCad Project Folder Here
-                    </p>
-                    <p className="ant-upload-hint" style={{ fontSize: '10px', color: '#6b6375', margin: 0 }}>
-                      Supports entire directory drops containing .kicad_pcb/.kicad_sch
-                    </p>
-                  </Upload.Dragger>
-                  <Form
-                    form={form}
-                    layout="vertical"
-                    initialValues={{
-                      repoPath,
-                      baseCommit,
-                      targetCommit,
-                      relativeFilePath
-                    }}
-                    onFinish={handleFetchDiff}
-                  >
-                    <Form.Item 
-                      label="Local Repo Root Absolute Path" 
-                      name="repoPath" 
-                      rules={[{ required: true, message: 'Please input absolute repo path' }]}
-                      style={{ marginBottom: '8px' }}
-                    >
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <Input 
-                          placeholder="e.g. C:\Users\project" 
-                          onChange={(e) => {
-                            setRepoPath(e.target.value);
-                            form.setFieldValue('repoPath', e.target.value);
-                          }} 
+                    style={{ marginBottom: '16px', background: '#0f1015' }}
+                  />
+
+                  {sourceMode === 'local' ? (
+                    <>
+                      <Upload.Dragger
+                        directory
+                        multiple={false}
+                        showUploadList={false}
+                        beforeUpload={(file) => {
+                          handleFileDraggedOrDropped(file);
+                          return false;
+                        }}
+                        style={{ 
+                          background: '#0f1015', 
+                          borderColor: '#232738',
+                          borderRadius: '4px',
+                          marginBottom: '15px',
+                          padding: '10px 0'
+                        }}
+                      >
+                        <p className="ant-upload-drag-icon" style={{ color: '#faad14', margin: 0 }}>
+                          <InboxOutlined style={{ fontSize: '24px' }} />
+                        </p>
+                        <p className="ant-upload-text" style={{ fontSize: '12px', color: '#f5f5f5', margin: '4px 0 0' }}>
+                          Drag KiCad Project Folder Here
+                        </p>
+                        <p className="ant-upload-hint" style={{ fontSize: '10px', color: '#6b6375', margin: 0 }}>
+                          Supports entire directory drops containing .kicad_pcb/.kicad_sch
+                        </p>
+                      </Upload.Dragger>
+                      <Form
+                        form={form}
+                        layout="vertical"
+                        initialValues={{
+                          repoPath,
+                          baseCommit,
+                          targetCommit,
+                          relativeFilePath
+                        }}
+                        onFinish={handleFetchDiff}
+                      >
+                        <Form.Item 
+                          label="Local Repo Root Absolute Path" 
+                          name="repoPath" 
+                          rules={[{ required: true, message: 'Please input absolute repo path' }]}
+                          style={{ marginBottom: '8px' }}
+                        >
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <Input 
+                              placeholder="e.g. C:\Users\project" 
+                              onChange={(e) => {
+                                setRepoPath(e.target.value);
+                                form.setFieldValue('repoPath', e.target.value);
+                              }} 
+                            />
+                            <Button type="default" onClick={() => loadRepoInfo(repoPath, false)}>Load</Button>
+                          </div>
+                        </Form.Item>
+                        <Alert
+                          message="Sandbox Security Notice"
+                          description="Because of browser sandbox security, please verify your local absolute repository path above so the Git engine can target it on disk."
+                          type="info"
+                          showIcon
+                          style={{ 
+                            marginBottom: '15px', 
+                            background: '#161722', 
+                            borderColor: '#232738',
+                            fontSize: '11px',
+                            color: '#a6adbb'
+                          }}
                         />
-                        <Button type="default" onClick={() => loadRepoInfo(repoPath, false)}>Load</Button>
-                      </div>
-                    </Form.Item>
-                    <Alert
-                      message="Sandbox Security Notice"
-                      description="Because of browser sandbox security, please verify your local absolute repository path above so the Git engine can target it on disk."
-                      type="info"
-                      showIcon
-                      style={{ 
-                        marginBottom: '15px', 
-                        background: '#161722', 
-                        borderColor: '#232738',
-                        fontSize: '11px',
-                        color: '#a6adbb'
-                      }}
-                    />
-                    <Form.Item label="Compare Branches instead of Commits" valuePropName="checked" style={{ marginBottom: '12px' }}>
-                      <Switch 
-                        checked={compareBranches} 
-                        onChange={(checked) => {
-                          setCompareBranches(checked);
-                          setBaseCommit('');
-                          setTargetCommit('');
-                          form.setFieldsValue({ baseCommit: '', targetCommit: '' });
-                          if (checked) {
-                            setChangedFiles([]);
-                            setRelativeFilePath('');
-                            form.setFieldValue('relativeFilePath', '');
-                          }
-                        }} 
-                      />
-                    </Form.Item>
-                    <Form.Item 
-                      label={compareBranches ? "Base Branch" : "Base Commit"} 
-                      name="baseCommit" 
-                      rules={[{ required: true, message: 'Please select base version' }]}
-                    >
-                      {!repoInfo ? (
-                        <Input placeholder="e.g. HEAD~1 or commit hash" onChange={(e) => setBaseCommit(e.target.value)} />
-                      ) : (
-                        <Select
-                          showSearch
-                          placeholder={compareBranches ? "Select base branch" : "Select base commit"}
-                          onChange={(val) => {
-                            setBaseCommit(val);
-                            form.setFieldValue('baseCommit', val);
-                            if (compareBranches && targetCommit) {
-                              fetchChangedFiles(repoPath, val, targetCommit);
-                            }
-                          }}
-                          value={baseCommit}
+                        <Form.Item label="Compare Branches instead of Commits" valuePropName="checked" style={{ marginBottom: '12px' }}>
+                          <Switch 
+                            checked={compareBranches} 
+                            onChange={(checked) => {
+                              setCompareBranches(checked);
+                              setBaseCommit('');
+                              setTargetCommit('');
+                              form.setFieldsValue({ baseCommit: '', targetCommit: '' });
+                              if (checked) {
+                                setChangedFiles([]);
+                                setRelativeFilePath('');
+                                form.setFieldValue('relativeFilePath', '');
+                              }
+                            }} 
+                          />
+                        </Form.Item>
+                        <Form.Item 
+                          label={compareBranches ? "Base Branch" : "Base Commit"} 
+                          name="baseCommit" 
+                          rules={[{ required: true, message: 'Please select base version' }]}
+                        >
+                          {!repoInfo ? (
+                            <Input placeholder="e.g. HEAD~1 or commit hash" onChange={(e) => setBaseCommit(e.target.value)} />
+                          ) : (
+                            <Select
+                              showSearch
+                              placeholder={compareBranches ? "Select base branch" : "Select base commit"}
+                              onChange={(val) => {
+                                setBaseCommit(val);
+                                form.setFieldValue('baseCommit', val);
+                                if (compareBranches && targetCommit) {
+                                  fetchChangedFiles(repoPath, val, targetCommit);
+                                }
+                              }}
+                              value={baseCommit}
+                            >
+                              {compareBranches ? (
+                                repoInfo.branches.map(b => (
+                                  <Select.Option key={`base-branch-${b}`} value={b}>{b}</Select.Option>
+                                ))
+                              ) : (
+                                repoInfo.commits.map(c => (
+                                  <Select.Option key={`base-commit-${c.hash}`} value={c.hash}>
+                                    {c.hash.substring(0, 7)} - {c.subject} ({c.author})
+                                  </Select.Option>
+                                ))
+                              )}
+                            </Select>
+                          )}
+                        </Form.Item>
+                        <Form.Item 
+                          label={compareBranches ? "Target Branch" : "Target Commit"} 
+                          name="targetCommit" 
+                          rules={[{ required: true, message: 'Please select target version' }]}
+                        >
+                          {!repoInfo ? (
+                            <Input placeholder="e.g. HEAD or commit hash" onChange={(e) => setTargetCommit(e.target.value)} />
+                          ) : (
+                            <Select
+                              showSearch
+                              placeholder={compareBranches ? "Select target branch" : "Select target commit"}
+                              onChange={(val) => {
+                                setTargetCommit(val);
+                                form.setFieldValue('targetCommit', val);
+                                if (compareBranches && baseCommit) {
+                                  fetchChangedFiles(repoPath, baseCommit, val);
+                                }
+                              }}
+                              value={targetCommit}
+                            >
+                              {compareBranches ? (
+                                repoInfo.branches.map(b => (
+                                  <Select.Option key={`target-branch-${b}`} value={b}>{b}</Select.Option>
+                                ))
+                              ) : (
+                                repoInfo.commits.map(c => (
+                                  <Select.Option key={`target-commit-${c.hash}`} value={c.hash}>
+                                    {c.hash.substring(0, 7)} - {c.subject} ({c.author})
+                                  </Select.Option>
+                                ))
+                              )}
+                            </Select>
+                          )}
+                        </Form.Item>
+                        <Form.Item 
+                          label="Design File Path" 
+                          name="relativeFilePath" 
+                          rules={[{ required: true, message: 'Please select file path' }]}
                         >
                           {compareBranches ? (
-                            repoInfo.branches.map(b => (
-                              <Select.Option key={`base-branch-${b}`} value={b}>{b}</Select.Option>
-                            ))
-                          ) : (
-                            repoInfo.commits.map(c => (
-                              <Select.Option key={`base-commit-${c.hash}`} value={c.hash}>
-                                {c.hash.substring(0, 7)} - {c.subject} ({c.author})
-                              </Select.Option>
-                            ))
-                          )}
-                        </Select>
-                      )}
-                    </Form.Item>
-                    <Form.Item 
-                      label={compareBranches ? "Target Branch" : "Target Commit"} 
-                      name="targetCommit" 
-                      rules={[{ required: true, message: 'Please select target version' }]}
-                    >
-                      {!repoInfo ? (
-                        <Input placeholder="e.g. HEAD or commit hash" onChange={(e) => setTargetCommit(e.target.value)} />
-                      ) : (
-                        <Select
-                          showSearch
-                          placeholder={compareBranches ? "Select target branch" : "Select target commit"}
-                          onChange={(val) => {
-                            setTargetCommit(val);
-                            form.setFieldValue('targetCommit', val);
-                            if (compareBranches && baseCommit) {
-                              fetchChangedFiles(repoPath, baseCommit, val);
-                            }
-                          }}
-                          value={targetCommit}
-                        >
-                          {compareBranches ? (
-                            repoInfo.branches.map(b => (
-                              <Select.Option key={`target-branch-${b}`} value={b}>{b}</Select.Option>
-                            ))
-                          ) : (
-                            repoInfo.commits.map(c => (
-                              <Select.Option key={`target-commit-${c.hash}`} value={c.hash}>
-                                {c.hash.substring(0, 7)} - {c.subject} ({c.author})
-                              </Select.Option>
-                            ))
-                          )}
-                        </Select>
-                      )}
-                    </Form.Item>
-                    <Form.Item 
-                      label="Design File Path" 
-                      name="relativeFilePath" 
-                      rules={[{ required: true, message: 'Please select file path' }]}
-                    >
-                      {compareBranches ? (
-                        !changedFiles || changedFiles.length === 0 ? (
-                          <Select placeholder="No changed KiCad files found" disabled />
-                        ) : (
-                          <Select
-                            showSearch
-                            placeholder="Select changed KiCad file"
-                            onChange={(val) => {
-                              setRelativeFilePath(val);
-                              form.setFieldValue('relativeFilePath', val);
-                            }}
-                            value={relativeFilePath}
-                          >
-                            {changedFiles.map(file => (
-                              <Select.Option key={`changed-${file}`} value={file}>{file}</Select.Option>
-                            ))}
-                          </Select>
-                        )
-                      ) : (
-                        !repoInfo?.kicadFiles || repoInfo.kicadFiles.length === 0 ? (
-                          <Input placeholder="e.g. layout/board.kicad_pcb" onChange={(e) => setRelativeFilePath(e.target.value)} />
-                        ) : (
-                          <Select
-                            showSearch
-                            placeholder="Select KiCad file"
-                            onChange={(val) => {
-                              setRelativeFilePath(val);
-                              form.setFieldValue('relativeFilePath', val);
-                            }}
-                            value={relativeFilePath}
-                          >
-                            {repoInfo.kicadFiles.map(file => (
-                              <Select.Option key={`file-${file}`} value={file}>{file}</Select.Option>
-                            ))}
-                          </Select>
-                        )
-                      )}
-                    </Form.Item>
-                    <Form.Item>
-                      <Button type="primary" htmlType="submit" icon={<FileSearchOutlined />} loading={loading} block>
-                        Fetch and Render Diff
-                      </Button>
-                    </Form.Item>
-                  </Form>
-                  {repoInfo?.commits && repoInfo.commits.length > 0 && (
-                    <div style={{ borderTop: '1px solid #232738', paddingTop: '20px', marginTop: '20px' }}>
-                      <Title level={5} style={{ color: '#fadb14', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '15px' }}>
-                        <HistoryOutlined /> Recent Git Commits
-                      </Title>
-                      <div style={{ maxHeight: '200px', overflowY: 'auto', paddingRight: '5px' }}>
-                        <Timeline
-                          pending={false}
-                          mode="left"
-                          items={repoInfo.commits.slice(0, 15).map((c, idx) => ({
-                            color: idx === 0 ? '#faad14' : '#6b6375',
-                            children: (
-                              <div style={{ fontSize: '11px', color: '#a6adbb' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-                                  <Text strong style={{ color: '#f5f5f5', fontSize: '11px' }}>{c.hash.substring(0, 7)}</Text>
-                                  <Text type="secondary" style={{ fontSize: '10px' }}>{c.date}</Text>
-                                </div>
-                                <div style={{ lineHeight: '1.3' }}>{c.subject}</div>
-                                <div style={{ fontSize: '10px', color: '#6b6375', marginTop: '2px' }}>by {c.author}</div>
-                              </div>
+                            !changedFiles || changedFiles.length === 0 ? (
+                              <Select placeholder="No changed KiCad files found" disabled />
+                            ) : (
+                              <Select
+                                showSearch
+                                placeholder="Select changed KiCad file"
+                                onChange={(val) => {
+                                  setRelativeFilePath(val);
+                                  form.setFieldValue('relativeFilePath', val);
+                                }}
+                                value={relativeFilePath}
+                              >
+                                {changedFiles.map(file => (
+                                  <Select.Option key={`changed-${file}`} value={file}>{file}</Select.Option>
+                                ))}
+                              </Select>
                             )
-                          }))}
-                        />
-                      </div>
-                    </div>
+                          ) : (
+                            !repoInfo?.kicadFiles || repoInfo.kicadFiles.length === 0 ? (
+                              <Input placeholder="e.g. layout/board.kicad_pcb" onChange={(e) => setRelativeFilePath(e.target.value)} />
+                            ) : (
+                              <Select
+                                showSearch
+                                placeholder="Select KiCad file"
+                                onChange={(val) => {
+                                  setRelativeFilePath(val);
+                                  form.setFieldValue('relativeFilePath', val);
+                                }}
+                                value={relativeFilePath}
+                              >
+                                {repoInfo.kicadFiles.map(file => (
+                                  <Select.Option key={`file-${file}`} value={file}>{file}</Select.Option>
+                                ))}
+                              </Select>
+                            )
+                          )}
+                        </Form.Item>
+                        <Form.Item>
+                          <Button type="primary" htmlType="submit" icon={<FileSearchOutlined />} loading={loading} block>
+                            Fetch and Render Diff
+                          </Button>
+                        </Form.Item>
+                      </Form>
+                      {repoInfo?.commits && repoInfo.commits.length > 0 && (
+                        <div style={{ borderTop: '1px solid #232738', paddingTop: '20px', marginTop: '20px' }}>
+                          <Title level={5} style={{ color: '#fadb14', display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '15px' }}>
+                            <HistoryOutlined /> Recent Git Commits
+                          </Title>
+                          <div style={{ maxHeight: '200px', overflowY: 'auto', paddingRight: '5px' }}>
+                            <Timeline
+                              pending={false}
+                              mode="left"
+                              items={repoInfo.commits.slice(0, 15).map((c, idx) => ({
+                                color: idx === 0 ? '#faad14' : '#6b6375',
+                                children: (
+                                  <div style={{ fontSize: '11px', color: '#a6adbb' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
+                                      <Text strong style={{ color: '#f5f5f5', fontSize: '11px' }}>{c.hash.substring(0, 7)}</Text>
+                                      <Text type="secondary" style={{ fontSize: '10px' }}>{c.date}</Text>
+                                    </div>
+                                    <div style={{ lineHeight: '1.3' }}>{c.subject}</div>
+                                    <div style={{ fontSize: '10px', color: '#6b6375', marginTop: '2px' }}>by {c.author}</div>
+                                  </div>
+                                )
+                              }))}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <GithubControls
+                      githubToken={githubToken}
+                      githubUser={githubUser}
+                      onOpenAuthModal={() => setGithubModalOpen(true)}
+                      onFetchDiff={handleFetchRemoteDiff}
+                      loading={loading}
+                      selectedRepo={selectedRemoteRepo}
+                      setSelectedRepo={setSelectedRemoteRepo}
+                      baseCommit={baseCommit}
+                      setBaseCommit={setBaseCommit}
+                      targetCommit={targetCommit}
+                      setTargetCommit={setTargetCommit}
+                      relativeFilePath={relativeFilePath}
+                      setRelativeFilePath={setRelativeFilePath}
+                    />
                   )}
                 </div>
 
@@ -1397,7 +1544,16 @@ export default function App() {
                       setActiveAuditIdx={setActiveAuditIdx}
                       padLabelProps={
                         relativeFilePath?.endsWith('.kicad_pcb')
-                          ? { repoPath, baseCommit, targetCommit, relativeFilePath }
+                          ? {
+                              repoPath,
+                              baseCommit,
+                              targetCommit,
+                              relativeFilePath,
+                              owner: selectedRemoteRepo?.owner,
+                              repo: selectedRemoteRepo?.name,
+                              filePath: relativeFilePath,
+                              githubToken
+                            }
                           : null
                       }
                     />
@@ -1589,15 +1745,48 @@ export default function App() {
             selectedLayers,
             diffMode,
             modifications: diffData?.modifications || [],
-            pcbMetadata: diffData?.pcbMetadata
+            pcbMetadata: diffData?.pcbMetadata,
+            activeAuditIdx,
+            activeAuditItem: activeAuditIdx !== null ? (diffData?.modifications || [])[activeAuditIdx] : null,
+            evolutionInfo: evolutionEnabled ? {
+              step: evolutionStep,
+              totalSteps: evolutionData?.totalSteps || 0,
+              mode: evolutionMode
+            } : null,
+            telemetry: diffData?.telemetry
           }}
           onSelectModification={(modId, label) => {
             const mods = diffData?.modifications || [];
-            const idx = mods.findIndex(m => m.id === modId || (label && (m.label?.includes(label) || m.text?.includes(label))));
+            const idx = mods.findIndex((m, i) =>
+              m.id === modId ||
+              String(m.diffIdx) === String(modId) ||
+              modId === `mod-${i}` ||
+              modId === `mod-${m.diffIdx}` ||
+              (m.refDes && (m.refDes === modId || m.refDes === label)) ||
+              (m.name && label && m.name.includes(label)) ||
+              (m.title && label && m.title.includes(label)) ||
+              (m.net && label && m.net.includes(label))
+            );
             if (idx !== -1) {
               handleAuditItemSelect(mods[idx], idx);
             }
           }}
+        />
+
+        {/* GitHub Cloud Connect Modal */}
+        <GithubConnectModal
+          open={githubModalOpen}
+          onClose={() => setGithubModalOpen(false)}
+          githubUser={githubUser}
+          githubToken={githubToken}
+          onAuthSuccess={(token, user) => {
+            localStorage.setItem('banana:githubToken', token);
+            setGithubToken(token);
+            setGithubUser(user);
+            setSourceMode('github');
+            localStorage.setItem('banana:sourceMode', 'github');
+          }}
+          onDisconnect={handleDisconnectGithub}
         />
     </Layout>
   </ConfigProvider>

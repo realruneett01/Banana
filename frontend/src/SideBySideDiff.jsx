@@ -237,17 +237,12 @@ const DIFF_CSS = `
 `;
 
 // ─── Layer matching helper ────────────────────────────────────────────────────
+const PCB_LAYER_TOKENS = ['_cu', 'silkscreen', 'edge_cuts', 'silks', 'mask', 'paste', 'courtyard'];
+
 function isLayerActive(filename, activeLayers) {
   const name = filename.toLowerCase();
-  if (
-    !name.includes('_cu') &&
-    !name.includes('silkscreen') &&
-    !name.includes('edge_cuts') &&
-    !name.includes('silks') &&
-    !name.includes('mask') &&
-    !name.includes('paste') &&
-    !name.includes('courtyard')
-  ) return true;
+  const isPcbLayer = PCB_LAYER_TOKENS.some((token) => name.includes(token));
+  if (!isPcbLayer) return true;
 
   return activeLayers.some(layer => {
     const nl = layer.replace('.', '_').toLowerCase();
@@ -542,7 +537,7 @@ function getLayerOpacity(filename, layerOpacities) {
 }
 
 // ─── SideBySideSvgLayer ───────────────────────────────────────────────────────
-const SideBySideSvgLayer = React.memo(({ filename, content, side, layerTier, opacityStyle, filterStyle }) => {
+const SideBySideSvgLayer = React.memo(({ filename: _filename, content, side: _side, layerTier, opacityStyle, filterStyle }) => {
   return (
     <div
       className={layerTier}
@@ -684,7 +679,7 @@ function SvgPanel({ svgs, activeLayers, soloLayer, layerOpacities, contentRef, s
 }
 
 // ─── Softcoded Diff Configuration & Dimension Determination ───────────────────
-export const DIFF_CONFIG = {
+const DIFF_CONFIG = {
   MODE_NATIVE: 'inherit',
   DEFAULT_TRACE_WIDTH: 'inherit', // 100% native KiCad dimension-to-dimension rendering
   FALLBACK_TRACE_WIDTH: '0.200mm', // Standard 0.200mm / 7.874 mils (~7.9 mils)
@@ -701,14 +696,6 @@ export const DIFF_CONFIG = {
     { label: '0.300mm (11.8 mils)', value: '0.300mm' },
   ],
 };
-
-export function mmToMils(mm) {
-  return typeof mm === 'number' ? mm * DIFF_CONFIG.MM_TO_MILS : 0;
-}
-
-export function milsToMm(mils) {
-  return typeof mils === 'number' ? mils * DIFF_CONFIG.MILS_TO_MM : 0;
-}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default forwardRef(function SideBySideDiff({
@@ -864,7 +851,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
 }
 
   useImperativeHandle(ref, () => ({
-    focusElement({ diffIdx, side, diffType, baseCoords, targetCoords, bbox }) {
+    focusElement({ diffIdx, side: _side, diffType, baseCoords, targetCoords, bbox }) {
       if (!leftContentRef.current || !rightContentRef.current) return;
 
       const leftViewport = leftContentRef.current.parentElement;
@@ -970,7 +957,7 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
       resetTransform();
       if (setActiveAuditIdx) setActiveAuditIdx(null);
     }
-  }), [animateTo, focusOnBoundingBox, resetTransform, setActiveAuditIdx]);
+  }), [animateTo, focusOnBoundingBox, resetTransform, setActiveAuditIdx, synced]);
 
   useEffect(() => {
     const el = outerRef.current;
@@ -1178,6 +1165,10 @@ function getScreenCoordsFromSvg(viewportContentEl, coords) {
             baseCommit={padLabelProps.baseCommit}
             targetCommit={padLabelProps.targetCommit}
             relativeFilePath={padLabelProps.relativeFilePath}
+            owner={padLabelProps.owner}
+            repo={padLabelProps.repo}
+            filePath={padLabelProps.filePath}
+            githubToken={padLabelProps.githubToken}
             leftContentRef={leftContentRef}
             rightContentRef={rightContentRef}
             activeLayers={activeLayers}

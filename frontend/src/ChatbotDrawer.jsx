@@ -14,17 +14,13 @@ import {
   Card
 } from 'antd';
 import {
-  RobotOutlined,
   SendOutlined,
   SettingOutlined,
   DeleteOutlined,
   CloseOutlined,
   KeyOutlined,
-  ThunderboltOutlined,
   BulbOutlined,
   AimOutlined,
-  CheckCircleFilled,
-  ExclamationCircleFilled,
   CompassOutlined,
   SafetyCertificateOutlined,
   FileSearchOutlined,
@@ -32,7 +28,7 @@ import {
 } from '@ant-design/icons';
 import { API_BASE_URL } from './config.js';
 
-const { Text, Paragraph, Title } = Typography;
+const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
 // Pre-defined quick prompt templates for Hardware Copilot
@@ -40,27 +36,27 @@ const QUICK_PROMPTS = [
   {
     icon: <AimOutlined />,
     label: 'Explain detected diffs',
-    prompt: 'Explain all the detected changes on this PCB and summarize what got added, deleted, or shifted.'
+    prompt: 'Analyze all detected changes on this PCB: explain what was done, what the electrical and physical changes are, and how I can make the layout better.'
   },
   {
     icon: <SafetyCertificateOutlined />,
     label: 'Check DRC & clearance risks',
-    prompt: 'Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts?'
-  },
-  {
-    icon: <CompassOutlined />,
-    label: 'How do diff modes work?',
-    prompt: 'How do the 3 diff modes in Banana 2.0 (Side-by-Side, Overlay Slider, Color Delta Map) work and when should I use each?'
+    prompt: 'Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts, and how should I fix them?'
   },
   {
     icon: <BulbOutlined />,
+    label: 'Optimize layout & routing',
+    prompt: 'Review the current routing and component changes. What are the top 3 concrete improvements I can make to reduce noise, improve return paths, and optimize thermals?'
+  },
+  {
+    icon: <FileSearchOutlined />,
     label: 'Trace width & current rules',
     prompt: 'What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?'
   },
   {
-    icon: <FileSearchOutlined />,
-    label: 'Copper weight & stackup',
-    prompt: 'What are the rules of thumb for 1oz vs 2oz copper weights and controlled impedance routing in high-speed KiCad designs?'
+    icon: <CompassOutlined />,
+    label: 'Differential pairs & SI',
+    prompt: 'What are the best practices for differential pair length matching, via stitching, and continuous ground return paths in KiCad?'
   }
 ];
 
@@ -76,7 +72,7 @@ export default function ChatbotDrawer({
     if (saved) {
       try {
         return JSON.parse(saved);
-      } catch (e) {
+      } catch {
         // fallback
       }
     }
@@ -110,7 +106,7 @@ export default function ChatbotDrawer({
       // Keep last 30 messages
       const trimmed = messages.slice(-30);
       localStorage.setItem('banana:chatHistory', JSON.stringify(trimmed));
-    } catch (e) {
+    } catch {
       // ignore quota errors
     }
   }, [messages]);
@@ -199,7 +195,11 @@ export default function ChatbotDrawer({
             selectedLayers: boardContext.selectedLayers || [],
             diffMode: boardContext.diffMode,
             modifications: boardContext.modifications || [],
-            pcbMetadata: boardContext.pcbMetadata
+            pcbMetadata: boardContext.pcbMetadata,
+            activeAuditIdx: boardContext.activeAuditIdx,
+            activeAuditItem: boardContext.activeAuditItem,
+            evolutionInfo: boardContext.evolutionInfo,
+            telemetry: boardContext.telemetry
           },
           model: activeModel
         })
@@ -211,7 +211,7 @@ export default function ChatbotDrawer({
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder('utf-8');
-      let accumulatedText = '';
+      const textChunks = [];
       let buffer = '';
 
       while (true) {
@@ -233,23 +233,25 @@ export default function ChatbotDrawer({
             const data = JSON.parse(jsonStr);
 
             if (data.error) {
+              const errSuffix = data.isKeyRequired
+                ? '\n\n⚠️ **API Key Required**: Please provide a Gemini API key in the Copilot Settings.'
+                : `\n\n❌ **Error**: ${data.error}`;
+              textChunks.push(errSuffix);
               if (data.isKeyRequired) {
-                accumulatedText += `\n\n⚠️ **API Key Required**: Please provide a Gemini API key in the Copilot Settings.`;
                 setIsSettingsOpen(true);
-              } else {
-                accumulatedText += `\n\n❌ **Error**: ${data.error}`;
               }
               break;
             }
 
             if (data.text) {
-              accumulatedText += data.text;
+              textChunks.push(data.text);
+              const currentContent = textChunks.join('');
               setMessages(prev => {
                 const copy = [...prev];
                 if (copy[assistantIndex]) {
                   copy[assistantIndex] = {
                     ...copy[assistantIndex],
-                    content: accumulatedText,
+                    content: currentContent,
                     isStreaming: true
                   };
                 }
@@ -258,31 +260,33 @@ export default function ChatbotDrawer({
             }
 
             if (data.done) {
+              const currentContent = textChunks.join('');
               setMessages(prev => {
                 const copy = [...prev];
                 if (copy[assistantIndex]) {
                   copy[assistantIndex] = {
                     ...copy[assistantIndex],
-                    content: accumulatedText,
+                    content: currentContent,
                     isStreaming: false
                   };
                 }
                 return copy;
               });
             }
-          } catch (e) {
+          } catch {
             // ignore malformed JSON chunk
           }
         }
       }
 
       // Finalize message stream
+      const finalText = textChunks.join('');
       setMessages(prev => {
         const copy = [...prev];
         if (copy[assistantIndex]) {
           copy[assistantIndex] = {
             ...copy[assistantIndex],
-            content: accumulatedText || '*(Empty response received)*',
+            content: finalText || '*(Empty response received)*',
             isStreaming: false
           };
         }

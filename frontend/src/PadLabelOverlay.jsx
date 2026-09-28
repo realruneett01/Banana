@@ -260,6 +260,10 @@ export default function PadLabelOverlay({
   baseCommit,
   targetCommit,
   relativeFilePath,
+  owner,
+  repo,
+  filePath,
+  githubToken,
   leftContentRef,
   rightContentRef,
   activeLayers,
@@ -271,39 +275,61 @@ export default function PadLabelOverlay({
   const [basePads, setBasePads] = useState(null);
   const [targetPads, setTargetPads] = useState(null);
 
+  const activeFilePath = relativeFilePath || filePath;
+
   // ── Fetch base pad data ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!repoPath || !baseCommit || !relativeFilePath) return;
+    if ((!repoPath && !(owner && repo)) || !baseCommit || !activeFilePath) return;
     let cancelled = false;
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (githubToken) headers['Authorization'] = `Bearer ${githubToken}`;
 
     fetch(`${API_BASE_URL}/api/board/pads`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoPath, commit: baseCommit, relativeFilePath }),
+      headers,
+      body: JSON.stringify({
+        repoPath,
+        owner,
+        repo,
+        commit: baseCommit,
+        relativeFilePath: activeFilePath,
+        filePath: activeFilePath
+      }),
     })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => { if (!cancelled) setBasePads(d.footprints ?? null); })
       .catch(err => console.warn('[PadLabelOverlay] base fetch failed:', err));
 
     return () => { cancelled = true; };
-  }, [repoPath, baseCommit, relativeFilePath]);
+  }, [repoPath, owner, repo, baseCommit, activeFilePath, githubToken]);
 
   // ── Fetch target pad data ───────────────────────────────────────────────────
   useEffect(() => {
-    if (!repoPath || !targetCommit || !relativeFilePath) return;
+    if ((!repoPath && !(owner && repo)) || !targetCommit || !activeFilePath) return;
     let cancelled = false;
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (githubToken) headers['Authorization'] = `Bearer ${githubToken}`;
 
     fetch(`${API_BASE_URL}/api/board/pads`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoPath, commit: targetCommit, relativeFilePath }),
+      headers,
+      body: JSON.stringify({
+        repoPath,
+        owner,
+        repo,
+        commit: targetCommit,
+        relativeFilePath: activeFilePath,
+        filePath: activeFilePath
+      }),
     })
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => { if (!cancelled) setTargetPads(d.footprints ?? null); })
       .catch(err => console.warn('[PadLabelOverlay] target fetch failed:', err));
 
     return () => { cancelled = true; };
-  }, [repoPath, targetCommit, relativeFilePath]);
+  }, [repoPath, owner, repo, targetCommit, activeFilePath, githubToken]);
 
   // ── Inject/refresh labels when data or visibility state changes ─────────────
   useEffect(() => {

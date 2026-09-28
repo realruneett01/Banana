@@ -282,8 +282,8 @@ export function sanitizeAndNormalizeKiCadSvg(rawSvgContent, options = {}) {
  * @returns {{ scale: number, x: number, y: number }}
  */
 export function calculateZoomToFit(containerDims, contentBox, paddingRatio = 0.05) {
-  if (!containerDims || containerDims.width <= 0 || containerDims.height <= 0 ||
-      !contentBox || contentBox.width <= 0 || contentBox.height <= 0) {
+  const hasValidDims = (dims) => Boolean(dims && dims.width > 0 && dims.height > 0);
+  if (!hasValidDims(containerDims) || !hasValidDims(contentBox)) {
     return { scale: 1, x: 0, y: 0 };
   }
 

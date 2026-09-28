@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: banana2
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    healthCheckPath: /api/health-check
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: KICAD_CLI_PATH
+        value: /usr/bin/kicad-cli
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CALLBACK_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false

@@ -1,0 +1,31 @@
+# Dependencies
+node_modules
+npm-debug.log*
+
+# Git and tooling
+.git
+.gitignore
+.repowise
+.claude
+.vscode
+.antigravity.md
+claude.md
+
+# Temporary and local output
+temp_storage
+scratch
+dist
+frontend/dist
+
+# Diagnostic scripts & documentation artifacts
+generate_pdf.mjs
+backend/diag_runner.mjs
+backend/verify_fix.mjs
+*.pdf
+*.png
+*.html
+
+# Local environment secrets
+.env
+.env.*
+!.env.example

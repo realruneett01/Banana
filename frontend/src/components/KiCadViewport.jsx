@@ -18,7 +18,7 @@ import './KiCadViewport.css';
 /**
  * Standard KiCad PCB layer stack order (bottom-to-top rendering)
  */
-const DEFAULT_LAYER_ORDER = [
+const _DEFAULT_LAYER_ORDER = [
   'edge_cuts',
   'b_courtyard',
   'b_silks',

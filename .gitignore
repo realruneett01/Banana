@@ -41,3 +41,12 @@ backend/temp_storage/
 *.db
 *.db-shm
 *.db-wal
+
+# Local tooling & scratch
+.repowise/
+.claude/
+scratch/
+.antigravity.md
+claude.md
+.mcp.json
+*.pdf

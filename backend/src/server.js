@@ -10,6 +10,17 @@ import { renderKicadFile } from './kicad-renderer.js';
 import { processSvgDiff, cleanNetName, cleanLayerName } from './svg-diff-processor.js';
 import { parseKiCadBoard } from './kicad-pcb-parser.js';
 import { streamGeminiChat } from './ai-service.js';
+import {
+  getOAuthAuthorizeUrl,
+  exchangeCodeForToken,
+  verifyTokenAndGetUser,
+  getUserRepositories,
+  getRepoBranches,
+  getRepoCommits,
+  getRepoPullRequests,
+  getRepoHardwareFiles,
+  downloadRepoFile
+} from './github-service.js';
 
 
 const app = express();
@@ -431,56 +442,25 @@ app.get('/api/git/evolution', async (req, res) => {
   }
 });
 
-app.post('/api/diff/process', async (req, res) => {
-  const { repoPath, baseCommit, targetCommit, relativeFilePath, isPcb } = req.body;
-
-  // Input validation
-  if (!repoPath || !baseCommit || !targetCommit || !relativeFilePath) {
-    return res.status(400).json({
-      error: "Missing required parameters in request body. Required: repoPath, baseCommit, targetCommit, relativeFilePath"
-    });
-  }
-
-  const tTotalStart = performance.now();
-  const cleanBaseCommit = String(baseCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
-  const cleanTargetCommit = String(targetCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
-  const safeRelPath = relativeFilePath.replace(/[^a-zA-Z0-9_-]/g, '_');
-
-  const baseFolderId = `git_${cleanBaseCommit}_${safeRelPath}`;
-  const targetFolderId = `git_${cleanTargetCommit}_${safeRelPath}`;
-  const fileBasename = path.basename(relativeFilePath);
-
-  const baseTempName = path.join(baseFolderId, fileBasename);
-  const targetTempName = path.join(targetFolderId, fileBasename);
-
-  let basePath = null;
-  let targetPath = null;
+/**
+ * Shared Diff Pipeline: Renders KiCad CAD files, generates SVGs, parses AST metadata,
+ * executes 5-pass vector/copper corridor diff, and formats consolidated audit response.
+ */
+async function executeDiffPipeline({
+  basePath,
+  targetPath,
+  baseCommit,
+  targetCommit,
+  isPcb,
+  tExtraction = 0,
+  cleanExtractionFolders = [],
+  tTotalStart = performance.now()
+}, res) {
   let baseRenders = null;
   let targetRenders = null;
 
   try {
-    // 1. Extract files from Git
-    const tGitStart = performance.now();
-    try {
-      basePath = await extractFileFromCommit(repoPath, baseCommit, relativeFilePath, baseTempName);
-    } catch (err) {
-      return res.status(500).json({
-        error: `Failed to extract file at base commit (${baseCommit})`,
-        details: err.message
-      });
-    }
-
-    try {
-      targetPath = await extractFileFromCommit(repoPath, targetCommit, relativeFilePath, targetTempName);
-    } catch (err) {
-      return res.status(500).json({
-        error: `Failed to extract file at target commit (${targetCommit})`,
-        details: err.message
-      });
-    }
-    const tGit = performance.now() - tGitStart;
-
-    // 2. Render files concurrently using KiCad CLI
+    // 1. Render files concurrently using KiCad CLI
     const tCliStart = performance.now();
     try {
       [baseRenders, targetRenders] = await Promise.all([
@@ -496,12 +476,11 @@ app.post('/api/diff/process', async (req, res) => {
     }
     const tCli = performance.now() - tCliStart;
 
-    // 3. Read generated SVGs into memory
+    // 2. Read generated SVGs into memory
     const readSvgs = (renderResult) => {
       return renderResult.svgFiles.map(filePath => {
         const rawFilename = path.basename(filePath);
         const content = fs.readFileSync(filePath, 'utf8');
-
         return {
           filename: rawFilename,
           content: content
@@ -512,8 +491,7 @@ app.post('/api/diff/process', async (req, res) => {
     const baseSvgs = readSvgs(baseRenders);
     const targetSvgs = readSvgs(targetRenders);
 
-    // 4. Build semantic SVG diff annotation for Side-by-Side mode
-    //    Match layers by filename, process each pair through the diff engine.
+    // 3. Build semantic SVG diff annotation for Side-by-Side mode
     const tDiffStart = performance.now();
     const sideBySideBase   = [];
     const sideBySideTarget = [];
@@ -617,7 +595,7 @@ app.post('/api/diff/process', async (req, res) => {
           }
         }
 
-        // Supply all 1,100+ native AST tracks with resolved net strings
+        // Supply native AST tracks with resolved net strings
         pcbMetadata = {
           footprints,
           pads,
@@ -646,7 +624,6 @@ app.post('/api/diff/process', async (req, res) => {
 
     let globalDiffIdx = 0;
     for (const baseSvg of baseSvgs) {
-      // Find the matching target layer by filename or layer suffix
       const bSuffix = getLayerSuffix(baseSvg.filename);
       const matchingTarget = targetSvgs.find(t => t.filename === baseSvg.filename || getLayerSuffix(t.filename) === bSuffix);
 
@@ -665,7 +642,6 @@ app.post('/api/diff/process', async (req, res) => {
             layerTelemetries.push({ layer: baseSvg.filename, ...layerTel });
           }
 
-          // Enrich modifications with the layer filename
           const enrichedMods = (layerMods || []).map(m => ({
             ...m,
             layer: baseSvg.filename
@@ -678,7 +654,6 @@ app.post('/api/diff/process', async (req, res) => {
           baseSvgsWithIdx.push({ filename: baseSvg.filename, content: cleanBaseSvg || baseSvg.content });
           targetSvgsWithIdx.push({ filename: matchingTarget.filename, content: cleanTargetSvg || matchingTarget.content });
         } catch (diffErr) {
-          // Fall back to unannotated SVGs if the diff processor fails on a specific layer
           console.warn(`SVG diff annotation failed for layer ${baseSvg.filename}:`, diffErr.message);
           sideBySideBase.push(baseSvg);
           sideBySideTarget.push(matchingTarget);
@@ -686,7 +661,6 @@ app.post('/api/diff/process', async (req, res) => {
           targetSvgsWithIdx.push(matchingTarget);
         }
       } else {
-        // Layer only in base — entire SVG is "deleted"
         sideBySideBase.push(baseSvg);
         baseSvgsWithIdx.push(baseSvg);
         allModifications.push({
@@ -700,7 +674,6 @@ app.post('/api/diff/process', async (req, res) => {
       }
     }
 
-    // Layers only in target (not in base) — entire SVG is "added"
     for (const targetSvg of targetSvgs) {
       const tSuffix = getLayerSuffix(targetSvg.filename);
       const inBase = baseSvgs.some(b => b.filename === targetSvg.filename || getLayerSuffix(b.filename) === tSuffix);
@@ -720,7 +693,6 @@ app.post('/api/diff/process', async (req, res) => {
     const tDiff = performance.now() - tDiffStart;
     const tTotal = performance.now() - tTotalStart;
 
-    // Consolidate and deduplicate audit modifications to eliminate spam:
     const consolidatedMods = [];
     const componentMap = new Map();
     const traceMap = new Map();
@@ -728,9 +700,7 @@ app.post('/api/diff/process', async (req, res) => {
 
     for (const mod of allModifications) {
       if (mod.type === 'COMPONENT' && mod.refDes) {
-        // If ground-truth footprint changes exist and this refDes is NOT in them:
         if (footprintChanges.size > 0 && !footprintChanges.has(mod.refDes)) {
-          // Stationary component whose attached pad/track changed -> route as trace
           const netName = mod.net || mod.name || 'signal';
           const layerClean = cleanLayerName(mod.layer);
           const key = `${cleanNetName(netName)}@${mod.layer}`;
@@ -763,7 +733,6 @@ app.post('/api/diff/process', async (req, res) => {
         } else {
           const existing = componentMap.get(mod.refDes);
           const fpChange = footprintChanges.get(mod.refDes);
-          // Prefer copper layer for the master component card so canvas focuses properly
           if (mod.layer.includes('F_Cu') && !existing.layer.includes('F_Cu')) {
             existing.layer = mod.layer;
             existing.diffIdx = mod.diffIdx;
@@ -775,7 +744,6 @@ app.post('/api/diff/process', async (req, res) => {
       } else if (mod.type === 'TRACE') {
         const isCopper = (mod.layer || '').includes('Cu');
         if (!isCopper) {
-          // Absorb non-copper graphics near a moved component
           let absorbed = false;
           for (const [ref, fpChange] of footprintChanges) {
             if (mod.bbox && fpChange.targetAt) {
@@ -824,8 +792,7 @@ app.post('/api/diff/process', async (req, res) => {
 
     consolidatedMods.push(...componentMap.values(), ...traceMap.values(), ...graphicMap.values());
 
-    // 5. Return SVG content in structured response with telemetry
-    res.json({
+    return res.json({
       base: {
         commit: baseCommit,
         svgs: baseSvgsWithIdx
@@ -839,8 +806,15 @@ app.post('/api/diff/process', async (req, res) => {
         target: sideBySideTarget
       },
       modifications: consolidatedMods,
+      pcbMetadata: pcbMetadata ? {
+        nets: pcbMetadata.nets || [],
+        footprintCount: (pcbMetadata.footprints || []).length,
+        padCount: (pcbMetadata.pads || []).length,
+        segmentCount: (pcbMetadata.segments || []).length,
+        footprintChanges: Array.from(footprintChanges.entries()).map(([ref, ch]) => ({ ref, ...ch }))
+      } : null,
       telemetry: {
-        tGit: Number(tGit.toFixed(2)),
+        tGit: Number(tExtraction.toFixed(2)),
         tCli: Number(tCli.toFixed(2)),
         tDiff: Number(tDiff.toFixed(2)),
         tTotal: Number(tTotal.toFixed(2)),
@@ -850,23 +824,20 @@ app.post('/api/diff/process', async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({
+    console.error('[Banana Diff Pipeline] Unexpected error:', error);
+    return res.status(500).json({
       error: "Unexpected error during diff processing",
       details: error.message
     });
   } finally {
-    // 5. Clean up all temporary files and directories
-    try {
-      const baseDir = path.join(process.cwd(), 'temp_storage', baseFolderId);
-      const targetDir = path.join(process.cwd(), 'temp_storage', targetFolderId);
-      if (fs.existsSync(baseDir)) {
-        fs.rmSync(baseDir, { recursive: true, force: true });
+    for (const folder of cleanExtractionFolders) {
+      try {
+        if (fs.existsSync(folder)) {
+          fs.rmSync(folder, { recursive: true, force: true });
+        }
+      } catch (e) {
+        console.warn('Failed to clean up extraction folder:', folder, e.message);
       }
-      if (fs.existsSync(targetDir)) {
-        fs.rmSync(targetDir, { recursive: true, force: true });
-      }
-    } catch (e) {
-      console.error('Failed to clean up directories:', e.message);
     }
 
     if (baseRenders && baseRenders.outputDir && fs.existsSync(baseRenders.outputDir)) {
@@ -875,6 +846,256 @@ app.post('/api/diff/process', async (req, res) => {
     if (targetRenders && targetRenders.outputDir && fs.existsSync(targetRenders.outputDir)) {
       try { fs.rmSync(targetRenders.outputDir, { recursive: true, force: true }); } catch (_) {}
     }
+  }
+}
+
+/**
+ * POST /api/diff/process
+ * Local Git diff processor
+ */
+app.post('/api/diff/process', async (req, res) => {
+  const { repoPath, baseCommit, targetCommit, relativeFilePath, isPcb } = req.body;
+
+  if (!repoPath || !baseCommit || !targetCommit || !relativeFilePath) {
+    return res.status(400).json({
+      error: "Missing required parameters in request body. Required: repoPath, baseCommit, targetCommit, relativeFilePath"
+    });
+  }
+
+  const tTotalStart = performance.now();
+  const cleanBaseCommit = String(baseCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const cleanTargetCommit = String(targetCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const safeRelPath = relativeFilePath.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  const baseFolderId = `git_${cleanBaseCommit}_${safeRelPath}`;
+  const targetFolderId = `git_${cleanTargetCommit}_${safeRelPath}`;
+  const fileBasename = path.basename(relativeFilePath);
+
+  const baseTempName = path.join(baseFolderId, fileBasename);
+  const targetTempName = path.join(targetFolderId, fileBasename);
+
+  const baseDir = path.join(process.cwd(), 'temp_storage', baseFolderId);
+  const targetDir = path.join(process.cwd(), 'temp_storage', targetFolderId);
+
+  let basePath = null;
+  let targetPath = null;
+  const tGitStart = performance.now();
+
+  try {
+    basePath = await extractFileFromCommit(repoPath, baseCommit, relativeFilePath, baseTempName);
+  } catch (err) {
+    return res.status(500).json({
+      error: `Failed to extract file at base commit (${baseCommit})`,
+      details: err.message
+    });
+  }
+
+  try {
+    targetPath = await extractFileFromCommit(repoPath, targetCommit, relativeFilePath, targetTempName);
+  } catch (err) {
+    return res.status(500).json({
+      error: `Failed to extract file at target commit (${targetCommit})`,
+      details: err.message
+    });
+  }
+  const tGit = performance.now() - tGitStart;
+
+  return executeDiffPipeline({
+    basePath,
+    targetPath,
+    baseCommit,
+    targetCommit,
+    isPcb,
+    tExtraction: tGit,
+    cleanExtractionFolders: [baseDir, targetDir],
+    tTotalStart
+  }, res);
+});
+
+/**
+ * POST /api/github/diff/process
+ * Remote GitHub diff processor (directly diffs remote branches, commits, or PRs)
+ */
+app.post('/api/github/diff/process', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.body.token;
+  const { owner, repo, baseCommit, targetCommit, filePath, isPcb } = req.body;
+
+  if (!token) {
+    return res.status(401).json({ error: 'GitHub authentication token required' });
+  }
+  if (!owner || !repo || !baseCommit || !targetCommit || !filePath) {
+    return res.status(400).json({
+      error: 'Missing required parameters: owner, repo, baseCommit, targetCommit, filePath'
+    });
+  }
+
+  const tTotalStart = performance.now();
+  const fileBasename = path.basename(filePath);
+  const cleanBase = String(baseCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const cleanTarget = String(targetCommit).replace(/[^a-zA-Z0-9_-]/g, '').substring(0, 16);
+  const safeFile = filePath.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  const baseFolder = path.join(process.cwd(), 'temp_storage', `gh_${cleanBase}_${safeFile}`);
+  const targetFolder = path.join(process.cwd(), 'temp_storage', `gh_${cleanTarget}_${safeFile}`);
+
+  const basePath = path.join(baseFolder, fileBasename);
+  const targetPath = path.join(targetFolder, fileBasename);
+
+  const tGhStart = performance.now();
+  try {
+    await Promise.all([
+      downloadRepoFile(token, owner, repo, filePath, baseCommit, basePath),
+      downloadRepoFile(token, owner, repo, filePath, targetCommit, targetPath)
+    ]);
+  } catch (err) {
+    return res.status(500).json({
+      error: 'Failed to download hardware file from GitHub',
+      details: err.message
+    });
+  }
+  const tGh = performance.now() - tGhStart;
+
+  return executeDiffPipeline({
+    basePath,
+    targetPath,
+    baseCommit,
+    targetCommit,
+    isPcb: isPcb !== undefined ? isPcb : /\.kicad_pcb$/i.test(filePath),
+    tExtraction: tGh,
+    cleanExtractionFolders: [baseFolder, targetFolder],
+    tTotalStart
+  }, res);
+});
+
+// ---------------------------------------------------------------------------
+// GitHub Integration Endpoints
+// ---------------------------------------------------------------------------
+
+// 1. Get OAuth login URL
+app.get('/api/auth/github/url', (req, res) => {
+  try {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const dynamicOrigin = `${protocol}://${host}`;
+    const dynamicCallback = (process.env.GITHUB_CALLBACK_URL && !process.env.GITHUB_CALLBACK_URL.includes('localhost'))
+      ? process.env.GITHUB_CALLBACK_URL
+      : `${dynamicOrigin}/api/auth/github/callback`;
+
+    const url = getOAuthAuthorizeUrl(req.query.state || 'banana_auth', dynamicCallback);
+    res.json({ url, configured: true });
+  } catch (err) {
+    res.json({ configured: false, error: err.message });
+  }
+});
+
+// 2. OAuth Callback
+app.get('/api/auth/github/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) {
+    return res.status(400).send('Authorization code missing');
+  }
+
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.get('host');
+  const dynamicOrigin = `${protocol}://${host}`;
+  const targetFrontend = (process.env.FRONTEND_URL && !process.env.FRONTEND_URL.includes('localhost'))
+    ? process.env.FRONTEND_URL
+    : dynamicOrigin;
+
+  try {
+    const token = await exchangeCodeForToken(code);
+    const redirectUrl = `${targetFrontend}/?github_token=${encodeURIComponent(token)}`;
+    res.redirect(redirectUrl);
+  } catch (err) {
+    console.error('[Banana API] GitHub OAuth callback error:', err);
+    res.redirect(`${targetFrontend}/?github_error=${encodeURIComponent(err.message)}`);
+  }
+});
+
+// 3. Verify Token & Get User
+app.get('/api/auth/github/verify', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  if (!token) {
+    return res.status(401).json({ error: 'GitHub token required' });
+  }
+  try {
+    const user = await verifyTokenAndGetUser(token);
+    res.json({ authenticated: true, user });
+  } catch (err) {
+    res.status(401).json({ authenticated: false, error: err.message });
+  }
+});
+
+// 4. List User Repositories
+app.get('/api/github/repos', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  if (!token) return res.status(401).json({ error: 'GitHub token required' });
+
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const repos = await getUserRepositories(token, page);
+    res.json({ repos });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to list repositories', details: err.message });
+  }
+});
+
+// 5. Get Repo Branches
+app.get('/api/github/repos/:owner/:repo/branches', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  const { owner, repo } = req.params;
+  if (!token) return res.status(401).json({ error: 'GitHub token required' });
+
+  try {
+    const branches = await getRepoBranches(token, owner, repo);
+    res.json({ branches });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch branches', details: err.message });
+  }
+});
+
+// 6. Get Repo Commits
+app.get('/api/github/repos/:owner/:repo/commits', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  const { owner, repo } = req.params;
+  const { sha, path: filePath } = req.query;
+  if (!token) return res.status(401).json({ error: 'GitHub token required' });
+
+  try {
+    const commits = await getRepoCommits(token, owner, repo, sha, filePath);
+    res.json({ commits });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch commits', details: err.message });
+  }
+});
+
+// 7. Get Repo Pull Requests
+app.get('/api/github/repos/:owner/:repo/pulls', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  const { owner, repo } = req.params;
+  const state = req.query.state || 'open';
+  if (!token) return res.status(401).json({ error: 'GitHub token required' });
+
+  try {
+    const pulls = await getRepoPullRequests(token, owner, repo, state);
+    res.json({ pulls });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch pull requests', details: err.message });
+  }
+});
+
+// 8. Get Repo Hardware Files (.kicad_pcb / .kicad_sch)
+app.get('/api/github/repos/:owner/:repo/files', async (req, res) => {
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.query.token;
+  const { owner, repo } = req.params;
+  const ref = req.query.ref || 'main';
+  if (!token) return res.status(401).json({ error: 'GitHub token required' });
+
+  try {
+    const files = await getRepoHardwareFiles(token, owner, repo, ref);
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch hardware files from repository', details: err.message });
   }
 });
 
@@ -889,33 +1110,33 @@ app.post('/api/diff/process', async (req, res) => {
  * Response:     { footprints: [{ reference, layer, pads: [{ number, net, absAt, size, layers }] }] }
  */
 app.post('/api/board/pads', async (req, res) => {
-  const { repoPath, commit, relativeFilePath } = req.body;
+  const { repoPath, commit, relativeFilePath, owner, repo, filePath } = req.body;
+  const token = req.headers['authorization']?.replace(/^Bearer\s+/i, '') || req.body.token;
 
-  if (!repoPath || !commit || !relativeFilePath) {
+  const targetFile = relativeFilePath || filePath;
+  if (!commit || !targetFile || (!repoPath && !(owner && repo))) {
     return res.status(400).json({
-      error: 'Missing required fields: repoPath, commit, relativeFilePath'
+      error: 'Missing required fields: (repoPath OR owner+repo), commit, (relativeFilePath OR filePath)'
     });
   }
 
-  if (!relativeFilePath.endsWith('.kicad_pcb')) {
+  if (!targetFile.endsWith('.kicad_pcb')) {
     return res.status(400).json({
       error: 'Only .kicad_pcb files are supported by this endpoint'
     });
   }
 
   const uniqueId = `pads_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-  const fileBasename = path.basename(relativeFilePath);
-  const tempName = path.join(uniqueId, fileBasename);
-  let tempFilePath = null;
+  const fileBasename = path.basename(targetFile);
+  const tempDir = path.join(process.cwd(), 'temp_storage', uniqueId);
+  const tempFilePath = path.join(tempDir, fileBasename);
 
   try {
-    try {
-      tempFilePath = await extractFileFromCommit(repoPath, commit, relativeFilePath, tempName);
-    } catch (err) {
-      return res.status(500).json({
-        error: `Failed to extract file at commit (${commit})`,
-        details: err.message
-      });
+    if (owner && repo) {
+      if (!token) return res.status(401).json({ error: 'GitHub token required for remote pads' });
+      await downloadRepoFile(token, owner, repo, targetFile, commit, tempFilePath);
+    } else {
+      await extractFileFromCommit(repoPath, commit, targetFile, path.join(uniqueId, fileBasename));
     }
 
     let board;
@@ -970,7 +1191,9 @@ app.get('/api/ai/status', (req, res) => {
   res.json({
     status: 'ok',
     serverKeyConfigured,
-    model: config.geminiModel || 'gemini-2.0-flash-preview'
+    model: config.geminiModel || 'gemini-3-flash-preview',
+    kicadVersion: config.kicadVersion || 'unknown',
+    kicadCliPath: config.kicadCliPath
   });
 });
 
@@ -1006,10 +1229,27 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 });
 
+// Serve production static frontend if available
+const candidateStaticDirs = [
+  process.env.STATIC_DIR,
+  path.resolve(process.cwd(), 'frontend/dist'),
+  path.resolve(process.cwd(), '../frontend/dist'),
+  path.resolve(process.cwd(), 'dist'),
+  path.resolve(process.cwd(), 'public')
+];
+const staticDir = candidateStaticDirs.find(d => d && fs.existsSync(d));
 
+if (staticDir) {
+  console.log(`[Banana] Serving static frontend from: ${staticDir}`);
+  app.use(express.static(staticDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(staticDir, 'index.html'));
+  });
+}
 
 const PORT = config.port;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`KiCad CLI path: ${config.kicadCliPath}`);
 });

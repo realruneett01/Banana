@@ -388,20 +388,6 @@ export const DIFF_CONFIG = {
   MILS_TO_MM: 0.0254,
 };
 
-/**
- * Converts millimeters to mils.
- */
-export function mmToMils(mm) {
-  return typeof mm === 'number' ? mm * DIFF_CONFIG.MM_TO_MILS : 0;
-}
-
-/**
- * Converts mils to millimeters.
- */
-export function milsToMm(mils) {
-  return typeof mils === 'number' ? mils * DIFF_CONFIG.MILS_TO_MM : 0;
-}
-
 // ─── STRICT COLOR PALETTE ──────────────────────────────────────────────────────
 const DIFF_PALETTE = {
   CHANGED:   '#FACC15', // Yellow
@@ -540,7 +526,7 @@ export function isCopperLayerFilename(layerFilename) {
  *                                 (used to gate copper detection; KiCad path/line
  *                                 elements carry no class attr in their SVG output)
  */
-function assembleTrackChains(elements, layerFilename) {
+export function assembleTrackChains(elements, layerFilename) {
   // FIX (a): Only attempt chain assembly when the SVG file IS a copper layer.
   // The old code checked `attrs.class` for 'cu'/'_cu', but KiCad SVG <path>/<line>
   // elements never have a class attribute — so that filter always returned []
@@ -570,7 +556,7 @@ function assembleTrackChains(elements, layerFilename) {
   const chains = [];
 
   function isClose(p1, p2) {
-    return Math.hypot(p1.x - p2.x, p1.y - p2.y) <= 0.1;
+    return Math.hypot(p1.x - p2.x, p1.y - p2.y) <= 0.02;
   }
 
   // Spatial hash grid (0.2 mm cells) for O(1) neighbor lookups
@@ -640,24 +626,23 @@ function assembleTrackChains(elements, layerFilename) {
       }
     }
 
-    // Determine terminal/end anchor points of this chain
-    const endpoints = [];
-    for (const node of component) {
-      endpoints.push(node.pts.start, node.pts.end);
-    }
-
+    // Determine terminal/end anchor points of this chain:
+    // A segment endpoint is a terminal anchor if no other segment j != i connects to it.
     const terminalAnchors = [];
-    for (let k = 0; k < endpoints.length; k++) {
-      const pt = endpoints[k];
-      let shareCount = 0;
-      for (let m = 0; m < endpoints.length; m++) {
-        if (isClose(pt, endpoints[m])) {
-          shareCount++;
+    for (const node of component) {
+      for (const pt of [node.pts.start, node.pts.end]) {
+        let connectedToOther = false;
+        for (const otherNode of component) {
+          if (otherNode === node) continue;
+          if (isClose(pt, otherNode.pts.start) || isClose(pt, otherNode.pts.end)) {
+            connectedToOther = true;
+            break;
+          }
         }
-      }
-      if (shareCount === 1) {
-        if (!terminalAnchors.some(t => isClose(t, pt))) {
-          terminalAnchors.push(pt);
+        if (!connectedToOther) {
+          if (!terminalAnchors.some(t => isClose(t, pt))) {
+            terminalAnchors.push(pt);
+          }
         }
       }
     }
@@ -665,9 +650,23 @@ function assembleTrackChains(elements, layerFilename) {
     const startAnchor = terminalAnchors[0] || component[0].pts.start;
     const endAnchor = terminalAnchors[1] || component[component.length - 1].pts.end;
 
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let totalLength = 0;
+    for (const node of component) {
+      if (node.pts && node.pts.start && node.pts.end) {
+        minX = Math.min(minX, node.pts.start.x, node.pts.end.x);
+        minY = Math.min(minY, node.pts.start.y, node.pts.end.y);
+        maxX = Math.max(maxX, node.pts.start.x, node.pts.end.x);
+        maxY = Math.max(maxY, node.pts.start.y, node.pts.end.y);
+        totalLength += Math.hypot(node.pts.end.x - node.pts.start.x, node.pts.end.y - node.pts.start.y);
+      }
+    }
+
     chains.push({
       startAnchor,
       endAnchor,
+      bbox: { minX, minY, maxX, maxY },
+      totalLength,
       subSegments: component.map(node => node.el)
     });
   }
@@ -757,138 +756,8 @@ function getDistance(el1, el2) {
   return Math.hypot(c1.x - c2.x, c1.y - c2.y);
 }
 
-/**
- * Softcoded determination of lengths, widths, and stroke-widths for SVG elements.
- * Accurately calculates bounding dimensions for paths, circles, rects, lines, polylines,
- * and component groups without dilating original native geometries.
- *
- * @param {Object} el - Element object from extractPrimitives or extractElements
- * @param {Object} [options] - Configuration overrides (e.g. standardTraceWidth)
- * @returns {{ width: number, length: number, strokeWidth: number, isClosed: boolean }}
- */
-export function determineElementDimensions(el, options = {}) {
-  const standardTraceWidth = options.standardTraceWidth ?? DIFF_CONFIG.DEFAULT_TRACE_WIDTH_MM;
-  const attrs = el.attrs || parseAttributes(el.fullMatch || '');
-  
-  // Check if native stroke-width is declared
-  let strokeWidth = 0;
-  const styleStr = attrs.style || '';
-  const swMatch = styleStr.match(/\bstroke-width\s*:\s*([^;]+)/i);
-  if (swMatch) {
-    strokeWidth = parseFloat(swMatch[1]) || 0;
-  } else if (attrs['stroke-width']) {
-    strokeWidth = parseFloat(attrs['stroke-width']) || 0;
-  }
 
-  // 1. Line element: length = distance between endpoints, width = strokeWidth or standardTraceWidth
-  if (el.tag === 'line') {
-    const x1 = parseFloat(attrs.x1 || 0);
-    const y1 = parseFloat(attrs.y1 || 0);
-    const x2 = parseFloat(attrs.x2 || 0);
-    const y2 = parseFloat(attrs.y2 || 0);
-    const length = Math.hypot(x2 - x1, y2 - y1);
-    const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
-    return { width, length, strokeWidth: width, isClosed: false };
-  }
 
-  // 2. Circle / Ellipse (e.g. circular pad or via)
-  if (el.tag === 'circle') {
-    const r = parseFloat(attrs.r || 0);
-    const diameter = 2 * r;
-    return { width: diameter, length: diameter, strokeWidth: 0, isClosed: true };
-  }
-  if (el.tag === 'ellipse') {
-    const rx = parseFloat(attrs.rx || 0);
-    const ry = parseFloat(attrs.ry || 0);
-    return { width: 2 * rx, length: 2 * ry, strokeWidth: 0, isClosed: true };
-  }
-
-  // 3. Rect element (e.g. SMD pad or component outline)
-  if (el.tag === 'rect') {
-    const width = parseFloat(attrs.width || 0);
-    const length = parseFloat(attrs.height || 0);
-    return { width, length, strokeWidth: 0, isClosed: true };
-  }
-
-  // 4. Path element (open trace vs closed pad)
-  if (el.tag === 'path') {
-    const d = attrs.d || '';
-    const isClosed = el.isClosedPath || /z\s*$/i.test(d.trim());
-    const coords = d.match(/[-+]?[0-9]*\.?[0-9]+/g);
-    
-    if (coords && coords.length >= 2) {
-      let minX = Infinity, maxX = -Infinity;
-      let minY = Infinity, maxY = -Infinity;
-      let totalLength = 0;
-      let prevX = null, prevY = null;
-
-      for (let i = 0; i < coords.length - 1; i += 2) {
-        const x = parseFloat(coords[i]);
-        const y = parseFloat(coords[i + 1]);
-        if (!isNaN(x) && !isNaN(y)) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-
-          if (prevX !== null && prevY !== null) {
-            totalLength += Math.hypot(x - prevX, y - prevY);
-          }
-          prevX = x;
-          prevY = y;
-        }
-      }
-
-      if (isClosed) {
-        const width = minX !== Infinity ? maxX - minX : 0;
-        const length = minY !== Infinity ? maxY - minY : 0;
-        return { width, length, strokeWidth: 0, isClosed: true };
-      } else {
-        const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
-        return { width, length: totalLength, strokeWidth: width, isClosed: false };
-      }
-    }
-  }
-
-  // 5. Polyline / Polygon
-  if (el.tag === 'polyline' || el.tag === 'polygon') {
-    const pointsStr = attrs.points || '';
-    const coords = pointsStr.match(/[-+]?[0-9]*\.?[0-9]+/g);
-    const isClosed = el.tag === 'polygon';
-    if (coords && coords.length >= 2) {
-      let minX = Infinity, maxX = -Infinity;
-      let minY = Infinity, maxY = -Infinity;
-      let totalLength = 0;
-      let prevX = null, prevY = null;
-
-      for (let i = 0; i < coords.length - 1; i += 2) {
-        const x = parseFloat(coords[i]);
-        const y = parseFloat(coords[i + 1]);
-        if (!isNaN(x) && !isNaN(y)) {
-          if (x < minX) minX = x;
-          if (x > maxX) maxX = x;
-          if (y < minY) minY = y;
-          if (y > maxY) maxY = y;
-
-          if (prevX !== null && prevY !== null) {
-            totalLength += Math.hypot(x - prevX, y - prevY);
-          }
-          prevX = x;
-          prevY = y;
-        }
-      }
-
-      if (isClosed) {
-        return { width: maxX - minX, length: maxY - minY, strokeWidth: 0, isClosed: true };
-      } else {
-        const width = strokeWidth > 0 ? strokeWidth : standardTraceWidth;
-        return { width, length: totalLength, strokeWidth: width, isClosed: false };
-      }
-    }
-  }
-
-  return { width: 0, length: 0, strokeWidth: 0, isClosed: false };
-}
 
 /**
  * Replaces KiCad's exported paper-color background (#F5F4EF cream / white) in schematic
@@ -1233,6 +1102,7 @@ function generatePreciseAuditLog(targetClassifications, baseClassifications, pcb
       }
 
       modifications.push({
+        id: `mod-${meta.diffIdx}`,
         diffIdx: meta.diffIdx,
         action,          // 'CHANGED' | 'ADDED' | 'DELETED'
         title,           // e.g. "changed spi2_cs trace", "deleted r38 component"
@@ -1321,7 +1191,24 @@ export function processSvgDiff(baseSvg, targetSvg, layerFilename, pcbMetadata = 
       // the same trace, causing false positives.
       const bKeys = bestBaseChain.subSegments.map(el => el.geoKey).sort();
       const tKeys = tChain.subSegments.map(el => el.geoKey).sort();
-      const chainsIdentical = bKeys.length === tKeys.length && bKeys.every((k, i) => k === tKeys[i]);
+      let chainsIdentical = bKeys.length === tKeys.length && bKeys.every((k, i) => k === tKeys[i]);
+
+      // Physical copper corridor tolerance: If chains have matching terminals (<=0.25mm),
+      // matching bounding boxes (<=0.15mm), and matching total lengths (<=0.25mm),
+      // they represent the exact same physical trace corridor even if CAD export
+      // sliced the line into differing segment counts or micro-jittered vertices.
+      if (!chainsIdentical && bestBaseChain.bbox && tChain.bbox) {
+        const dLen = Math.abs((bestBaseChain.totalLength || 0) - (tChain.totalLength || 0));
+        const dBox = Math.max(
+          Math.abs(bestBaseChain.bbox.minX - tChain.bbox.minX),
+          Math.abs(bestBaseChain.bbox.minY - tChain.bbox.minY),
+          Math.abs(bestBaseChain.bbox.maxX - tChain.bbox.maxX),
+          Math.abs(bestBaseChain.bbox.maxY - tChain.bbox.maxY)
+        );
+        if (minD <= 0.25 && dBox <= 0.15 && dLen <= 0.25) {
+          chainsIdentical = true;
+        }
+      }
 
       if (chainsIdentical) {
         // Chains are geometrically identical — classify as unchanged, no modification entry

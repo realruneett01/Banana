@@ -5,19 +5,23 @@ import {
   Tag,
   Typography,
   Badge,
-  Tooltip
+  Tooltip,
+  Avatar
 } from 'antd';
 import {
   FileSearchOutlined,
-  RobotOutlined
+  RobotOutlined,
+  GithubOutlined
 } from '@ant-design/icons';
 
-const { Text, Title } = Typography;
+const { Title } = Typography;
 
 export default function WorkspaceShell({
   onOpenCopilot,
   kicadVersion,
-  backendStatus
+  backendStatus,
+  githubUser,
+  onOpenGithubModal
 }) {
   return (
     <div style={{
@@ -73,8 +77,62 @@ export default function WorkspaceShell({
         </Tag>
       </Space>
 
-      {/* Right: KiCad Status + Copilot Launcher */}
+      {/* Right: GitHub Status + KiCad Status + Copilot Launcher */}
       <Space size="middle" align="center">
+        {/* GitHub Auth Button / User Profile Badge */}
+        {githubUser ? (
+          <Tooltip title={`Connected as @${githubUser.login} (Click to manage)`}>
+            <Button
+              type="text"
+              onClick={onOpenGithubModal}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '4px 10px',
+                height: '32px',
+                background: '#0f1015',
+                border: '1px solid #30363d',
+                borderRadius: '6px',
+                color: '#fff'
+              }}
+            >
+              <Avatar
+                src={githubUser.avatarUrl}
+                size={20}
+                icon={<GithubOutlined />}
+              />
+              <span style={{ fontSize: '12px', fontWeight: 600 }}>{githubUser.login}</span>
+              <span style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: '#00ff66',
+                display: 'inline-block',
+                boxShadow: '0 0 6px #00ff66'
+              }} />
+            </Button>
+          </Tooltip>
+        ) : (
+          <Tooltip title="Connect GitHub to diff remote repos & Pull Requests">
+            <Button
+              type="default"
+              icon={<GithubOutlined />}
+              onClick={onOpenGithubModal}
+              style={{
+                background: '#1c1f2b',
+                borderColor: '#30363d',
+                color: '#e2e8f0',
+                fontSize: '12px',
+                fontWeight: 500,
+                height: '32px'
+              }}
+            >
+              Connect GitHub
+            </Button>
+          </Tooltip>
+        )}
+
         {backendStatus === 'healthy' ? (
           <Badge
             count={`KiCad ${kicadVersion || 'CLI'}`}

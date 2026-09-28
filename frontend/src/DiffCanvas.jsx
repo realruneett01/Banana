@@ -12,20 +12,15 @@ const { Text } = Typography;
  * Normalizes backslashes to forward slashes and matches the filename
  * against the selected active layers checklist.
  */
+const PCB_LAYER_TOKENS = ['_cu', 'silkscreen', 'edge_cuts', 'silks', 'mask', 'paste', 'courtyard'];
+
 const isLayerActive = (filename, activeLayers) => {
   const name = filename.toLowerCase();
 
   // If it's a schematic export (usually single SVG like "analogins.svg"),
   // show it regardless of PCB layer filters.
-  if (
-    !name.includes('_cu') &&
-    !name.includes('silkscreen') &&
-    !name.includes('edge_cuts') &&
-    !name.includes('silks') &&
-    !name.includes('mask') &&
-    !name.includes('paste') &&
-    !name.includes('courtyard')
-  ) {
+  const isPcbLayer = PCB_LAYER_TOKENS.some((token) => name.includes(token));
+  if (!isPcbLayer) {
     return true;
   }
 
@@ -86,7 +81,7 @@ const applyTransformToDom = (element, transform) => {
   }
 };
 
-const SvgLayer = React.memo(({ filename, content, isBase, filterStyle, opacityStyle, mixBlendMode }) => {
+const SvgLayer = React.memo(({ content, filterStyle, opacityStyle, mixBlendMode }) => {
   return (
     <div
       style={{
@@ -150,8 +145,8 @@ const DiffCanvas = forwardRef(function DiffCanvas({
   onSliderChange,
   soloLayer,
   layerOpacities,
-  baseCommit,
-  targetCommit,
+  baseCommit: _baseCommit,
+  targetCommit: _targetCommit,
   activeAuditIdx,
   setActiveAuditIdx
 }, ref) {
@@ -226,34 +221,6 @@ const DiffCanvas = forwardRef(function DiffCanvas({
 
     requestAnimationFrame(tick);
   }, []);
-
-function getScreenCoordsFromSvg(viewportContentEl, coords) {
-  if (!coords) return null;
-  const svg = viewportContentEl.querySelector('svg');
-  if (!svg) return null;
-
-  const svgRect = svg.getBoundingClientRect();
-  const viewBoxStr = svg.getAttribute('viewBox');
-  if (!viewBoxStr) return null;
-
-  const vb = viewBoxStr.split(/[\s,]+/).map(parseFloat);
-  if (vb.length < 4 || vb[2] <= 0 || vb[3] <= 0) return null;
-
-  const vbW = vb[2];
-  const vbH = vb[3];
-
-  // KiCad SVGs preserve aspect ratio (xMidYMid meet)
-  const scale = Math.min(svgRect.width / vbW, svgRect.height / vbH);
-  const offsetX = (svgRect.width - vbW * scale) / 2;
-  const offsetY = (svgRect.height - vbH * scale) / 2;
-
-  return {
-    left: svgRect.left + offsetX + (coords.x - vb[0]) * scale,
-    top: svgRect.top + offsetY + (coords.y - vb[1]) * scale,
-    width: 0,
-    height: 0
-  };
-}
 
   // Draw glowing focus ring on modified element using native SVG coordinates
   const drawFocusRing = useCallback((targetElOrRect, ringClass, directCoords = null) => {

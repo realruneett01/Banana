@@ -121,9 +121,10 @@ function toBoardAbsolute(footprint, localX, localY, localRot = 0) {
 }
 
 function parseProperty(fpNode, propName) {
+    const targetName = propName.toLowerCase();
     let props = findSublists(fpNode, 'property');
     for (let p of props) {
-        if (p[1] === propName) {
+        if (typeof p[1] === 'string' && p[1].toLowerCase() === targetName) {
             let text = p[2];
             let atNode = findSublist(p, 'at');
             let x = 0, y = 0, rot = 0;
@@ -141,7 +142,7 @@ function parseProperty(fpNode, propName) {
     
     let fpTexts = findSublists(fpNode, 'fp_text');
     for (let ft of fpTexts) {
-        if (ft[1] === propName.toLowerCase()) {
+        if (typeof ft[1] === 'string' && ft[1].toLowerCase() === targetName) {
             let text = ft[2];
             let atNode = findSublist(ft, 'at');
             let x = 0, y = 0, rot = 0;
@@ -828,7 +829,7 @@ function parseKiCadBoard(filePath) {
             }
             
             footprints.push(fp);
-        } else if (keyword === 'segment') {
+        } else if (keyword === 'segment' || keyword === 'arc') {
             tracks.push(parseSegment(item, nets));
         } else if (keyword === 'via') {
             vias.push(parseVia(item, nets));
@@ -879,16 +880,18 @@ function parsePcbMetadata(pcbFileContent) {
     return { netMap, segments, footprints };
   }
 
-  // 1. Extract all Net definitions: (net 14 "/ETHERNET/PMODE1")
-  const netRegex = /\(net\s+(\d+)\s+"([^"]+)"\)/g;
+  // 1. Extract all Net definitions: (net 14 "/ETHERNET/PMODE1") or (net 14 "GND")
+  const netRegex = /\(net\s+(\d+)\s+(?:"([^"]+)"|([^\s)]+))\)/g;
   let netMatch;
   while ((netMatch = netRegex.exec(pcbFileContent)) !== null) {
-    netMap.set(parseInt(netMatch[1], 10), netMatch[2]);
+    const netName = netMatch[2] !== undefined ? netMatch[2] : netMatch[3];
+    netMap.set(parseInt(netMatch[1], 10), netName);
   }
 
-  // 2. Extract all Track Segments:
+  // 2. Extract all Track / Arc Segments:
   //    (segment (start X Y) (end X Y) (width W) (layer "L") (net N))
-  const segRegex = /\(segment\s+\(start\s+([\d.-]+)\s+([\d.-]+)\)\s+\(end\s+([\d.-]+)\s+([\d.-]+)\).*?\(layer\s+"?([^"\s)]+)"?\).*?\(net\s+(\d+)\)/g;
+  //    (arc (start X Y) (mid X Y) (end X Y) (width W) (layer "L") (net N))
+  const segRegex = /\((?:segment|arc)\s+.*?\(start\s+([\d.-]+)\s+([\d.-]+)\).*?\(end\s+([\d.-]+)\s+([\d.-]+)\).*?\(layer\s+"?([^"\s)]+)"?\).*?\(net\s+(\d+)\)/gs;
   let segMatch;
   while ((segMatch = segRegex.exec(pcbFileContent)) !== null) {
     const netId = parseInt(segMatch[6], 10);
@@ -901,17 +904,28 @@ function parsePcbMetadata(pcbFileContent) {
     });
   }
 
-  // 3. Extract Footprints / Components:
-  //    (footprint "..." (layer "...") (at X Y) ... (fp_text reference "R38" ...) (fp_text value "10k" ...))
-  const fpRegex = /\(footprint\s+"[^"]*"\s+\(layer\s+"?([^"\s)]+)"?\).*?\(at\s+([\d.-]+)\s+([\d.-]+)\).*?\(fp_text\s+reference\s+"([^"]+)"\s+\(at[^)]*\)[^)]*\)\s+\(fp_text\s+value\s+"([^"]+)"/gs;
+  // 3. Extract Footprints / Components (Universal across KiCad 7, 8, 9, 10+):
+  //    Handles both (property "Reference" "R38" ...) and (fp_text reference "R38" ...)
+  //    and arbitrary ordering of properties within (footprint ...) or (module ...)
+  const fpBlockRegex = /\((?:footprint|module)\s+"[^"]*"\s+\(layer\s+"?([^"\s)]+)"?\).*?\(at\s+([\d.-]+)\s+([\d.-]+)(?:\s+[\d.-]+)?\)([\s\S]*?)(?=\n\s*\((?:footprint|module|segment|arc|via|zone)|\n\s*\)$|$)/g;
   let fpMatch;
-  while ((fpMatch = fpRegex.exec(pcbFileContent)) !== null) {
-    footprints.push({
-      layer:  fpMatch[1],
-      center: { x: parseFloat(fpMatch[2]), y: parseFloat(fpMatch[3]) },
-      ref:    fpMatch[4],
-      value:  fpMatch[5]
-    });
+  while ((fpMatch = fpBlockRegex.exec(pcbFileContent)) !== null) {
+    const layer = fpMatch[1];
+    const x = parseFloat(fpMatch[2]);
+    const y = parseFloat(fpMatch[3]);
+    const body = fpMatch[4];
+
+    const refMatch = body.match(/\((?:property|fp_text)\s+"?[Rr]eference"?\s+"([^"]+)"/i);
+    const valMatch = body.match(/\((?:property|fp_text)\s+"?[Vv]alue"?\s+"([^"]+)"/i);
+
+    if (refMatch) {
+      footprints.push({
+        layer,
+        center: { x, y },
+        ref: refMatch[1],
+        value: valMatch ? valMatch[1] : ''
+      });
+    }
   }
 
   return { netMap, segments, footprints };
