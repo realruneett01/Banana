@@ -50,3 +50,6 @@ scratch/
 claude.md
 .mcp.json
 *.pdf
+backend/diag_runner.mjs
+backend/verify_fix.mjs
+generate_pdf.mjs

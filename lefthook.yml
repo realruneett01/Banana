@@ -1,0 +1,8 @@
+pre-commit:
+  parallel: true
+  commands:
+    formatting-check:
+      glob: "*.{js,ts,jsx,tsx,json}"
+      run: npx biome check --write {staged_files}
+    repowise-sync:
+      run: repowise status

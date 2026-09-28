@@ -120,158 +120,161 @@ function toBoardAbsolute(footprint, localX, localY, localRot = 0) {
     return { x: absX, y: absY, rotation: absRot };
 }
 
-function parseProperty(fpNode, propName) {
-    const targetName = propName.toLowerCase();
-    let props = findSublists(fpNode, 'property');
-    for (let p of props) {
-        if (typeof p[1] === 'string' && p[1].toLowerCase() === targetName) {
-            let text = p[2];
-            let atNode = findSublist(p, 'at');
-            let x = 0, y = 0, rot = 0;
-            if (atNode) {
-                x = parseFloat(atNode[1]);
-                y = parseFloat(atNode[2]);
-                if (atNode[3]) rot = parseFloat(atNode[3]);
-            }
-            let layerNode = findSublist(p, 'layer');
-            let layer = layerNode ? layerNode[1] : "";
-            let hide = findSublist(p, 'hide') !== null;
-            return { text, at: { x, y, rotation: rot }, layer, hide };
-        }
+function extractPropertyDetails(itemNode) {
+    let text = itemNode[2];
+    let atNode = findSublist(itemNode, 'at');
+    let x = 0, y = 0, rot = 0;
+    if (atNode) {
+        x = parseFloat(atNode[1]);
+        y = parseFloat(atNode[2]);
+        if (atNode[3]) rot = parseFloat(atNode[3]);
     }
-    
-    let fpTexts = findSublists(fpNode, 'fp_text');
-    for (let ft of fpTexts) {
-        if (typeof ft[1] === 'string' && ft[1].toLowerCase() === targetName) {
-            let text = ft[2];
-            let atNode = findSublist(ft, 'at');
-            let x = 0, y = 0, rot = 0;
-            if (atNode) {
-                x = parseFloat(atNode[1]);
-                y = parseFloat(atNode[2]);
-                if (atNode[3]) rot = parseFloat(atNode[3]);
-            }
-            let layerNode = findSublist(ft, 'layer');
-            let layer = layerNode ? layerNode[1] : "";
-            let hide = findSublist(ft, 'hide') !== null;
-            return { text, at: { x, y, rotation: rot }, layer, hide };
+    let layerNode = findSublist(itemNode, 'layer');
+    let layer = layerNode ? layerNode[1] : "";
+    let hide = findSublist(itemNode, 'hide') !== null;
+    return { text, at: { x, y, rotation: rot }, layer, hide };
+}
+
+function parseProperty(fpNode, propertyName) {
+    let targetName = propertyName.toLowerCase();
+    let candidates = [...findSublists(fpNode, 'property'), ...findSublists(fpNode, 'fp_text')];
+    for (let item of candidates) {
+        if (typeof item[1] === 'string' && item[1].toLowerCase() === targetName) {
+            return extractPropertyDetails(item);
         }
     }
     return { text: "", at: { x: 0, y: 0, rotation: 0 }, layer: "", hide: true };
+}
+
+function resolveNetName(netNode, netTable) {
+    if (!netNode) return undefined;
+    if (netNode.length >= 3) return netNode[2];
+    let val = netNode[1];
+    if (!isNaN(val)) {
+        let index = parseInt(val, 10);
+        return netTable.get(index) || ("net_" + index);
+    }
+    return val;
+}
+
+function extractLayersList(layersNode) {
+    if (!layersNode) return [];
+    let layers = [];
+    for (let i = 1; i < layersNode.length; i++) {
+        layers.push(layersNode[i]);
+    }
+    return layers;
+}
+
+function extractPointList(ptsNode) {
+    if (!ptsNode) return [];
+    let xyNodes = findSublists(ptsNode, 'xy');
+    return xyNodes.map(xy => ({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) }));
+}
+
+function parsePadDrill(drillNode) {
+    if (!drillNode) return undefined;
+    let sizeW = 0, sizeH = 0;
+    let offset = undefined;
+    let isOval = drillNode[1] === 'oval';
+    let idx = isOval ? 2 : 1;
+    
+    if (drillNode[idx]) {
+        sizeW = parseFloat(drillNode[idx]);
+        sizeH = sizeW;
+        if (isOval && drillNode[idx+1]) {
+            sizeH = parseFloat(drillNode[idx+1]);
+            idx++;
+        }
+        idx++;
+    }
+    
+    let offsetNode = findSublist(drillNode, 'offset');
+    if (offsetNode) {
+        offset = { x: parseFloat(offsetNode[1]), y: parseFloat(offsetNode[2]) };
+    }
+    return { size: { w: sizeW, h: sizeH }, offset };
+}
+
+function parseNodePoint(node) {
+    return node ? { x: parseFloat(node[1]), y: parseFloat(node[2]) } : undefined;
+}
+
+function calculateCircleRadius(centerNode, endNode) {
+    if (!centerNode || !endNode) return undefined;
+    return Math.hypot(parseFloat(endNode[1]) - parseFloat(centerNode[1]), parseFloat(endNode[2]) - parseFloat(centerNode[2]));
+}
+
+function parsePadPrimitive(prim) {
+    if (!Array.isArray(prim)) return null;
+    let typeClean = prim[0].replace('gr_', '');
+    let centerNode = findSublist(prim, 'center');
+    let endNode = findSublist(prim, 'end');
+    let startNode = findSublist(prim, 'start');
+    let pts = extractPointList(findSublist(prim, 'pts'));
+    let widthNode = findSublist(prim, 'width');
+    let radius = typeClean === 'circle' ? calculateCircleRadius(centerNode, endNode) : undefined;
+    
+    return {
+        type: typeClean,
+        center: parseNodePoint(centerNode),
+        end: parseNodePoint(endNode),
+        start: parseNodePoint(startNode),
+        pts: pts.length > 0 ? pts : undefined,
+        width: widthNode ? parseFloat(widthNode[1]) : undefined,
+        radius
+    };
+}
+
+function parsePadPrimitives(primitivesNode) {
+    if (!primitivesNode) return [];
+    let primitives = [];
+    for (let i = 1; i < primitivesNode.length; i++) {
+        let parsed = parsePadPrimitive(primitivesNode[i]);
+        if (parsed) primitives.push(parsed);
+    }
+    return primitives;
+}
+
+function parseAtNode(atNode) {
+    if (!atNode) return { x: 0, y: 0, rotation: 0 };
+    return {
+        x: parseFloat(atNode[1]),
+        y: parseFloat(atNode[2]),
+        rotation: atNode[3] ? parseFloat(atNode[3]) : 0
+    };
+}
+
+function parseSizeNode(sizeNode) {
+    if (!sizeNode) return { w: 0, h: 0 };
+    return { w: parseFloat(sizeNode[1]), h: parseFloat(sizeNode[2]) };
+}
+
+function extractPadMetadata(padNode) {
+    let pinfunctionNode = findSublist(padNode, 'pinfunction');
+    let pintypeNode = findSublist(padNode, 'pintype');
+    let roundrectRratioNode = findSublist(padNode, 'roundrect_rratio');
+    let uuidNode = findSublist(padNode, 'uuid') || findSublist(padNode, 'tstamp');
+    return {
+        pinfunction: pinfunctionNode ? pinfunctionNode[1] : undefined,
+        pintype: pintypeNode ? pintypeNode[1] : undefined,
+        roundrectRratio: roundrectRratioNode ? parseFloat(roundrectRratioNode[1]) : undefined,
+        uuid: uuidNode ? uuidNode[1] : undefined
+    };
 }
 
 function parsePad(padNode, footprint, netTable) {
     let number = padNode[1];
     let type = padNode[2];
     let shape = padNode[3];
-    
-    let atNode = findSublist(padNode, 'at');
-    let lx = 0, ly = 0, lrot = 0;
-    if (atNode) {
-        lx = parseFloat(atNode[1]);
-        ly = parseFloat(atNode[2]);
-        if (atNode[3]) lrot = parseFloat(atNode[3]);
-    }
-    
-    let sizeNode = findSublist(padNode, 'size');
-    let w = 0, h = 0;
-    if (sizeNode) {
-        w = parseFloat(sizeNode[1]);
-        h = parseFloat(sizeNode[2]);
-    }
-    
-    let drillNode = findSublist(padNode, 'drill');
-    let drill = undefined;
-    if (drillNode) {
-        let sizeW = 0, sizeH = 0;
-        let offset = undefined;
-        let isOval = drillNode[1] === 'oval';
-        let idx = isOval ? 2 : 1;
-        
-        if (drillNode[idx]) {
-            sizeW = parseFloat(drillNode[idx]);
-            sizeH = sizeW;
-            if (isOval && drillNode[idx+1]) {
-                sizeH = parseFloat(drillNode[idx+1]);
-                idx++;
-            }
-            idx++;
-        }
-        
-        let offsetNode = findSublist(drillNode, 'offset');
-        if (offsetNode) {
-            offset = { x: parseFloat(offsetNode[1]), y: parseFloat(offsetNode[2]) };
-        }
-        drill = { size: { w: sizeW, h: sizeH }, offset };
-    }
-    
-    let layersNode = findSublist(padNode, 'layers');
-    let layers = [];
-    if (layersNode) {
-        for (let i = 1; i < layersNode.length; i++) {
-            layers.push(layersNode[i]);
-        }
-    }
-    
-    let netNode = findSublist(padNode, 'net');
-    let netName = undefined;
-    if (netNode) {
-        if (netNode.length >= 3) {
-            netName = netNode[2];
-        } else {
-            let val = netNode[1];
-            if (!isNaN(val)) {
-                let index = parseInt(val);
-                netName = netTable.get(index) || ("net_" + index);
-            } else {
-                netName = val;
-            }
-        }
-    }
-    
-    let pinfunctionNode = findSublist(padNode, 'pinfunction');
-    let pintypeNode = findSublist(padNode, 'pintype');
-    let roundrectRratioNode = findSublist(padNode, 'roundrect_rratio');
-    let uuidNode = findSublist(padNode, 'uuid') || findSublist(padNode, 'tstamp');
-    
-    let primitives = [];
-    let primitivesNode = findSublist(padNode, 'primitives');
-    if (primitivesNode) {
-        for (let i = 1; i < primitivesNode.length; i++) {
-            let prim = primitivesNode[i];
-            if (Array.isArray(prim)) {
-                let primType = prim[0];
-                let typeClean = primType.replace('gr_', '');
-                let centerNode = findSublist(prim, 'center');
-                let endNode = findSublist(prim, 'end');
-                let startNode = findSublist(prim, 'start');
-                let ptsNode = findSublist(prim, 'pts');
-                let widthNode = findSublist(prim, 'width');
-                
-                let pts = [];
-                if (ptsNode) {
-                    let xyNodes = findSublists(ptsNode, 'xy');
-                    for (let xy of xyNodes) {
-                        pts.push({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) });
-                    }
-                }
-                
-                primitives.push({
-                    type: typeClean,
-                    center: centerNode ? { x: parseFloat(centerNode[1]), y: parseFloat(centerNode[2]) } : undefined,
-                    end: endNode ? { x: parseFloat(endNode[1]), y: parseFloat(endNode[2]) } : undefined,
-                    start: startNode ? { x: parseFloat(startNode[1]), y: parseFloat(startNode[2]) } : undefined,
-                    pts: pts.length > 0 ? pts : undefined,
-                    width: widthNode ? parseFloat(widthNode[1]) : undefined,
-                    radius: (typeClean === 'circle' && centerNode && endNode) ? 
-                        Math.sqrt(Math.pow(parseFloat(endNode[1]) - parseFloat(centerNode[1]), 2) + Math.pow(parseFloat(endNode[2]) - parseFloat(centerNode[2]), 2)) : undefined
-                });
-            }
-        }
-    }
-    
-    let localAt = { x: lx, y: ly, rotation: lrot };
-    let absAt = toBoardAbsolute(footprint, lx, ly, lrot);
+    let localAt = parseAtNode(findSublist(padNode, 'at'));
+    let absAt = toBoardAbsolute(footprint, localAt.x, localAt.y, localAt.rotation);
+    let size = parseSizeNode(findSublist(padNode, 'size'));
+    let drill = parsePadDrill(findSublist(padNode, 'drill'));
+    let layers = extractLayersList(findSublist(padNode, 'layers'));
+    let net = resolveNetName(findSublist(padNode, 'net'), netTable);
+    let primitives = parsePadPrimitives(findSublist(padNode, 'primitives'));
+    let meta = extractPadMetadata(padNode);
     
     return {
         number,
@@ -279,256 +282,175 @@ function parsePad(padNode, footprint, netTable) {
         shape,
         localAt,
         absAt,
-        size: { w, h },
+        size,
         drill,
         layers,
-        net: netName,
-        pinfunction: pinfunctionNode ? pinfunctionNode[1] : undefined,
-        pintype: pintypeNode ? pintypeNode[1] : undefined,
-        roundrectRratio: roundrectRratioNode ? parseFloat(roundrectRratioNode[1]) : undefined,
+        net,
+        primitives: primitives.length > 0 ? primitives : undefined,
+        ...meta
+    };
+}
+
+function extractTwoPoints(node, aKey, bKey) {
+    let a = findSublist(node, aKey);
+    let b = findSublist(node, bKey);
+    return (a && b) ? [
+        { x: parseFloat(a[1]), y: parseFloat(a[2]) },
+        { x: parseFloat(b[1]), y: parseFloat(b[2]) }
+    ] : [];
+}
+
+function extractShapePoints(type, node) {
+    if (type === 'line' || type === 'rect') return extractTwoPoints(node, 'start', 'end');
+    if (type === 'circle') return extractTwoPoints(node, 'center', 'end');
+    if (type === 'poly') {
+        let ptsNode = findSublist(node, 'pts');
+        return ptsNode ? findSublists(ptsNode, 'xy').map(xy => ({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) })) : [];
+    }
+    return [];
+}
+
+function extractGraphicWidth(gNode) {
+    let strokeNode = findSublist(gNode, 'stroke');
+    let widthNode = strokeNode ? findSublist(strokeNode, 'width') : findSublist(gNode, 'width');
+    return widthNode ? parseFloat(widthNode[1]) : undefined;
+}
+
+function extractGraphicText(type, gNode) {
+    let textNode = findSublist(gNode, 'text') || (type === 'text' ? gNode[1] : null);
+    return (type === 'text' && typeof textNode === 'string') ? textNode : (textNode && textNode[1]);
+}
+
+function extractGraphicCommon(gNode) {
+    let rawType = gNode[0];
+    let type = rawType.replace(/^(?:fp_|gr_)/, '');
+    let layerNode = findSublist(gNode, 'layer');
+    let uuidNode = findSublist(gNode, 'uuid') || findSublist(gNode, 'tstamp');
+    return {
+        type,
+        layer: layerNode ? layerNode[1] : "",
+        width: extractGraphicWidth(gNode),
+        text: extractGraphicText(type, gNode),
         uuid: uuidNode ? uuidNode[1] : undefined,
-        primitives: primitives.length > 0 ? primitives : undefined
+        pts: extractShapePoints(type, gNode)
     };
 }
 
 function parseFootprintGraphic(gNode, footprint) {
-    let type = gNode[0].replace('fp_', '');
-    let layerNode = findSublist(gNode, 'layer');
-    let layer = layerNode ? layerNode[1] : "";
-    let widthNode = findSublist(gNode, 'stroke') ? findSublist(findSublist(gNode, 'stroke'), 'width') : findSublist(gNode, 'width');
-    let width = widthNode ? parseFloat(widthNode[1]) : undefined;
-    let textNode = findSublist(gNode, 'text') || (type === 'text' ? gNode[1] : null);
-    let text = (type === 'text' && typeof textNode === 'string') ? textNode : (textNode && textNode[1]);
-    let uuidNode = findSublist(gNode, 'uuid') || findSublist(gNode, 'tstamp');
-    
-    let localPts = [];
-    if (type === 'line' || type === 'rect') {
-        let start = findSublist(gNode, 'start');
-        let end = findSublist(gNode, 'end');
-        if (start && end) {
-            localPts.push({ x: parseFloat(start[1]), y: parseFloat(start[2]) });
-            localPts.push({ x: parseFloat(end[1]), y: parseFloat(end[2]) });
-        }
-    } else if (type === 'circle') {
-        let center = findSublist(gNode, 'center');
-        let end = findSublist(gNode, 'end');
-        if (center && end) {
-            localPts.push({ x: parseFloat(center[1]), y: parseFloat(center[2]) });
-            localPts.push({ x: parseFloat(end[1]), y: parseFloat(end[2]) });
-        }
-    } else if (type === 'poly') {
-        let ptsNode = findSublist(gNode, 'pts');
-        if (ptsNode) {
-            let xyNodes = findSublists(ptsNode, 'xy');
-            for (let xy of xyNodes) {
-                localPts.push({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) });
-            }
-        }
-    }
-    
-    let absPts = localPts.map(pt => {
+    let common = extractGraphicCommon(gNode);
+    let absPts = common.pts.map(pt => {
         let res = toBoardAbsolute(footprint, pt.x, pt.y);
         return { x: res.x, y: res.y };
     });
-    
     return {
-        type,
-        layer,
-        localPts,
-        absPts,
-        width,
-        text,
-        uuid: uuidNode ? uuidNode[1] : undefined
+        type: common.type,
+        layer: common.layer,
+        width: common.width,
+        text: common.text,
+        uuid: common.uuid,
+        localPts: common.pts,
+        absPts
     };
 }
+
 
 function parseSegment(segNode, netTable) {
     let startNode = findSublist(segNode, 'start');
     let endNode = findSublist(segNode, 'end');
     let widthNode = findSublist(segNode, 'width');
     let layerNode = findSublist(segNode, 'layer');
-    let netNode = findSublist(segNode, 'net');
     let uuidNode = findSublist(segNode, 'uuid') || findSublist(segNode, 'tstamp');
-    
-    let netName = "";
-    if (netNode) {
-        let val = netNode[1];
-        if (!isNaN(val)) {
-            let index = parseInt(val);
-            netName = netTable.get(index) || ("net_" + index);
-        } else {
-            netName = val;
-        }
-    }
     
     return {
         start: { x: parseFloat(startNode[1]), y: parseFloat(startNode[2]) },
         end: { x: parseFloat(endNode[1]), y: parseFloat(endNode[2]) },
         width: widthNode ? parseFloat(widthNode[1]) : 0,
         layer: layerNode ? layerNode[1] : "",
-        net: netName,
+        net: resolveNetName(findSublist(segNode, 'net'), netTable) || "",
         uuid: uuidNode ? uuidNode[1] : undefined
     };
 }
 
+function resolveViaType(keyword) {
+    if (keyword === 'blind' || keyword === 'buried' || keyword === 'micro') return keyword;
+    return undefined;
+}
+
 function parseVia(viaNode, netTable) {
-    let type = viaNode[1] === 'blind' || viaNode[1] === 'buried' || viaNode[1] === 'micro' ? viaNode[1] : undefined;
+    let type = resolveViaType(viaNode[1]);
     let atNode = findSublist(viaNode, 'at');
     let sizeNode = findSublist(viaNode, 'size');
     let drillNode = findSublist(viaNode, 'drill');
-    let layersNode = findSublist(viaNode, 'layers');
-    let netNode = findSublist(viaNode, 'net');
     let uuidNode = findSublist(viaNode, 'uuid') || findSublist(viaNode, 'tstamp');
-    
-    let netName = "";
-    if (netNode) {
-        let val = netNode[1];
-        if (!isNaN(val)) {
-            let index = parseInt(val);
-            netName = netTable.get(index) || ("net_" + index);
-        } else {
-            netName = val;
-        }
-    }
-    
-    let layers = [];
-    if (layersNode) {
-        for (let i = 1; i < layersNode.length; i++) {
-            layers.push(layersNode[i]);
-        }
-    }
     
     return {
         type,
         at: { x: parseFloat(atNode[1]), y: parseFloat(atNode[2]) },
         size: sizeNode ? parseFloat(sizeNode[1]) : 0,
         drill: drillNode ? parseFloat(drillNode[1]) : 0,
-        layers,
-        net: netName,
+        layers: extractLayersList(findSublist(viaNode, 'layers')),
+        net: resolveNetName(findSublist(viaNode, 'net'), netTable) || "",
         uuid: uuidNode ? uuidNode[1] : undefined
     };
 }
 
-function parseZone(zoneNode, netTable) {
-    let netNode = findSublist(zoneNode, 'net');
-    let netName = "";
-    if (netNode) {
-        let val = netNode[1];
-        if (!isNaN(val)) {
-            let index = parseInt(val);
-            netName = netTable.get(index) || ("net_" + index);
-        } else {
-            netName = val;
-        }
-    }
-    
-    let layerNode = findSublist(zoneNode, 'layer');
-    let layersNode = findSublist(zoneNode, 'layers');
-    let layers = [];
-    if (layerNode) {
-        layers.push(layerNode[1]);
-    } else if (layersNode) {
-        for (let i = 1; i < layersNode.length; i++) {
-            layers.push(layersNode[i]);
-        }
-    }
-    
-    let hatchNode = findSublist(zoneNode, 'hatch');
-    let hatchMode = hatchNode ? hatchNode[1] : undefined;
-    let hatchSize = (hatchNode && hatchNode[2]) ? parseFloat(hatchNode[2]) : undefined;
-    
-    let connectPadsNode = findSublist(zoneNode, 'connect_pads');
-    let minThicknessNode = findSublist(zoneNode, 'min_thickness');
-    let filledAreasThicknessNode = findSublist(zoneNode, 'filled_areas_thickness');
-    let uuidNode = findSublist(zoneNode, 'uuid') || findSublist(zoneNode, 'tstamp');
-    
-    let polygonPts = [];
-    let polygonNode = findSublist(zoneNode, 'polygon');
-    if (polygonNode) {
-        let ptsNode = findSublist(polygonNode, 'pts');
-        if (ptsNode) {
-            let xyNodes = findSublists(ptsNode, 'xy');
-            for (let xy of xyNodes) {
-                polygonPts.push({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) });
-            }
-        }
-    }
-    
+function extractFilledPolygons(zoneNode) {
     let filledPolygons = [];
     let filledPolys = findSublists(zoneNode, 'filled_polygon');
     for (let fp of filledPolys) {
         let layerSub = findSublist(fp, 'layer');
-        let ptsSub = findSublist(fp, 'pts');
-        let pts = [];
-        if (ptsSub) {
-            let xyNodes = findSublists(ptsSub, 'xy');
-            for (let xy of xyNodes) {
-                pts.push({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) });
-            }
-        }
+        let pts = extractPointList(findSublist(fp, 'pts'));
         filledPolygons.push({
             layer: layerSub ? layerSub[1] : "",
             pts
         });
     }
-    
+    return filledPolygons;
+}
+
+function extractZoneHatch(zoneNode) {
+    let hatchNode = findSublist(zoneNode, 'hatch');
+    if (!hatchNode) return { hatchMode: undefined, hatchSize: undefined };
     return {
-        net: netName,
-        layers,
-        hatchMode,
-        hatchSize,
+        hatchMode: hatchNode[1],
+        hatchSize: hatchNode[2] ? parseFloat(hatchNode[2]) : undefined
+    };
+}
+
+function extractZoneThickness(zoneNode) {
+    let connectPadsNode = findSublist(zoneNode, 'connect_pads');
+    let minThicknessNode = findSublist(zoneNode, 'min_thickness');
+    let filledAreasThicknessNode = findSublist(zoneNode, 'filled_areas_thickness');
+    return {
         connectPads: connectPadsNode ? connectPadsNode[1] : undefined,
         minThickness: minThicknessNode ? parseFloat(minThicknessNode[1]) : undefined,
-        filledAreasThickness: filledAreasThicknessNode ? filledAreasThicknessNode[1] : undefined,
-        polygonPts,
+        filledAreasThickness: filledAreasThicknessNode ? parseFloat(filledAreasThicknessNode[1]) : undefined
+    };
+}
+
+function parseZone(zoneNode, netTable) {
+    let layerNode = findSublist(zoneNode, 'layer');
+    let layers = layerNode ? [layerNode[1]] : extractLayersList(findSublist(zoneNode, 'layers'));
+    let hatch = extractZoneHatch(zoneNode);
+    let thick = extractZoneThickness(zoneNode);
+    let uuidNode = findSublist(zoneNode, 'uuid') || findSublist(zoneNode, 'tstamp');
+    let polygonNode = findSublist(zoneNode, 'polygon');
+    let polygonPts = polygonNode ? extractPointList(findSublist(polygonNode, 'pts')) : [];
+    let filledPolygons = extractFilledPolygons(zoneNode);
+    
+    return {
+        net: resolveNetName(findSublist(zoneNode, 'net'), netTable) || "",
+        layers,
+        ...hatch,
+        ...thick,
+        polygon: polygonPts,
         filledPolygons,
         uuid: uuidNode ? uuidNode[1] : undefined
     };
 }
 
 function parseBoardGraphic(gNode) {
-    let type = gNode[0].replace('gr_', '');
-    let layerNode = findSublist(gNode, 'layer');
-    let layer = layerNode ? layerNode[1] : "";
-    let widthNode = findSublist(gNode, 'stroke') ? findSublist(findSublist(gNode, 'stroke'), 'width') : findSublist(gNode, 'width');
-    let width = widthNode ? parseFloat(widthNode[1]) : undefined;
-    let textNode = findSublist(gNode, 'text') || (type === 'text' ? gNode[1] : null);
-    let text = (type === 'text' && typeof textNode === 'string') ? textNode : (textNode && textNode[1]);
-    let uuidNode = findSublist(gNode, 'uuid') || findSublist(gNode, 'tstamp');
-    
-    let pts = [];
-    if (type === 'line' || type === 'rect') {
-        let start = findSublist(gNode, 'start');
-        let end = findSublist(gNode, 'end');
-        if (start && end) {
-            pts.push({ x: parseFloat(start[1]), y: parseFloat(start[2]) });
-            pts.push({ x: parseFloat(end[1]), y: parseFloat(end[2]) });
-        }
-    } else if (type === 'circle') {
-        let center = findSublist(gNode, 'center');
-        let end = findSublist(gNode, 'end');
-        if (center && end) {
-            pts.push({ x: parseFloat(center[1]), y: parseFloat(center[2]) });
-            pts.push({ x: parseFloat(end[1]), y: parseFloat(end[2]) });
-        }
-    } else if (type === 'poly') {
-        let ptsNode = findSublist(gNode, 'pts');
-        if (ptsNode) {
-            let xyNodes = findSublists(ptsNode, 'xy');
-            for (let xy of xyNodes) {
-                pts.push({ x: parseFloat(xy[1]), y: parseFloat(xy[2]) });
-            }
-        }
-    }
-    
-    return {
-        type,
-        layer,
-        pts,
-        width,
-        text,
-        uuid: uuidNode ? uuidNode[1] : undefined
-    };
+    return extractGraphicCommon(gNode);
 }
 
 function parseDimension(dimNode) {
@@ -585,349 +507,316 @@ function parseGroup(groupNode) {
  * full parseKiCadBoard pipeline and can therefore be used stand-alone by audit
  * reporters and diff processors that only need net-name resolution for trace diffs.
  */
+function isNetDeclarationToken(token) {
+  return (
+    Array.isArray(token) &&
+    token[0] === 'net' &&
+    token.length >= 3 &&
+    !isNaN(token[1]) &&
+    typeof token[2] === 'string'
+  );
+}
+
+function extractSegPoints(segProps) {
+  const start = segProps.start ? { x: parseFloat(segProps.start[0]), y: parseFloat(segProps.start[1]) } : null;
+  const end = segProps.end ? { x: parseFloat(segProps.end[0]), y: parseFloat(segProps.end[1]) } : null;
+  return { start, end };
+}
+
+function parseSingleTrackSegment(token, netIndexMap) {
+  const segProps = Object.fromEntries(
+    token.slice(1).map(item =>
+      Array.isArray(item) ? [item[0], item.slice(1)] : [item, true]
+    )
+  );
+
+  const netId = segProps.net ? parseInt(segProps.net[0], 10) : 0;
+  const netName = netIndexMap.get(netId) || 'unconnected';
+  const layer = segProps.layer ? segProps.layer[0] : 'F.Cu';
+  const { start, end } = extractSegPoints(segProps);
+
+  return (start && end) ? { start, end, netId, netName, layer } : null;
+}
+
+/**
+ * Extracts and maps all track segments with their resolved net names and coordinates.
+ */
 function parsePcbNetSegments(pcbAst) {
-  const netIndexMap = new Map(); // netId -> netName
+  const netIndexMap = new Map();
   const trackSegments = [];
 
-  // 1. Build Net ID → Net Name dictionary from (net N "NET_NAME") declarations
   for (const token of pcbAst) {
-    if (
-      Array.isArray(token) &&
-      token[0] === 'net' &&
-      token.length >= 3 &&
-      !isNaN(token[1]) &&
-      typeof token[2] === 'string'
-    ) {
-      netIndexMap.set(parseInt(token[1]), token[2]);
+    if (isNetDeclarationToken(token)) {
+      netIndexMap.set(parseInt(token[1], 10), token[2]);
     }
   }
 
-  // 2. Extract track segments with resolved net names
   for (const token of pcbAst) {
-    if (!Array.isArray(token) || token[0] !== 'segment') continue;
-
-    const segProps = Object.fromEntries(
-      token.slice(1).map(item =>
-        Array.isArray(item) ? [item[0], item.slice(1)] : [item, true]
-      )
-    );
-
-    const netId   = segProps.net   ? parseInt(segProps.net[0]) : 0;
-    const netName = netIndexMap.get(netId) || 'unconnected';
-    const layer   = segProps.layer ? segProps.layer[0]        : 'F.Cu';
-    const start   = segProps.start
-      ? { x: parseFloat(segProps.start[0]), y: parseFloat(segProps.start[1]) }
-      : null;
-    const end     = segProps.end
-      ? { x: parseFloat(segProps.end[0]),   y: parseFloat(segProps.end[1]) }
-      : null;
-
-    if (start && end) {
-      trackSegments.push({ start, end, netId, netName, layer });
+    if (Array.isArray(token) && token[0] === 'segment') {
+      const seg = parseSingleTrackSegment(token, netIndexMap);
+      if (seg) trackSegments.push(seg);
     }
   }
 
   return { netIndexMap, trackSegments };
 }
 
+function extractPcbTitleBlock(titleBlockNode) {
+  if (!titleBlockNode) return undefined;
+  let title = findSublist(titleBlockNode, 'title')?.[1];
+  let date = findSublist(titleBlockNode, 'date')?.[1];
+  let rev = findSublist(titleBlockNode, 'rev')?.[1];
+  let company = findSublist(titleBlockNode, 'company')?.[1];
+  let comments = [];
+  for (let i = 1; i <= 9; i++) {
+    let comment = findSublist(titleBlockNode, 'comment ' + i) || findSublist(titleBlockNode, `comment_${i}`) || findSublist(titleBlockNode, `comment${i}`);
+    if (comment) comments.push(comment[1]);
+  }
+  return { title, date, rev, company, comments };
+}
+
+function parsePcbMetadataHeader(root) {
+  let version = findSublist(root, 'version')?.[1] || "";
+  let generator = findSublist(root, 'generator')?.[1] || "";
+  let generatorVersion = findSublist(root, 'generator_version')?.[1] || "";
+  let general = findSublist(root, 'general');
+  let thickNode = general ? findSublist(general, 'thickness') : null;
+  let thickness = thickNode ? parseFloat(thickNode[1]) : undefined;
+  let paper = findSublist(root, 'paper');
+  let paperSize = paper ? paper[1] : undefined;
+  let titleBlock = extractPcbTitleBlock(findSublist(root, 'title_block'));
+  return { version, generator, generatorVersion, thickness, paperSize, titleBlock };
+}
+
+function parsePcbLayers(root) {
+  let layers = new Map();
+  let layersNode = findSublist(root, 'layers');
+  if (layersNode) {
+    for (let i = 1; i < layersNode.length; i++) {
+      let item = layersNode[i];
+      if (Array.isArray(item)) {
+        let index = parseInt(item[0], 10);
+        let canonicalName = item[1];
+        let type = item[2];
+        let userName = item[3];
+        layers.set(canonicalName, { index, name: canonicalName, type, userName });
+      }
+    }
+  }
+  return layers;
+}
+
+function parsePcbNets(root) {
+  let nets = new Map();
+  let netNodes = findSublists(root, 'net');
+  for (let node of netNodes) {
+    if (node.length >= 3) {
+      let index = parseInt(node[1], 10);
+      let name = node[2];
+      nets.set(index, name);
+    }
+  }
+  return nets;
+}
+
+function parseSingleNetClass(node) {
+  let name = node[1];
+  let descNode = findSublist(node, 'description');
+  let description = descNode ? descNode[1] : undefined;
+  let clearanceNode = findSublist(node, 'clearance');
+  let traceWidthNode = findSublist(node, 'trace_width');
+  let viaDiaNode = findSublist(node, 'via_dia');
+  let viaDrillNode = findSublist(node, 'via_drill');
+  let uviaDiaNode = findSublist(node, 'uvia_dia');
+  let uviaDrillNode = findSublist(node, 'uvia_drill');
+  let nets = findSublists(node, 'add_net').map(an => an[1]);
+  return {
+    name,
+    description,
+    clearance: clearanceNode ? parseFloat(clearanceNode[1]) : 0,
+    traceWidth: traceWidthNode ? parseFloat(traceWidthNode[1]) : 0,
+    viaDia: viaDiaNode ? parseFloat(viaDiaNode[1]) : 0,
+    viaDrill: viaDrillNode ? parseFloat(viaDrillNode[1]) : 0,
+    uviaDia: uviaDiaNode ? parseFloat(uviaDiaNode[1]) : undefined,
+    uviaDrill: uviaDrillNode ? parseFloat(uviaDrillNode[1]) : undefined,
+    nets
+  };
+}
+
+function parsePcbNetClasses(root) {
+  return findSublists(root, 'net_class').map(parseSingleNetClass);
+}
+
+function parseFootprint3DModel(modelNode) {
+  if (!modelNode) return undefined;
+  let offsetNode = findSublist(modelNode, 'offset');
+  let scaleNode = findSublist(modelNode, 'scale');
+  let rotateNode = findSublist(modelNode, 'rotate');
+  return {
+    path: modelNode[1],
+    offset: offsetNode ? { x: parseFloat(offsetNode[1]), y: parseFloat(offsetNode[2]), z: parseFloat(offsetNode[3]) } : { x: 0, y: 0, z: 0 },
+    scale: scaleNode ? { x: parseFloat(scaleNode[1]), y: parseFloat(scaleNode[2]), z: parseFloat(scaleNode[3]) } : { x: 1, y: 1, z: 1 },
+    rotate: rotateNode ? { x: parseFloat(rotateNode[1]), y: parseFloat(rotateNode[2]), z: parseFloat(rotateNode[3]) } : { x: 0, y: 0, z: 0 }
+  };
+}
+
+function populateFootprintChildren(item, fp, nets) {
+  for (let subItem of item) {
+    if (!Array.isArray(subItem)) continue;
+    if (subItem[0] === 'pad') {
+      fp.pads.push(parsePad(subItem, fp, nets));
+    } else if (subItem[0].startsWith('fp_')) {
+      fp.graphics.push(parseFootprintGraphic(subItem, fp));
+    }
+  }
+}
+
+function parsePcbFootprintItem(item, nets) {
+  let libId = item[1];
+  let layerNode = findSublist(item, 'layer');
+  let layer = layerNode ? layerNode[1] : "";
+  let at = parseAtNode(findSublist(item, 'at'));
+  let uuidNode = findSublist(item, 'uuid') || findSublist(item, 'tstamp');
+  let descNode = findSublist(item, 'descr');
+  let tags = extractLayersList(findSublist(item, 'tags'));
+  let attrs = extractLayersList(findSublist(item, 'attr'));
+  
+  let fp = {
+    libId,
+    layer,
+    at,
+    reference: parseProperty(item, 'Reference'),
+    value: parseProperty(item, 'Value'),
+    uuid: uuidNode ? uuidNode[1] : undefined,
+    descr: descNode ? descNode[1] : undefined,
+    tags: tags.length > 0 ? tags : undefined,
+    attr: attrs.length > 0 ? attrs : undefined,
+    pads: [],
+    graphics: [],
+    model: parseFootprint3DModel(findSublist(item, 'model'))
+  };
+  
+  populateFootprintChildren(item, fp, nets);
+  return fp;
+}
+
+const BOARD_ITEM_DISPATCHERS = {
+  footprint: (item, nets, c) => c.footprints.push(parsePcbFootprintItem(item, nets)),
+  module: (item, nets, c) => c.footprints.push(parsePcbFootprintItem(item, nets)),
+  segment: (item, nets, c) => c.tracks.push(parseSegment(item, nets)),
+  arc: (item, nets, c) => c.tracks.push(parseSegment(item, nets)),
+  via: (item, nets, c) => c.vias.push(parseVia(item, nets)),
+  zone: (item, nets, c) => c.zones.push(parseZone(item, nets)),
+  dimension: (item, nets, c) => c.dimensions.push(parseDimension(item)),
+  group: (item, nets, c) => c.groups.push(parseGroup(item))
+};
+
+function dispatchBoardItem(item, nets, collections) {
+  const keyword = item[0];
+  const handler = BOARD_ITEM_DISPATCHERS[keyword];
+  if (handler) {
+    handler(item, nets, collections);
+  } else if (keyword?.startsWith('gr_')) {
+    collections.graphics.push(parseBoardGraphic(item));
+  }
+}
+
 /**
  * Main parse function. Takes file path, parses and returns the full typed board representation.
  */
 function parseKiCadBoard(filePath) {
-    const fileContent = fs.readFileSync(filePath, 'utf8');
-    const root = parseSExpr(fileContent);
-    
-    if (!root || root[0] !== 'kicad_pcb') {
-        throw new Error("Invalid .kicad_pcb file: root S-expression must be (kicad_pcb ...)");
-    }
-    
-    // 1. Metadata
-    let version = "";
-    let verNode = findSublist(root, 'version');
-    if (verNode) version = verNode[1];
-    
-    let generator = "";
-    let genNode = findSublist(root, 'generator');
-    if (genNode) generator = genNode[1];
-    
-    let generatorVersion = "";
-    let genVerNode = findSublist(root, 'generator_version');
-    if (genVerNode) generatorVersion = genVerNode[1];
-    
-    let general = findSublist(root, 'general');
-    let thickness = undefined;
-    if (general) {
-        let thickNode = findSublist(general, 'thickness');
-        if (thickNode) thickness = parseFloat(thickNode[1]);
-    }
-    
-    let paper = findSublist(root, 'paper');
-    let paperSize = paper ? paper[1] : undefined;
-    
-    let titleBlockNode = findSublist(root, 'title_block');
-    let titleBlock = undefined;
-    if (titleBlockNode) {
-        let title = findSublist(titleBlockNode, 'title');
-        let date = findSublist(titleBlockNode, 'date');
-        let rev = findSublist(titleBlockNode, 'rev');
-        let company = findSublist(titleBlockNode, 'company');
-        let comments = [];
-        for (let i = 1; i <= 9; i++) {
-            let comment = findSublist(titleBlockNode, 'comment ' + i) || findSublist(titleBlockNode, `comment_${i}`) || findSublist(titleBlockNode, `comment${i}`);
-            if (comment) comments.push(comment[1]);
-        }
-        titleBlock = {
-            title: title ? title[1] : undefined,
-            date: date ? date[1] : undefined,
-            rev: rev ? rev[1] : undefined,
-            company: company ? company[1] : undefined,
-            comments
-        };
-    }
-    
-    const metadata = { version, generator, generatorVersion, thickness, paperSize, titleBlock };
-    
-    // 2. Layers
-    let layers = new Map();
-    let layersNode = findSublist(root, 'layers');
-    if (layersNode) {
-        for (let i = 1; i < layersNode.length; i++) {
-            let item = layersNode[i];
-            if (Array.isArray(item)) {
-                let index = parseInt(item[0]);
-                let canonicalName = item[1];
-                let type = item[2];
-                let userName = item[3];
-                layers.set(canonicalName, { index, name: canonicalName, type, userName });
-            }
-        }
-    }
-    
-    // 3. Nets
-    let nets = new Map();
-    let netNodes = findSublists(root, 'net');
-    for (let node of netNodes) {
-        if (node.length >= 3) {
-            let index = parseInt(node[1]);
-            let name = node[2];
-            nets.set(index, name);
-        }
-    }
-    
-    // 4. Net Classes
-    let netClasses = [];
-    let netClassNodes = findSublists(root, 'net_class');
-    for (let node of netClassNodes) {
-        let name = node[1];
-        let descNode = findSublist(node, 'description');
-        let description = descNode ? descNode[1] : undefined;
-        
-        let clearanceNode = findSublist(node, 'clearance');
-        let traceWidthNode = findSublist(node, 'trace_width');
-        let viaDiaNode = findSublist(node, 'via_dia');
-        let viaDrillNode = findSublist(node, 'via_drill');
-        let uviaDiaNode = findSublist(node, 'uvia_dia');
-        let uviaDrillNode = findSublist(node, 'uvia_drill');
-        
-        let classNets = [];
-        let addNetNodes = findSublists(node, 'add_net');
-        for (let an of addNetNodes) {
-            classNets.push(an[1]);
-        }
-        
-        netClasses.push({
-            name,
-            description,
-            clearance: clearanceNode ? parseFloat(clearanceNode[1]) : 0,
-            traceWidth: traceWidthNode ? parseFloat(traceWidthNode[1]) : 0,
-            viaDia: viaDiaNode ? parseFloat(viaDiaNode[1]) : 0,
-            viaDrill: viaDrillNode ? parseFloat(viaDrillNode[1]) : 0,
-            uviaDia: uviaDiaNode ? parseFloat(uviaDiaNode[1]) : undefined,
-            uviaDrill: uviaDrillNode ? parseFloat(uviaDrillNode[1]) : undefined,
-            nets: classNets
-        });
-    }
-    
-    // 5. Footprints, Tracks, Vias, Zones, Graphics, Dimensions, Groups
-    let footprints = [];
-    let tracks = [];
-    let vias = [];
-    let zones = [];
-    let graphics = [];
-    let dimensions = [];
-    let groups = [];
-    
-    for (let item of root) {
-        if (!Array.isArray(item)) continue;
-        
-        let keyword = item[0];
-        if (keyword === 'footprint' || keyword === 'module') {
-            let libId = item[1];
-            let layerNode = findSublist(item, 'layer');
-            let layer = layerNode ? layerNode[1] : "";
-            
-            let atNode = findSublist(item, 'at');
-            let x = 0, y = 0, rotation = 0;
-            if (atNode) {
-                x = parseFloat(atNode[1]);
-                y = parseFloat(atNode[2]);
-                if (atNode[3]) rotation = parseFloat(atNode[3]);
-            }
-            
-            let uuidNode = findSublist(item, 'uuid') || findSublist(item, 'tstamp');
-            let descNode = findSublist(item, 'descr');
-            
-            let tagsNode = findSublist(item, 'tags');
-            let tags = [];
-            if (tagsNode) {
-                for (let i = 1; i < tagsNode.length; i++) tags.push(tagsNode[i]);
-            }
-            
-            let attrs = [];
-            let attrNode = findSublist(item, 'attr');
-            if (attrNode) {
-                for (let i = 1; i < attrNode.length; i++) attrs.push(attrNode[i]);
-            }
-            
-            let fp = {
-                libId,
-                layer,
-                at: { x, y, rotation },
-                reference: parseProperty(item, 'Reference'),
-                value: parseProperty(item, 'Value'),
-                uuid: uuidNode ? uuidNode[1] : undefined,
-                descr: descNode ? descNode[1] : undefined,
-                tags: tags.length > 0 ? tags : undefined,
-                attr: attrs.length > 0 ? attrs : undefined,
-                pads: [],
-                graphics: []
-            };
-            
-            // Model
-            let modelNode = findSublist(item, 'model');
-            if (modelNode) {
-                let path = modelNode[1];
-                let offsetNode = findSublist(modelNode, 'offset');
-                let scaleNode = findSublist(modelNode, 'scale');
-                let rotateNode = findSublist(modelNode, 'rotate');
-                fp.model = {
-                    path,
-                    offset: offsetNode ? { x: parseFloat(offsetNode[1]), y: parseFloat(offsetNode[2]), z: parseFloat(offsetNode[3]) } : { x: 0, y: 0, z: 0 },
-                    scale: scaleNode ? { x: parseFloat(scaleNode[1]), y: parseFloat(scaleNode[2]), z: parseFloat(scaleNode[3]) } : { x: 1, y: 1, z: 1 },
-                    rotate: rotateNode ? { x: parseFloat(rotateNode[1]), y: parseFloat(rotateNode[2]), z: parseFloat(rotateNode[3]) } : { x: 0, y: 0, z: 0 }
-                };
-            }
-            
-            // Pad and Graphics parsing inside footprints
-            for (let subItem of item) {
-                if (!Array.isArray(subItem)) continue;
-                if (subItem[0] === 'pad') {
-                    fp.pads.push(parsePad(subItem, fp, nets));
-                } else if (subItem[0].startsWith('fp_')) {
-                    fp.graphics.push(parseFootprintGraphic(subItem, fp));
-                }
-            }
-            
-            footprints.push(fp);
-        } else if (keyword === 'segment' || keyword === 'arc') {
-            tracks.push(parseSegment(item, nets));
-        } else if (keyword === 'via') {
-            vias.push(parseVia(item, nets));
-        } else if (keyword === 'zone') {
-            zones.push(parseZone(item, nets));
-        } else if (keyword.startsWith('gr_')) {
-            graphics.push(parseBoardGraphic(item));
-        } else if (keyword === 'dimension') {
-            dimensions.push(parseDimension(item));
-        } else if (keyword === 'group') {
-            groups.push(parseGroup(item));
-        }
-    }
-    
-    return {
-        metadata,
-        layers,
-        nets,
-        netClasses,
-        footprints,
-        tracks,
-        vias,
-        zones,
-        graphics,
-        dimensions,
-        groups
-    };
+  const fileContent = fs.readFileSync(filePath, 'utf8');
+  const root = parseSExpr(fileContent);
+  
+  if (!root || root[0] !== 'kicad_pcb') {
+    throw new Error("Invalid .kicad_pcb file: root S-expression must be (kicad_pcb ...)");
+  }
+  
+  const metadata = parsePcbMetadataHeader(root);
+  const layers = parsePcbLayers(root);
+  const nets = parsePcbNets(root);
+  const netClasses = parsePcbNetClasses(root);
+  
+  const collections = {
+    footprints: [],
+    tracks: [],
+    vias: [],
+    zones: [],
+    graphics: [],
+    dimensions: [],
+    groups: []
+  };
+  
+  for (const item of root) {
+    if (Array.isArray(item)) dispatchBoardItem(item, nets, collections);
+  }
+  
+  return {
+    metadata,
+    layers,
+    nets,
+    netClasses,
+    ...collections
+  };
 }
 
-/**
- * Direct S-Expression regex parser for KiCad PCB tracks, nets, and footprints.
- *
- * This is intentionally a lightweight, regex-based extractor that works on raw
- * file-content strings — no full AST parse required. It is designed to be called
- * from server.js to populate pcbMetadata before passing it into processSvgDiff.
- *
- * Returns:
- *   netMap     Map<netId:number, netName:string>
- *   segments   Array<{ start, end, layer, netId, netName }>
- *   footprints Array<{ ref, value, center: {x,y}, layer }>
- */
-function parsePcbMetadata(pcbFileContent) {
-  const netMap    = new Map(); // netId (number) -> netName (string)
-  const segments  = [];       // { start:{x,y}, end:{x,y}, netName, layer }
-  const footprints = [];      // { ref, value, center:{x,y}, layer }
-
-  if (!pcbFileContent || typeof pcbFileContent !== 'string') {
-    return { netMap, segments, footprints };
-  }
-
-  // 1. Extract all Net definitions: (net 14 "/ETHERNET/PMODE1") or (net 14 "GND")
+function extractRegexNets(content) {
+  const netMap = new Map();
   const netRegex = /\(net\s+(\d+)\s+(?:"([^"]+)"|([^\s)]+))\)/g;
-  let netMatch;
-  while ((netMatch = netRegex.exec(pcbFileContent)) !== null) {
-    const netName = netMatch[2] !== undefined ? netMatch[2] : netMatch[3];
-    netMap.set(parseInt(netMatch[1], 10), netName);
+  let m;
+  while ((m = netRegex.exec(content)) !== null) {
+    netMap.set(parseInt(m[1], 10), m[2] !== undefined ? m[2] : m[3]);
   }
+  return netMap;
+}
 
-  // 2. Extract all Track / Arc Segments:
-  //    (segment (start X Y) (end X Y) (width W) (layer "L") (net N))
-  //    (arc (start X Y) (mid X Y) (end X Y) (width W) (layer "L") (net N))
+function extractRegexSegments(content, netMap) {
+  const segments = [];
   const segRegex = /\((?:segment|arc)\s+.*?\(start\s+([\d.-]+)\s+([\d.-]+)\).*?\(end\s+([\d.-]+)\s+([\d.-]+)\).*?\(layer\s+"?([^"\s)]+)"?\).*?\(net\s+(\d+)\)/gs;
-  let segMatch;
-  while ((segMatch = segRegex.exec(pcbFileContent)) !== null) {
-    const netId = parseInt(segMatch[6], 10);
+  let m;
+  while ((m = segRegex.exec(content)) !== null) {
+    const netId = parseInt(m[6], 10);
     segments.push({
-      start:   { x: parseFloat(segMatch[1]), y: parseFloat(segMatch[2]) },
-      end:     { x: parseFloat(segMatch[3]), y: parseFloat(segMatch[4]) },
-      layer:   segMatch[5],
+      start: { x: parseFloat(m[1]), y: parseFloat(m[2]) },
+      end: { x: parseFloat(m[3]), y: parseFloat(m[4]) },
+      layer: m[5],
       netId,
       netName: netMap.get(netId) || `Net-${netId}`
     });
   }
+  return segments;
+}
 
-  // 3. Extract Footprints / Components (Universal across KiCad 7, 8, 9, 10+):
-  //    Handles both (property "Reference" "R38" ...) and (fp_text reference "R38" ...)
-  //    and arbitrary ordering of properties within (footprint ...) or (module ...)
+function extractRegexFootprints(content) {
+  const footprints = [];
   const fpBlockRegex = /\((?:footprint|module)\s+"[^"]*"\s+\(layer\s+"?([^"\s)]+)"?\).*?\(at\s+([\d.-]+)\s+([\d.-]+)(?:\s+[\d.-]+)?\)([\s\S]*?)(?=\n\s*\((?:footprint|module|segment|arc|via|zone)|\n\s*\)$|$)/g;
-  let fpMatch;
-  while ((fpMatch = fpBlockRegex.exec(pcbFileContent)) !== null) {
-    const layer = fpMatch[1];
-    const x = parseFloat(fpMatch[2]);
-    const y = parseFloat(fpMatch[3]);
-    const body = fpMatch[4];
-
+  let m;
+  while ((m = fpBlockRegex.exec(content)) !== null) {
+    const body = m[4];
     const refMatch = body.match(/\((?:property|fp_text)\s+"?[Rr]eference"?\s+"([^"]+)"/i);
     const valMatch = body.match(/\((?:property|fp_text)\s+"?[Vv]alue"?\s+"([^"]+)"/i);
-
     if (refMatch) {
       footprints.push({
-        layer,
-        center: { x, y },
+        layer: m[1],
+        center: { x: parseFloat(m[2]), y: parseFloat(m[3]) },
         ref: refMatch[1],
         value: valMatch ? valMatch[1] : ''
       });
     }
   }
+  return footprints;
+}
 
+/**
+ * Direct S-Expression regex parser for KiCad PCB tracks, nets, and footprints.
+ */
+function parsePcbMetadata(pcbFileContent) {
+  if (!pcbFileContent || typeof pcbFileContent !== 'string') {
+    return { netMap: new Map(), segments: [], footprints: [] };
+  }
+  const netMap = extractRegexNets(pcbFileContent);
+  const segments = extractRegexSegments(pcbFileContent, netMap);
+  const footprints = extractRegexFootprints(pcbFileContent);
   return { netMap, segments, footprints };
 }
 

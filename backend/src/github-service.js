@@ -60,17 +60,15 @@ export async function exchangeCodeForToken(code) {
   return data.access_token;
 }
 
-/**
- * Verifies a GitHub access token or personal access token (PAT) and retrieves user profile.
- */
-export async function verifyTokenAndGetUser(token) {
-  if (!token) throw new Error('Missing GitHub access token');
-
-  const response = await fetch(`${GITHUB_API_URL}/user`, {
+async function fetchGithubJson(endpoint, token, options = {}) {
+  const url = endpoint.startsWith('http') ? endpoint : `${GITHUB_API_URL}${endpoint}`;
+  const response = await fetch(url, {
+    ...options,
     headers: {
       'Authorization': `Bearer ${token}`,
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': USER_AGENT
+      'User-Agent': USER_AGENT,
+      ...options.headers
     }
   });
 
@@ -79,10 +77,18 @@ export async function verifyTokenAndGetUser(token) {
       throw new Error('Invalid or expired GitHub access token. Please re-authenticate.');
     }
     const errorText = await response.text();
-    throw new Error(`GitHub user profile fetch failed (HTTP ${response.status}): ${errorText}`);
+    throw new Error(`GitHub request failed for ${url} (HTTP ${response.status}): ${errorText}`);
   }
+  return response.json();
+}
 
-  const user = await response.json();
+/**
+ * Verifies a GitHub access token or personal access token (PAT) and retrieves user profile.
+ */
+export async function verifyTokenAndGetUser(token) {
+  if (!token) throw new Error('Missing GitHub access token');
+
+  const user = await fetchGithubJson('/user', token);
   return {
     id: user.id,
     login: user.login,
@@ -99,24 +105,9 @@ export async function verifyTokenAndGetUser(token) {
  */
 export async function getUserRepositories(token, page = 1, perPage = 100) {
   if (!token) throw new Error('Missing GitHub access token');
+  const path = `/user/repos?sort=updated&direction=desc&per_page=${perPage}&page=${page}&affiliation=owner,collaborator,organization_member`;
+  const repos = await fetchGithubJson(path, token);
 
-  const response = await fetch(
-    `${GITHUB_API_URL}/user/repos?sort=updated&direction=desc&per_page=${perPage}&page=${page}&affiliation=owner,collaborator,organization_member`,
-    {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': USER_AGENT
-      }
-    }
-  );
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to list GitHub repositories (HTTP ${response.status}): ${errorText}`);
-  }
-
-  const repos = await response.json();
   return repos.map(r => ({
     id: r.id,
     name: r.name,
@@ -136,21 +127,8 @@ export async function getUserRepositories(token, page = 1, perPage = 100) {
  */
 export async function getRepoBranches(token, owner, repo) {
   if (!token) throw new Error('Missing GitHub access token');
+  const branches = await fetchGithubJson(`/repos/${owner}/${repo}/branches?per_page=100`, token);
 
-  const response = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/branches?per_page=100`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': USER_AGENT
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to fetch branches for ${owner}/${repo}: ${errorText}`);
-  }
-
-  const branches = await response.json();
   return branches.map(b => ({
     name: b.name,
     commitSha: b.commit?.sha
@@ -160,36 +138,48 @@ export async function getRepoBranches(token, owner, repo) {
 /**
  * Fetches commits for a repository, optionally filtered by branch and/or file path.
  */
-export async function getRepoCommits(token, owner, repo, sha = '', filePath = '', perPage = 50) {
-  if (!token) throw new Error('Missing GitHub access token');
-
-  const params = new URLSearchParams({ per_page: String(perPage) });
-  if (sha) params.append('sha', sha);
-  if (filePath) params.append('path', filePath);
-
-  const response = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/commits?${params.toString()}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': USER_AGENT
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to fetch commits for ${owner}/${repo}: ${errorText}`);
-  }
-
-  const commits = await response.json();
-  return commits.map(c => ({
+function formatCommitItem(c) {
+  const commitMsg = c.commit?.message || '';
+  const authorName = c.commit?.author?.name || c.author?.login || 'Unknown';
+  return {
     hash: c.sha,
     shortHash: c.sha ? c.sha.substring(0, 7) : '',
-    message: c.commit?.message?.split('\n')[0] || '',
-    fullMessage: c.commit?.message || '',
-    author: c.commit?.author?.name || c.author?.login || 'Unknown',
+    message: commitMsg.split('\n')[0],
+    fullMessage: commitMsg,
+    author: authorName,
     authorAvatar: c.author?.avatar_url || null,
     date: c.commit?.author?.date || null
-  }));
+  };
+}
+
+function resolveCommitQuery(options, restArgs) {
+  if (typeof options === 'object' && options !== null) {
+    return {
+      sha: options.sha,
+      pathFilter: options.filePath || options.path,
+      limit: options.perPage || 50
+    };
+  }
+  return {
+    sha: options,
+    pathFilter: restArgs[0],
+    limit: restArgs[1] || 50
+  };
+}
+
+/**
+ * Fetches commits for a repository, optionally filtered by branch and/or file path.
+ */
+export async function getRepoCommits(token, owner, repo, options = {}) {
+  if (!token) throw new Error('Missing GitHub access token');
+
+  const { sha, pathFilter, limit } = resolveCommitQuery(options, [arguments[4], arguments[5]]);
+  const params = new URLSearchParams({ per_page: String(limit) });
+  if (sha) params.append('sha', sha);
+  if (pathFilter) params.append('path', pathFilter);
+
+  const commits = await fetchGithubJson(`/repos/${owner}/${repo}/commits?${params.toString()}`, token);
+  return commits.map(formatCommitItem);
 }
 
 /**
@@ -197,21 +187,8 @@ export async function getRepoCommits(token, owner, repo, sha = '', filePath = ''
  */
 export async function getRepoPullRequests(token, owner, repo, state = 'open') {
   if (!token) throw new Error('Missing GitHub access token');
+  const pulls = await fetchGithubJson(`/repos/${owner}/${repo}/pulls?state=${state}&per_page=50`, token);
 
-  const response = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/pulls?state=${state}&per_page=50`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': USER_AGENT
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to fetch pull requests for ${owner}/${repo}: ${errorText}`);
-  }
-
-  const pulls = await response.json();
   return pulls.map(pr => ({
     id: pr.id,
     number: pr.number,
@@ -235,25 +212,10 @@ export async function getRepoPullRequests(token, owner, repo, state = 'open') {
  */
 export async function getRepoHardwareFiles(token, owner, repo, ref = 'main') {
   if (!token) throw new Error('Missing GitHub access token');
-
-  // Query git tree recursively for O(1) file discovery across the entire repository
-  const response = await fetch(`${GITHUB_API_URL}/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': USER_AGENT
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Failed to fetch git tree for ${owner}/${repo} at ${ref}: ${errorText}`);
-  }
-
-  const data = await response.json();
+  const data = await fetchGithubJson(`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`, token);
   const tree = data.tree || [];
 
-  const hardwareFiles = tree.filter(item => {
+  return tree.filter(item => {
     if (item.type !== 'blob') return false;
     return /\.(kicad_pcb|kicad_sch|sch|brd)$/i.test(item.path);
   }).map(item => ({
@@ -262,48 +224,33 @@ export async function getRepoHardwareFiles(token, owner, repo, ref = 'main') {
     sha: item.sha,
     isPcb: /\.kicad_pcb$/i.test(item.path)
   }));
-
-  return hardwareFiles;
 }
 
-/**
- * Downloads a specific version of a CAD file at a commit hash and writes it to disk.
- */
-export async function downloadRepoFile(token, owner, repo, filePath, commitSha, destinationPath) {
-  if (!token) throw new Error('Missing GitHub access token');
-
-  const parentDir = path.dirname(destinationPath);
-  if (!fs.existsSync(parentDir)) {
-    fs.mkdirSync(parentDir, { recursive: true });
+function resolveDownloadParams(options, restArgs) {
+  if (typeof options === 'object' && options !== null) {
+    return options;
   }
+  return {
+    owner: options,
+    repo: restArgs[0],
+    filePath: restArgs[1],
+    commitSha: restArgs[2],
+    destinationPath: restArgs[3]
+  };
+}
 
-  // If already cached on disk with size > 0, return cached path immediately
-  if (fs.existsSync(destinationPath)) {
-    try {
-      const stat = fs.statSync(destinationPath);
-      if (stat.size > 0) return destinationPath;
-    } catch (_) {}
-  }
-
-  // 1. Fetch raw content directly using GitHub's raw content endpoint
+async function fetchRawFileBuffer(token, params) {
+  const { owner, repo, filePath, commitSha } = params;
   const rawUrl = `${GITHUB_API_URL}/repos/${owner}/${repo}/contents/${filePath}?ref=${encodeURIComponent(commitSha)}`;
+  const fallbackUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(commitSha)}/${filePath}`;
+
+  const headers = { 'Authorization': `Bearer ${token}`, 'User-Agent': USER_AGENT };
   let response = await fetch(rawUrl, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.raw+json',
-      'User-Agent': USER_AGENT
-    }
+    headers: { ...headers, 'Accept': 'application/vnd.github.raw+json' }
   });
 
-  // 2. Fallback to raw.githubusercontent.com if needed
   if (!response.ok) {
-    const fallbackUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(commitSha)}/${filePath}`;
-    response = await fetch(fallbackUrl, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'User-Agent': USER_AGENT
-      }
-    });
+    response = await fetch(fallbackUrl, { headers });
   }
 
   if (!response.ok) {
@@ -311,7 +258,36 @@ export async function downloadRepoFile(token, owner, repo, filePath, commitSha, 
     throw new Error(`Failed to download ${filePath} at ${commitSha} from ${owner}/${repo} (HTTP ${response.status}): ${errText}`);
   }
 
-  const arrayBuffer = await response.arrayBuffer();
-  fs.writeFileSync(destinationPath, Buffer.from(arrayBuffer));
-  return destinationPath;
+  return response.arrayBuffer();
 }
+
+async function isExistingFileNonEmpty(dest) {
+  try {
+    const stat = await fs.promises.stat(dest);
+    return stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Downloads a specific version of a CAD file at a commit hash and writes it to disk.
+ */
+export async function downloadRepoFile(token, options) {
+  if (!token) throw new Error('Missing GitHub access token');
+
+  const params = resolveDownloadParams(options, Array.prototype.slice.call(arguments, 2));
+  const dest = params.destinationPath;
+
+  const parentDir = path.dirname(dest);
+  await fs.promises.mkdir(parentDir, { recursive: true });
+
+  if (await isExistingFileNonEmpty(dest)) {
+    return dest;
+  }
+
+  const arrayBuffer = await fetchRawFileBuffer(token, params);
+  await fs.promises.writeFile(dest, Buffer.from(arrayBuffer));
+  return dest;
+}
+

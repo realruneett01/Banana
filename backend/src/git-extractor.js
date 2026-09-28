@@ -3,6 +3,34 @@ import fs from 'fs';
 import path from 'path';
 
 /**
+ * Prepares and returns the destination output path within temp_storage.
+ * @param {string} targetFilename
+ * @returns {string}
+ */
+function prepareOutputPath(targetFilename) {
+  const outputPath = path.join(process.cwd(), 'temp_storage', targetFilename);
+  const parentDir = path.dirname(outputPath);
+  if (!fs.existsSync(parentDir)) {
+    fs.mkdirSync(parentDir, { recursive: true });
+  }
+  return outputPath;
+}
+
+/**
+ * Checks whether the destination file already exists with content.
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+function isCachedFileValid(filePath) {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    return fs.statSync(filePath).size > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Extracts a specific file version from a Git commit hash and saves it to temp_storage.
  * 
  * @param {string} repoPath - Path to the local git repository
@@ -12,27 +40,11 @@ import path from 'path';
  * @returns {Promise<string>} Path to the written file
  */
 export async function extractFileFromCommit(repoPath, commitHash, relativeFilePath, targetFilename) {
-  const tempDir = path.join(process.cwd(), 'temp_storage');
-  
-  // Ensure temp_storage directory exists
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
-
-  const outputPath = path.join(tempDir, targetFilename);
-  const parentDir = path.dirname(outputPath);
-  if (!fs.existsSync(parentDir)) {
-    fs.mkdirSync(parentDir, { recursive: true });
-  }
+  const outputPath = prepareOutputPath(targetFilename);
 
   // If file for this exact commit already exists with non-zero size, return immediately
-  if (fs.existsSync(outputPath)) {
-    try {
-      const stats = fs.statSync(outputPath);
-      if (stats.size > 0) {
-        return outputPath;
-      }
-    } catch (_) {}
+  if (isCachedFileValid(outputPath)) {
+    return outputPath;
   }
 
   const tStart = performance.now();

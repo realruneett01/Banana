@@ -3,15 +3,8 @@
  *
  * Senior Frontend Graphics & WebGL/SVG Engineering utility for KiCad SVG inspection,
  * sanitization, coordinate normalization, bounding-box calculation, and zoom-to-fit geometry.
- *
- * KiCad SVG Quirks Handled:
- * 1. Hardcoded physical unit locks (e.g. width="297.0000mm", height="210.0000mm", 11.69in).
- * 2. Embedded drawing sheets / title blocks taking up 90% of the canvas around small PCB outlines.
- * 3. Missing, offset, or negative viewBoxes causing clipping or coordinate drift.
- * 4. Coordinate conversions between Screen Pixels, SVG Coordinate Space, Millimeters (mm), and Mils.
  */
 
-// KiCad drawing sheet identifiers and paper color matches
 const DRAWING_SHEET_REGEX = /<g\b[^>]*(?:class|id)=["'][^"']*(?:kicad_drawing_sheet|drawing_sheet|title_block|worksheet_frame)[^"']*["']>[\s\S]*?<\/g>/gi;
 const PAPER_BG_REGEX = /<g\b[^>]*style=["'][^"']*fill:\s*#(?:F5F4EF|FFFFFF|FFFEF2|FEFEFE|F0EFE9|ffffff|fffef2|f5f4ef)[^"']*["']>\s*<rect\b[^>]*width=["']29[0-9][^"']*["'][^>]*\/?>\s*<\/g>/gi;
 const TITLE_TEXT_REGEX = /<text\b[^>]*class=["'][^"']*title_text[^"']*["']>[\s\S]*?<\/text>/gi;
@@ -25,7 +18,7 @@ const TITLE_TEXT_REGEX = /<text\b[^>]*class=["'][^"']*title_text[^"']*["']>[\s\S
 export function parseViewBox(viewBoxStr) {
   if (!viewBoxStr || typeof viewBoxStr !== 'string') return null;
   const parts = viewBoxStr.trim().split(/[\s,]+/).map(parseFloat);
-  if (parts.length < 4 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2]) || isNaN(parts[3])) {
+  if (parts.length < 4 || parts.slice(0, 4).some(isNaN)) {
     return null;
   }
   return {
@@ -46,67 +39,104 @@ export function formatViewBox(box) {
   return `${Number(box.minX.toFixed(4))} ${Number(box.minY.toFixed(4))} ${Number(box.width.toFixed(4))} ${Number(box.height.toFixed(4))}`;
 }
 
-/**
- * Extracts raw geometric bounding box from SVG markup using fast, robust regex parsing.
- * Analyzes path coordinates, circles, rects, lines, polylines, and polygons.
- * Detects whether Edge.Cuts (board outline) is present to prioritize board boundary.
- *
- * @param {string} svgContent
- * @param {Object} [options]
- * @param {boolean} [options.filterSheet=true] - Exclude full-page frame elements
- * @returns {{ minX: number, minY: number, maxX: number, maxY: number, width: number, height: number, hasEdgeCuts: boolean, edgeCutsBox?: Object }}
- */
-export function extractGraphicBoundingBox(svgContent, options = {}) {
-  const filterSheet = options.filterSheet !== false;
+function isWithinSheetBoundary(x, y) {
+  return x >= 1 && y >= 1 && x <= 296 && y <= 209;
+}
 
-  let minX = Infinity, maxX = -Infinity;
-  let minY = Infinity, maxY = -Infinity;
+class BBoxCollector {
+  constructor(filterSheet = true) {
+    this.filterSheet = filterSheet;
+    this.minX = Infinity;
+    this.maxX = -Infinity;
+    this.minY = Infinity;
+    this.maxY = -Infinity;
+    this.edgeMinX = Infinity;
+    this.edgeMaxX = -Infinity;
+    this.edgeMinY = Infinity;
+    this.edgeMaxY = -Infinity;
+    this.hasEdgeCuts = false;
+  }
 
-  let edgeMinX = Infinity, edgeMaxX = -Infinity;
-  let edgeMinY = Infinity, edgeMaxY = -Infinity;
-  let hasEdgeCuts = false;
+  updateMainBounds(x, y) {
+    this.minX = Math.min(this.minX, x);
+    this.maxX = Math.max(this.maxX, x);
+    this.minY = Math.min(this.minY, y);
+    this.maxY = Math.max(this.maxY, y);
+  }
 
-  // 1. Path elements
-  const pathRe = /<path\b([^>]*?)(?:\/>|>([\s\S]*?)<\/path>)/gi;
-  let m;
-  while ((m = pathRe.exec(svgContent)) !== null) {
-    const attrStr = m[1];
-    const isEdgeCut = /class=["'][^"']*(?:edge_cuts|Edge\.Cuts|Edge_Cuts)[^"']*["']/i.test(attrStr) ||
-                      /stroke=["'](?:#C8C832|#FFE600|yellow)["']/i.test(attrStr);
+  updateEdgeBounds(x, y) {
+    this.hasEdgeCuts = true;
+    this.edgeMinX = Math.min(this.edgeMinX, x);
+    this.edgeMaxX = Math.max(this.edgeMaxX, x);
+    this.edgeMinY = Math.min(this.edgeMinY, y);
+    this.edgeMaxY = Math.max(this.edgeMaxY, y);
+  }
 
-    const dMatch = attrStr.match(/\bd=["']([^"']+)["']/i);
-    if (!dMatch) continue;
+  addPoint(x, y, isEdgeCut = false) {
+    if (isNaN(x) || isNaN(y)) return;
+    if (this.filterSheet && !isWithinSheetBoundary(x, y)) return;
 
-    const coords = dMatch[1].match(/[-+]?[0-9]*\.?[0-9]+/g);
-    if (!coords || coords.length < 2) continue;
-
-    for (let i = 0; i < coords.length - 1; i += 2) {
-      const x = parseFloat(coords[i]);
-      const y = parseFloat(coords[i + 1]);
-      if (isNaN(x) || isNaN(y)) continue;
-
-      // Filter obvious A4 sheet margin outer borders (>290mm width, >200mm height) if filterSheet is active
-      if (filterSheet && (x < 1 || y < 1 || x > 296 || y > 209)) {
-        // Skip page boundary frame points
-      }
-
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-
-      if (isEdgeCut) {
-        hasEdgeCuts = true;
-        if (x < edgeMinX) edgeMinX = x;
-        if (x > edgeMaxX) edgeMaxX = x;
-        if (y < edgeMinY) edgeMinY = y;
-        if (y > edgeMaxY) edgeMaxY = y;
-      }
+    this.updateMainBounds(x, y);
+    if (isEdgeCut) {
+      this.updateEdgeBounds(x, y);
     }
   }
 
-  // 2. Circles & Ellipses (vias, round pads)
+  toResult() {
+    const safeMinX = this.minX === Infinity ? 0 : this.minX;
+    const safeMaxX = this.maxX === -Infinity ? 100 : this.maxX;
+    const safeMinY = this.minY === Infinity ? 0 : this.minY;
+    const safeMaxY = this.maxY === -Infinity ? 100 : this.maxY;
+
+    const result = {
+      minX: safeMinX,
+      minY: safeMinY,
+      maxX: safeMaxX,
+      maxY: safeMaxY,
+      width: Math.max(0.1, safeMaxX - safeMinX),
+      height: Math.max(0.1, safeMaxY - safeMinY),
+      hasEdgeCuts: this.hasEdgeCuts
+    };
+
+    if (this.hasEdgeCuts && this.edgeMinX !== Infinity) {
+      result.edgeCutsBox = {
+        minX: this.edgeMinX,
+        minY: this.edgeMinY,
+        maxX: this.edgeMaxX,
+        maxY: this.edgeMaxY,
+        width: Math.max(0.1, this.edgeMaxX - this.edgeMinX),
+        height: Math.max(0.1, this.edgeMaxY - this.edgeMinY)
+      };
+    }
+    return result;
+  }
+}
+
+function scanPathCoords(attrStr, collector) {
+  const isEdgeCut = /class=["'][^"']*(?:edge_cuts|Edge\.Cuts|Edge_Cuts)[^"']*["']/i.test(attrStr) ||
+                    /stroke=["'](?:#C8C832|#FFE600|yellow)["']/i.test(attrStr);
+  const dMatch = attrStr.match(/\bd=["']([^"']+)["']/i);
+  if (!dMatch) return;
+
+  const coords = dMatch[1].match(/[-+]?[0-9]*\.?[0-9]+/g);
+  if (!coords || coords.length < 2) return;
+
+  for (let i = 0; i < coords.length - 1; i += 2) {
+    collector.addPoint(parseFloat(coords[i]), parseFloat(coords[i + 1]), isEdgeCut);
+  }
+}
+
+function scanPaths(svgContent, collector) {
+  const pathRe = /<path\b([^>]*?)(?:\/>|>([\s\S]*?)<\/path>)/gi;
+  let m;
+  while ((m = pathRe.exec(svgContent)) !== null) {
+    scanPathCoords(m[1], collector);
+  }
+}
+
+function scanCircles(svgContent, collector) {
   const circleRe = /<(?:circle|ellipse)\b([^>]*?)\/?>/gi;
+  let m;
   while ((m = circleRe.exec(svgContent)) !== null) {
     const attrs = m[1];
     const cx = parseFloat(attrs.match(/\bcx=["']([^"']+)["']/i)?.[1] || 0);
@@ -115,32 +145,38 @@ export function extractGraphicBoundingBox(svgContent, options = {}) {
     const rx = parseFloat(attrs.match(/\brx=["']([^"']+)["']/i)?.[1] || r);
     const ry = parseFloat(attrs.match(/\bry=["']([^"']+)["']/i)?.[1] || r);
 
-    if (cx - rx < minX) minX = cx - rx;
-    if (cx + rx > maxX) maxX = cx + rx;
-    if (cy - ry < minY) minY = cy - ry;
-    if (cy + ry > maxY) maxY = cy + ry;
+    collector.addPoint(cx - rx, cy - ry);
+    collector.addPoint(cx + rx, cy + ry);
   }
+}
 
-  // 3. Rectangles (SMD pads, components)
+function isSheetBackgroundRect(w, h) {
+  return w > 150 && h > 100;
+}
+
+function extractRectMetrics(attrs) {
+  const w = parseFloat(attrs.match(/\bwidth=["']([^"']+)["']/i)?.[1] || 0);
+  const h = parseFloat(attrs.match(/\bheight=["']([^"']+)["']/i)?.[1] || 0);
+  const x = parseFloat(attrs.match(/\bx=["']([^"']+)["']/i)?.[1] || 0);
+  const y = parseFloat(attrs.match(/\by=["']([^"']+)["']/i)?.[1] || 0);
+  return { x, y, w, h };
+}
+
+function scanRects(svgContent, collector, filterSheet) {
   const rectRe = /<rect\b([^>]*?)\/?>/gi;
+  let m;
   while ((m = rectRe.exec(svgContent)) !== null) {
-    const attrs = m[1];
-    const w = parseFloat(attrs.match(/\bwidth=["']([^"']+)["']/i)?.[1] || 0);
-    const h = parseFloat(attrs.match(/\bheight=["']([^"']+)["']/i)?.[1] || 0);
-    // Ignore full-page worksheet background rects (>150mm x >100mm)
-    if (filterSheet && w > 150 && h > 100) continue;
+    const { x, y, w, h } = extractRectMetrics(m[1]);
+    if (filterSheet && isSheetBackgroundRect(w, h)) continue;
 
-    const x = parseFloat(attrs.match(/\bx=["']([^"']+)["']/i)?.[1] || 0);
-    const y = parseFloat(attrs.match(/\by=["']([^"']+)["']/i)?.[1] || 0);
-
-    if (x < minX) minX = x;
-    if (x + w > maxX) maxX = x + w;
-    if (y < minY) minY = y;
-    if (y + h > maxY) maxY = y + h;
+    collector.addPoint(x, y);
+    collector.addPoint(x + w, y + h);
   }
+}
 
-  // 4. Lines
+function scanLines(svgContent, collector) {
   const lineRe = /<line\b([^>]*?)\/?>/gi;
+  let m;
   while ((m = lineRe.exec(svgContent)) !== null) {
     const attrs = m[1];
     const x1 = parseFloat(attrs.match(/\bx1=["']([^"']+)["']/i)?.[1] || 0);
@@ -148,58 +184,72 @@ export function extractGraphicBoundingBox(svgContent, options = {}) {
     const x2 = parseFloat(attrs.match(/\bx2=["']([^"']+)["']/i)?.[1] || 0);
     const y2 = parseFloat(attrs.match(/\by2=["']([^"']+)["']/i)?.[1] || 0);
 
-    if (Math.min(x1, x2) < minX) minX = Math.min(x1, x2);
-    if (Math.max(x1, x2) > maxX) maxX = Math.max(x1, x2);
-    if (Math.min(y1, y2) < minY) minY = Math.min(y1, y2);
-    if (Math.max(y1, y2) > maxY) maxY = Math.max(y1, y2);
+    collector.addPoint(x1, y1);
+    collector.addPoint(x2, y2);
   }
+}
 
-  // Fallback if no geometry was captured
-  if (minX === Infinity) {
-    minX = 0; maxX = 100;
-    minY = 0; maxY = 100;
-  }
+/**
+ * Extracts raw geometric bounding box from SVG markup using fast regex parsing.
+ *
+ * @param {string} svgContent
+ * @param {Object} [options]
+ * @param {boolean} [options.filterSheet=true]
+ * @returns {{ minX: number, minY: number, maxX: number, maxY: number, width: number, height: number, hasEdgeCuts: boolean, edgeCutsBox?: Object }}
+ */
+export function extractGraphicBoundingBox(svgContent, options = {}) {
+  const filterSheet = options.filterSheet !== false;
+  const collector = new BBoxCollector(filterSheet);
 
-  const result = {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width: Math.max(0.1, maxX - minX),
-    height: Math.max(0.1, maxY - minY),
-    hasEdgeCuts
+  scanPaths(svgContent, collector);
+  scanCircles(svgContent, collector);
+  scanRects(svgContent, collector, filterSheet);
+  scanLines(svgContent, collector);
+
+  return collector.toResult();
+}
+
+function resolveGeometricViewBox(content, stripSheet, sheetPadding) {
+  const geoBox = extractGraphicBoundingBox(content, { filterSheet: stripSheet });
+  const targetBox = (stripSheet && geoBox.hasEdgeCuts && geoBox.edgeCutsBox)
+    ? geoBox.edgeCutsBox
+    : geoBox;
+
+  return {
+    minX: targetBox.minX - sheetPadding,
+    minY: targetBox.minY - sheetPadding,
+    width: targetBox.width + 2 * sheetPadding,
+    height: targetBox.height + 2 * sheetPadding
   };
+}
 
-  if (hasEdgeCuts && edgeMinX !== Infinity) {
-    result.edgeCutsBox = {
-      minX: edgeMinX,
-      minY: edgeMinY,
-      maxX: edgeMaxX,
-      maxY: edgeMaxY,
-      width: Math.max(0.1, edgeMaxX - edgeMinX),
-      height: Math.max(0.1, edgeMaxY - edgeMinY)
-    };
-  }
+function sanitizeRootSvgTag(rootAttrs, viewBox) {
+  const sanitizedAttrs = rootAttrs
+    .replace(/\b(?:width|height)=["'][^"']*["']/gi, '')
+    .replace(/\bviewBox=["'][^"']*["']/gi, '')
+    .replace(/\bstyle=["'][^"']*["']/gi, (styleAttr) => {
+      return styleAttr
+        .replace(/width\s*:\s*[^;]+;?/gi, '')
+        .replace(/height\s*:\s*[^;]+;?/gi, '');
+    });
 
-  return result;
+  const viewBoxStr = formatViewBox(viewBox);
+  return `<svg ${sanitizedAttrs.trim()} width="100%" height="100%" viewBox="${viewBoxStr}" preserveAspectRatio="xMidYMid meet" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" style="width:100%; height:100%; position:absolute; top:0; left:0; overflow:visible;">`;
+}
+
+function stripSheetMarkup(content) {
+  return content
+    .replace(DRAWING_SHEET_REGEX, '')
+    .replace(PAPER_BG_REGEX, '')
+    .replace(TITLE_TEXT_REGEX, '');
 }
 
 /**
  * Sanitizes and normalizes KiCad-exported SVGs for responsive web rendering.
  *
- * Actions:
- * 1. Strips static physical width/height locks (e.g. width="297mm", height="210mm") and style locks.
- * 2. Injects responsive width="100%" height="100%" preserveAspectRatio="xMidYMid meet".
- * 3. Enforces shape-rendering="geometricPrecision" to maintain sub-pixel vector fidelity under high zoom.
- * 4. Resolves or tightens viewBox:
- *    - If viewBox is missing, computes true geometry boundary.
- *    - If `stripDrawingSheet: true`, removes title frame and zooms directly to board outline (or Edge.Cuts).
- *
- * @param {string} rawSvgContent - Raw SVG text from file, commit, or network
+ * @param {string} rawSvgContent
  * @param {Object} [options]
- * @param {boolean} [options.stripDrawingSheet=false] - Remove KiCad title frame/sheet & zoom tightly to board
- * @param {number} [options.sheetPaddingMm=4] - Padding margin in mm when zooming to board outline
- * @returns {{ sanitizedSvg: string, viewBox: { minX: number, minY: number, width: number, height: number }, originalViewBox: Object | null, isNormalized: boolean }}
+ * @returns {{ sanitizedSvg: string, viewBox: Object, originalViewBox: Object | null, isNormalized: boolean }}
  */
 export function sanitizeAndNormalizeKiCadSvg(rawSvgContent, options = {}) {
   if (!rawSvgContent || typeof rawSvgContent !== 'string') {
@@ -208,18 +258,8 @@ export function sanitizeAndNormalizeKiCadSvg(rawSvgContent, options = {}) {
 
   const stripSheet = Boolean(options.stripDrawingSheet);
   const sheetPadding = options.sheetPaddingMm ?? 4.0;
+  const content = stripSheet ? stripSheetMarkup(rawSvgContent) : rawSvgContent;
 
-  let content = rawSvgContent;
-
-  // 1. Strip drawing sheet & worksheet frame markup if requested
-  if (stripSheet) {
-    content = content
-      .replace(DRAWING_SHEET_REGEX, '')
-      .replace(PAPER_BG_REGEX, '')
-      .replace(TITLE_TEXT_REGEX, '');
-  }
-
-  // 2. Extract existing viewBox from root <svg>
   const rootSvgMatch = content.match(/<svg\b([^>]*)>/i);
   if (!rootSvgMatch) {
     return { sanitizedSvg: content, viewBox: { minX: 0, minY: 0, width: 100, height: 100 }, originalViewBox: null, isNormalized: false };
@@ -229,40 +269,11 @@ export function sanitizeAndNormalizeKiCadSvg(rawSvgContent, options = {}) {
   const vbMatch = rootAttrs.match(/\bviewBox=["']([^"']+)["']/i);
   const originalViewBox = vbMatch ? parseViewBox(vbMatch[1]) : null;
 
-  let activeViewBox = originalViewBox;
+  const activeViewBox = (!originalViewBox || stripSheet)
+    ? resolveGeometricViewBox(content, stripSheet, sheetPadding)
+    : originalViewBox;
 
-  // 3. If viewBox is missing or stripSheet is requested, compute geometric bounding box
-  if (!activeViewBox || stripSheet) {
-    const geoBox = extractGraphicBoundingBox(content, { filterSheet: stripSheet });
-    const targetBox = (stripSheet && geoBox.hasEdgeCuts && geoBox.edgeCutsBox)
-      ? geoBox.edgeCutsBox
-      : geoBox;
-
-    activeViewBox = {
-      minX: targetBox.minX - sheetPadding,
-      minY: targetBox.minY - sheetPadding,
-      width: targetBox.width + 2 * sheetPadding,
-      height: targetBox.height + 2 * sheetPadding
-    };
-  }
-
-  // 4. Sanitize root <svg> attributes:
-  // - Strip physical width="...mm" / height="...mm" / width="...in"
-  // - Strip inline style="width:...; height:..."
-  let sanitizedAttrs = rootAttrs
-    .replace(/\b(?:width|height)=["'][^"']*["']/gi, '')
-    .replace(/\bviewBox=["'][^"']*["']/gi, '')
-    .replace(/\bstyle=["'][^"']*["']/gi, (styleAttr) => {
-      // Clean width/height properties from style if present
-      return styleAttr
-        .replace(/width\s*:\s*[^;]+;?/gi, '')
-        .replace(/height\s*:\s*[^;]+;?/gi, '');
-    });
-
-  // 5. Re-inject normalized presentation & vector precision attributes
-  const viewBoxStr = formatViewBox(activeViewBox);
-  const normalizedRoot = `<svg ${sanitizedAttrs.trim()} width="100%" height="100%" viewBox="${viewBoxStr}" preserveAspectRatio="xMidYMid meet" shape-rendering="geometricPrecision" text-rendering="geometricPrecision" style="width:100%; height:100%; position:absolute; top:0; left:0; overflow:visible;">`;
-
+  const normalizedRoot = sanitizeRootSvgTag(rootAttrs, activeViewBox);
   const sanitizedSvg = content.replace(/<svg\b[^>]*>/i, normalizedRoot);
 
   return {
@@ -276,9 +287,9 @@ export function sanitizeAndNormalizeKiCadSvg(rawSvgContent, options = {}) {
 /**
  * Calculates optimal scale and translation (Zoom-to-Fit) to center content perfectly inside container.
  *
- * @param {{ width: number, height: number }} containerDims - DOM clientWidth/clientHeight
- * @param {{ minX: number, minY: number, width: number, height: number }} contentBox - SVG viewBox
- * @param {number} [paddingRatio=0.05] - Margin ratio (default 5%)
+ * @param {{ width: number, height: number }} containerDims
+ * @param {{ minX: number, minY: number, width: number, height: number }} contentBox
+ * @param {number} [paddingRatio=0.05]
  * @returns {{ scale: number, x: number, y: number }}
  */
 export function calculateZoomToFit(containerDims, contentBox, paddingRatio = 0.05) {
@@ -290,11 +301,7 @@ export function calculateZoomToFit(containerDims, contentBox, paddingRatio = 0.0
   const availableWidth = containerDims.width * (1 - 2 * paddingRatio);
   const availableHeight = containerDims.height * (1 - 2 * paddingRatio);
 
-  const scaleX = availableWidth / contentBox.width;
-  const scaleY = availableHeight / contentBox.height;
-  const scale = Math.min(scaleX, scaleY);
-
-  // Center within container
+  const scale = Math.min(availableWidth / contentBox.width, availableHeight / contentBox.height);
   const contentWidthOnScreen = contentBox.width * scale;
   const contentHeightOnScreen = contentBox.height * scale;
 
@@ -305,7 +312,7 @@ export function calculateZoomToFit(containerDims, contentBox, paddingRatio = 0.0
 }
 
 /**
- * Converts screen client pixel coordinates (e.g. mouse pointer) to SVG coordinate space.
+ * Converts screen client pixel coordinates to SVG coordinate space.
  *
  * @param {number} clientX
  * @param {number} clientY
@@ -319,14 +326,17 @@ export function screenToSvgCoords(clientX, clientY, containerRect, transform) {
 
   const svgX = (containerX - transform.x) / transform.scale;
   const svgY = (containerY - transform.y) / transform.scale;
-
-  // In standard KiCad SVGs, 1 SVG unit = 1 millimeter (mm)
   const mmX = svgX;
   const mmY = svgY;
-  const milsX = mmX * 39.3700787;
-  const milsY = mmY * 39.3700787;
 
-  return { svgX, svgY, mmX, mmY, milsX, milsY };
+  return {
+    svgX,
+    svgY,
+    mmX,
+    mmY,
+    milsX: mmX * 39.3700787,
+    milsY: mmY * 39.3700787
+  };
 }
 
 /**

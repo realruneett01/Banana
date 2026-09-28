@@ -6,13 +6,32 @@ import fs from 'fs';
 
 dotenv.config();
 
-function resolveKicadCliPath() {
-  // 1. Explicit override always wins
-  if (process.env.KICAD_CLI_PATH && fs.existsSync(process.env.KICAD_CLI_PATH)) {
-    return process.env.KICAD_CLI_PATH;
-  }
+const CANDIDATES = {
+  win32: [
+    'C:\\Program Files\\KiCad\\11.0\\bin\\kicad-cli.exe',
+    'C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe',
+    'C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe',
+    'C:\\Program Files\\KiCad\\8.0\\bin\\kicad-cli.exe',
+    'C:\\Program Files\\KiCad\\7.0\\bin\\kicad-cli.exe',
+    'C:\\Program Files\\KiCad\\bin\\kicad-cli.exe',
+  ],
+  darwin: [
+    '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
+    '/Applications/KiCad 10.0/KiCad.app/Contents/MacOS/kicad-cli',
+    '/Applications/KiCad 9.0/KiCad.app/Contents/MacOS/kicad-cli',
+    '/Applications/KiCad 8.0/KiCad.app/Contents/MacOS/kicad-cli',
+    '/Applications/KiCad 7.0/KiCad.app/Contents/MacOS/kicad-cli',
+  ],
+  linux: [
+    '/usr/bin/kicad-cli',
+    '/usr/local/bin/kicad-cli',
+    '/snap/bin/kicad-cli',
+    '/usr/lib/kicad-nightly/bin/kicad-cli',
+    '/usr/lib/kicad/bin/kicad-cli'
+  ],
+};
 
-  // 2. Try PATH resolution first (works if user installed via package manager)
+function findKicadOnPath() {
   const finder = os.platform() === 'win32' ? 'where' : 'which';
   try {
     const result = execFileSync(finder, ['kicad-cli'], {
@@ -20,44 +39,28 @@ function resolveKicadCliPath() {
       stdio: ['pipe', 'pipe', 'ignore']
     }).trim().split(/\r?\n/)[0];
     if (result && fs.existsSync(result)) return result;
-  } catch {
-    // not on PATH, fall through to known install locations
+  } catch (err) {
+    if (process.env.DEBUG_KICAD) {
+      console.warn('[Banana] kicad-cli not on PATH:', err.message);
+    }
   }
+  return null;
+}
 
-  // 3. OS-specific known install locations (checked dynamically across KiCad 11, 10, 9, 8, 7)
-  const candidates = {
-    win32: [
-      'C:\\Program Files\\KiCad\\11.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\8.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\7.0\\bin\\kicad-cli.exe',
-      'C:\\Program Files\\KiCad\\bin\\kicad-cli.exe',
-    ],
-    darwin: [
-      '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
-      '/Applications/KiCad 10.0/KiCad.app/Contents/MacOS/kicad-cli',
-      '/Applications/KiCad 9.0/KiCad.app/Contents/MacOS/kicad-cli',
-      '/Applications/KiCad 8.0/KiCad.app/Contents/MacOS/kicad-cli',
-      '/Applications/KiCad 7.0/KiCad.app/Contents/MacOS/kicad-cli',
-    ],
-    linux: [
-      '/usr/bin/kicad-cli',
-      '/usr/local/bin/kicad-cli',
-      '/snap/bin/kicad-cli',
-      '/usr/lib/kicad-nightly/bin/kicad-cli',
-      '/usr/lib/kicad/bin/kicad-cli'
-    ],
-  };
-  const platformCandidates = candidates[os.platform()] || [];
-  for (const candidate of platformCandidates) {
-    if (fs.existsSync(candidate)) return candidate;
+function findKicadInStandardDirs() {
+  const list = CANDIDATES[os.platform()] || [];
+  return list.find(candidate => fs.existsSync(candidate)) || null;
+}
+
+function resolveKicadCliPath() {
+  if (process.env.KICAD_CLI_PATH && fs.existsSync(process.env.KICAD_CLI_PATH)) {
+    return process.env.KICAD_CLI_PATH;
   }
-
-  throw new Error(
-    'kicad-cli not found. Set KICAD_CLI_PATH env var, or ensure kicad-cli ' +
-    'is on your system PATH.'
-  );
+  return findKicadOnPath() || findKicadInStandardDirs() || (function() {
+    throw new Error(
+      'kicad-cli not found. Set KICAD_CLI_PATH env var, or ensure kicad-cli is on your system PATH.'
+    );
+  })();
 }
 
 export const KICAD_CLI_PATH = resolveKicadCliPath();
