@@ -129,12 +129,9 @@ router.post("/init", async (req, res) => {
 	try {
 		const gitDir = path.join(repoPath, ".git");
 		if (!fs.existsSync(gitDir)) {
-			return res
-				.status(400)
-				.json({
-					error:
-						"Selected folder is not a Git repository (no .git folder found)",
-				});
+			return res.status(400).json({
+				error: "Selected folder is not a Git repository (no .git folder found)",
+			});
 		}
 
 		const [branches, commits, kicadFiles] = await Promise.all([
@@ -401,12 +398,10 @@ async function buildEvolutionTimeline({
 router.get("/evolution", async (req, res) => {
 	const { repoPath, baseCommit, targetCommit, filePath } = req.query;
 	if (!repoPath || !baseCommit || !targetCommit) {
-		return res
-			.status(400)
-			.json({
-				error:
-					"Missing required query parameters: repoPath, baseCommit, targetCommit",
-			});
+		return res.status(400).json({
+			error:
+				"Missing required query parameters: repoPath, baseCommit, targetCommit",
+		});
 	}
 
 	if (!isSafeRef(baseCommit) || !isSafeRef(targetCommit)) {
@@ -433,12 +428,10 @@ router.get("/evolution", async (req, res) => {
 		res.json(timeline);
 	} catch (err) {
 		console.error("[Banana API] Evolution path error:", err);
-		res
-			.status(500)
-			.json({
-				error: "Failed to retrieve commit evolution path",
-				details: err.message,
-			});
+		res.status(500).json({
+			error: "Failed to retrieve commit evolution path",
+			details: err.message,
+		});
 	}
 });
 
