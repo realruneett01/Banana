@@ -1,0 +1,45 @@
+name: Release
+
+# Push a tag like v1.0.0 (or run manually) to build the downloadable bundle and the website.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends kicad
+      - run: npm ci
+      - run: npm test
+      - name: Build release files (zip, tar.gz, SHA256SUMS, releases.json)
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then export BANANA_VERSION="${GITHUB_REF_NAME#v}"; fi
+          node scripts/make-release.mjs
+      - name: Verify the zip as a user would receive it
+        run: |
+          mkdir /tmp/verify && cd /tmp/verify
+          unzip -q "$GITHUB_WORKSPACE"/website/downloads/banana-*-portable.zip
+          cd banana-*/
+          node scripts/preflight.mjs --no-write
+      - name: Attach to the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" website/downloads/* --title "Banana ${GITHUB_REF_NAME#v}" --generate-notes
+      - name: Website bundle (deploy this folder to any static host)
+        uses: actions/upload-artifact@v4
+        with:
+          name: banana-website
+          path: |
+            website
+            !website/downloads/*.tar.gz

@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { API_BASE_URL } from './config.js';
 import {
   Space,
   Button,
@@ -11,7 +12,8 @@ import {
 import {
   FileSearchOutlined,
   RobotOutlined,
-  GithubOutlined
+  GithubOutlined,
+  LogoutOutlined
 } from '@ant-design/icons';
 
 const { Title } = Typography;
@@ -139,6 +141,43 @@ function BackendStatusBadge({ backendStatus, kicadVersion }) {
   );
 }
 
+/** Shows the signed-in account and a sign-out button when the server requires login. */
+function SessionControl() {
+  const [session, setSession] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE_URL}/api/session`, { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (!cancelled && data?.enabled && data.authenticated) setSession(data.user); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!session) return null;
+
+  const signOut = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/api/session/logout`, { method: 'POST', credentials: 'same-origin' });
+    } finally {
+      window.location.reload();
+    }
+  };
+
+  return (
+    <Tooltip title={`Signed in as ${session.username} (${session.role})`}>
+      <Button
+        type="text"
+        icon={<LogoutOutlined />}
+        onClick={signOut}
+        style={{ color: '#8890a6', fontSize: '12px', height: BUTTON_HEIGHT }}
+      >
+        {session.username} · Sign out
+      </Button>
+    </Tooltip>
+  );
+}
+
 function CopilotButton({ onOpenCopilot }) {
   return (
     <Tooltip title="Open Banana Hardware Copilot (AI PCB Diff Assistant)">
@@ -191,6 +230,7 @@ export default function WorkspaceShell({
         <CopilotButton
           onOpenCopilot={onOpenCopilot}
         />
+        <SessionControl />
       </Space>
     </div>
   );

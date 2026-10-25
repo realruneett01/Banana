@@ -312,6 +312,12 @@ export async function runSelfTest({
 					KICAD_CLI_PATH: kicadPath,
 					BANANA_TEMP_DIR: path.join(work, "tmp"),
 					BANANA_AUTOCONFIG: path.join(work, "none.json"),
+					// The throw-away self-test server must not inherit the deployment's login/token settings.
+					BANANA_AUTH: "off",
+					BANANA_ACCESS_TOKEN: "",
+					BANANA_ADMIN_USER: "",
+					BANANA_ADMIN_PASSWORD: "",
+					BANANA_DATA_DIR: path.join(work, "data"),
 				},
 				stdio: ["ignore", "ignore", "pipe"],
 			},

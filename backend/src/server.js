@@ -9,19 +9,36 @@ import {
 	isLoopbackHost,
 	loginHandler,
 } from "./access-control.js";
+import { bootstrapAdmin, createAuth } from "./auth/index.js";
 import { config } from "./config.js";
 import { createApiRouter } from "./routes/index.js";
 import { APP_ROOT } from "./runtime-detect.js";
 
-export function createApp() {
+export function createApp({ auth } = {}) {
 	const app = express();
+	const authn =
+		auth ??
+		createAuth({
+			enabled: config.authEnabled,
+			dataDir: config.dataDir,
+			sessionHours: config.sessionHours,
+			trustProxy: config.trustProxy,
+		});
+	if (config.trustProxy) app.set("trust proxy", 1);
 
 	app.disable("x-powered-by");
 	app.use(cors(corsOptionsFor(config.frontendUrl)));
 	app.use(express.json({ limit: "2mb" }));
 
-	app.get("/login", loginHandler(config.accessToken));
-	app.use("/api", accessGuard(config.accessToken), createApiRouter());
+	if (authn.enabled) {
+		// Accounts replace the shared access token: one credential model at a time.
+		app.use("/api/session", authn.sessionRouter);
+		app.use(authn.pageGuard);
+		app.use("/api", authn.apiGuard, createApiRouter());
+	} else {
+		app.get("/login", loginHandler(config.accessToken));
+		app.use("/api", accessGuard(config.accessToken), createApiRouter());
+	}
 	setupStaticServing(app);
 
 	// Malformed JSON bodies and other pre-router errors.
@@ -62,8 +79,29 @@ function setupStaticServing(expressApp) {
 	});
 }
 
-export function startServer({ port = config.port, host = config.host } = {}) {
-	const app = createApp();
+export async function startServer({
+	port = config.port,
+	host = config.host,
+} = {}) {
+	const auth = createAuth({
+		enabled: config.authEnabled,
+		dataDir: config.dataDir,
+		sessionHours: config.sessionHours,
+		trustProxy: config.trustProxy,
+	});
+	if (auth.enabled) {
+		if (await bootstrapAdmin(auth.store)) {
+			console.log(
+				`[Banana] Created initial admin account "${process.env.BANANA_ADMIN_USER}".`,
+			);
+		}
+		if (auth.store.count === 0) {
+			console.warn(
+				"[Banana] Login is required but no accounts exist. Run: npm run user -- add <name> --admin",
+			);
+		}
+	}
+	const app = createApp({ auth });
 	return new Promise((resolve, reject) => {
 		const server = app.listen(port, host);
 		server.once("listening", () => {

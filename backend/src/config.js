@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import dotenv from "dotenv";
 import {
 	APP_ROOT,
@@ -57,6 +58,14 @@ export const config = {
 	kicadCliPath: KICAD_CLI_PATH,
 	kicadVersion: KICAD_VERSION,
 	kicadError: kicad.error,
+	authEnabled: ["required", "on", "1", "true"].includes(
+		String(process.env.BANANA_AUTH || "").toLowerCase(),
+	),
+	dataDir: path.resolve(
+		process.env.BANANA_DATA_DIR || path.join(APP_ROOT, ".banana"),
+	),
+	sessionHours: parsePositiveInt(process.env.BANANA_SESSION_HOURS, 12),
+	trustProxy: process.env.BANANA_TRUST_PROXY === "1",
 	accessToken: process.env.BANANA_ACCESS_TOKEN || "",
 	tempRoot: resolveTempRoot(),
 	renderTimeoutMs: parsePositiveInt(

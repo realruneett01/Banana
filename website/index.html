@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Banana · See exactly what changed on your PCB</title>
+<meta name="description" content="Banana is a visual Git diff for KiCad schematics and boards. Pick two commits and see every moved part, added trace and removed component, mapped back to its net and pad.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top" aria-label="Banana home"><span class="logo" aria-hidden="true"></span><span>Banana</span></a>
+    <nav aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#faq">FAQ</a>
+      <a class="btn btn-small" href="#download">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+<section class="hero" id="top">
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">Visual Git diff for KiCad</p>
+      <h1>See exactly what changed on your board.</h1>
+      <p class="lead">Pick two commits. Banana renders both versions, compares the actual geometry, and tells you which part moved, which trace was added and which net it belongs to &mdash; not a wall of S-expression text.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#download">Download for desktop</a>
+        <a class="btn btn-ghost" href="#how">See how it works</a>
+      </div>
+      <ul class="facts" aria-label="Key facts">
+        <li>Runs on your computer</li>
+        <li>KiCad 7 or newer</li>
+        <li>Portable &mdash; runs from a USB drive</li>
+      </ul>
+    </div>
+
+    <figure class="demo" aria-labelledby="demo-cap">
+      <div class="demo-stage" id="stage">
+        <svg viewBox="0 0 560 340" role="img" aria-label="A circuit board shown as a grey original with the changes highlighted in colour on the left part of the slider">
+          <defs>
+            <clipPath id="reveal"><rect id="revealRect" x="0" y="0" width="280" height="340"/></clipPath>
+          </defs>
+          <!-- BEFORE: neutral grey -->
+          <g class="board grey">
+            <rect class="outline" x="16" y="16" width="528" height="308" rx="10"/>
+            <path class="trace" d="M120 110H250M250 110V190M250 190H400M400 190V250M110 250H250"/>
+            <path class="trace" d="M330 90V150H460"/>
+            <g class="part"><rect x="86" y="92" width="68" height="36" rx="3"/><circle cx="96" cy="110" r="5"/><circle cx="144" cy="110" r="5"/></g>
+            <g class="part"><rect x="366" y="232" width="68" height="36" rx="3"/><circle cx="376" cy="250" r="5"/><circle cx="424" cy="250" r="5"/></g>
+            <g class="part"><rect x="300" y="56" width="62" height="36" rx="3"/></g>
+            <g class="part"><rect x="420" y="130" width="86" height="64" rx="4"/></g>
+            <g class="part"><rect x="76" y="230" width="68" height="36" rx="3"/></g>
+          </g>
+          <!-- AFTER: diff colours, revealed from the left -->
+          <g clip-path="url(#reveal)">
+            <rect x="0" y="0" width="560" height="340" class="stage-bg"/>
+            <g class="board">
+              <rect class="outline" x="16" y="16" width="528" height="308" rx="10"/>
+              <path class="trace grey-t" d="M120 110H250M250 110V190M250 190H400M400 190V250"/>
+              <path class="trace grey-t" d="M330 90V150H460"/>
+              <path class="trace deleted" d="M110 250H250"/>
+              <path class="trace added" d="M250 190H360V300H300"/>
+              <g class="part grey-p"><rect x="366" y="232" width="68" height="36" rx="3"/></g>
+              <g class="part grey-p"><rect x="300" y="56" width="62" height="36" rx="3"/></g>
+              <g class="part grey-p"><rect x="420" y="130" width="86" height="64" rx="4"/></g>
+              <g class="part changed"><rect x="124" y="92" width="68" height="36" rx="3"/><circle cx="134" cy="110" r="5"/><circle cx="182" cy="110" r="5"/></g>
+              <g class="part deleted-p"><rect x="76" y="230" width="68" height="36" rx="3"/></g>
+              <text x="158" y="84" class="tag t-changed">R1 moved 2.00&nbsp;mm</text>
+              <text x="108" y="288" class="tag t-deleted">C3 removed</text>
+              <text x="372" y="312" class="tag t-added">GND trace added</text>
+            </g>
+          </g>
+          <line id="divider" x1="280" y1="0" x2="280" y2="340" class="divider"/>
+        </svg>
+      </div>
+      <label class="slider"><span class="sr">Drag to compare the original with the highlighted changes</span>
+        <input id="compare" type="range" min="4" max="96" value="52" aria-label="Compare original and highlighted changes">
+      </label>
+      <figcaption id="demo-cap">Drag the slider &mdash; left of the line shows the change view, right shows the original.</figcaption>
+      <ul class="changes" aria-label="Audit list for this example">
+        <li><span class="pill pill-changed">CHANGED</span> R1 relocated by 2.00&nbsp;mm on F.Cu</li>
+        <li><span class="pill pill-added">ADDED</span> GND trace on F.Cu</li>
+        <li><span class="pill pill-deleted">DELETED</span> C3 component</li>
+      </ul>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="features" aria-labelledby="features-h">
+  <div class="wrap">
+    <h2 id="features-h">Built for reviewing hardware changes</h2>
+    <p class="section-lead">Everything a design review needs, without opening KiCad twice.</p>
+    <div class="grid">
+      <article class="card"><h3>Geometry diff, not text diff</h3><p>Both versions are rendered with KiCad&rsquo;s own exporter, then matched in several passes &mdash; reference designators, exact shapes, nearby shapes, copper track chains &mdash; so a moved part is reported once, not as hundreds of line changes.</p></article>
+      <article class="card"><h3>Mapped to nets and pads</h3><p>Every difference is traced back to the footprint, pad or net it belongs to, using the parsed board file. &ldquo;Added GND trace&rdquo; beats &ldquo;path changed&rdquo;.</p></article>
+      <article class="card"><h3>Side-by-side and overlay</h3><p>Synchronised pan and zoom, a before/after slider, per-layer control and pad labels. Unchanged geometry fades to grey so changes stand out.</p></article>
+      <article class="card"><h3>History, not just two points</h3><p>Step through every commit that touched a file between two revisions with the evolution timeline.</p></article>
+      <article class="card"><h3>Local Git or GitHub</h3><p>Read commits straight from a repository on your machine, or connect GitHub to diff branches, commits and pull requests.</p></article>
+      <article class="card"><h3>Checks itself before it starts</h3><p>Each launch verifies file integrity, finds KiCad, picks a free port and proves the diff engine on a known pair of boards. If anything is off, it tells you instead of failing quietly.</p></article>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="how" aria-labelledby="how-h">
+  <div class="wrap">
+    <h2 id="how-h">From commit to answer in three steps</h2>
+    <ol class="steps">
+      <li><span class="num">1</span><h3>Choose a repository</h3><p>Open a KiCad project from your disk, or connect a GitHub repository.</p></li>
+      <li><span class="num">2</span><h3>Pick two revisions</h3><p>Any two commits, branches or a pull request, for a schematic or a board file.</p></li>
+      <li><span class="num">3</span><h3>Review the changes</h3><p>Click an entry in the audit list to jump to it. Share the findings with your team.</p></li>
+    </ol>
+  </div>
+</section>
+
+<section class="section" id="download" aria-labelledby="dl-h">
+  <div class="wrap">
+    <h2 id="dl-h">Download Banana</h2>
+    <p class="section-lead">One portable download for every desktop. Unzip it anywhere &mdash; including a USB drive &mdash; and run the launcher.</p>
+
+    <div class="dl-grid">
+      <div class="dl-card" id="dl-card" aria-live="polite">
+        <div class="dl-head">
+          <div>
+            <p class="eyebrow" id="dl-os">Detecting your system&hellip;</p>
+            <h3 id="dl-title">Banana portable</h3>
+            <p class="muted" id="dl-meta">Loading release information&hellip;</p>
+          </div>
+        </div>
+
+        <label class="terms">
+          <input type="checkbox" id="terms">
+          <span>I have a licence agreement with the owner of Banana and accept that it is proprietary software: no copying, redistribution or reverse engineering. <a href="#terms-detail" id="terms-link">Terms summary</a></span>
+        </label>
+
+        <div class="dl-buttons" id="dl-buttons"></div>
+        <p class="notice" id="dl-notice" hidden></p>
+
+        <details id="terms-detail" class="terms-detail">
+          <summary>Terms summary</summary>
+          <ul>
+            <li>Banana is proprietary and all rights are reserved. This page does not grant a licence.</li>
+            <li>Use is limited to parties with a signed agreement, on computers they control, for internal use.</li>
+            <li>Do not copy, share, host, modify or reverse engineer it, or use it to train AI models.</li>
+            <li>KiCad and Node.js are separate programs under their own licences and are not covered.</li>
+            <li>The full text is the <code>LICENSE</code> file inside the download and governs.</li>
+          </ul>
+        </details>
+      </div>
+
+      <div class="dl-side">
+        <h3>What you need first</h3>
+        <ul class="reqs">
+          <li><strong>Node.js 20.11+</strong> <span class="muted">runs the app</span></li>
+          <li><strong>KiCad 7 or newer</strong> <span class="muted">renders your files</span></li>
+          <li><strong>Git</strong> <span class="muted">reads your history</span></li>
+        </ul>
+        <p class="muted small">Banana runs as a local app that opens in your web browser. There is no installer (.exe / .dmg) yet.</p>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Install steps by system">
+      <button role="tab" id="tab-win" aria-controls="panel-win" aria-selected="true" class="tab" data-os="windows">Windows</button>
+      <button role="tab" id="tab-mac" aria-controls="panel-mac" aria-selected="false" class="tab" data-os="macos" tabindex="-1">macOS</button>
+      <button role="tab" id="tab-lin" aria-controls="panel-lin" aria-selected="false" class="tab" data-os="linux" tabindex="-1">Linux</button>
+    </div>
+    <div class="panel" role="tabpanel" id="panel-win" aria-labelledby="tab-win">
+      <ol>
+        <li>Right-click the zip, choose <strong>Extract All&hellip;</strong>, and open the extracted folder.</li>
+        <li>Double-click <code>start.bat</code>. Banana checks your computer, then opens in your browser.</li>
+        <li>To check the download first, run in PowerShell: <code class="copy" data-copy="Get-FileHash .\banana-portable.zip -Algorithm SHA256">Get-FileHash .\banana-&lt;version&gt;-portable.zip -Algorithm SHA256</code></li>
+      </ol>
+    </div>
+    <div class="panel" role="tabpanel" id="panel-mac" aria-labelledby="tab-mac" hidden>
+      <ol>
+        <li>Double-click the zip to extract it, then open Terminal in the new folder.</li>
+        <li>Run <code class="copy" data-copy="sh start.sh">sh start.sh</code>. Banana checks your computer, then opens in your browser.</li>
+        <li>To check the download first: <code class="copy" data-copy="shasum -a 256 banana-portable.zip">shasum -a 256 banana-&lt;version&gt;-portable.zip</code></li>
+      </ol>
+    </div>
+    <div class="panel" role="tabpanel" id="panel-lin" aria-labelledby="tab-lin" hidden>
+      <ol>
+        <li>Extract: <code class="copy" data-copy="unzip banana-portable.zip && cd banana-*/">unzip banana-&lt;version&gt;-portable.zip &amp;&amp; cd banana-*/</code></li>
+        <li>Run <code class="copy" data-copy="sh start.sh">sh start.sh</code>. Banana checks your computer, then opens in your browser.</li>
+        <li>To check the download first: <code class="copy" data-copy="sha256sum -c SHA256SUMS --ignore-missing">sha256sum -c SHA256SUMS --ignore-missing</code></li>
+      </ol>
+    </div>
+
+    <div class="team">
+      <h3>Setting up for a team?</h3>
+      <p>Turn on sign-in so only your people can open it: set <code>BANANA_AUTH=required</code>, then create accounts with <code>npm run user -- add &lt;name&gt;</code>. Passwords are stored hashed, sessions expire, and failed sign-ins are rate-limited. Docker and systemd setups are in the README.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section alt" id="faq" aria-labelledby="faq-h">
+  <div class="wrap narrow">
+    <h2 id="faq-h">Questions</h2>
+    <details><summary>Does Banana upload my designs?</summary><p>No. With a local repository, files are read and rendered on your computer. If you connect GitHub, Banana downloads the files you choose from GitHub. The optional AI Copilot sends the context of your question to Google Gemini, and only when you use it with your own API key.</p></details>
+    <details><summary>Which KiCad versions work?</summary><p>KiCad 7 and newer. Version 7 is tested; 8 and later use a faster export path that has not been verified on every platform yet.</p></details>
+    <details><summary>Which operating systems are supported?</summary><p>Banana is built for Windows, macOS and Linux on x64 and ARM &mdash; the download is the same everywhere. Linux x64 is the most thoroughly tested today; Windows, macOS and ARM are covered by automated checks that are still being rolled out, so report anything odd.</p></details>
+    <details><summary>Is there an installer?</summary><p>Not yet. Banana is a portable folder: unzip and run the launcher. It needs Node.js and KiCad installed, or placed inside the folder&rsquo;s <code>runtime</code> directory to run from a USB drive on computers with nothing installed.</p></details>
+    <details><summary>Will it start by itself when I plug in a USB drive?</summary><p>No &mdash; modern operating systems block that, for good reason. Open the drive and run the launcher.</p></details>
+    <details><summary>What does it check at start-up?</summary><p>That its files are intact, that Node, Git and KiCad are present and working, that a port and scratch space are available, and that its diff engine gives the right answer on a built-in pair of test boards. It refuses to start if any of those fail.</p></details>
+    <details><summary>Can I use it commercially?</summary><p>Banana is proprietary. Use requires a signed agreement with the owner; this site does not grant a licence.</p></details>
+  </div>
+</section>
+</main>
+
+<footer class="footer">
+  <div class="wrap foot-in">
+    <span class="brand"><span class="logo" aria-hidden="true"></span>Banana</span>
+    <p class="muted small">&copy; 2025&ndash;2026 realruneett01. All rights reserved. Proprietary software. KiCad is a trademark of its respective owners; Banana is not affiliated with the KiCad project.</p>
+  </div>
+</footer>
+
+<script src="site.js"></script>
+</body>
+</html>

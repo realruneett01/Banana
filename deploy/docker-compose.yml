@@ -10,9 +10,14 @@ services:
       - "127.0.0.1:${BANANA_PORT:-5000}:5000"
     environment:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Turn on accounts: set BANANA_AUTH=required and an initial admin (first start only).
+      BANANA_AUTH: ${BANANA_AUTH:-required}
+      BANANA_ADMIN_USER: ${BANANA_ADMIN_USER:-}
+      BANANA_ADMIN_PASSWORD: ${BANANA_ADMIN_PASSWORD:-}
     volumes:
       # Local KiCad git repositories to diff, mounted read-only at /repos.
       - ${BANANA_REPOS:-./repos}:/repos:ro
+      - banana-data:/data
     read_only: true
     tmpfs:
       - /tmp
@@ -20,3 +25,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  banana-data:

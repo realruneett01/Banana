@@ -55,6 +55,8 @@ ENV PORT=5000
 ENV HOST=0.0.0.0
 ENV KICAD_CLI_PATH=/usr/bin/kicad-cli
 ENV BANANA_TEMP_DIR=/tmp/banana
+# Accounts and the session secret live here; mount a volume to keep them across restarts.
+ENV BANANA_DATA_DIR=/data
 
 # Copy package manifests for workspace resolution
 COPY package*.json ./
@@ -76,8 +78,8 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 
 # Set up user 1000 and directories for Hugging Face Spaces & security
 RUN (id -u 1000 >/dev/null 2>&1 || useradd -m -u 1000 user) && \
-    mkdir -p /app/temp_storage /home/user/.config/kicad /home/user/.cache/kicad && \
-    chown -R 1000:1000 /app /home/user && \
+    mkdir -p /data /app/temp_storage /home/user/.config/kicad /home/user/.cache/kicad && \
+    chown -R 1000:1000 /app /data /home/user && \
     chmod -R 775 /app /home/user
 
 USER 1000

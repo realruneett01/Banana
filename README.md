@@ -39,6 +39,43 @@ npm start            # preflight + calibration, then starts on http://127.0.0.1:
 
 Hot-reload development: `npm run dev` (backend on :5000 via nodemon, Vite on :5173).
 
+## Sign-in (accounts)
+
+Off by default so the single-user desktop launcher needs no setup. Turn it on for any shared or server deployment:
+
+```bash
+export BANANA_AUTH=required
+npm run user -- add alice --admin       # prompts for a password (min. 10 characters)
+npm run user -- add bob
+npm run user -- list | passwd <name> | disable <name> | enable <name> | remove <name>
+npm start
+```
+
+Or bootstrap the first admin from the environment (only used when no accounts exist): `BANANA_ADMIN_USER` + `BANANA_ADMIN_PASSWORD`.
+
+- Anonymous visitors only ever receive the login page; the app code and every `/api` route require a session (the health check stays open for container probes).
+- Passwords are stored as salted scrypt hashes in `<data dir>/users.json` (mode 0600). Sessions are signed, `HttpOnly`, `SameSite=Strict` cookies that expire after `BANANA_SESSION_HOURS` (default 12). Changing a password, disabling or removing an account ends that user's sessions immediately.
+- Failed sign-ins are rate-limited (5 per account per 15 minutes, plus a per-IP cap). State-changing requests from another origin are refused.
+- Accounts are created by an administrator on the server; there is no self-signup, password reset by e-mail, MFA or SSO. Put it behind HTTPS (and set `BANANA_TRUST_PROXY=1` behind a reverse proxy so the cookie is marked `Secure`).
+- `BANANA_DATA_DIR` (default `<app>/.banana`, `/data` in Docker) holds the users file and session secret; back it up and keep it private.
+
+## Download page and releases
+
+`website/` is a static download site (no build step, no dependencies, strict CSP). It reads `releases.json`, detects the visitor's OS, requires the visitor to accept the licence terms before the download links become active, and shows the SHA-256 of the file.
+
+```bash
+npm run make-release        # builds website/downloads/*.zip|.tar.gz, SHA256SUMS and website/releases.json
+npx serve website           # or any static host: Cloudflare Pages, Netlify, S3, nginx ...
+```
+
+Pushing a tag such as `v1.0.0` runs `.github/workflows/release.yml`, which tests, builds the release, verifies the zip as a user would receive it, attaches it to a GitHub release and uploads the ready-to-host `website` folder as a workflow artifact.
+
+Things to decide before publishing: the repository is private, so release assets are only downloadable by people with repository access; to let customers download without GitHub accounts, host the `website` folder (with `downloads/`) on a static host you control. The terms checkbox is a notice, not access control — if the file itself must be restricted, host it behind authentication. GitHub Pages from a private repository needs a paid plan and is public once published.
+
+## Desktop use
+
+Banana is a **local web app**, not a native installer: the download is a portable folder; the launcher starts the server on your computer and opens it in your browser. There is no `.exe`/`.dmg`/`.deb` yet (an Electron/installer wrapper is possible but is not built or tested).
+
 ## Run from a USB stick (no install on the target computer)
 
 On a build machine:
@@ -101,6 +138,9 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 | `PORT` | `5000` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only in a container or on a trusted network. |
 | `KICAD_CLI_PATH` | auto-detected | Path to `kicad-cli` |
+| `BANANA_AUTH` | off | `required` turns on account sign-in (see above). |
+| `BANANA_DATA_DIR` | `<app>/.banana` | Users file + session secret |
+| `BANANA_SESSION_HOURS`, `BANANA_TRUST_PROXY` | `12`, off | Session lifetime; set `1` behind an HTTPS reverse proxy |
 | `BANANA_ACCESS_TOKEN` | unset | If set, /api requires this token; open `/login?token=<token>` once per browser. Set it whenever `HOST` is not loopback. |
 | `BANANA_TEMP_DIR` | `<os tmp>/banana-<uid>` | Scratch + render cache |
 | `RENDER_TIMEOUT_MS` | `120000` (or calibrated) | Kill a hung `kicad-cli` after this long |
@@ -121,7 +161,7 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 ## Tests
 
 ```bash
-npm test                     # ~3,700 automated cases; KiCad-dependent ones are skipped if KiCad is absent
+npm test                     # ~4,000 automated cases; KiCad-dependent ones are skipped if KiCad is absent
 ```
 
 Includes a headless-browser smoke test of the built UI (needs Playwright; skipped otherwise), generated-input tests for the parser and diff engine, argument-injection and traversal cases for every route, concurrency tests, and end-to-end diffs against a real `kicad-cli`.
@@ -136,7 +176,8 @@ Includes a headless-browser smoke test of the built UI (needs Playwright; skippe
 ```
 backend/src      Express API, KiCad rendering, parsing, diff engine
 frontend/src     React + Ant Design UI
-scripts          preflight/calibration, launcher, portable-bundle builder
+scripts          preflight/calibration, launcher, portable-bundle + release builder, user management
+website          static download site
 samples          generator for the ground-truth calibration boards
 deploy           systemd unit/installer, docker compose
 tests            automated tests (node:test)

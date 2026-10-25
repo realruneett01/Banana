@@ -128,3 +128,30 @@ test("full preflight (real KiCad) passes the ground-truth self-test and produces
 	assert.ok(report.calibration.port > 0);
 	assert.ok(report.calibration.kicadCliPath);
 });
+
+test("REGRESSION: preflight self-test still passes when login and an access token are enabled in the environment", {
+	skip: hasKicad() ? false : "kicad-cli not installed",
+	timeout: 120000,
+}, async () => {
+	const saved = {
+		a: process.env.BANANA_AUTH,
+		t: process.env.BANANA_ACCESS_TOKEN,
+	};
+	process.env.BANANA_AUTH = "required";
+	process.env.BANANA_ACCESS_TOKEN = "some-token";
+	try {
+		const report = await runPreflight();
+		assert.deepEqual(
+			report.results.filter((r) => r.status === "fail"),
+			[],
+		);
+	} finally {
+		for (const [k, v] of [
+			["BANANA_AUTH", saved.a],
+			["BANANA_ACCESS_TOKEN", saved.t],
+		]) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	}
+});
