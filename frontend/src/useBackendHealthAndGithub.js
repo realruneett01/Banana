@@ -1,6 +1,7 @@
 import { message } from "antd";
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE_URL } from "./config.js";
+import { cleanAuthUrl, parseAuthParams } from "./utils/authUrl.js";
 
 async function fetchBackendHealthStatus() {
 	try {
@@ -23,10 +24,10 @@ function handleUrlAuthCallback({
 	verifyGithubToken,
 	existingToken,
 }) {
-	const hash = window.location.hash.replace(/^#/, "");
-	const params = new URLSearchParams(hash || window.location.search);
-	const tokenFromUrl = params.get("github_token");
-	const errorFromUrl = params.get("github_error");
+	const { token: tokenFromUrl, error: errorFromUrl } = parseAuthParams(
+		window.location.hash,
+		window.location.search,
+	);
 
 	if (tokenFromUrl) {
 		localStorage.setItem("banana:githubToken", tokenFromUrl);
@@ -37,8 +38,7 @@ function handleUrlAuthCallback({
 		window.history.replaceState(
 			{},
 			document.title,
-			window.location.pathname +
-				window.location.search.replace(/[?&]github_(token|error)=[^&]*/g, ""),
+			cleanAuthUrl(window.location.pathname, window.location.search),
 		);
 		message.success("GitHub OAuth login successful!");
 	} else if (errorFromUrl) {
@@ -46,8 +46,7 @@ function handleUrlAuthCallback({
 		window.history.replaceState(
 			{},
 			document.title,
-			window.location.pathname +
-				window.location.search.replace(/[?&]github_(token|error)=[^&]*/g, ""),
+			cleanAuthUrl(window.location.pathname, window.location.search),
 		);
 	} else if (existingToken) {
 		verifyGithubToken(existingToken);

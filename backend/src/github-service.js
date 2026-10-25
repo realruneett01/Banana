@@ -196,15 +196,18 @@ function resolveCommitQuery(options, restArgs) {
 /**
  * Fetches commits for a repository, optionally filtered by branch and/or file path.
  */
-export async function getRepoCommits(token, owner, repo, options = {}) {
+export async function getRepoCommits(
+	token,
+	owner,
+	repo,
+	options = {},
+	...legacyArgs
+) {
 	if (!token) throw new Error("Missing GitHub access token");
 	assertSafeGithubName(owner, "owner");
 	assertSafeGithubName(repo, "repo");
 
-	const { sha, pathFilter, limit } = resolveCommitQuery(options, [
-		arguments[4],
-		arguments[5],
-	]);
+	const { sha, pathFilter, limit } = resolveCommitQuery(options, legacyArgs);
 	const params = new URLSearchParams({ per_page: String(limit) });
 	if (sha) params.append("sha", sha);
 	if (pathFilter) params.append("path", pathFilter);
@@ -321,13 +324,10 @@ async function fetchRawFileBuffer(token, params) {
 /**
  * Downloads a specific version of a CAD file at a commit hash and writes it to disk.
  */
-export async function downloadRepoFile(token, options) {
+export async function downloadRepoFile(token, options, ...legacyArgs) {
 	if (!token) throw new Error("Missing GitHub access token");
 
-	const params = resolveDownloadParams(
-		options,
-		Array.prototype.slice.call(arguments, 2),
-	);
+	const params = resolveDownloadParams(options, legacyArgs);
 	const dest = params.destinationPath;
 
 	const parentDir = path.dirname(dest);

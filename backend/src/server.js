@@ -3,6 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express from "express";
+import {
+	accessGuard,
+	corsOptionsFor,
+	isLoopbackHost,
+	loginHandler,
+} from "./access-control.js";
 import { config } from "./config.js";
 import { createApiRouter } from "./routes/index.js";
 import { APP_ROOT } from "./runtime-detect.js";
@@ -11,10 +17,11 @@ export function createApp() {
 	const app = express();
 
 	app.disable("x-powered-by");
-	app.use(cors());
+	app.use(cors(corsOptionsFor(config.frontendUrl)));
 	app.use(express.json({ limit: "2mb" }));
 
-	app.use("/api", createApiRouter());
+	app.get("/login", loginHandler(config.accessToken));
+	app.use("/api", accessGuard(config.accessToken), createApiRouter());
 	setupStaticServing(app);
 
 	// Malformed JSON bodies and other pre-router errors.
@@ -61,6 +68,11 @@ export function startServer({ port = config.port, host = config.host } = {}) {
 		const server = app.listen(port, host);
 		server.once("listening", () => {
 			const addr = server.address();
+			if (!config.accessToken && !isLoopbackHost(host)) {
+				console.warn(
+					"[Banana] WARNING: listening on a non-loopback address without BANANA_ACCESS_TOKEN. Anyone who can reach this port can read repositories this process can read.",
+				);
+			}
 			console.log(`[Banana] Server listening on http://${host}:${addr.port}`);
 			resolve(server);
 		});

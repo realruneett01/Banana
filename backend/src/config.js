@@ -57,6 +57,7 @@ export const config = {
 	kicadCliPath: KICAD_CLI_PATH,
 	kicadVersion: KICAD_VERSION,
 	kicadError: kicad.error,
+	accessToken: process.env.BANANA_ACCESS_TOKEN || "",
 	tempRoot: resolveTempRoot(),
 	renderTimeoutMs: parsePositiveInt(
 		process.env.RENDER_TIMEOUT_MS,

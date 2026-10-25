@@ -3,6 +3,6 @@ pre-commit:
   commands:
     formatting-check:
       glob: "*.{js,ts,jsx,tsx,json}"
-      run: npx biome check --write --unsafe {staged_files}
+      run: npx biome format --write {staged_files}
     repowise-sync:
       run: command -v repowise >/dev/null 2>&1 && repowise status || echo "repowise not installed; skipping"

@@ -101,6 +101,7 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 | `PORT` | `5000` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only in a container or on a trusted network. |
 | `KICAD_CLI_PATH` | auto-detected | Path to `kicad-cli` |
+| `BANANA_ACCESS_TOKEN` | unset | If set, /api requires this token; open `/login?token=<token>` once per browser. Set it whenever `HOST` is not loopback. |
 | `BANANA_TEMP_DIR` | `<os tmp>/banana-<uid>` | Scratch + render cache |
 | `RENDER_TIMEOUT_MS` | `120000` (or calibrated) | Kill a hung `kicad-cli` after this long |
 | `CACHE_MAX_ENTRIES` | `200` | Render cache size (entries) |
@@ -110,7 +111,9 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 
 ## Security
 
-- Binds to loopback by default. The local-repository feature can read any Git repository the server process can read, and there is no login — do not expose it to untrusted networks.
+- Binds to loopback by default. If you bind elsewhere, set `BANANA_ACCESS_TOKEN`; the server warns at startup otherwise. CORS allows only the page's own origin, loopback, and `FRONTEND_URL`.
+- The Gemini key is sent to Google in a request header, never in a URL.
+- The local-repository feature can read any Git repository the server process can read, and there is no login — do not expose it to untrusted networks.
 - User-supplied Git refs and file paths are validated before use (no option injection, no path traversal); GitHub owner/repo names are validated before any request.
 - GitHub OAuth uses a random per-login `state` cookie; the token is returned in the URL fragment, not the query string.
 - Tokens entered in the UI are stored in the browser's `localStorage`.
@@ -118,10 +121,10 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 ## Tests
 
 ```bash
-npm test                     # ~3,600 automated cases; KiCad-dependent ones are skipped if KiCad is absent
+npm test                     # ~3,700 automated cases; KiCad-dependent ones are skipped if KiCad is absent
 ```
 
-Includes generated-input tests for the parser and diff engine, argument-injection and traversal cases for every route, concurrency tests, and end-to-end diffs against a real `kicad-cli`.
+Includes a headless-browser smoke test of the built UI (needs Playwright; skipped otherwise), generated-input tests for the parser and diff engine, argument-injection and traversal cases for every route, concurrency tests, and end-to-end diffs against a real `kicad-cli`.
 
 ## Verification status (what has and has not been run)
 
