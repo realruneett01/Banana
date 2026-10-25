@@ -54,7 +54,7 @@ export function zipDirectory(srcDir, outFile, topFolder) {
 		const useDeflate = comp.length < data.length;
 		const body = useDeflate ? comp : data;
 		const crc = crc32(data);
-		const exec = rel.endsWith(".sh");
+		const exec = rel.endsWith(".sh") || path.basename(rel) === "node";
 
 		const local = Buffer.alloc(30);
 		local.writeUInt32LE(0x04034b50, 0);

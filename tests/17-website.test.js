@@ -108,7 +108,7 @@ test("download is gated by the terms checkbox and delivers the exact published f
 	page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 	await page.goto(url, { waitUntil: "networkidle" });
 
-	const btn = page.locator("#dl-buttons a", { hasText: "Download .zip" });
+	const btn = page.locator("#dl-buttons a", { hasText: "Download for" });
 	assert.equal(await btn.getAttribute("aria-disabled"), "true");
 	assert.equal(
 		await btn.getAttribute("href"),
@@ -200,7 +200,7 @@ test("malformed or hostile manifests are rejected", {
 		});
 	}
 	await t.test(
-		"asset name with HTML is shown as text and encoded in the link",
+		"asset names that are not plain file names are dropped, not rendered",
 		async () => {
 			const evil = {
 				version: "1.0.0",
@@ -218,6 +218,10 @@ test("malformed or hostile manifests are rejected", {
 			await page.goto(url, { waitUntil: "networkidle" });
 			assert.equal(await page.evaluate(() => window.__x), undefined);
 			assert.equal(await page.locator("#dl-buttons script").count(), 0);
+			assert.match(
+				await page.textContent("#dl-meta"),
+				/No release has been published/,
+			);
 			await page.close();
 		},
 	);
@@ -260,4 +264,136 @@ test("slider moves the reveal line", { skip, timeout: 60000 }, async () => {
 	await page.locator("#compare").fill("10");
 	assert.equal(Number(await page.getAttribute("#divider", "x1")), 56);
 	await page.close();
+});
+
+const platformManifest = {
+	version: "9.9.9",
+	released: "2026-01-02",
+	assets: [
+		{
+			name: "banana-9.9.9-portable.zip",
+			bytes: 10,
+			sha256: "a".repeat(64),
+			os: "any",
+			arch: "any",
+			label: "Any system (Node.js not included)",
+			bundlesNode: false,
+		},
+		{
+			name: "banana-9.9.9-windows-x64.zip",
+			bytes: 40e6,
+			sha256: "b".repeat(64),
+			os: "windows",
+			arch: "x64",
+			label: "Windows (64-bit)",
+			bundlesNode: true,
+		},
+		{
+			name: "banana-9.9.9-windows-arm64.zip",
+			bytes: 30e6,
+			sha256: "c".repeat(64),
+			os: "windows",
+			arch: "arm64",
+			label: "Windows on ARM",
+			bundlesNode: true,
+		},
+		{
+			name: "banana-9.9.9-macos-arm64.zip",
+			bytes: 37e6,
+			sha256: "d".repeat(64),
+			os: "macos",
+			arch: "arm64",
+			label: "macOS (Apple silicon)",
+			bundlesNode: true,
+		},
+		{
+			name: "banana-9.9.9-macos-x64.zip",
+			bytes: 38e6,
+			sha256: "e".repeat(64),
+			os: "macos",
+			arch: "x64",
+			label: "macOS (Intel)",
+			bundlesNode: true,
+		},
+		{
+			name: "banana-9.9.9-linux-x64.zip",
+			bytes: 43e6,
+			sha256: "f".repeat(64),
+			os: "linux",
+			arch: "x64",
+			label: "Linux (x64)",
+			bundlesNode: true,
+		},
+		{ name: "SHA256SUMS", bytes: 9, sha256: "1".repeat(64) },
+	],
+};
+
+test("the download matches the visitor's operating system", {
+	skip,
+	timeout: 90000,
+}, async (t) => {
+	const cases = [
+		[
+			"Win32",
+			"Windows",
+			"banana-9.9.9-windows-x64.zip",
+			/Download for Windows \(64-bit\)/,
+			/includes Node\.js/,
+		],
+		[
+			"MacIntel",
+			"macOS",
+			"banana-9.9.9-macos-arm64.zip",
+			/Download for macOS \(Apple silicon\)/,
+			/includes Node\.js/,
+		],
+		[
+			"Linux x86_64",
+			"Linux",
+			"banana-9.9.9-linux-x64.zip",
+			/Download for Linux \(x64\)/,
+			/includes Node\.js/,
+		],
+		[
+			"Plan9",
+			null,
+			"banana-9.9.9-portable.zip",
+			/Download for any system/,
+			/needs Node\.js/,
+		],
+	];
+	for (const [platform, name, expectedFile, buttonText, metaText] of cases) {
+		await t.test(String(name || platform), async () => {
+			const url = await site(platformManifest, false);
+			const page = await browser.newPage();
+			await page.addInitScript((p) => {
+				Object.defineProperty(navigator, "platform", { get: () => p });
+				Object.defineProperty(navigator, "userAgentData", {
+					get: () => undefined,
+				});
+			}, platform);
+			await page.goto(url, { waitUntil: "networkidle" });
+			const primary = page.locator("#dl-buttons a.btn-primary");
+			assert.match(await primary.textContent(), buttonText);
+			assert.equal(
+				await primary.getAttribute("data-href"),
+				`downloads/${expectedFile}`,
+			);
+			assert.match(await page.textContent("#dl-meta"), metaText);
+			assert.equal((await page.textContent(".hash code")).length, 64);
+			if (name === "macOS")
+				assert.equal(
+					await page
+						.locator("#dl-buttons a", { hasText: "macOS (Intel)" })
+						.count(),
+					1,
+					"Intel alternative offered",
+				);
+			assert.ok(
+				(await page.locator(".more a").count()) >= 3,
+				"other systems listed",
+			);
+			await page.close();
+		});
+	}
 });

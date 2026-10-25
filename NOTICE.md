@@ -1,6 +1,6 @@
 # Third-party notices
 
-Banana itself is proprietary (see `LICENSE`). It uses the following third-party components, which remain under their own licences and are **not** covered by the Banana licence. Licence texts ship inside each package in `node_modules/`.
+Banana itself is proprietary freeware (see `LICENSE`: free to use, source and redistribution rights reserved). It uses the following third-party components, which remain under their own licences and are **not** covered by the Banana licence. Licence texts ship inside each package in `node_modules/`.
 
 | Component | Version | Licence | Where used |
 |---|---|---|---|
@@ -21,4 +21,4 @@ If you redistribute KiCad yourself, for example by copying it into `runtime/kica
 
 ## Node.js
 
-If you place a Node.js build in `runtime/node-<os>-<arch>/`, Node.js is distributed under its own licence (MIT and bundled third-party licences, see the `LICENSE` file shipped in the Node.js download).
+The per-platform downloads include an unmodified official Node.js executable in `runtime/node-<os>-<arch>/` (the same applies if you place one there yourself). Node.js is distributed under its own licence (MIT and bundled third-party licences, see the `LICENSE` file shipped in the Node.js download).

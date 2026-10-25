@@ -112,64 +112,109 @@
 		return (bytes / 1048576).toFixed(1) + " MB";
 	}
 
-	function render(release) {
-		var main = release.assets.filter(function (a) {
-			return /\.zip$/.test(a.name);
-		})[0];
-		var others = release.assets.filter(function (a) {
-			return a !== main && a.name !== "SHA256SUMS";
+	var DEFAULT_ARCH = { windows: "x64", macos: "arm64", linux: "x64" };
+
+	function pickPrimary(assets) {
+		var universal =
+			assets.filter(function (a) {
+				return a.os === "any";
+			})[0] ||
+			assets.filter(function (a) {
+				return /\.zip$/.test(a.name);
+			})[0];
+		if (!os) return universal;
+		var mine = assets.filter(function (a) {
+			return a.os === os;
 		});
-		var sums = release.assets.filter(function (a) {
+		return (
+			mine.filter(function (a) {
+				return a.arch === DEFAULT_ARCH[os];
+			})[0] ||
+			mine[0] ||
+			universal
+		);
+	}
+
+	function addLink(asset, label, primary) {
+		var a = document.createElement("a");
+		a.className = "btn " + (primary ? "btn-primary" : "btn-ghost");
+		a.href = "downloads/" + encodeURIComponent(asset.name);
+		a.setAttribute("download", asset.name);
+		a.textContent = label;
+		a.dataset.href = a.getAttribute("href");
+		links.push(a);
+		return a;
+	}
+
+	function render(release) {
+		var assets = release.assets;
+		var main = pickPrimary(assets);
+		var sums = assets.filter(function (a) {
 			return a.name === "SHA256SUMS";
 		})[0];
-		title.textContent = "Banana " + release.version + " — portable";
+		var rest = assets.filter(function (a) {
+			return a !== main && a.name !== "SHA256SUMS";
+		});
+		var label = main.label || "Portable";
+		title.textContent = "Banana " + release.version + " \u2014 " + label;
 		meta.textContent =
 			"Released " +
 			release.released +
-			" · same file for Windows, macOS and Linux" +
-			(main ? " · " + mb(main.bytes) : "");
+			" \u00b7 " +
+			mb(main.bytes) +
+			(main.bundlesNode
+				? " \u00b7 includes Node.js"
+				: " \u00b7 needs Node.js 20.11+ installed");
 		buttons.textContent = "";
 		links = [];
-		function addLink(asset, label, primary) {
-			var a = document.createElement("a");
-			a.className = "btn " + (primary ? "btn-primary" : "btn-ghost");
-			a.href = "downloads/" + encodeURIComponent(asset.name);
-			a.setAttribute("download", asset.name);
-			a.textContent = label;
-			a.dataset.href = a.getAttribute("href");
-			links.push(a);
-			buttons.appendChild(a);
-		}
-		if (main) addLink(main, "Download .zip", true);
-		others.forEach(function (a) {
+		buttons.appendChild(
 			addLink(
-				a,
-				"Download " + a.name.replace(/^banana-[^-]+-portable/, ""),
-				false,
-			);
-		});
-		if (sums) addLink(sums, "SHA256SUMS", false);
-		if (main) {
-			var h = document.createElement("div");
-			h.className = "hash";
-			h.textContent = "SHA-256 of " + main.name + ":";
-			var c = document.createElement("code");
-			c.textContent = main.sha256;
-			h.appendChild(c);
-			buttons.parentNode.insertBefore(h, notice);
+				main,
+				"Download for " + (main.os === "any" ? "any system" : label),
+				true,
+			),
+		);
+		if (os === "macos") {
+			var alt = assets.filter(function (a) {
+				return a.os === "macos" && a !== main;
+			})[0];
+			if (alt)
+				buttons.appendChild(addLink(alt, "Download " + alt.label, false));
 		}
+		var h = document.createElement("div");
+		h.className = "hash";
+		h.textContent = "SHA-256 of " + main.name + ":";
+		var c = document.createElement("code");
+		c.textContent = main.sha256;
+		h.appendChild(c);
+		buttons.parentNode.insertBefore(h, notice);
+
+		if (rest.length || sums) {
+			var d = document.createElement("details");
+			d.className = "terms-detail more";
+			var sm = document.createElement("summary");
+			sm.textContent = "Other systems and files";
+			d.appendChild(sm);
+			var row = document.createElement("div");
+			row.className = "dl-buttons";
+			rest.forEach(function (a) {
+				row.appendChild(addLink(a, a.label || a.name, false));
+			});
+			if (sums) row.appendChild(addLink(sums, "SHA256SUMS", false));
+			d.appendChild(row);
+			buttons.parentNode.insertBefore(d, notice);
+		}
+
 		// Make the install snippets use the real file name.
 		document.querySelectorAll("code.copy").forEach(function (el) {
-			if (main) {
-				el.textContent = el.textContent.replace(
-					/banana-<version>-portable\.zip/g,
-					main.name,
-				);
-				el.dataset.copy = el.dataset.copy.replace(
-					/banana-portable\.zip/g,
-					main.name,
-				);
-			}
+			el.textContent = el.textContent.replace(
+				/banana-<version>-portable\.zip/g,
+				main.name,
+			);
+			el.dataset.copy = el.dataset.copy.replace(
+				/banana-portable\.zip/g,
+				main.name,
+			);
 		});
 		applyGate();
 	}
@@ -201,7 +246,7 @@
 	terms.addEventListener("change", applyGate);
 
 	function unavailable(reason) {
-		title.textContent = "Banana portable";
+		title.textContent = "Banana";
 		meta.textContent = reason;
 		buttons.textContent = "";
 		var a = document.createElement("span");
@@ -226,6 +271,17 @@
 				!/^[0-9A-Za-z.+-]+$/.test(String(rel.version))
 			)
 				throw new Error("bad manifest");
+			// Only plain file names with a checksum are ever turned into links.
+			rel.assets = rel.assets.filter(function (a) {
+				return (
+					a &&
+					typeof a.name === "string" &&
+					/^[A-Za-z0-9._-]+$/.test(a.name) &&
+					typeof a.sha256 === "string" &&
+					/^[0-9a-f]{64}$/.test(a.sha256)
+				);
+			});
+			if (!rel.assets.length) throw new Error("no usable assets");
 			render(rel);
 		})
 		.catch(function () {

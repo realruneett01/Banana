@@ -24,7 +24,7 @@ jobs:
       - name: Build release files (zip, tar.gz, SHA256SUMS, releases.json)
         run: |
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then export BANANA_VERSION="${GITHUB_REF_NAME#v}"; fi
-          node scripts/make-release.mjs
+          node scripts/make-release.mjs --with-node
       - name: Verify the zip as a user would receive it
         run: |
           mkdir /tmp/verify && cd /tmp/verify

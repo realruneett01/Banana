@@ -27,17 +27,17 @@
 <section class="hero" id="top">
   <div class="wrap hero-grid">
     <div class="hero-copy">
-      <p class="eyebrow">Visual Git diff for KiCad</p>
+      <p class="eyebrow">Free visual Git diff for KiCad</p>
       <h1>See exactly what changed on your board.</h1>
       <p class="lead">Pick two commits. Banana renders both versions, compares the actual geometry, and tells you which part moved, which trace was added and which net it belongs to &mdash; not a wall of S-expression text.</p>
       <div class="cta">
-        <a class="btn btn-primary" href="#download">Download for desktop</a>
+        <a class="btn btn-primary" href="#download">Download free</a>
         <a class="btn btn-ghost" href="#how">See how it works</a>
       </div>
       <ul class="facts" aria-label="Key facts">
         <li>Runs on your computer</li>
         <li>KiCad 7 or newer</li>
-        <li>Portable &mdash; runs from a USB drive</li>
+        <li>Free to use &mdash; no account needed</li>
       </ul>
     </div>
 
@@ -121,8 +121,8 @@
 
 <section class="section" id="download" aria-labelledby="dl-h">
   <div class="wrap">
-    <h2 id="dl-h">Download Banana</h2>
-    <p class="section-lead">One portable download for every desktop. Unzip it anywhere &mdash; including a USB drive &mdash; and run the launcher.</p>
+    <h2 id="dl-h">Download Banana &mdash; free</h2>
+    <p class="section-lead">No sign-up, no licence key, no tracking. Unzip it anywhere &mdash; including a USB drive &mdash; and run the launcher. Everything except KiCad and Git is included.</p>
 
     <div class="dl-grid">
       <div class="dl-card" id="dl-card" aria-live="polite">
@@ -136,7 +136,7 @@
 
         <label class="terms">
           <input type="checkbox" id="terms">
-          <span>I have a licence agreement with the owner of Banana and accept that it is proprietary software: no copying, redistribution or reverse engineering. <a href="#terms-detail" id="terms-link">Terms summary</a></span>
+          <span>I accept the Banana Free Use License: free to use, including at work; the software stays proprietary &mdash; no copying or redistribution, no reverse engineering. <a href="#terms-detail" id="terms-link">Terms summary</a></span>
         </label>
 
         <div class="dl-buttons" id="dl-buttons"></div>
@@ -145,10 +145,11 @@
         <details id="terms-detail" class="terms-detail">
           <summary>Terms summary</summary>
           <ul>
-            <li>Banana is proprietary and all rights are reserved. This page does not grant a licence.</li>
-            <li>Use is limited to parties with a signed agreement, on computers they control, for internal use.</li>
-            <li>Do not copy, share, host, modify or reverse engineer it, or use it to train AI models.</li>
-            <li>KiCad and Node.js are separate programs under their own licences and are not covered.</li>
+            <li>Free to download and use, for personal, educational or commercial work, on any number of your own computers.</li>
+            <li>Banana is proprietary: the source code stays private and all other rights are reserved.</li>
+            <li>Please do not copy, mirror, resell, modify or reverse engineer it, or use it to train AI models. Share the link to this page instead.</li>
+            <li>Your designs stay on your computer. Banana collects no usage data.</li>
+            <li>KiCad is separate software under its own licence. Provided as is, without warranty.</li>
             <li>The full text is the <code>LICENSE</code> file inside the download and governs.</li>
           </ul>
         </details>
@@ -157,11 +158,11 @@
       <div class="dl-side">
         <h3>What you need first</h3>
         <ul class="reqs">
-          <li><strong>Node.js 20.11+</strong> <span class="muted">runs the app</span></li>
-          <li><strong>KiCad 7 or newer</strong> <span class="muted">renders your files</span></li>
+          <li><strong>KiCad 7 or newer</strong> <span class="muted">renders your files (free, from kicad.org)</span></li>
           <li><strong>Git</strong> <span class="muted">reads your history</span></li>
+          <li><strong>Node.js</strong> <span class="muted">already included in the download for your system</span></li>
         </ul>
-        <p class="muted small">Banana runs as a local app that opens in your web browser. There is no installer (.exe / .dmg) yet.</p>
+        <p class="muted small">Banana runs as a local app that opens in your web browser. There is no installer (.exe / .dmg) yet &mdash; you just unzip and run.</p>
       </div>
     </div>
 
@@ -205,10 +206,11 @@
     <details><summary>Does Banana upload my designs?</summary><p>No. With a local repository, files are read and rendered on your computer. If you connect GitHub, Banana downloads the files you choose from GitHub. The optional AI Copilot sends the context of your question to Google Gemini, and only when you use it with your own API key.</p></details>
     <details><summary>Which KiCad versions work?</summary><p>KiCad 7 and newer. Version 7 is tested; 8 and later use a faster export path that has not been verified on every platform yet.</p></details>
     <details><summary>Which operating systems are supported?</summary><p>Banana is built for Windows, macOS and Linux on x64 and ARM &mdash; the download is the same everywhere. Linux x64 is the most thoroughly tested today; Windows, macOS and ARM are covered by automated checks that are still being rolled out, so report anything odd.</p></details>
-    <details><summary>Is there an installer?</summary><p>Not yet. Banana is a portable folder: unzip and run the launcher. It needs Node.js and KiCad installed, or placed inside the folder&rsquo;s <code>runtime</code> directory to run from a USB drive on computers with nothing installed.</p></details>
+    <details><summary>Is there an installer?</summary><p>Not yet. Banana is a portable folder: unzip and run the launcher. The download for your system already includes Node.js; you only need KiCad and Git on the computer. It also runs from a USB drive.</p></details>
+    <details><summary>My computer shows a security warning &mdash; is that normal?</summary><p>It can be. Banana&rsquo;s own launcher scripts are not code-signed (that costs money and is not done yet), so Windows or macOS may ask you to confirm. Compare the SHA-256 shown on this page with your file first (steps above); if they match, the file is exactly what was published. The bundled Node.js is the official, unmodified build from nodejs.org.</p></details>
     <details><summary>Will it start by itself when I plug in a USB drive?</summary><p>No &mdash; modern operating systems block that, for good reason. Open the drive and run the launcher.</p></details>
     <details><summary>What does it check at start-up?</summary><p>That its files are intact, that Node, Git and KiCad are present and working, that a port and scratch space are available, and that its diff engine gives the right answer on a built-in pair of test boards. It refuses to start if any of those fail.</p></details>
-    <details><summary>Can I use it commercially?</summary><p>Banana is proprietary. Use requires a signed agreement with the owner; this site does not grant a licence.</p></details>
+    <details><summary>Is it really free? Can I use it at work?</summary><p>Yes. Banana is free for personal, educational and commercial use, with no sign-up. It is proprietary rather than open source: the source code is private and you may not redistribute, modify or reverse engineer it. The full terms are in the <code>LICENSE</code> file inside the download.</p></details>
   </div>
 </section>
 </main>
@@ -216,7 +218,7 @@
 <footer class="footer">
   <div class="wrap foot-in">
     <span class="brand"><span class="logo" aria-hidden="true"></span>Banana</span>
-    <p class="muted small">&copy; 2025&ndash;2026 realruneett01. All rights reserved. Proprietary software. KiCad is a trademark of its respective owners; Banana is not affiliated with the KiCad project.</p>
+    <p class="muted small">&copy; 2025&ndash;2026 realruneett01. Free to use; proprietary software, all other rights reserved. KiCad is a trademark of its respective owners; Banana is not affiliated with the KiCad project.</p>
   </div>
 </footer>
 

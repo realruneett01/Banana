@@ -134,3 +134,4 @@ code.copy:hover{border-color:var(--accent)}
 .foot-in{display:flex;flex-direction:column;gap:12px}
 @media (min-width:760px){.foot-in{flex-direction:row;justify-content:space-between;align-items:center}.foot-in p{max-width:60ch;margin:0}}
 @media (max-width:620px){.nav nav a:not(.btn){display:none}}
+.more{margin-top:14px}.more .dl-buttons{margin-top:12px}

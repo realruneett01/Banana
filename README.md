@@ -2,7 +2,7 @@
 
 Banana compares two Git versions of a KiCad schematic (`.kicad_sch`) or board (`.kicad_pcb`) and shows **what physically changed** — not a text diff of S-expressions. It renders both versions with `kicad-cli`, diffs the rendered geometry, then maps each difference back to the part, pad or net it belongs to.
 
-> **Proprietary software.** All rights reserved — see [`LICENSE`](LICENSE). Third-party notices are in [`NOTICE.md`](NOTICE.md).
+> **Free, proprietary software.** Free to download and use, including commercially; source code, redistribution and reverse-engineering rights are reserved — see [`LICENSE`](LICENSE). Third-party notices are in [`NOTICE.md`](NOTICE.md).
 
 ## What it does
 
@@ -25,7 +25,7 @@ Banana compares two Git versions of a KiCad schematic (`.kicad_sch`) or board (`
 
 | Needed | Notes |
 |---|---|
-| Node.js **20.11+** | Or put a Node.js build in `runtime/node-<os>-<arch>/` (see USB section). |
+| Node.js **20.11+** | Already included in the per-platform downloads; only needed for the universal zip or a source checkout. |
 | KiCad **7+** (`kicad-cli`) | On `PATH`, in a standard install dir, in `KICAD_CLI_PATH`, or in `runtime/kicad*/`. |
 | Git | To read commits from local repositories. |
 
@@ -61,16 +61,17 @@ Or bootstrap the first admin from the environment (only used when no accounts ex
 
 ## Download page and releases
 
-`website/` is a static download site (no build step, no dependencies, strict CSP). It reads `releases.json`, detects the visitor's OS, requires the visitor to accept the licence terms before the download links become active, and shows the SHA-256 of the file.
+`website/` is a static download site (no build step, no dependencies, strict CSP). It reads `releases.json`, detects the visitor's OS and offers the matching download, asks the visitor to accept the free-use licence before the links become active, and shows the SHA-256 of the file.
 
 ```bash
-npm run make-release        # builds website/downloads/*.zip|.tar.gz, SHA256SUMS and website/releases.json
+npm run make-release                 # universal zip only (needs Node.js installed by the user)
+node scripts/make-release.mjs --with-node   # + one zip per OS/arch that already contains Node.js (release workflow does this)
 npx serve website           # or any static host: Cloudflare Pages, Netlify, S3, nginx ...
 ```
 
 Pushing a tag such as `v1.0.0` runs `.github/workflows/release.yml`, which tests, builds the release, verifies the zip as a user would receive it, attaches it to a GitHub release and uploads the ready-to-host `website` folder as a workflow artifact.
 
-Things to decide before publishing: the repository is private, so release assets are only downloadable by people with repository access; to let customers download without GitHub accounts, host the `website` folder (with `downloads/`) on a static host you control. The terms checkbox is a notice, not access control — if the file itself must be restricted, host it behind authentication. GitHub Pages from a private repository needs a paid plan and is public once published.
+Publishing for free: the source repository stays private, but private-repo release assets cannot be downloaded by the public, so host the `website` folder (with `downloads/`) on a static host such as Cloudflare Pages, Netlify or your own server. The licence does not allow others to mirror the files, so point people at your official page. GitHub Pages from a private repository needs a paid plan.
 
 ## Desktop use
 
