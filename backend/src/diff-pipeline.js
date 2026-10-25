@@ -33,8 +33,9 @@ function cleanupDirectory(dirPath) {
 
 function cleanupFolders(cleanExtractionFolders, baseRenders, targetRenders) {
 	cleanExtractionFolders.forEach(cleanupDirectory);
-	cleanupDirectory(baseRenders?.outputDir);
-	cleanupDirectory(targetRenders?.outputDir);
+	// Persistent render-cache entries are shared between requests; only scratch dirs are removed.
+	if (!baseRenders?.persistent) cleanupDirectory(baseRenders?.outputDir);
+	if (!targetRenders?.persistent) cleanupDirectory(targetRenders?.outputDir);
 }
 
 function buildBaseLayerResult(baseSvg) {

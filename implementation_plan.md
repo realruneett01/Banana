@@ -1,3 +1,5 @@
+> **Historical document.** Written during development; it may describe files, scripts, scores or paths that no longer exist (for example `backend/diag_runner.mjs` and `backend/verify_fix.mjs` are not in the repository). The authoritative description of the current system is `README.md`; the test suite is `npm test`.
+
 # Banana 2.0 — Web Deployment: Detailed Implementation Plan
 
 > Scope: everything needed to turn the current local-only desktop tool into a publicly hosted web service. The diff engine (`svg-diff-processor.js`, `kicad-pcb-parser.js`, `kicad-renderer.js`) is **not modified** — it is treated as a stable, tested black box. All work is wrapper infrastructure around it.

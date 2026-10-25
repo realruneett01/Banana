@@ -53,3 +53,5 @@ claude.md
 backend/diag_runner.mjs
 backend/verify_fix.mjs
 generate_pdf.mjs
+.banana/
+dist-portable/

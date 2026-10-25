@@ -1,0 +1,22 @@
+# docker compose -f deploy/docker-compose.yml up --build
+services:
+  banana:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: banana:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BANANA_PORT:-5000}:5000"
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      # Local KiCad git repositories to diff, mounted read-only at /repos.
+      - ${BANANA_REPOS:-./repos}:/repos:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

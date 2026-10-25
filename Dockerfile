@@ -51,7 +51,10 @@ WORKDIR /app
 # Production environment variables
 ENV NODE_ENV=production
 ENV PORT=5000
+# Containers must listen on all interfaces; the app itself defaults to loopback only.
+ENV HOST=0.0.0.0
 ENV KICAD_CLI_PATH=/usr/bin/kicad-cli
+ENV BANANA_TEMP_DIR=/tmp/banana
 
 # Copy package manifests for workspace resolution
 COPY package*.json ./
@@ -63,6 +66,10 @@ RUN npm ci --workspace=backend --omit=dev
 
 # Copy backend source code
 COPY backend ./backend
+
+# Preflight/calibration tooling (run: docker run --rm <image> node scripts/preflight.mjs)
+COPY scripts ./scripts
+COPY samples ./samples
 
 # Copy built frontend assets from builder stage
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
@@ -78,6 +85,9 @@ ENV HOME=/home/user
 
 # Expose default port (Render will dynamically supply PORT at runtime)
 EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||5000)+'/api/health-check').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # Start Express server (serves API and production frontend)
 CMD ["node", "backend/src/server.js"]

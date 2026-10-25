@@ -1,3 +1,5 @@
+> **Historical document.** Written during development; it may describe files, scripts, scores or paths that no longer exist (for example `backend/diag_runner.mjs` and `backend/verify_fix.mjs` are not in the repository). The authoritative description of the current system is `README.md`; the test suite is `npm test`.
+
 # Banana 2.0 — System Architecture & Technical Context
 
 _Last updated: 2026-08-19_

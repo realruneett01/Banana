@@ -1,44 +1,93 @@
-import express from 'express';
-import cors from 'cors';
-import fs from 'fs';
-import path from 'path';
-import { config } from './config.js';
-import { createApiRouter } from './routes/index.js';
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import cors from "cors";
+import express from "express";
+import { config } from "./config.js";
+import { createApiRouter } from "./routes/index.js";
+import { APP_ROOT } from "./runtime-detect.js";
 
-const app = express();
+export function createApp() {
+	const app = express();
 
-app.use(cors());
-app.use(express.json());
+	app.disable("x-powered-by");
+	app.use(cors());
+	app.use(express.json({ limit: "2mb" }));
 
-// API routes
-app.use('/api', createApiRouter());
+	app.use("/api", createApiRouter());
+	setupStaticServing(app);
 
-function setupStaticServing(expressApp) {
-  const candidateDirs = [
-    process.env.STATIC_DIR,
-    path.resolve(process.cwd(), 'frontend/dist'),
-    path.resolve(process.cwd(), '../frontend/dist'),
-    path.resolve(process.cwd(), 'dist'),
-    path.resolve(process.cwd(), 'public')
-  ];
-  const staticDir = candidateDirs.find(d => Boolean(d && fs.existsSync(d)));
-
-  if (staticDir) {
-    console.log(`[Banana] Serving static frontend from: ${staticDir}`);
-    expressApp.use(express.static(staticDir));
-    expressApp.get('*', (req, res, next) => {
-      if (req.path.startsWith('/api')) return next();
-      res.sendFile(path.join(staticDir, 'index.html'));
-    });
-  }
+	// Malformed JSON bodies and other pre-router errors.
+	app.use((err, _req, res, next) => {
+		if (res.headersSent) return next(err);
+		const status = err.statusCode || err.status || 500;
+		res
+			.status(status)
+			.json({ error: status >= 500 ? "Internal server error" : err.message });
+	});
+	return app;
 }
 
-setupStaticServing(app);
+function setupStaticServing(expressApp) {
+	const candidateDirs = [
+		process.env.STATIC_DIR,
+		path.join(APP_ROOT, "frontend", "dist"),
+		path.resolve(process.cwd(), "frontend/dist"),
+		path.resolve(process.cwd(), "../frontend/dist"),
+		path.resolve(process.cwd(), "dist"),
+		path.resolve(process.cwd(), "public"),
+	];
+	const staticDir = candidateDirs.find((d) =>
+		Boolean(d && fs.existsSync(path.join(d, "index.html"))),
+	);
 
-const PORT = config.port;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`KiCad CLI path: ${config.kicadCliPath}`);
-});
+	if (!staticDir) {
+		console.warn(
+			"[Banana] No built frontend found (frontend/dist). Run `npm run build` to serve the UI from this server.",
+		);
+		return;
+	}
+	console.log(`[Banana] Serving static frontend from: ${staticDir}`);
+	expressApp.use(express.static(staticDir));
+	expressApp.get("*", (req, res, next) => {
+		if (req.path.startsWith("/api")) return next();
+		res.sendFile(path.join(staticDir, "index.html"));
+	});
+}
 
-export default app;
+export function startServer({ port = config.port, host = config.host } = {}) {
+	const app = createApp();
+	return new Promise((resolve, reject) => {
+		const server = app.listen(port, host);
+		server.once("listening", () => {
+			const addr = server.address();
+			console.log(`[Banana] Server listening on http://${host}:${addr.port}`);
+			resolve(server);
+		});
+		server.once("error", (err) => {
+			if (err.code === "EADDRINUSE") {
+				err.message = `Port ${port} is already in use. Set PORT to a free port (or run \`npm run preflight\`).`;
+			}
+			reject(err);
+		});
+	});
+}
+
+const isMain =
+	Boolean(process.argv[1]) &&
+	path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+	process.on("unhandledRejection", (reason) => {
+		console.error("[Banana] Unhandled rejection:", reason);
+	});
+	startServer()
+		.then((server) => {
+			const shutdown = () => server.close(() => process.exit(0));
+			process.on("SIGINT", shutdown);
+			process.on("SIGTERM", shutdown);
+		})
+		.catch((err) => {
+			console.error(`[Banana] Failed to start: ${err.message}`);
+			process.exit(1);
+		});
+}

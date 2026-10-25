@@ -1,92 +1,77 @@
-import dotenv from 'dotenv';
-import { execFileSync } from 'child_process';
-import os from 'os';
-import path from 'path';
-import fs from 'fs';
+import fs from "node:fs";
+import dotenv from "dotenv";
+import {
+	APP_ROOT,
+	findKicadCli,
+	loadAutoconfig,
+	parsePort,
+	parsePositiveInt,
+	probeKicadVersion,
+	resolveTempRoot,
+} from "./runtime-detect.js";
 
-dotenv.config();
+dotenv.config({ path: `${APP_ROOT}/.env`, quiet: true });
+dotenv.config({ quiet: true });
 
-const CANDIDATES = {
-  win32: [
-    'C:\\Program Files\\KiCad\\11.0\\bin\\kicad-cli.exe',
-    'C:\\Program Files\\KiCad\\10.0\\bin\\kicad-cli.exe',
-    'C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe',
-    'C:\\Program Files\\KiCad\\8.0\\bin\\kicad-cli.exe',
-    'C:\\Program Files\\KiCad\\7.0\\bin\\kicad-cli.exe',
-    'C:\\Program Files\\KiCad\\bin\\kicad-cli.exe',
-  ],
-  darwin: [
-    '/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli',
-    '/Applications/KiCad 10.0/KiCad.app/Contents/MacOS/kicad-cli',
-    '/Applications/KiCad 9.0/KiCad.app/Contents/MacOS/kicad-cli',
-    '/Applications/KiCad 8.0/KiCad.app/Contents/MacOS/kicad-cli',
-    '/Applications/KiCad 7.0/KiCad.app/Contents/MacOS/kicad-cli',
-  ],
-  linux: [
-    '/usr/bin/kicad-cli',
-    '/usr/local/bin/kicad-cli',
-    '/snap/bin/kicad-cli',
-    '/usr/lib/kicad-nightly/bin/kicad-cli',
-    '/usr/lib/kicad/bin/kicad-cli'
-  ],
-};
+const auto = loadAutoconfig() || {};
 
-function findKicadOnPath() {
-  const finder = os.platform() === 'win32' ? 'where' : 'which';
-  try {
-    const result = execFileSync(finder, ['kicad-cli'], {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'ignore']
-    }).trim().split(/\r?\n/)[0];
-    if (result && fs.existsSync(result)) return result;
-  } catch (err) {
-    if (process.env.DEBUG_KICAD) {
-      console.warn('[Banana] kicad-cli not on PATH:', err.message);
-    }
-  }
-  return null;
+function resolveKicad() {
+	// Environment wins; the calibration file is only trusted if its path still exists.
+	const explicit =
+		process.env.KICAD_CLI_PATH ||
+		(auto.kicadCliPath && fs.existsSync(auto.kicadCliPath)
+			? auto.kicadCliPath
+			: "");
+	const found = findKicadCli({ explicit });
+	if (!found.path) {
+		return {
+			path: "",
+			version: "",
+			error:
+				"kicad-cli not found. Install KiCad 7+, set KICAD_CLI_PATH, or put KiCad under runtime/kicad*/. Run `npm run preflight` for details.",
+		};
+	}
+	const probe = probeKicadVersion(found.path);
+	if (!probe.ok) {
+		return {
+			path: found.path,
+			version: "",
+			error: `kicad-cli at ${found.path} failed to run: ${probe.error}`,
+		};
+	}
+	console.log(
+		`[Banana] KiCad CLI ${probe.version} at ${found.path} (${found.source})`,
+	);
+	return { path: found.path, version: probe.version, error: "" };
 }
 
-function findKicadInStandardDirs() {
-  const list = CANDIDATES[os.platform()] || [];
-  return list.find(candidate => fs.existsSync(candidate)) || null;
-}
+const kicad = resolveKicad();
+if (kicad.error) console.warn(`[Banana] WARNING: ${kicad.error}`);
 
-function resolveKicadCliPath() {
-  if (process.env.KICAD_CLI_PATH && fs.existsSync(process.env.KICAD_CLI_PATH)) {
-    return process.env.KICAD_CLI_PATH;
-  }
-  return findKicadOnPath() || findKicadInStandardDirs() || (function() {
-    throw new Error(
-      'kicad-cli not found. Set KICAD_CLI_PATH env var, or ensure kicad-cli is on your system PATH.'
-    );
-  })();
-}
-
-export const KICAD_CLI_PATH = resolveKicadCliPath();
-
-// Fail-fast verification at startup: throw immediately if KiCad CLI cannot execute
-export const KICAD_VERSION = (() => {
-  try {
-    const ver = execFileSync(KICAD_CLI_PATH, ['--version'], { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
-    console.log(`[Banana] Initialized KiCad CLI v${ver} at: ${KICAD_CLI_PATH}`);
-    return ver;
-  } catch (err) {
-    console.error(`[Banana] Failed to execute KiCad CLI at ${KICAD_CLI_PATH}:`, err.message);
-    throw err;
-  }
-})();
+export const KICAD_CLI_PATH = kicad.path;
+export const KICAD_VERSION = kicad.version;
 
 export const config = {
-  port: process.env.PORT || 5000,
-  kicadCliPath: KICAD_CLI_PATH,
-  kicadVersion: KICAD_VERSION,
-  geminiApiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
-  githubClientId: process.env.GITHUB_CLIENT_ID || '',
-  githubClientSecret: process.env.GITHUB_CLIENT_SECRET || '',
-  githubCallbackUrl: process.env.GITHUB_CALLBACK_URL || 'http://localhost:5000/api/auth/github/callback',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173'
+	port: parsePort(process.env.PORT, parsePort(auto.port, 5000)),
+	host: process.env.HOST || auto.host || "127.0.0.1",
+	kicadCliPath: KICAD_CLI_PATH,
+	kicadVersion: KICAD_VERSION,
+	kicadError: kicad.error,
+	tempRoot: resolveTempRoot(),
+	renderTimeoutMs: parsePositiveInt(
+		process.env.RENDER_TIMEOUT_MS,
+		parsePositiveInt(auto.renderTimeoutMs, 120000),
+	),
+	cacheMaxEntries: parsePositiveInt(
+		process.env.CACHE_MAX_ENTRIES,
+		parsePositiveInt(auto.cacheMaxEntries, 200),
+	),
+	geminiApiKey: process.env.GEMINI_API_KEY || "",
+	geminiModel: process.env.GEMINI_MODEL || "gemini-3-flash-preview",
+	githubClientId: process.env.GITHUB_CLIENT_ID || "",
+	githubClientSecret: process.env.GITHUB_CLIENT_SECRET || "",
+	githubCallbackUrl:
+		process.env.GITHUB_CALLBACK_URL ||
+		"http://localhost:5000/api/auth/github/callback",
+	frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
 };
-
-

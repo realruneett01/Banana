@@ -1,3 +1,5 @@
+> **Historical document.** Written during development; it may describe files, scripts, scores or paths that no longer exist (for example `backend/diag_runner.mjs` and `backend/verify_fix.mjs` are not in the repository). The authoritative description of the current system is `README.md`; the test suite is `npm test`.
+
 # Diagnostic Prompt: "Changed" Items Misclassified as "Added" in Audit List
 
 **Read-only investigation. No code changes. No fixes proposed until findings are reported and reviewed.**

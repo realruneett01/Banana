@@ -1,0 +1,141 @@
+BANANA PROPRIETARY SOFTWARE LICENSE AGREEMENT
+
+Copyright (c) 2025-2026 realruneett01 ("Licensor"). ALL RIGHTS RESERVED.
+
+THIS SOFTWARE, ITS SOURCE CODE, ITS ALGORITHMS, ITS DOCUMENTATION AND ALL RELATED
+MATERIALS (together, the "Software") ARE THE CONFIDENTIAL AND PROPRIETARY PROPERTY OF
+THE LICENSOR AND CONSTITUTE TRADE SECRETS AND COPYRIGHTED WORKS.
+
+1.  NO LICENSE BY DEFAULT.
+    Nothing in this repository, in any copy of it, or in the act of viewing, cloning,
+    downloading, forking, or receiving the Software grants you any right, title, license
+    or interest, express or implied, by estoppel or otherwise. If you do not hold a
+    separate written agreement signed by the Licensor that grants you rights, you have
+    NO right to use the Software for any purpose and you must delete every copy now.
+
+2.  LIMITED GRANT (ONLY UNDER A SIGNED WRITTEN AGREEMENT).
+    Where the Licensor has granted you a written licence, you receive a personal,
+    non-exclusive, non-transferable, non-sublicensable, revocable right to run the
+    Software, in executable or portable-bundle form, on computers you own or control,
+    solely for your internal business purposes, for the term and the number of seats or
+    installations stated in that agreement, and subject to every restriction below.
+
+3.  PROHIBITED CONDUCT. Without the Licensor's prior written consent you shall not, and
+    shall not permit or assist any third party to:
+    (a)  copy, reproduce, publish, post, or distribute the Software or any part of it,
+         including by physical media such as USB drives, by mirroring, or by uploading
+         to any repository, registry, container registry, file-sharing or cloud service;
+    (b)  modify, adapt, translate, port, or create derivative works of the Software;
+    (c)  sell, rent, lease, lend, sublicense, host, or offer the Software or its
+         functionality to third parties, including as a hosted service, SaaS, API,
+         managed service, or on a time-sharing or service-bureau basis;
+    (d)  reverse engineer, decompile, disassemble, deobfuscate, or otherwise attempt to
+         derive the source code, algorithms, matching heuristics, data structures,
+         scoring thresholds or other trade secrets of the Software, except to the extent
+         applicable law expressly forbids this restriction, and then only after giving the
+         Licensor thirty (30) days' written notice;
+    (e)  reimplement, clone, or build a competing or substantially similar product using
+         knowledge, code, behaviour or output of the Software obtained under this
+         Agreement or in breach of it;
+    (f)  use the Software, its source code, its documentation, or its outputs to train,
+         fine-tune, evaluate, distil, or prompt-engineer any machine-learning or
+         artificial-intelligence model or dataset, or feed them to any code-generation
+         system for any purpose other than your own authorised internal use of the Software;
+    (g)  remove, alter, or obscure any copyright, trademark, confidentiality or licensing
+         notice, or the integrity manifest (MANIFEST.sha256) or any technical protection;
+    (h)  circumvent, disable, or tamper with any licensing, integrity, or preflight check;
+    (i)  publish benchmark, security, or comparative analyses of the Software;
+    (j)  use the Software in violation of any applicable law or export-control regulation,
+         or for any unlawful purpose.
+
+4.  OWNERSHIP.
+    The Software is licensed, not sold. The Licensor and its licensors retain all right,
+    title and interest, including all patent, copyright, trade secret, trademark and other
+    intellectual property rights, in the Software and in every modification, improvement,
+    feedback, suggestion or contribution relating to it, all of which you hereby
+    irrevocably assign to the Licensor, and to the extent assignment is not possible you
+    grant the Licensor a perpetual, irrevocable, worldwide, royalty-free, transferable,
+    sublicensable licence to use them for any purpose.
+
+5.  CONFIDENTIALITY.
+    You shall hold the Software in strict confidence, apply at least the degree of care
+    you apply to your own most sensitive information and never less than reasonable care,
+    restrict access to those of your employees who need it and are bound by written
+    confidentiality duties at least as protective as this Agreement, and notify the
+    Licensor immediately on becoming aware of any unauthorised access, copy, use or
+    disclosure. These obligations survive termination without limit in time for as long
+    as any part of the Software remains a trade secret under applicable law.
+
+6.  THIRD-PARTY COMPONENTS.
+    The Software depends on and may be distributed together with third-party components,
+    including open-source software and KiCad (which is licensed under the GNU GPL and
+    other licences). Those components are NOT covered by this Agreement and remain under
+    their own licences, listed in NOTICE.md. Nothing in this Agreement restricts rights
+    that those licences grant you in those components themselves.
+
+7.  TERM AND TERMINATION.
+    Any licence ends automatically and immediately, without notice, if you breach this
+    Agreement. The Licensor may also terminate on written notice for any reason. On
+    termination you shall stop all use, permanently delete or return every copy
+    (including backups and portable media), and certify in writing that you have done so.
+    Sections 1, 3-5 and 7-16 survive termination.
+
+8.  AUDIT.
+    On reasonable notice the Licensor may inspect your relevant records and systems to
+    verify compliance. You shall bear the cost of the audit if it reveals unlicensed use.
+
+9.  REMEDIES.
+    You acknowledge that a breach of Sections 3 or 5 would cause the Licensor irreparable
+    harm for which damages are an inadequate remedy, and that the Licensor is entitled to
+    injunctive and other equitable relief without proving actual damage and without
+    posting a bond, in addition to all other remedies, including recovery of profits
+    obtained through the breach and of the Licensor's reasonable legal fees and costs.
+
+10. DISCLAIMER OF WARRANTY.
+    THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITH ALL FAULTS AND WITHOUT
+    WARRANTY OF ANY KIND. TO THE MAXIMUM EXTENT PERMITTED BY LAW THE LICENSOR DISCLAIMS
+    ALL WARRANTIES, EXPRESS, IMPLIED OR STATUTORY, INCLUDING MERCHANTABILITY, FITNESS FOR
+    A PARTICULAR PURPOSE, ACCURACY, NON-INFRINGEMENT, AND THAT THE SOFTWARE WILL BE
+    ERROR-FREE OR UNINTERRUPTED. THE SOFTWARE IS AN AID TO HUMAN REVIEW OF HARDWARE
+    DESIGN CHANGES AND MUST NOT BE THE SOLE BASIS FOR SAFETY-CRITICAL, MEDICAL,
+    AVIATION, AUTOMOTIVE, MANUFACTURING-RELEASE OR OTHER HIGH-RISK DECISIONS.
+
+11. LIMITATION OF LIABILITY.
+    TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR AND ITS CONTRIBUTORS SHALL NOT BE
+    LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY OR PUNITIVE
+    DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, DATA, GOODWILL OR BUSINESS, OR FOR THE COST
+    OF MANUFACTURING OR REWORKING HARDWARE, HOWEVER CAUSED AND ON ANY THEORY OF
+    LIABILITY, EVEN IF ADVISED OF THEIR POSSIBILITY. THE LICENSOR'S TOTAL AGGREGATE
+    LIABILITY FOR ALL CLAIMS SHALL NOT EXCEED THE FEES YOU PAID FOR THE SOFTWARE IN THE
+    TWELVE MONTHS BEFORE THE CLAIM, OR ONE HUNDRED US DOLLARS (US$100) IF NONE WERE PAID.
+
+12. INDEMNITY.
+    You shall defend, indemnify and hold harmless the Licensor from all claims, losses,
+    liabilities, damages, costs and expenses (including legal fees) arising from your use
+    of the Software, your breach of this Agreement, or your hardware designs and their
+    manufacture or use.
+
+13. EXPORT AND COMPLIANCE.
+    You are responsible for complying with all export, re-export, sanctions and import
+    laws that apply to your use of the Software.
+
+14. GOVERNING LAW AND VENUE.
+    This Agreement is governed by the laws of [GOVERNING JURISDICTION - TO BE COMPLETED BY
+    LICENSOR], without regard to conflict-of-law rules. The courts of that jurisdiction
+    have exclusive jurisdiction over any dispute, and you submit to their jurisdiction;
+    the Licensor may seek injunctive relief in any court of competent jurisdiction.
+
+15. GENERAL.
+    This Agreement (with any signed written licence) is the entire agreement on its
+    subject and supersedes all prior understandings. If any provision is unenforceable it
+    shall be enforced to the maximum extent permitted and the rest remains in force. No
+    waiver is effective unless in writing. You may not assign this Agreement without the
+    Licensor's written consent; the Licensor may assign it freely. Headings are for
+    convenience only.
+
+16. NOTICE TO GOVERNMENT AND OTHER USERS.
+    The Software is "commercial computer software" developed at private expense. Any use,
+    duplication or disclosure by a government is subject to restrictions consistent with
+    this Agreement.
+
+Requests for licences: contact the Licensor through the GitHub account realruneett01.

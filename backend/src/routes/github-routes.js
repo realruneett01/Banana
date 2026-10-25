@@ -1,4 +1,4 @@
-import express from "express";
+import crypto from "node:crypto";
 import {
 	exchangeCodeForToken,
 	getOAuthAuthorizeUrl,
@@ -9,8 +9,21 @@ import {
 	getUserRepositories,
 	verifyTokenAndGetUser,
 } from "../github-service.js";
+import { createSafeRouter } from "../safe-router.js";
 
-const router = express.Router();
+const router = createSafeRouter();
+
+const STATE_COOKIE = "banana_oauth_state";
+
+function readCookie(req, name) {
+	const header = req.headers.cookie || "";
+	for (const part of header.split(";")) {
+		const idx = part.indexOf("=");
+		if (idx > -1 && part.slice(0, idx).trim() === name)
+			return decodeURIComponent(part.slice(idx + 1).trim());
+	}
+	return "";
+}
 
 function getDynamicOrigin(req) {
 	const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
@@ -28,10 +41,19 @@ router.get("/auth/github/url", (req, res) => {
 				? process.env.GITHUB_CALLBACK_URL
 				: `${dynamicOrigin}/api/auth/github/callback`;
 
-		const url = getOAuthAuthorizeUrl(
-			req.query.state || "banana_auth",
-			dynamicCallback,
-		);
+		// Random per-login state bound to this browser; verified in the callback (CSRF defence).
+		const state = crypto.randomBytes(16).toString("hex");
+		const url = getOAuthAuthorizeUrl(state, dynamicCallback);
+		res.cookie?.(STATE_COOKIE, state, {
+			httpOnly: true,
+			sameSite: "lax",
+			maxAge: 10 * 60 * 1000,
+		});
+		if (!res.cookie)
+			res.setHeader(
+				"Set-Cookie",
+				`${STATE_COOKIE}=${state}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/`,
+			);
 		res.json({ url, configured: true });
 	} catch (err) {
 		res.json({ configured: false, error: err.message });
@@ -40,9 +62,15 @@ router.get("/auth/github/url", (req, res) => {
 
 // 2. OAuth Callback
 router.get("/auth/github/callback", async (req, res) => {
-	const { code } = req.query;
-	if (!code) {
+	const { code, state } = req.query;
+	if (!code || typeof code !== "string") {
 		return res.status(400).send("Authorization code missing");
+	}
+	const expectedState = readCookie(req, STATE_COOKIE);
+	if (!expectedState || state !== expectedState) {
+		return res
+			.status(400)
+			.send("Invalid OAuth state. Please restart the GitHub login.");
 	}
 
 	const dynamicOrigin = getDynamicOrigin(req);
@@ -53,12 +81,13 @@ router.get("/auth/github/callback", async (req, res) => {
 
 	try {
 		const token = await exchangeCodeForToken(code);
-		const redirectUrl = `${targetFrontend}/?github_token=${encodeURIComponent(token)}`;
+		// Fragment, not query string: it is never sent to servers or written to access logs.
+		const redirectUrl = `${targetFrontend}/#github_token=${encodeURIComponent(token)}`;
 		res.redirect(redirectUrl);
 	} catch (err) {
 		console.error("[Banana API] GitHub OAuth callback error:", err);
 		res.redirect(
-			`${targetFrontend}/?github_error=${encodeURIComponent(err.message)}`,
+			`${targetFrontend}/#github_error=${encodeURIComponent(err.message)}`,
 		);
 	}
 });

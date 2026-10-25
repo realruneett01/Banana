@@ -1,8 +1,8 @@
-import express from "express";
 import { streamGeminiChat } from "../ai-service.js";
 import { config } from "../config.js";
+import { createSafeRouter } from "../safe-router.js";
 
-const router = express.Router();
+const router = createSafeRouter();
 
 router.get("/status", (_req, res) => {
 	const serverKeyConfigured = Boolean(

@@ -23,7 +23,8 @@ function handleUrlAuthCallback({
 	verifyGithubToken,
 	existingToken,
 }) {
-	const params = new URLSearchParams(window.location.search);
+	const hash = window.location.hash.replace(/^#/, "");
+	const params = new URLSearchParams(hash || window.location.search);
 	const tokenFromUrl = params.get("github_token");
 	const errorFromUrl = params.get("github_error");
 
@@ -33,11 +34,21 @@ function handleUrlAuthCallback({
 		setSourceMode("github");
 		localStorage.setItem("banana:sourceMode", "github");
 		verifyGithubToken(tokenFromUrl);
-		window.history.replaceState({}, document.title, window.location.pathname);
+		window.history.replaceState(
+			{},
+			document.title,
+			window.location.pathname +
+				window.location.search.replace(/[?&]github_(token|error)=[^&]*/g, ""),
+		);
 		message.success("GitHub OAuth login successful!");
 	} else if (errorFromUrl) {
 		message.error(`GitHub login error: ${errorFromUrl}`);
-		window.history.replaceState({}, document.title, window.location.pathname);
+		window.history.replaceState(
+			{},
+			document.title,
+			window.location.pathname +
+				window.location.search.replace(/[?&]github_(token|error)=[^&]*/g, ""),
+		);
 	} else if (existingToken) {
 		verifyGithubToken(existingToken);
 	}

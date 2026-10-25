@@ -5,4 +5,4 @@ pre-commit:
       glob: "*.{js,ts,jsx,tsx,json}"
       run: npx biome check --write --unsafe {staged_files}
     repowise-sync:
-      run: repowise status
+      run: command -v repowise >/dev/null 2>&1 && repowise status || echo "repowise not installed; skipping"

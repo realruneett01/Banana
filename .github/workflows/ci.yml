@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-24.04-arm covers ARM64; windows-latest covers Windows; macos-latest is Apple silicon.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install KiCad (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends kicad
+      - name: Install KiCad (Windows)
+        if: runner.os == 'Windows'
+        run: choco install kicad --no-progress -y
+      - name: Install KiCad (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --cask kicad
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - name: Preflight + ground-truth self-test
+        run: node scripts/preflight.mjs --no-write
+      - name: Portable bundle builds and has no native add-ons
+        run: node scripts/make-portable.mjs "${{ runner.temp }}/banana-portable"
+      - name: Portable bundle passes its own preflight
+        run: node scripts/preflight.mjs --no-write
+        working-directory: ${{ runner.temp }}/banana-portable
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t banana:ci .
+      - name: Container preflight (includes self-test with the image's KiCad)
+        run: docker run --rm banana:ci node scripts/preflight.mjs --no-write
+      - name: Container serves the API
+        run: |
+          docker run -d --name banana -p 5000:5000 banana:ci
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:5000/api/health-check && exit 0; sleep 2; done
+          docker logs banana; exit 1
+
+  systemd-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: systemd-analyze verify deploy/banana.service

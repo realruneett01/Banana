@@ -1,18 +1,29 @@
 {
-  "name": "banana2.0",
-  "version": "1.0.0",
-  "private": true,
-  "workspaces": [
-    "backend",
-    "frontend"
-  ],
-  "scripts": {
-    "dev:backend": "npm run dev --workspace=backend",
-    "dev:frontend": "npm run dev --workspace=frontend",
-    "dev": "npm run dev --workspaces"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "lefthook": "^2.1.14"
-  }
+	"name": "banana2.0",
+	"version": "1.0.0",
+	"private": true,
+	"workspaces": [
+		"backend",
+		"frontend"
+	],
+	"scripts": {
+		"dev:backend": "npm run dev --workspace=backend",
+		"dev:frontend": "npm run dev --workspace=frontend",
+		"dev": "npm run dev --workspaces",
+		"start": "node scripts/launch.mjs",
+		"build": "npm run build --workspace=frontend",
+		"preflight": "node scripts/preflight.mjs",
+		"make-portable": "node scripts/make-portable.mjs",
+		"test": "node tests/run.mjs",
+		"lint": "npm run lint --workspace=frontend"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"lefthook": "^2.1.14"
+	},
+	"engines": {
+		"node": ">=20.11"
+	},
+	"license": "SEE LICENSE IN LICENSE",
+	"type": "module"
 }
