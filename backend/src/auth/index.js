@@ -108,11 +108,9 @@ export function createAuth({
 		const gate = loginLimiter.check(ip, username);
 		if (!gate.allowed) {
 			res.setHeader("Retry-After", String(gate.retryAfterSec));
-			return res
-				.status(429)
-				.json({
-					error: `Too many failed attempts. Try again in ${Math.ceil(gate.retryAfterSec / 60)} minute(s).`,
-				});
+			return res.status(429).json({
+				error: `Too many failed attempts. Try again in ${Math.ceil(gate.retryAfterSec / 60)} minute(s).`,
+			});
 		}
 		const user =
 			typeof password === "string"
