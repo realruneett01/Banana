@@ -23,6 +23,7 @@ import { runAllTests } from "./simulate.js";
 import { chamferTracks } from "./tidy.js";
 import {
 	boardViewTransform,
+	viewCropMargin,
 	renderBoardView,
 	renderSchematicView,
 } from "./views.js";
@@ -530,7 +531,7 @@ export async function projectState(name) {
 		built,
 		needsBuild,
 		board: pcb.board,
-		transform: boardViewTransform(pcb.board),
+		transform: boardViewTransform(pcb.board, await viewCropMargin()),
 		zones: design.data.zones.map((z) => ({ ...z, fill: pcb.zones?.status })),
 		canUndo: Boolean(await revParse(dir, "HEAD~1")),
 		canRedo: readRedo(dir).length > 0,

@@ -35,13 +35,78 @@ export const OUTLINE_HALF_WIDTH = 0.05;
  * `--page-size-mode 2` (board area only): scale is 1 (the viewBox is in mm) and the origin sits half an
  * outline stroke outside the board's top-left corner.
  */
-export function boardViewTransform(board) {
+export function boardViewTransform(
+	board,
+	margin = { x: OUTLINE_HALF_WIDTH, y: OUTLINE_HALF_WIDTH },
+) {
 	return {
 		scale: 1,
-		offsetX: -(board.originX - OUTLINE_HALF_WIDTH),
-		offsetY: -(board.originY - OUTLINE_HALF_WIDTH),
+		offsetX: -(board.originX - margin.x),
+		offsetY: -(board.originY - margin.y),
 		unit: "mm",
 	};
+}
+
+const DEFAULT_MARGIN = { x: OUTLINE_HALF_WIDTH, y: OUTLINE_HALF_WIDTH };
+
+/**
+ * How far outside the outline the exported viewBox starts, from the viewBox of a render of a board with a known
+ * outline (the crop is taken as centred). KiCad 7 to 9 give 0.05 mm (half an outline stroke); KiCad 10.0.7 crops
+ * tighter: 49.9872 x 24.9936 for a 50 x 25 mm board (CI), so what a KiCad does is measured, not assumed.
+ */
+export function marginFromViewBox(viewBox, board) {
+	if (!viewBox) return DEFAULT_MARGIN;
+	const x = (viewBox[2] - board.width) / 2;
+	const y = (viewBox[3] - board.height) / 2;
+	return Number.isFinite(x) &&
+		Number.isFinite(y) &&
+		Math.abs(x) < 1 &&
+		Math.abs(y) < 1
+		? { x, y }
+		: DEFAULT_MARGIN;
+}
+
+const CALIBRATION = { width: 50, height: 25, origin: 20 };
+const calibrated = new Map();
+/** Margin of the installed KiCad, measured once per version with a tiny board and cached by the render cache. */
+export async function viewCropMargin() {
+	const key = `${config.kicadCliPath}|${config.kicadVersion}`;
+	if (calibrated.has(key)) return calibrated.get(key);
+	let margin = DEFAULT_MARGIN;
+	try {
+		const { width, height, origin } = CALIBRATION;
+		const corners = [
+			[origin, origin, origin + width, origin],
+			[origin + width, origin, origin + width, origin + height],
+			[origin + width, origin + height, origin, origin + height],
+			[origin, origin + height, origin, origin],
+		];
+		const text = `(kicad_pcb (version 20221018) (generator banana)
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (44 "Edge.Cuts" user))
+${corners
+	.map(
+		([x1, y1, x2, y2], i) =>
+			`  (gr_line (start ${x1} ${y1}) (end ${x2} ${y2}) (layer "Edge.Cuts") (width 0.1) (tstamp 00000000-0000-4000-8000-00000000000${i}))`,
+	)
+	.join("\n")}
+)
+`;
+		const dir = path.join(config.tempRoot, "cache");
+		fs.mkdirSync(dir, { recursive: true });
+		const file = path.join(dir, "view-calibration.kicad_pcb");
+		fs.writeFileSync(file, text);
+		const r = await renderBoardView(file, { view: "front" });
+		margin = marginFromViewBox(svgHealth(r.svg).viewBox, {
+			width,
+			height,
+		});
+	} catch {
+		/* no KiCad or a render failure: the long-standing value */
+	}
+	calibrated.set(key, margin);
+	return margin;
 }
 
 export function toViewCoords(transform, x, y) {

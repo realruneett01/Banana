@@ -21,7 +21,7 @@ import { matchParen } from "../backend/src/design/sexp.js";
 import { propertiesToFpText } from "../backend/src/design/writer-pcb.js";
 import { extractFileFromCommit } from "../backend/src/git-extractor.js";
 import { config } from "../backend/src/config.js";
-import { tmpDir } from "./helpers.js";
+import { hasKicad, tmpDir } from "./helpers.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fx = (dir, n) =>
@@ -281,4 +281,32 @@ test("library symbols that extend a symbol that extends another still get the pi
 		"a cycle is unusable, not an endless loop",
 	);
 	fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the view crop margin comes from the viewBox of a known outline", async () => {
+	const V = await import("../backend/src/design/views.js");
+	const board = { width: 50, height: 25 };
+	const seven = V.marginFromViewBox([0, 0, 50.1, 25.1], board);
+	assert.ok(Math.abs(seven.x - 0.05) < 1e-9 && Math.abs(seven.y - 0.05) < 1e-9);
+	const ten = V.marginFromViewBox([0, 0, 49.9872, 24.9936], board);
+	assert.ok(
+		Math.abs(ten.x - -0.0064) < 1e-9 && Math.abs(ten.y - -0.0032) < 1e-9,
+	);
+	assert.deepEqual(V.marginFromViewBox(null, board), { x: 0.05, y: 0.05 });
+	assert.deepEqual(
+		V.marginFromViewBox([0, 0, 500, 25], board),
+		{ x: 0.05, y: 0.05 },
+		"implausible: default",
+	);
+	const tr = V.boardViewTransform({ originX: 20, originY: 20 }, ten);
+	assert.ok(Math.abs(V.toViewCoords(tr, 20, 20).x - -0.0064) < 1e-9);
+});
+
+test("the installed KiCad's crop margin is measured and stays small", {
+	skip: !hasKicad() && "kicad-cli not installed",
+}, async () => {
+	const V = await import("../backend/src/design/views.js");
+	const m = await V.viewCropMargin();
+	assert.ok(Math.abs(m.x) < 0.2 && Math.abs(m.y) < 0.2, JSON.stringify(m));
+	assert.deepEqual(await V.viewCropMargin(), m, "memoised");
 });

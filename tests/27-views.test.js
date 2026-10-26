@@ -173,7 +173,8 @@ test("KiCad's own SVG agrees with the mm->view transform and our pad positions (
 	await P.build("xform", "x");
 	const design = P.loadDesign("xform");
 	const pcb = writePcb(design);
-	const tr = V.boardViewTransform(pcb.board);
+	const margin = await V.viewCropMargin();
+	const tr = V.boardViewTransform(pcb.board, margin);
 	// Same flags as the real front view but only copper + outline, so the page crop matches it
 	const caps = getCapabilities({
 		cliPath: config.kicadCliPath,
@@ -194,8 +195,8 @@ test("KiCad's own SVG agrees with the mm->view transform and our pad positions (
 	assert.ok(
 		// KiCad 10 crops 0.1 mm tighter than 7 to 9 (CI: 49.9872 x 24.9936 for a 50 x 25 board); the pad
 		// positions checked below are what proves the transform
-		Math.abs(vb[2] - (pcb.board.width + 0.1)) < 0.2 &&
-			Math.abs(vb[3] - (pcb.board.height + 0.1)) < 0.2,
+		Math.abs(vb[2] - (pcb.board.width + 2 * margin.x)) < 0.03 &&
+			Math.abs(vb[3] - (pcb.board.height + 2 * margin.y)) < 0.03,
 		`viewBox ${vb} vs board ${pcb.board.width}x${pcb.board.height}`,
 	);
 	const expected = [...absolutePads(design, pcb.positions)].map(([pin, p]) => ({
@@ -273,7 +274,10 @@ test("state, views and changes endpoints", {
 		assert.equal(r.body.parts.length, 2);
 		assert.ok(r.body.parts[0].courtyard.maxX > r.body.parts[0].courtyard.minX);
 		assert.equal(r.body.parts[0].pads.length, 2);
-		assert.deepEqual(r.body.transform, V.boardViewTransform(r.body.board));
+		assert.deepEqual(
+			r.body.transform,
+			V.boardViewTransform(r.body.board, await V.viewCropMargin()),
+		);
 	});
 	await t.test("views refuse to render before a build", async () =>
 		assert.equal(
