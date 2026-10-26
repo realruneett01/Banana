@@ -90,6 +90,54 @@ export function rotatedBox(bbox, rot) {
 /** Rewrites a library footprint for placement in a board: position, reference/value, pad nets. */
 const ATOM = '("(?:[^"\\\\]|\\\\.)*"|[^\\s()]+)';
 
+const unquote = (v) =>
+	v?.startsWith('"') ? v.slice(1, -1).replace(/\\(.)/g, "$1") : v;
+
+/**
+ * KiCad 8 and newer libraries describe the reference and value as `(property "Reference" "R" (at ..) (layer ..)
+ * (effects ..))` blocks, but Banana writes boards with the KiCad 7 file header, whose footprints carry them as
+ * `(fp_text reference "R" ...)`. A newer KiCad reading that mix did not draw the reference at all (CI: no `R1` in
+ * the silkscreen SVG on 8, 9 and 10), so the blocks are written in the dialect the header promises. Positioned
+ * hidden metadata blocks (Footprint, Datasheet, Description) are dropped; KiCad 7 style `(property "k" "v")` stay.
+ */
+export function propertiesToFpText(t) {
+	for (const b of childLists(t)
+		.filter((c) => c.head === "property")
+		.reverse()) {
+		const body = t.slice(b.start, b.end + 1);
+		if (!/\(at\s/.test(body)) continue; // old style key/value: keep
+		const m = new RegExp(`^\\(\\s*property\\s+${ATOM}\\s+${ATOM}`).exec(body);
+		if (!m) continue;
+		const key = unquote(m[1]);
+		const kind =
+			key === "Reference" ? "reference" : key === "Value" ? "value" : null;
+		let repl = "";
+		if (kind) {
+			const at = /\(at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+(-?[\d.]+))?\)/.exec(
+				body,
+			);
+			const layer = /\(layer\s+("(?:[^"\\]|\\.)*"|[^\s()]+)\)/.exec(body);
+			const effectsBlock = childLists(body).find((c) => c.head === "effects");
+			let effects = effectsBlock
+				? body.slice(effectsBlock.start, effectsBlock.end + 1)
+				: "(effects (font (size 1 1) (thickness 0.15)))";
+			const hidden =
+				/\(hide\s+yes\)/.test(body) || /\(effects[^]*\bhide\b/.test(effects);
+			effects = effects
+				.replace(/\(hide\s+yes\)/g, "")
+				.replace(/\s+hide\b/g, "")
+				.replace(/\s+/g, " ")
+				.replace(/\( /g, "(")
+				.replace(/ \)/g, ")");
+			const uuid = /\((?:uuid|tstamp)\s+"?([^"\s)]+)"?\)/.exec(body)?.[1];
+			if (at && layer)
+				repl = `(fp_text ${kind} ${m[2]} (at ${at[1]} ${at[2]}${at[3] && Number(at[3]) ? ` ${at[3]}` : ""}) (layer ${layer[1]})${hidden ? " hide" : ""} ${effects}${uuid ? ` (tstamp ${uuid})` : ""})`;
+		}
+		t = t.slice(0, b.start) + repl + t.slice(b.end + 1);
+	}
+	return t;
+}
+
 /** Rewrites a library footprint for placement in a board: position, reference/value, pad nets. */
 function instantiateFootprint({
 	libText,
@@ -116,6 +164,7 @@ function instantiateFootprint({
 		/\(layer\s+"?F\.Cu"?\)/,
 		`(layer "F.Cu")\n  (at ${f(at.x)} ${f(at.y)}${at.rot ? ` ${at.rot}` : ""})\n  (tstamp ${stableUuid(`${uuidSeed}:fp`)})`,
 	);
+	t = propertiesToFpText(t);
 	t = t.replace(
 		new RegExp(`(\\(fp_text\\s+reference\\s+)${ATOM}`),
 		`$1${q(ref)}`,

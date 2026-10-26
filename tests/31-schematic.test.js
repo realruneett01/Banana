@@ -304,7 +304,13 @@ test("rotation: library symbols turned by the layout still land their pins on th
 		...searchSymbols("q_npn", { limit: 200 }),
 		"Transistor_BJT:BC547",
 		"Transistor_BJT:2N3904",
-	].find((id) => getSymbol(id)?.pins.filter((p) => !p.hidden).length === 3);
+	].find((id) => {
+		// three pins numbered 1-3, as the SOT-23 footprint below has pads 1-3
+		const pins = getSymbol(id)?.pins ?? [];
+		return (
+			pins.length === 3 && pins.every((p) => ["1", "2", "3"].includes(p.number))
+		);
+	});
 	assert.ok(npn, "an installed three-pin NPN symbol");
 	d.addPart({
 		symbol: npn,

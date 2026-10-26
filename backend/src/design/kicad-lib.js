@@ -111,18 +111,23 @@ export function getSymbol(libId, opts) {
 	let block = index.get(id.name);
 	if (!block) return null;
 
-	let ownText = text.slice(block.start, block.end + 1);
+	// `levels` runs from the symbol itself up through its `(extends "Parent")` chain to the symbol that has the
+	// drawing and pins (libraries chain more than one level; a cycle or a missing parent is an unusable symbol)
+	const levels = [text.slice(block.start, block.end + 1)];
 	let baseName = id.name;
-	const ext = /\(extends\s+"((?:[^"\\]|\\.)*)"\)/.exec(ownText.slice(0, 300));
-	let propertyOverrides = "";
-	if (ext) {
-		const parent = index.get(ext[1]);
-		if (!parent) return null;
-		propertyOverrides = ownText;
-		baseName = ext[1];
+	for (;;) {
+		const up = /\(extends\s+"((?:[^"\\]|\\.)*)"\)/.exec(
+			levels[levels.length - 1].slice(0, 300),
+		);
+		if (!up) break;
+		const parent = index.get(up[1]);
+		if (!parent || levels.length > 8) return null;
+		baseName = up[1];
 		block = parent;
-		ownText = text.slice(parent.start, parent.end + 1);
+		levels.push(text.slice(parent.start, parent.end + 1));
 	}
+	const ownText = levels[levels.length - 1];
+	const ext = levels.length > 1;
 
 	const pins = [];
 	const units = new Set();
@@ -159,11 +164,19 @@ export function getSymbol(libId, opts) {
 			});
 		}
 	}
-	const prop = (name, src = propertyOverrides || ownText) => {
+	const propIn = (name, src) => {
 		const m = new RegExp(
 			`\\(property\\s+"${name}"\\s+"((?:[^"\\\\]|\\\\.)*)"`,
 		).exec(src);
 		return m ? m[1] : "";
+	};
+	/** The nearest non-empty value along the extends chain (the symbol's own wins over its parents'). */
+	const prop = (name, from = 0) => {
+		for (const level of levels.slice(from)) {
+			const v = propIn(name, level);
+			if (v) return v;
+		}
+		return "";
 	};
 	return {
 		id: `${id.lib}:${id.name}`,
@@ -187,8 +200,11 @@ export function getSymbol(libId, opts) {
 			// Sub-symbols keep the *parent's* base name inside lib_symbols (KiCad flattens extends this way).
 			if (ext) {
 				const over = (n) => {
-					const o = prop(n, propertyOverrides);
-					return o;
+					for (const level of levels.slice(0, -1)) {
+						const o = propIn(n, level);
+						if (o) return o;
+					}
+					return "";
 				};
 				for (const n of [
 					"Value",

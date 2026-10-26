@@ -107,6 +107,7 @@ const IGNORED = [
 	"*-backups/",
 	"fp-info-cache",
 	"*.kicad_prl",
+	"~*.lck",
 ];
 const GITIGNORE = `${IGNORED.join("\n")}\n`;
 function ensureIgnored(dir) {

@@ -16,7 +16,9 @@ import {
 	extractFills,
 	fillZones,
 } from "../backend/src/design/zonefill.js";
-import { listSymbolIds } from "../backend/src/design/kicad-lib.js";
+import { getSymbol, listSymbolIds } from "../backend/src/design/kicad-lib.js";
+import { matchParen } from "../backend/src/design/sexp.js";
+import { propertiesToFpText } from "../backend/src/design/writer-pcb.js";
 import { extractFileFromCommit } from "../backend/src/git-extractor.js";
 import { config } from "../backend/src/config.js";
 import { tmpDir } from "./helpers.js";
@@ -186,4 +188,97 @@ test("without pcbnew's Python, a kicad-cli that can refill zones fills them", {
 	const r = await fillZones(writePcb(d).text, { python: null });
 	assert.equal(r.status, "ok");
 	assert.ok(r.fills.get("GND|B.Cu")?.startsWith("(filled_polygon"));
+});
+
+test("KiCad 8+ footprint properties become the fp_text the board header promises", () => {
+	// shape taken from the footprint block Banana wrote on KiCad 8.0.9 (CI log)
+	const fp = `(footprint "Resistor_SMD:R_0805_2012Metric"
+  \t(layer "F.Cu")
+  \t(tags "resistor")
+  \t(property "Reference" "R1"
+  \t\t(at 0 -1.65 0)
+  \t\t(layer "F.SilkS")
+  \t\t(uuid "effead60-2b17-4463-91cf-34792a2b459a")
+  \t\t(effects
+  \t\t\t(font
+  \t\t\t\t(size 1 1)
+  \t\t\t\t(thickness 0.15)
+  \t\t\t)
+  \t\t)
+  \t)
+  \t(property "Value" "1k"
+  \t\t(at 0 1.65 0)
+  \t\t(layer "F.Fab")
+  \t\t(uuid "83cd9c78-75b4-4eec-9501-2ff4a6e7a26e")
+  \t\t(effects (font (size 1 1) (thickness 0.15)))
+  \t)
+  \t(property "Datasheet" ""
+  \t\t(at 0 0 0)
+  \t\t(unlocked yes)
+  \t\t(layer "F.Fab")
+  \t\t(hide yes)
+  \t\t(uuid "10e8fbff-4a7b-46b4-8e2f-6ae1745031fe")
+  \t\t(effects (font (size 1.27 1.27)))
+  \t)
+  \t(property "Sheetfile" "x.kicad_sch")
+  \t(attr smd)
+)`;
+	const out = propertiesToFpText(fp);
+	assert.match(
+		out,
+		/\(fp_text reference "R1" \(at 0 -1\.65\) \(layer "F\.SilkS"\) \(effects \(font \(size 1 1\) \(thickness 0\.15\)\)\) \(tstamp effead60-2b17-4463-91cf-34792a2b459a\)\)/,
+	);
+	assert.match(out, /\(fp_text value "1k" \(at 0 1\.65\) \(layer "F\.Fab"\)/);
+	assert.ok(!out.includes("Datasheet"), "positioned metadata is dropped");
+	assert.ok(
+		out.includes('(property "Sheetfile" "x.kicad_sch")'),
+		"old key/value kept",
+	);
+	assert.equal(matchParen(out, 0), out.length - 1, "still balanced");
+	// KiCad 9/10 put hide inside the font effects
+	const hid = propertiesToFpText(
+		'(footprint "X" (property "Reference" "U1" (at 1 2 90) (layer "F.SilkS") (uuid "u") (effects (font (size 1 1)) (hide yes))))',
+	);
+	assert.match(
+		hid,
+		/\(fp_text reference "U1" \(at 1 2 90\) \(layer "F\.SilkS"\) hide \(effects \(font \(size 1 1\)\)\) \(tstamp u\)\)/,
+	);
+	// a KiCad 7 footprint passes through untouched
+	const seven =
+		'(footprint "X" (fp_text reference "REF**" (at 0 0) (layer "F.SilkS") (effects (font (size 1 1)))))';
+	assert.equal(propertiesToFpText(seven), seven);
+});
+
+test("library symbols that extend a symbol that extends another still get the pins", () => {
+	const dir = tmpDir("banana-chain-");
+	const pin =
+		'(pin passive line\n\t\t\t\t(at -3.81 0 0)\n\t\t\t\t(length 2.54)\n\t\t\t\t(name "K" (effects (font (size 1 1))))\n\t\t\t\t(number "1" (effects (font (size 1 1)))))';
+	const sym = (name, extra) =>
+		`\t(symbol "${name}"\n${extra}\n\t\t(property "Reference" "D" (at 0 0 0) (effects (font (size 1 1))))\n\t\t(property "Value" "${name}" (at 0 0 0) (effects (font (size 1 1))))\n\t)\n`;
+	const base = `\t(symbol "BASE"\n\t\t(property "Reference" "D" (at 0 0 0) (effects (font (size 1 1))))\n\t\t(property "Value" "BASE" (at 0 0 0) (effects (font (size 1 1))))\n\t\t(property "ki_description" "Base diode" (at 0 0 0) (effects (font (size 1 1))))\n\t\t(symbol "BASE_1_1"\n\t\t\t${pin}\n\t\t)\n\t)\n`;
+	fs.writeFileSync(
+		path.join(dir, "Chain.kicad_sym"),
+		`(kicad_symbol_lib\n\t(version 20231120)\n${base}${sym("MID", '\t\t(extends "BASE")')}${sym("TOP", '\t\t(extends "MID")')}${sym("LOOP_A", '\t\t(extends "LOOP_B")')}${sym("LOOP_B", '\t\t(extends "LOOP_A")')})\n`,
+	);
+	const opts = { env: { KICAD_SYMBOL_DIR: dir }, cliPath: "" };
+	const top = getSymbol("Chain:TOP", opts);
+	assert.equal(top.pins.length, 1);
+	assert.equal(
+		top.description,
+		"Base diode",
+		"inherited from the root of the chain",
+	);
+	assert.match(top.embedText(), /^\(symbol "Chain:TOP"/);
+	assert.match(
+		top.embedText(),
+		/\(property "Value" "TOP"/,
+		"its own value wins",
+	);
+	assert.equal(getSymbol("Chain:MID", opts).pins.length, 1);
+	assert.equal(
+		getSymbol("Chain:LOOP_A", opts),
+		null,
+		"a cycle is unusable, not an endless loop",
+	);
+	fs.rmSync(dir, { recursive: true, force: true });
 });
