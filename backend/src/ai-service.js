@@ -28,7 +28,7 @@ async function parseErrorResponse(response) {
 	return err;
 }
 
-function resolveModelsToTry(model) {
+export function resolveModelsToTry(model) {
 	let target = (model || config.geminiModel || "gemini-3-flash-preview").trim();
 	if (target.includes("preievew")) {
 		target = target.replace("preievew", "preview");

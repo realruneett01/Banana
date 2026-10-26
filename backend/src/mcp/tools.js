@@ -603,7 +603,7 @@ export const toolList = () =>
 	}));
 
 /** Validates and runs a tool. Returns { ok, result } or { ok:false, error, details }. */
-export async function callTool(name, args) {
+export async function callTool(name, args, { handlers } = {}) {
 	const tool = byName.get(name);
 	if (!tool)
 		return { ok: false, error: `Unknown tool "${name}"`, code: "unknown_tool" };
@@ -616,7 +616,10 @@ export async function callTool(name, args) {
 			code: "invalid_arguments",
 		};
 	try {
-		return { ok: true, result: await tool.handler(input) };
+		return {
+			ok: true,
+			result: await (handlers?.[name] ?? tool.handler)(input),
+		};
 	} catch (err) {
 		if (err instanceof DesignError || err.statusCode === 400)
 			return {

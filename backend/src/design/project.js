@@ -54,7 +54,7 @@ export async function withLock(name, fn) {
 }
 
 export function projectDir(name) {
-	if (!PROJECT_NAME.test(String(name)))
+	if (typeof name !== "string" || !PROJECT_NAME.test(name))
 		throw new DesignError(
 			`Invalid project name "${name}" (lowercase letters, digits, dash, underscore; max 48)`,
 		);
@@ -148,7 +148,11 @@ export function saveDesign(name, design) {
 }
 
 /** Writes the KiCad files from design.json and commits the result. */
-export async function build(name, message = "Update design") {
+export async function build(
+	name,
+	message = "Update design",
+	{ commit: doCommit = true } = {},
+) {
 	const dir = projectDir(name);
 	const design = loadDesign(name);
 	const sch = writeSchematic(design);
@@ -157,10 +161,15 @@ export async function build(name, message = "Update design") {
 	fs.writeFileSync(path.join(dir, `${name}.kicad_pcb`), pcb.text);
 	fs.writeFileSync(path.join(dir, `${name}.kicad_pro`), writeProjectFile(name));
 	fs.writeFileSync(path.join(dir, "design.json"), stableJson(design.data));
-	await git(dir, "add", "-A");
-	const dirty = (await git(dir, "status", "--porcelain")).trim().length > 0;
-	if (dirty)
-		await git(dir, "commit", "-q", "-m", String(message).slice(0, 200));
+	let dirty = false;
+	if (doCommit) {
+		await git(dir, "add", "-A");
+		dirty = (await git(dir, "status", "--porcelain")).trim().length > 0;
+		if (dirty) {
+			await git(dir, "commit", "-q", "-m", String(message).slice(0, 200));
+			writeRedo(dir, []); // new work replaces whatever Redo could have brought back
+		}
+	}
 	const commit = (await git(dir, "rev-parse", "HEAD")).trim();
 	return {
 		commit,
@@ -175,6 +184,66 @@ export async function build(name, message = "Update design") {
 		directory: dir,
 		openInKicad: path.join(dir, `${name}.kicad_pro`),
 	};
+}
+
+const redoFile = (dir) => path.join(dir, ".git", "banana-redo.json");
+function readRedo(dir) {
+	try {
+		const v = JSON.parse(fs.readFileSync(redoFile(dir), "utf8"));
+		return Array.isArray(v) ? v.filter((x) => /^[0-9a-f]{40}$/.test(x)) : [];
+	} catch {
+		return [];
+	}
+}
+function writeRedo(dir, list) {
+	fs.writeFileSync(redoFile(dir), JSON.stringify(list));
+}
+
+const revParse = async (dir, rev) => {
+	try {
+		return (await git(dir, "rev-parse", "--verify", "-q", rev)).trim();
+	} catch {
+		return null;
+	}
+};
+
+/**
+ * Undo = move the branch back one build. The undone build stays reachable (a keep-ref) so Redo can bring it
+ * back; nothing is rewritten or deleted. Unbuilt edits are committed first so they can be redone too.
+ */
+export async function undo(name) {
+	return withLock(name, async () => {
+		const dir = projectDir(name);
+		loadDesign(name);
+		if ((await git(dir, "status", "--porcelain")).trim())
+			await build(name, "Unsaved changes");
+		const head = await revParse(dir, "HEAD");
+		const parent = await revParse(dir, "HEAD~1");
+		if (!head || !parent) throw new DesignError("Nothing to undo");
+		const message = (await git(dir, "log", "-1", "--format=%s", head)).trim();
+		await git(dir, "update-ref", `refs/banana/keep/${head}`, head);
+		writeRedo(dir, [...readRedo(dir), head]);
+		await git(dir, "reset", "-q", "--hard", parent);
+		return { head: parent, undone: head, message, canRedo: true };
+	});
+}
+
+export async function redo(name) {
+	return withLock(name, async () => {
+		const dir = projectDir(name);
+		loadDesign(name);
+		const stack = readRedo(dir);
+		const target = stack.at(-1);
+		const head = await revParse(dir, "HEAD");
+		if (!target || (await revParse(dir, `${target}~1`)) !== head) {
+			writeRedo(dir, []);
+			throw new DesignError("Nothing to redo");
+		}
+		await git(dir, "reset", "-q", "--hard", target);
+		writeRedo(dir, stack.slice(0, -1));
+		const message = (await git(dir, "log", "-1", "--format=%s", target)).trim();
+		return { head: target, message, canRedo: stack.length > 1 };
+	});
 }
 
 export async function history(name, limit = 30) {
@@ -257,10 +326,10 @@ export function summarizeDiff(payload) {
 }
 
 /** Runs every check available and returns one structured report. */
-export async function checkProject(name) {
+export async function checkProject(name, { commit = true } = {}) {
 	const dir = projectDir(name);
 	const design = loadDesign(name);
-	const built = await build(name, "Update design");
+	const built = await build(name, "Update design", { commit });
 	const pcb = writePcb(design);
 	const schPath = path.join(dir, `${name}.kicad_sch`);
 	const pcbPath = path.join(dir, `${name}.kicad_pcb`);
@@ -413,6 +482,8 @@ export async function projectState(name) {
 		needsBuild,
 		board: pcb.board,
 		transform: boardViewTransform(pcb.board),
+		canUndo: Boolean(await revParse(dir, "HEAD~1")),
+		canRedo: readRedo(dir).length > 0,
 		parts,
 		nets: design.summary().nets,
 		tests: design.data.tests.map((t) => t.name),

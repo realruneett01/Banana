@@ -2,11 +2,15 @@ import { DesignError } from "../design/model.js";
 import { createSafeRouter } from "../safe-router.js";
 import { handleMessage } from "../mcp/protocol.js";
 import { callTool, toolList } from "../mcp/tools.js";
+import { AGENT_LIMITS, runAgent } from "../design/agent.js";
 import {
 	diffBuilds,
 	diffWorking,
 	listProjects,
+	projectDir,
 	projectState,
+	redo,
+	undo,
 	viewSvg,
 } from "../design/project.js";
 
@@ -83,6 +87,90 @@ router.get("/projects/:name/changes", async (req, res) => {
 				})
 			: await diffBuilds(req.params.name, { base, target, file });
 	res.json(payload);
+});
+
+router.post("/projects/:name/undo", async (req, res) =>
+	res.json(await undo(req.params.name)),
+);
+router.post("/projects/:name/redo", async (req, res) =>
+	res.json(await redo(req.params.name)),
+);
+
+const agentRuns = new Set();
+
+/**
+ * POST /api/design/agent  { project, messages: [{role, content}], model? }  header x-gemini-api-key
+ * Server-sent events: text, tool_call, tool_result, design_changed, done, error. One run per project at a time.
+ */
+router.post("/agent", async (req, res) => {
+	const { project, messages, model } = req.body ?? {};
+	projectDir(project); // validates the name (400)
+	if (
+		!Array.isArray(messages) ||
+		messages.length === 0 ||
+		messages.length > AGENT_LIMITS.maxMessages * 2 ||
+		messages.some(
+			(m) =>
+				!m ||
+				typeof m !== "object" ||
+				typeof (m.content ?? m.text) !== "string" ||
+				!["user", "assistant", "model"].includes(m.role),
+		)
+	)
+		throw new DesignError(
+			"messages must be a non-empty list of {role: user|assistant, content: string}",
+		);
+	if (model !== undefined && !/^[A-Za-z0-9._-]{1,100}$/.test(String(model)))
+		throw new DesignError("Invalid model name");
+	const apiKey = req.get("x-gemini-api-key") || undefined;
+	if (agentRuns.has(project)) {
+		res
+			.status(409)
+			.json({ error: "The assistant is already working on this project." });
+		return;
+	}
+	agentRuns.add(project);
+
+	res.set({
+		"Content-Type": "text/event-stream; charset=utf-8",
+		"Cache-Control": "no-cache, no-transform",
+		Connection: "keep-alive",
+		"X-Accel-Buffering": "no",
+	});
+	res.flushHeaders?.();
+	const send = (event, data) => {
+		if (!res.writableEnded)
+			res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+	};
+	const controller = new AbortController();
+	res.on("close", () => {
+		if (!res.writableFinished) controller.abort();
+	});
+	const beat = setInterval(() => {
+		if (!res.writableEnded) res.write(": keep-alive\n\n");
+	}, 15000);
+	try {
+		await runAgent({
+			project,
+			messages,
+			apiKey,
+			model,
+			emit: send,
+			signal: controller.signal,
+		});
+	} catch (err) {
+		send("error", {
+			message: err.message,
+			code: /GEMINI_API_KEY_REQUIRED/.test(err.message)
+				? "key_required"
+				: "error",
+		});
+		send("done", { stopped: "error", changed: false, steps: 0 });
+	} finally {
+		clearInterval(beat);
+		agentRuns.delete(project);
+		res.end();
+	}
 });
 
 export default router;
