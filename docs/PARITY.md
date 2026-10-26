@@ -74,4 +74,4 @@ Legend: **Tier A** = delegated to KiCad's engine · **Tier B** = native interact
 |---|---|
 | 7.0.x | Full test suite run (Linux, 7.0.11). |
 | 8.0.9, 9.0.9, 10.0.7, nightly (10.0.0) | The code adapts to what the installed `kicad-cli` offers by reading its own help output (`backend/src/kicad-compat.js`; tested against real 7.0.11 help text and parts of the real 8.0.9 help text). The full suite, preflight included, ran green in the matching `kicad/kicad:<version>` containers on CI run 25. Differences found and handled on the way: tab-indented libraries, multi-line netlists, `extends` chains, footprint text dialect, `--mode-multi` only from KiCad 9, a tighter SVG crop on KiCad 10. |
-| macOS (KiCad 10.0.x), Windows (Chocolatey KiCad), Linux x64/ARM64 (distro KiCad) | Green on CI, see the README table for which run; Ubuntu x64 has no finished green run for the latest commit. |
+| macOS (KiCad 10.0.x), Windows (Chocolatey KiCad), Linux x64/ARM64 (distro KiCad) | Green on CI runs 25 and 26 (see the README table). |

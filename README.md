@@ -225,12 +225,12 @@ Includes a headless-browser smoke test of the built UI (needs Playwright; skippe
 
   | Job | Result |
   |---|---|
-  | Ubuntu x64 (distro KiCad) | green on run 24; on run 25 the job was stuck installing KiCad (runner issue) and had not finished, so run 25 is **not** a pass for it |
-  | Ubuntu ARM64 (distro KiCad) | green on runs 24 and 25 |
+  | Ubuntu x64 (distro KiCad) | green on runs 24, 25 and 26 (on run 25 the job first hung for half an hour installing KiCad, a runner issue, and then finished green) |
+  | Ubuntu ARM64 (distro KiCad) | green on runs 24, 25 and 26 |
   | Windows (KiCad from Chocolatey, version not recorded) | green on runs 24 and 25, including preflight and portable bundle |
-  | macOS (KiCad 10.0.x from Homebrew) | green on run 25 (it failed on run 23) |
-  | KiCad 7.0 / 8.0 / 9.0 / 10.0 (`kicad/kicad:<version>` containers) | green on run 25 (8.0.9, 9.0.9, 10.0.7 as reported by the images); 10.0 failed on run 24 and was fixed |
-  | KiCad nightly container | green on run 25 (the image reported 10.0.0) |
+  | macOS (KiCad 10.0.x from Homebrew) | green on runs 25 and 26 (it failed on run 23) |
+  | KiCad 7.0 / 8.0 / 9.0 / 10.0 (`kicad/kicad:<version>` containers) | green on runs 25 and 26 (8.0.9, 9.0.9, 10.0.7 as reported by the images); 10.0 failed on run 24 and was fixed |
+  | KiCad nightly container | green on runs 25 and 26 (the image reported 10.0.0) |
   | Docker image build + container preflight + API check | green on run 25 |
   | systemd unit check (`systemd-analyze verify`) | green on run 25 |
 
