@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { config } from "../config.js";
+import { getCapabilities } from "../kicad-compat.js";
 import { getFootprint, getSymbol } from "./kicad-lib.js";
 
 const exec = promisify(execFile);
@@ -535,6 +536,13 @@ export function placementLite(design, positions, board) {
 }
 
 // ---- KiCad's own checks ----
+export function kicadCaps() {
+	return getCapabilities({
+		cliPath: config.kicadCliPath,
+		version: config.kicadVersion,
+	});
+}
+
 export function kicadMajor() {
 	const m = /^(\d+)/.exec(String(config.kicadVersion || "").trim());
 	return m ? Number(m[1]) : 0;
@@ -652,11 +660,11 @@ export async function kicadErc(schPath) {
 			reason: config.kicadError || "kicad-cli not found",
 			issues: [],
 		};
-	if (kicadMajor() < 8)
+	if (!kicadCaps().hasErc)
 		return {
 			engine: "kicad",
 			status: "unavailable",
-			reason: `kicad-cli ${config.kicadVersion} has no ERC command (needs KiCad 8 or newer)`,
+			reason: `kicad-cli ${config.kicadVersion} has no ERC command`,
 			issues: [],
 		};
 	const tmp = path.join(
@@ -702,7 +710,7 @@ export async function kicadErc(schPath) {
 export async function kicadDrc(pcbPath) {
 	const tmp = path.join(os.tmpdir(), `banana-drc-${process.pid}-${Date.now()}`);
 	try {
-		if (config.kicadCliPath && kicadMajor() >= 8) {
+		if (config.kicadCliPath && kicadCaps().hasDrc) {
 			await exec(
 				config.kicadCliPath,
 				[

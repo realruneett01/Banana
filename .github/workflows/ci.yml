@@ -40,6 +40,38 @@ jobs:
         run: node scripts/preflight.mjs --no-write
         working-directory: ${{ runner.temp }}/banana-portable
 
+  kicad-versions:
+    name: KiCad ${{ matrix.kicad }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.kicad == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Banana supports KiCad 7 and newer; every release runs the full suite against the real kicad-cli.
+        kicad: ["7.0", "8.0", "9.0", "10.0", "nightly"]
+    container:
+      image: kicad/kicad:${{ matrix.kicad }}
+      options: --user root
+    env:
+      KICAD_CLI_PATH: /usr/bin/kicad-cli
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Tooling (git, Node.js 22, ngspice, python)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends curl git ca-certificates python3 ngspice gnupg
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y --no-install-recommends nodejs
+          kicad-cli --version
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - run: npm run build
+      - name: Capabilities detected for this KiCad
+        run: node -e "import('./backend/src/config.js').then(async c=>{const k=await import('./backend/src/kicad-compat.js');console.log(k.describeCapabilities(k.getCapabilities({cliPath:c.config.kicadCliPath,version:c.config.kicadVersion})))})"
+      - run: npm test
+      - name: Preflight self-test
+        run: node scripts/preflight.mjs --no-write
+
   docker:
     runs-on: ubuntu-latest
     steps:

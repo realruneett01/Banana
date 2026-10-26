@@ -9,6 +9,7 @@
  *
  *   node scripts/preflight.mjs [--json] [--no-write] [--skip-selftest] [--port N]
  */
+import "./lib/quiet-json.mjs";
 import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -26,6 +27,7 @@ import {
 	resolveTempRoot,
 } from "../backend/src/runtime-detect.js";
 import { findPython } from "../backend/src/design/checks.js";
+import { describeCapabilities, getCapabilities } from "../backend/src/kicad-compat.js";
 import { findLibraryRoot } from "../backend/src/design/kicad-lib.js";
 import { ngspiceAvailable } from "../backend/src/design/simulate.js";
 import { sampleBoard, sampleSchematic } from "../samples/gen-sample.mjs";
@@ -110,16 +112,18 @@ export function checkKicad(opts = {}) {
 			path: found.path,
 			version: probe.version,
 			source: found.source,
+			capabilities: describeCapabilities(getCapabilities({ cliPath: found.path, version: probe.version })),
 		},
 	);
 }
 
 /** Optional board-design tooling (MCP tools): libraries, DRC python, ngspice. Missing pieces are warnings, not failures. */
-export async function checkDesignTools() {
+export async function checkDesignTools(kicad = {}) {
 	const missing = [];
 	if (!findLibraryRoot("symbols") || !findLibraryRoot("footprints")) missing.push("KiCad symbol/footprint libraries (needed to design boards)");
 	if (!(await ngspiceAvailable())) missing.push("ngspice (needed for simulation)");
-	if (!findPython()) missing.push("python with pcbnew (needed for DRC on KiCad 7; KiCad 8+ uses kicad-cli)");
+	const hasCliDrc = kicad.path ? getCapabilities({ cliPath: kicad.path, version: kicad.version }).hasDrc : false;
+	if (!hasCliDrc && !findPython()) missing.push("python with pcbnew (this KiCad has no CLI DRC; KiCad 8+ does)");
 	return missing.length === 0 ? check("design", PASS, "Board design tools ready (libraries, ngspice, DRC)") : check("design", WARN, `Design tools incomplete: ${missing.join("; ")}`, { missing });
 }
 
@@ -414,7 +418,7 @@ export async function runPreflight(opts = {}) {
 		checkIntegrity(appRoot),
 	);
 	results.push(await checkWritable(tempRoot, "tempdir"));
-	results.push(await checkDesignTools());
+	results.push(await checkDesignTools(kicad));
 
 	const wantPort = opts.port ?? parsePort(process.env.PORT, 5000);
 	const port = await pickPort(wantPort);
@@ -513,7 +517,7 @@ async function main() {
 		written = writeCalibration(report.calibration);
 
 	if (flag("--json")) {
-		console.log(JSON.stringify({ ...report, written }, null, 2));
+		process.stdout.write(`${JSON.stringify({ ...report, written }, null, 2)}\n`);
 	} else {
 		console.log("\nBanana preflight\n----------------");
 		for (const r of report.results)

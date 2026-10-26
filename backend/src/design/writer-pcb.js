@@ -66,7 +66,7 @@ export function autoPlace(design, footprints) {
 	return placed;
 }
 
-function rotatedBox(bbox, rot) {
+export function rotatedBox(bbox, rot) {
 	const pts = [
 		[bbox.minX, bbox.minY],
 		[bbox.maxX, bbox.minY],
@@ -148,6 +148,19 @@ function instantiateFootprint({
 		const net = padNet(num);
 		if (net)
 			t = `${t.slice(0, b.end)} (net ${net.id} ${q(net.name)})${t.slice(b.end)}`;
+		// KiCad stores a pad's angle in board terms (footprint angle included); without it a
+		// rotated part keeps unrotated pad shapes and a 0805 on a 90 degree part is drawn upright.
+		if (at.rot) {
+			const padText = t.slice(b.start, b.end + 1);
+			const m = /\(at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+(-?[\d.]+))?\)/.exec(
+				padText,
+			);
+			if (m) {
+				const angle = (((Number(m[3] ?? 0) + at.rot) % 360) + 360) % 360;
+				const from = b.start + m.index;
+				t = `${t.slice(0, from)}(at ${m[1]} ${m[2]} ${angle})${t.slice(from + m[0].length)}`;
+			}
+		}
 	}
 	return t
 		.split("\n")

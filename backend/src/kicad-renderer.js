@@ -4,6 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
+import {
+	fallbackCapabilities,
+	getCapabilities,
+	parseKicadVersion,
+} from "./kicad-compat.js";
 
 /**
  * Resolves the cache directory path based on the file content hash.
@@ -96,14 +101,8 @@ const PCB_LAYERS = [
 
 /** KiCad 8+ can export every layer in one call (--mode-multi); 7.x cannot. */
 export function supportsModeMulti(versionString) {
-	const major = Number.parseInt(
-		String(versionString || "")
-			.trim()
-			.split(".")[0],
-		10,
-	);
 	// Unknown or nightly builds are treated as modern.
-	return !Number.isInteger(major) || major >= 8;
+	return fallbackCapabilities(parseKicadVersion(versionString)).svg.multiMode;
 }
 
 const RENDER_PARALLELISM = Math.max(1, Math.min(4, os.cpus().length));
@@ -160,10 +159,13 @@ export function buildRenderCommands({
 	filePath,
 	outputDir,
 	kicadVersion,
+	capabilities,
 }) {
 	if (!isPcb)
 		return [["sch", "export", "svg", "--output", outputDir, filePath]];
-	if (supportsModeMulti(kicadVersion)) {
+	if (
+		capabilities ? capabilities.svg.multiMode : supportsModeMulti(kicadVersion)
+	) {
 		return [
 			[
 				"pcb",
@@ -296,6 +298,7 @@ async function renderKicadFileUncached(filePath, isPcb) {
 		filePath: normalizedFilePath,
 		outputDir,
 		kicadVersion: config.kicadVersion,
+		capabilities: getCapabilities({ cliPath, version: config.kicadVersion }),
 	});
 
 	return executeCliRender(

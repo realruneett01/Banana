@@ -2,6 +2,7 @@ import express from "express";
 import { apiErrorHandler } from "../safe-router.js";
 import aiRouter from "./ai-routes.js";
 import boardRouter from "./board-routes.js";
+import designRouter from "./design-routes.js";
 import diffRouter from "./diff-routes.js";
 import gitRouter from "./git-routes.js";
 import githubRouter from "./github-routes.js";
@@ -15,6 +16,7 @@ export function createApiRouter() {
 	api.use("/board", boardRouter);
 	api.use(githubRouter);
 	api.use("/ai", aiRouter);
+	api.use("/design", designRouter);
 	api.use((_req, res) => res.status(404).json({ error: "Not found" }));
 	api.use(apiErrorHandler);
 	return api;

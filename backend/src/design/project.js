@@ -16,11 +16,17 @@ import {
 	placementLite,
 	routingStatus,
 } from "./checks.js";
+import { getFootprint } from "./kicad-lib.js";
 import { Design, DesignError, emptyDesign } from "./model.js";
 import { autoroute } from "./router.js";
 import { runAllTests } from "./simulate.js";
+import {
+	boardViewTransform,
+	renderBoardView,
+	renderSchematicView,
+} from "./views.js";
 import { writeSchematic } from "./writer-sch.js";
-import { writePcb, writeProjectFile } from "./writer-pcb.js";
+import { rotatedBox, writePcb, writeProjectFile } from "./writer-pcb.js";
 
 const execGit = promisify(execFile);
 export const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]{0,47}$/;
@@ -343,4 +349,149 @@ export async function autoRoute(name, { orderSeed = 0 } = {}) {
 		tracks: result.tracks.length,
 		vias: result.vias.length,
 	};
+}
+
+/** Everything the Studio needs to draw overlays and panels, without writing any file. */
+export async function projectState(name) {
+	const dir = projectDir(name);
+	const design = loadDesign(name);
+	const pcb = writePcb(design);
+	const boardFile = path.join(dir, `${name}.kicad_pcb`);
+	const built = fs.existsSync(boardFile);
+	const needsBuild = !built || fs.readFileSync(boardFile, "utf8") !== pcb.text;
+	const pads = absolutePads(design, pcb.positions);
+	const netOfPin = new Map();
+	for (const [net, def] of Object.entries(design.data.nets))
+		for (const p of def.pins) netOfPin.set(p, net);
+	const parts = design.data.parts.map((part) => {
+		const at = pcb.positions[part.ref];
+		const fp = part.footprint ? getFootprint(part.footprint) : null;
+		const box = fp && at ? rotatedBox(fp.bbox, at.rot || 0) : null;
+		return {
+			ref: part.ref,
+			symbol: part.symbol,
+			value: part.value,
+			footprint: part.footprint,
+			placed: Boolean(part.at),
+			at,
+			courtyard: box
+				? {
+						minX: at.x + box.minX,
+						maxX: at.x + box.maxX,
+						minY: at.y + box.minY,
+						maxY: at.y + box.maxY,
+					}
+				: null,
+			pads: [...pads]
+				.filter(([pin]) => pin.startsWith(`${part.ref}.`))
+				.map(([pin, p]) => ({
+					pin,
+					x: p.x,
+					y: p.y,
+					w: p.w,
+					h: p.h,
+					net: netOfPin.get(pin) ?? null,
+				})),
+		};
+	});
+	let head = null;
+	try {
+		head = (await git(dir, "rev-parse", "HEAD")).trim();
+	} catch {
+		/* no commits yet */
+	}
+	return {
+		name,
+		title: design.data.title,
+		head,
+		built,
+		needsBuild,
+		board: pcb.board,
+		transform: boardViewTransform(pcb.board),
+		parts,
+		nets: design.summary().nets,
+		tests: design.data.tests.map((t) => t.name),
+	};
+}
+
+async function fileAtRev(name, rev, rel) {
+	const unique = `view_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	const out = await extractFileFromCommit(
+		projectDir(name),
+		rev,
+		rel,
+		`${unique}/${rel}`,
+	);
+	return {
+		file: out,
+		cleanup: () =>
+			fs.rmSync(path.join(config.tempRoot, unique), {
+				recursive: true,
+				force: true,
+			}),
+	};
+}
+
+/** Native KiCad render of the board or schematic, from the built files or from any commit. */
+export async function viewSvg(
+	name,
+	{ kind = "board", view = "front", rev = "working" } = {},
+) {
+	if (!["board", "schematic"].includes(kind))
+		throw new DesignError('kind must be "board" or "schematic"');
+	const rel = kind === "board" ? `${name}.kicad_pcb` : `${name}.kicad_sch`;
+	let file;
+	let cleanup = () => {};
+	if (rev === "working") {
+		file = path.join(projectDir(name), rel);
+		if (!fs.existsSync(file))
+			throw new DesignError("Nothing built yet. Run build first.");
+	} else {
+		if (!isSafeRef(rev)) throw new DesignError("Invalid revision");
+		({ file, cleanup } = await fileAtRev(name, rev, rel));
+	}
+	try {
+		return kind === "board"
+			? await renderBoardView(file, { view })
+			: await renderSchematicView(file);
+	} finally {
+		cleanup();
+	}
+}
+
+/** Live Changes: diff the design as it is *now* (not yet committed) against a commit, with Banana's own engine. */
+export async function diffWorking(
+	name,
+	{ base = "HEAD", file = "board" } = {},
+) {
+	if (!isSafeRef(base)) throw new DesignError("Invalid commit reference");
+	if (!["board", "schematic"].includes(file))
+		throw new DesignError('file must be "board" or "schematic"');
+	const design = loadDesign(name);
+	const rel = file === "board" ? `${name}.kicad_pcb` : `${name}.kicad_sch`;
+	const unique = `live_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	const root = path.join(config.tempRoot, unique);
+	try {
+		const basePath = await extractFileFromCommit(
+			projectDir(name),
+			base,
+			rel,
+			`${unique}/base/${rel}`,
+		);
+		const targetPath = path.join(root, "target", rel);
+		fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+		fs.writeFileSync(
+			targetPath,
+			file === "board" ? writePcb(design).text : writeSchematic(design),
+		);
+		return await computeDiff({
+			basePath,
+			targetPath,
+			baseCommit: base,
+			targetCommit: "working",
+			isPcb: file === "board",
+		});
+	} finally {
+		fs.rmSync(root, { recursive: true, force: true });
+	}
 }
