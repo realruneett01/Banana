@@ -22,7 +22,7 @@ jobs:
           cache: npm
       - name: Install KiCad (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends kicad
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends kicad kicad-symbols kicad-footprints
       - name: Install KiCad (Windows)
         if: runner.os == 'Windows'
         run: choco install kicad --no-progress -y

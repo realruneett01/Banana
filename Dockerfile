@@ -1,3 +1,5 @@
+# KiCad version of the runtime image; declared before the first FROM so every stage can use it.
+ARG KICAD_VERSION=nightly
 # ==========================================
 # Stage 1: Build Frontend Assets
 # ==========================================
@@ -25,7 +27,6 @@ RUN npm run build --workspace=frontend
 # Stage 2: Production Runtime with KiCad CLI (Universal KiCad 10.x & 7+ Compatible)
 # ==========================================
 # Defaults to KiCad nightly (includes bleeding-edge KiCad 10.x/11.x CLI, backward-compatible with 7.x, 8.x, 9.x)
-ARG KICAD_VERSION=nightly
 FROM kicad/kicad:${KICAD_VERSION}
 
 USER root

@@ -46,7 +46,7 @@ test("profiles are ordered from coarse to fine", () => {
 	);
 	assert.ok(fine.minDrill < standard.minDrill);
 	assert.throws(
-		() => dfmReport(two(), POS, BOARD, "nonsense"),
+		() => dfmReport(new Design(emptyDesign("t")), {}, BOARD, "nonsense"),
 		/Unknown DFM profile/,
 	);
 });
