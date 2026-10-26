@@ -110,7 +110,10 @@ test("bom groups identical parts and keeps references in natural order", {
 	assert.equal(rows[1].refs[9], "R10");
 	assert.equal(rows[1].refs[1], "R2");
 	const csv = X.bomCsv(d);
-	assert.match(csv, /^Reference,Quantity,Value,Footprint,Symbol\nJ1,1,"J, with comma"/);
+	assert.match(
+		csv,
+		/^Reference,Quantity,Value,Footprint,Symbol\nJ1,1,"J, with comma"/,
+	);
 	assert.match(csv, /"J, with comma"/, "commas are quoted");
 });
 

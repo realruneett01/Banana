@@ -1,5 +1,14 @@
 import React, { useState } from "react";
-import { Alert, Button, Collapse, Empty, Select, Space, Tag, Typography } from "antd";
+import {
+	Alert,
+	Button,
+	Collapse,
+	Empty,
+	Select,
+	Space,
+	Tag,
+	Typography,
+} from "antd";
 import {
 	CheckCircleFilled,
 	CloseCircleFilled,
@@ -72,7 +81,11 @@ const PROFILES = [
 function ManufacturingSection({ dfm, onRunDfm, busy }) {
 	const [profile, setProfile] = useState("standard");
 	return (
-		<Space direction="vertical" style={{ width: "100%" }} data-testid="dfm-section">
+		<Space
+			direction="vertical"
+			style={{ width: "100%" }}
+			data-testid="dfm-section"
+		>
 			<Space.Compact style={{ width: "100%" }}>
 				<Select
 					value={profile}
