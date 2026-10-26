@@ -16,7 +16,7 @@ Legend: **Tier A** = delegated to KiCad's engine · **Tier B** = native interact
 | Buses | not yet | B | |
 | Symbol editor | not yet | B | Library symbols are used as they are. |
 | Annotation | done | B | References are assigned automatically. `tests/21-design-model.test.js` |
-| ERC | partial | A | Banana's own rules on every version; KiCad ERC through the CLI only where the installed `kicad-cli` has it (8+, **not run here**; the capability probe is tested against real KiCad 7 help text). |
+| ERC | partial | A | Banana's own rules on every version; KiCad ERC through the CLI only where the installed `kicad-cli` has it (8 and newer); the suite passed in the 8.0, 9.0, 10.0 and nightly CI containers. |
 | Netlist export | done | A | `tests/34-exports.test.js` |
 | BOM | done | B | Grouped CSV from the design. `tests/34-exports.test.js` |
 | Library tables / custom libraries | not yet | A | KiCad's installed libraries are searched and used; project-local libraries are not. |
@@ -73,4 +73,5 @@ Legend: **Tier A** = delegated to KiCad's engine · **Tier B** = native interact
 | Version | Status |
 |---|---|
 | 7.0.x | Full test suite run (Linux, 7.0.11). |
-| 8, 9, 10, nightly | The code adapts to what the installed `kicad-cli` offers by reading its own help output (`backend/src/kicad-compat.js`, tested against real KiCad 7 help text and synthetic newer text). A CI job runs the suite in `kicad/kicad:<version>` containers for 7.0, 8.0, 9.0, 10.0 and nightly; **those runs are the evidence, not this sandbox**, and this page does not claim more than their results.
+| 8.0.9, 9.0.9, 10.0.7, nightly (10.0.0) | The code adapts to what the installed `kicad-cli` offers by reading its own help output (`backend/src/kicad-compat.js`; tested against real 7.0.11 help text and parts of the real 8.0.9 help text). The full suite, preflight included, ran green in the matching `kicad/kicad:<version>` containers on CI run 25. Differences found and handled on the way: tab-indented libraries, multi-line netlists, `extends` chains, footprint text dialect, `--mode-multi` only from KiCad 9, a tighter SVG crop on KiCad 10. |
+| macOS (KiCad 10.0.x), Windows (Chocolatey KiCad), Linux x64/ARM64 (distro KiCad) | Green on CI, see the README table for which run; Ubuntu x64 has no finished green run for the latest commit. |

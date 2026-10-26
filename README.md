@@ -221,8 +221,20 @@ Includes a headless-browser smoke test of the built UI (needs Playwright; skippe
 ## Verification status (what has and has not been run)
 
 - Linux x64, Node 22, KiCad 7.0.11: full test suite (including the Studio in a real browser against a real `kicad-cli`, with a scripted Gemini), preflight, portable bundle, server — run in the development sandbox.
-- GitHub Actions (`.github/workflows/ci.yml`) runs Linux, Linux ARM, Windows and macOS jobs and the KiCad 7/8/9/10/nightly containers on every push; look at the latest run for the current state of each. A platform or KiCad version is only supported to the extent its job is green.
-- Windows, ARM, macOS, Docker image build, systemd runtime, KiCad 8/9/10 output: **not run in the development sandbox.** The code paths exist (KiCad 8+ multi-layer export, Windows launcher, ARM-independent bundle) and the CI workflow in `.github/workflows/ci.yml` is set up to exercise them; treat them as unverified until that workflow is green.
+- GitHub Actions (`.github/workflows/ci.yml`) runs the whole suite on every push. Results on branch `claude/magical-rubin-8ia3h1` (the workflow runs are the evidence; check the latest run for the current state):
+
+  | Job | Result |
+  |---|---|
+  | Ubuntu x64 (distro KiCad) | green on run 24; on run 25 the job was stuck installing KiCad (runner issue) and had not finished, so run 25 is **not** a pass for it |
+  | Ubuntu ARM64 (distro KiCad) | green on runs 24 and 25 |
+  | Windows (KiCad from Chocolatey, version not recorded) | green on runs 24 and 25, including preflight and portable bundle |
+  | macOS (KiCad 10.0.x from Homebrew) | green on run 25 (it failed on run 23) |
+  | KiCad 7.0 / 8.0 / 9.0 / 10.0 (`kicad/kicad:<version>` containers) | green on run 25 (8.0.9, 9.0.9, 10.0.7 as reported by the images); 10.0 failed on run 24 and was fixed |
+  | KiCad nightly container | green on run 25 (the image reported 10.0.0) |
+  | Docker image build + container preflight + API check | green on run 25 |
+  | systemd unit check (`systemd-analyze verify`) | green on run 25 |
+
+- What this does **not** show: the Studio's AI assistant against live Gemini (only a scripted model is tested), real hardware or sensors, Linux distributions other than the CI runners, and KiCad versions or patch releases outside the table. Getting here took fixes for real differences between KiCad versions (tab-indented libraries, multi-line netlists, `extends` chains, footprint text, a tighter SVG crop on KiCad 10); more will probably turn up on other versions.
 
 ## Repository layout
 
