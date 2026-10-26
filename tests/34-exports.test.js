@@ -271,7 +271,7 @@ test("every export on a routed board", { skip, timeout: 600000 }, async (t) => {
 		const net = await X.runExport("fab", "netlist");
 		assert.match(
 			fs.readFileSync(path.join(net.directory, net.download), "utf8"),
-			/\(export \(version/,
+			/\(export\s+\(version/,
 		);
 		const pdf = await X.runExport("fab", "pdf");
 		assert.deepEqual(pdf.files.map((f) => f.name).sort(), [

@@ -11,6 +11,11 @@ import {
 	fallbackCapabilities,
 } from "../backend/src/kicad-compat.js";
 import { parseKicadNetlist } from "../backend/src/design/checks.js";
+import {
+	cliCanRefillZones,
+	extractFills,
+	fillZones,
+} from "../backend/src/design/zonefill.js";
 import { listSymbolIds } from "../backend/src/design/kicad-lib.js";
 import { extractFileFromCommit } from "../backend/src/git-extractor.js";
 import { config } from "../backend/src/config.js";
@@ -128,4 +133,57 @@ test("a failed extraction never leaves the output file behind (60 tries, directo
 		await new Promise((r) => setTimeout(r, 0));
 		assert.equal(fs.existsSync(path.join(config.tempRoot, target)), false);
 	}
+});
+
+test('saved zones are read in the older (net_name/layer) and the newer (net "X"/layers) spelling', () => {
+	const old = `(kicad_pcb (zone (net 1) (net_name "GND") (layer "B.Cu") (tstamp 1)
+  (polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))
+  (filled_polygon (layer "B.Cu") (pts (xy 0 0) (xy 1 0) (xy 1 1)))))`;
+	const next = `(kicad_pcb
+	(zone
+		(net "GND")
+		(layers "B.Cu")
+		(uuid "u")
+		(polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))
+		(filled_polygon
+			(layer "B.Cu")
+			(pts (xy 0 0) (xy 1 0) (xy 1 1))
+		)
+	)
+	(zone
+		(net "+5V")
+		(layers "F.Cu" "B.Cu")
+		(polygon (pts (xy 0 0) (xy 1 0) (xy 1 1)))
+	)
+)`;
+	for (const text of [old, next]) {
+		const fills = extractFills(text);
+		assert.deepEqual([...fills.keys()], ["GND|B.Cu"]);
+		assert.match(fills.get("GND|B.Cu"), /^\(filled_polygon \(layer "B\.Cu"\)/);
+	}
+});
+
+test("without pcbnew's Python, a kicad-cli that can refill zones fills them", {
+	skip:
+		!cliCanRefillZones() &&
+		"this kicad-cli cannot refill zones (KiCad 10 and newer can)",
+}, async () => {
+	const { Design, emptyDesign } = await import(
+		"../backend/src/design/model.js"
+	);
+	const { writePcb } = await import("../backend/src/design/writer-pcb.js");
+	const d = new Design(emptyDesign("cli-fill"));
+	for (const v of ["1k", "2k"])
+		d.addPart({
+			symbol: "Device:R",
+			value: v,
+			footprint: "Resistor_SMD:R_0805_2012Metric",
+		});
+	d.connect("GND", ["R1.2", "R2.2"]);
+	d.connect("SIG", ["R1.1", "R2.1"]);
+	d.setBoard(40, 30);
+	d.addZone({ net: "GND", layer: "B.Cu" });
+	const r = await fillZones(writePcb(d).text, { python: null });
+	assert.equal(r.status, "ok");
+	assert.ok(r.fills.get("GND|B.Cu")?.startsWith("(filled_polygon"));
 });

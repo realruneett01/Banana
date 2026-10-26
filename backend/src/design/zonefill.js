@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -23,8 +23,11 @@ export function extractFills(text) {
 	const fills = new Map();
 	for (const zone of childLists(text, root).filter((c) => c.head === "zone")) {
 		const body = text.slice(zone.start, zone.end + 1);
-		const net = /\(net_name\s+"((?:[^"\\]|\\.)*)"\)/.exec(body)?.[1];
-		const layer = /\(layer\s+"((?:[^"\\]|\\.)*)"\)/.exec(body)?.[1];
+		// KiCad up to 9 writes `(net 1) (net_name "GND")`; newer files may name the net directly: `(net "GND")`.
+		// A zone on one layer is `(layer "X")`, newer files write `(layers "X")`.
+		const net = (/\(net_name\s+"((?:[^"\\]|\\.)*)"\)/.exec(body) ??
+			/\(net\s+"((?:[^"\\]|\\.)*)"\)/.exec(body))?.[1];
+		const layer = /\(layers?\s+"((?:[^"\\]|\\.)*)"/.exec(body)?.[1];
 		if (net === undefined || !layer) continue;
 		const blocks = childLists(text, zone.start, zone.end)
 			.filter((c) => c.head === "filled_polygon")
@@ -40,6 +43,30 @@ export function extractFills(text) {
 	return fills;
 }
 
+let refillProbe = null;
+/** Whether this kicad-cli can refill zones itself (`pcb drc --refill-zones --save-board`, KiCad 10 and newer). */
+export function cliCanRefillZones(cliPath = config.kicadCliPath) {
+	if (!cliPath) return false;
+	if (refillProbe?.cliPath === cliPath) return refillProbe.ok;
+	let ok = false;
+	try {
+		const help = String(
+			execFileSync(cliPath, ["pcb", "drc", "--help"], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 30000,
+			}),
+		);
+		ok = /--refill-zones/.test(help) && /--save-board/.test(help);
+	} catch (e) {
+		ok =
+			/--refill-zones/.test(String(e.stdout ?? "")) &&
+			/--save-board/.test(String(e.stdout ?? ""));
+	}
+	refillProbe = { cliPath, ok };
+	return ok;
+}
+
 const cacheDir = () => path.join(config.tempRoot, "cache", "zonefill");
 
 /**
@@ -47,7 +74,7 @@ const cacheDir = () => path.join(config.tempRoot, "cache", "zonefill");
  * KiCad version. When no pcbnew Python is available the pours stay unfilled: still valid files, KiCad fills them
  * itself on open, but Banana cannot draw or check the copper.
  */
-export async function fillZones(boardText, { python } = {}) {
+export async function fillZones(boardText, { python, cli = true } = {}) {
 	const key = crypto
 		.createHash("sha256")
 		.update(`${boardText}\u0000${config.kicadVersion}`)
@@ -63,7 +90,8 @@ export async function fillZones(boardText, { python } = {}) {
 		/* not cached */
 	}
 	const py = python === undefined ? findPython() : python;
-	if (!py)
+	const viaCli = !py && cli && cliCanRefillZones();
+	if (!py && !viaCli)
 		return {
 			status: "unavailable",
 			reason:
@@ -75,11 +103,30 @@ export async function fillZones(boardText, { python } = {}) {
 		const input = path.join(work, "in.kicad_pcb");
 		const output = path.join(work, "out.kicad_pcb");
 		fs.writeFileSync(input, boardText);
-		await run(py, ["-c", FILL_PY, input, output], {
-			timeout: 120_000,
-			maxBuffer: 16 * 1024 * 1024,
-		});
-		const fills = extractFills(fs.readFileSync(output, "utf8"));
+		let saved = output;
+		if (py) {
+			await run(py, ["-c", FILL_PY, input, output], {
+				timeout: 120_000,
+				maxBuffer: 16 * 1024 * 1024,
+			});
+		} else {
+			// kicad-cli refills and saves the board in place; the report itself is not needed
+			await run(
+				config.kicadCliPath,
+				[
+					"pcb",
+					"drc",
+					"--refill-zones",
+					"--save-board",
+					"--output",
+					path.join(work, "drc.rpt"),
+					input,
+				],
+				{ timeout: 120_000, maxBuffer: 16 * 1024 * 1024 },
+			);
+			saved = input;
+		}
+		const fills = extractFills(fs.readFileSync(saved, "utf8"));
 		fs.mkdirSync(cacheDir(), { recursive: true });
 		fs.writeFileSync(
 			`${cached}.${process.pid}.tmp`,

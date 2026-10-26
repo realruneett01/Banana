@@ -131,7 +131,9 @@ try {
 		const lines = sv.content.split("\n");
 		const hit = (l) => /R1|<desc|<text|stroked|<g\b[^>]*class=|<title/.test(l);
 		const idx = lines.map((l, i) => (hit(l) ? i : -1)).filter((i) => i >= 0);
-		console.log(`silk ${sv.filename}: ${lines.length} lines, ${idx.length} matching`);
+		console.log(
+			`silk ${sv.filename}: ${lines.length} lines, ${idx.length} matching`,
+		);
 		console.log(
 			idx
 				.slice(0, 14)
@@ -139,7 +141,11 @@ try {
 				.join("\n"),
 		);
 		const r1 = sv.content.indexOf("R1");
-		if (r1 >= 0) console.log("around R1:", JSON.stringify(sv.content.slice(Math.max(0, r1 - 300), r1 + 300)));
+		if (r1 >= 0)
+			console.log(
+				"around R1:",
+				JSON.stringify(sv.content.slice(Math.max(0, r1 - 300), r1 + 300)),
+			);
 	}
 	const f = files.find((s) => /F_Cu/.test(s.filename)) ?? files[0];
 	if (f) {
@@ -218,8 +224,18 @@ try {
 	console.log(cli("pcb", "drc", "--help").split("\n").slice(0, 40).join("\n"));
 	await P.createProject("pour");
 	const z = P.loadDesign("pour");
-	z.addPart({ symbol: "Device:R", value: "1k", footprint: R, at: { x: 30, y: 30 } });
-	z.addPart({ symbol: "Device:R", value: "2k", footprint: R, at: { x: 40, y: 30 } });
+	z.addPart({
+		symbol: "Device:R",
+		value: "1k",
+		footprint: R,
+		at: { x: 30, y: 30 },
+	});
+	z.addPart({
+		symbol: "Device:R",
+		value: "2k",
+		footprint: R,
+		at: { x: 40, y: 30 },
+	});
 	z.connect("GND", ["R1.2", "R2.2"]);
 	z.connect("SIG", ["R1.1", "R2.1"]);
 	z.setBoard(40, 30);
@@ -230,13 +246,122 @@ try {
 	const text = fs.readFileSync(pcb, "utf8");
 	const at = text.indexOf("(zone");
 	console.log("zone block start:", JSON.stringify(text.slice(at, at + 700)));
-	console.log("filled_polygon count:", (text.match(/filled_polygon/g) ?? []).length);
-	if (!caps.hasDrc) throw new Error("this KiCad has no `pcb drc` command (skipped)");
+	console.log(
+		"filled_polygon count:",
+		(text.match(/filled_polygon/g) ?? []).length,
+	);
+	if (!caps.hasDrc)
+		throw new Error("this KiCad has no `pcb drc` command (skipped)");
 	const out = path.join(P.projectDir("pour"), "drc.json");
-	console.log(cli("pcb", "drc", "--format", "json", "--severity-all", "--all-track-errors", "-o", out, pcb).slice(0, 300));
+	console.log(
+		cli(
+			"pcb",
+			"drc",
+			"--format",
+			"json",
+			"--severity-all",
+			"--all-track-errors",
+			"-o",
+			out,
+			pcb,
+		).slice(0, 300),
+	);
 	const j = JSON.parse(fs.readFileSync(out, "utf8"));
-	console.log("unconnected:", JSON.stringify(j.unconnected_items ?? []).slice(0, 1200));
-	console.log("violations:", JSON.stringify((j.violations ?? []).map((v) => v.type)));
+	console.log(
+		"unconnected:",
+		JSON.stringify(j.unconnected_items ?? []).slice(0, 1200),
+	);
+	console.log(
+		"violations:",
+		JSON.stringify((j.violations ?? []).map((v) => v.type)),
+	);
 } catch (e) {
 	console.log("pour diagnostic failed:", e.stack ?? e.message);
+}
+
+section("where does the reference text go (footprint R1 as Banana wrote it)");
+try {
+	const pcbText = fs.readFileSync(
+		path.join(P.projectDir("diag"), "diag.kicad_pcb"),
+		"utf8",
+	);
+	const at = pcbText.indexOf("(footprint");
+	console.log(pcbText.slice(at, at + 1800));
+	const diff = await P.diffBuilds("diag", { base: v1, target: v2 });
+	for (const s of diff.target?.svgs ?? [])
+		console.log(
+			s.filename,
+			"R1 occurrences:",
+			(s.content.match(/R1/g) ?? []).length,
+			"stroked-text groups:",
+			(s.content.match(/class="stroked-text"/g) ?? []).length,
+			"<text:",
+			(s.content.match(/<text\b/g) ?? []).length,
+		);
+} catch (e) {
+	console.log("footprint diagnostic failed:", e.stack ?? e.message);
+}
+
+section("library symbols that parsed without pins");
+try {
+	const { getSymbol, findLibraryRoot } = await import(
+		"../backend/src/design/kicad-lib.js"
+	);
+	const root = findLibraryRoot("symbols");
+	for (const id of ["Diode:SM15T36A", "Relay:JQC-3FF-009-1Z", "Device:R"]) {
+		const sym = getSymbol(id);
+		console.log(
+			id,
+			"->",
+			sym ? `${sym.pins.length} pins, units ${sym.units}` : "null",
+		);
+		const [lib, name] = id.split(":");
+		const text = fs.readFileSync(path.join(root, `${lib}.kicad_sym`), "utf8");
+		const i = text.indexOf(`(symbol "${name}"`);
+		if (sym?.pins.length === 0 || id === "Device:R")
+			console.log(
+				JSON.stringify(
+					text.slice(i, i + (sym?.pins.length === 0 ? 1600 : 300)),
+				),
+			);
+	}
+} catch (e) {
+	console.log("symbol diagnostic failed:", e.stack ?? e.message);
+}
+
+section("pcbnew's own zone fill (python) on the pour board");
+try {
+	const { findPython } = await import("../backend/src/design/checks.js");
+	const py = findPython();
+	console.log("python with pcbnew:", py);
+	if (py) {
+		const pcb = path.join(P.projectDir("pour"), "pour.kicad_pcb");
+		const out = path.join(P.projectDir("pour"), "filled.kicad_pcb");
+		try {
+			execFileSync(
+				py,
+				[
+					"-c",
+					"import sys, pcbnew\nb = pcbnew.LoadBoard(sys.argv[1])\npcbnew.ZONE_FILLER(b).Fill(b.Zones())\npcbnew.SaveBoard(sys.argv[2], b)",
+					pcb,
+					out,
+				],
+				{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60000 },
+			);
+			const t = fs.readFileSync(out, "utf8");
+			const z = t.indexOf("(zone");
+			console.log("saved zone head:", JSON.stringify(t.slice(z, z + 500)));
+			console.log(
+				"filled_polygon count:",
+				(t.match(/filled_polygon/g) ?? []).length,
+			);
+		} catch (e) {
+			console.log(
+				"python fill failed:",
+				String(e.stderr || e.message).slice(-600),
+			);
+		}
+	}
+} catch (e) {
+	console.log("zone diagnostic failed:", e.stack ?? e.message);
 }

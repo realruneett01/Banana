@@ -124,7 +124,12 @@ test("every sampled library symbol embeds as balanced S-expression with pins (15
 			const text = s.embedText();
 			assert.ok(text.startsWith(`(symbol "${id}"`), "renamed to Lib:Name");
 			assert.equal(matchParen(text, 0), text.length - 1, "balanced");
-			assert.ok(s.pins.length > 0 || s.isPower, "has pins");
+			// graphics and mechanical parts are legitimately pinless
+			const pinless = /^(Graphic|Mechanical):/.test(id);
+			assert.ok(
+				s.pins.length > 0 || s.isPower || pinless,
+				`${id} has pins; the symbol begins: ${text.slice(0, 700)}`,
+			);
 			for (const p of s.pins)
 				assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
 		});

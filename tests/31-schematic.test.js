@@ -10,7 +10,7 @@ import { hasKicad, tmpDir } from "./helpers.js";
 const work = tmpDir("banana-sch-");
 process.env.BANANA_PROJECTS_DIR = work;
 const { Design, emptyDesign } = await import("../backend/src/design/model.js");
-const { findLibraryRoot, getSymbol } = await import(
+const { findLibraryRoot, getSymbol, searchSymbols } = await import(
 	"../backend/src/design/kicad-lib.js"
 );
 const { writeSchematic } = await import("../backend/src/design/writer-sch.js");
@@ -301,7 +301,10 @@ test("rotation: library symbols turned by the layout still land their pins on th
 		"Device:Q_NPN_BEC",
 		"Device:Q_NPN_CBE",
 		"Device:Q_NPN_EBC",
-	].find((id) => getSymbol(id)?.pins.length === 3);
+		...searchSymbols("q_npn", { limit: 200 }),
+		"Transistor_BJT:BC547",
+		"Transistor_BJT:2N3904",
+	].find((id) => getSymbol(id)?.pins.filter((p) => !p.hidden).length === 3);
 	assert.ok(npn, "an installed three-pin NPN symbol");
 	d.addPart({
 		symbol: npn,

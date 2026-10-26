@@ -241,7 +241,7 @@ test("without KiCad's Python the pour stays unfilled and says so", {
 }, async () => {
 	const d = ledBoard();
 	d.addZone({ net: "GND", layer: "B.Cu" });
-	const r = await fillZones(writePcb(d).text, { python: null });
+	const r = await fillZones(writePcb(d).text, { python: null, cli: false });
 	assert.equal(r.status, "unavailable");
 	assert.match(r.reason, /pcbnew/);
 	assert.equal(r.fills.size, 0);
