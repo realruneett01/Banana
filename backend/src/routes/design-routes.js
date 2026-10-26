@@ -14,7 +14,8 @@ router.get("/projects", (_req, res) => res.json({ projects: listProjects() }));
 router.post("/tools/:name", async (req, res) => {
 	const r = await callTool(req.params.name, req.body);
 	if (r.ok) return res.json(r.result);
-	const status = r.code === "unknown_tool" ? 404 : r.code === "internal" ? 500 : 400;
+	const status =
+		r.code === "unknown_tool" ? 404 : r.code === "internal" ? 500 : 400;
 	res.status(status).json({ error: r.error, code: r.code, details: r.details });
 });
 
@@ -25,7 +26,9 @@ router.post("/tools/:name", async (req, res) => {
 router.post("/mcp", async (req, res) => {
 	const body = req.body;
 	if (Array.isArray(body)) {
-		const replies = (await Promise.all(body.map(handleMessage))).filter(Boolean);
+		const replies = (await Promise.all(body.map(handleMessage))).filter(
+			Boolean,
+		);
 		return replies.length ? res.json(replies) : res.status(202).end();
 	}
 	const reply = await handleMessage(body);

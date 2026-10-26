@@ -9,7 +9,8 @@ export function matchParen(text, start) {
 	for (let i = start; i < text.length; i++) {
 		const c = text[i];
 		if (c === '"') {
-			for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+			for (i++; i < text.length && text[i] !== '"'; i++)
+				if (text[i] === "\\") i++;
 		} else if (c === "(") depth++;
 		else if (c === ")") {
 			depth--;
@@ -39,7 +40,9 @@ export function childLists(text, start = 0, end = matchParen(text, start)) {
 
 /** First quoted-or-bare atom after the head of a list: `(symbol "R" ...)` -> "R". */
 export function firstAtom(text, block) {
-	const m = /^\(\s*[^\s()"]+\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))/.exec(text.slice(block.start, block.start + 400));
+	const m = /^\(\s*[^\s()"]+\s+(?:"((?:[^"\\]|\\.)*)"|([^\s()"]+))/.exec(
+		text.slice(block.start, block.start + 400),
+	);
 	return m ? (m[1] ?? m[2]) : null;
 }
 
@@ -66,6 +69,8 @@ export function stableUuid(seed) {
 	const h = crypto.createHash("sha256").update(String(seed)).digest();
 	h[6] = (h[6] & 0x0f) | 0x40;
 	h[8] = (h[8] & 0x3f) | 0x80;
-	const x = [...h.subarray(0, 16)].map((v) => v.toString(16).padStart(2, "0")).join("");
+	const x = [...h.subarray(0, 16)]
+		.map((v) => v.toString(16).padStart(2, "0"))
+		.join("");
 	return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
 }

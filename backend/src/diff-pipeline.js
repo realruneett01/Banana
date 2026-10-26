@@ -185,7 +185,11 @@ export async function computeDiff({
 		const pcbMetadata = extractPcbMetadata(basePath, targetPath, isPcb);
 		const footprintChanges = pcbMetadata?.footprintChanges || new Map();
 
-		const layersResult = processAllLayers({ baseSvgs, targetSvgs, pcbMetadata });
+		const layersResult = processAllLayers({
+			baseSvgs,
+			targetSvgs,
+			pcbMetadata,
+		});
 		const tDiff = performance.now() - tDiffStart;
 		const tTotal = performance.now() - tTotalStart;
 
@@ -220,7 +224,15 @@ export async function executeDiffPipeline(
 	res,
 ) {
 	try {
-		const payload = await computeDiff({ basePath, targetPath, baseCommit, targetCommit, isPcb, tExtraction, tTotalStart });
+		const payload = await computeDiff({
+			basePath,
+			targetPath,
+			baseCommit,
+			targetCommit,
+			isPcb,
+			tExtraction,
+			tTotalStart,
+		});
 		return res.json(payload);
 	} catch (error) {
 		if (error.stage === "render") {

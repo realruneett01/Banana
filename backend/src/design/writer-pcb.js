@@ -36,11 +36,17 @@ export function autoPlace(design, footprints) {
 		const b = footprints.get(p.ref).bbox;
 		return s + (b.maxX - b.minX + GAP) * (b.maxY - b.minY + GAP);
 	}, 0);
-	const targetWidth = Math.max(design.data.board ? design.data.board.width - 6 : 0, Math.sqrt(area * 2.2), 12);
+	const targetWidth = Math.max(
+		design.data.board ? design.data.board.width - 6 : 0,
+		Math.sqrt(area * 2.2),
+		12,
+	);
 	let x = ORIGIN + 3;
 	let y = ORIGIN + 3;
 	let rowH = 0;
-	for (const p of [...need].sort((a, b) => a.ref.localeCompare(b.ref, undefined, { numeric: true }))) {
+	for (const p of [...need].sort((a, b) =>
+		a.ref.localeCompare(b.ref, undefined, { numeric: true }),
+	)) {
 		const b = footprints.get(p.ref).bbox;
 		const w = b.maxX - b.minX;
 		const h = b.maxY - b.minY;
@@ -49,7 +55,11 @@ export function autoPlace(design, footprints) {
 			y += rowH + GAP;
 			rowH = 0;
 		}
-		placed.set(p.ref, { x: Math.round((x - b.minX) * 100) / 100, y: Math.round((y - b.minY) * 100) / 100, rot: 0 });
+		placed.set(p.ref, {
+			x: Math.round((x - b.minX) * 100) / 100,
+			y: Math.round((y - b.minY) * 100) / 100,
+			rot: 0,
+		});
 		x += w + GAP;
 		rowH = Math.max(rowH, h);
 	}
@@ -57,38 +67,92 @@ export function autoPlace(design, footprints) {
 }
 
 function rotatedBox(bbox, rot) {
-	const pts = [[bbox.minX, bbox.minY], [bbox.maxX, bbox.minY], [bbox.maxX, bbox.maxY], [bbox.minX, bbox.maxY]];
+	const pts = [
+		[bbox.minX, bbox.minY],
+		[bbox.maxX, bbox.minY],
+		[bbox.maxX, bbox.maxY],
+		[bbox.minX, bbox.maxY],
+	];
 	const r = (rot * Math.PI) / 180;
-	const rp = pts.map(([x, y]) => [x * Math.cos(r) - y * Math.sin(r), x * Math.sin(r) + y * Math.cos(r)]);
-	return { minX: Math.min(...rp.map((p) => p[0])), maxX: Math.max(...rp.map((p) => p[0])), minY: Math.min(...rp.map((p) => p[1])), maxY: Math.max(...rp.map((p) => p[1])) };
+	const rp = pts.map(([x, y]) => [
+		x * Math.cos(r) - y * Math.sin(r),
+		x * Math.sin(r) + y * Math.cos(r),
+	]);
+	return {
+		minX: Math.min(...rp.map((p) => p[0])),
+		maxX: Math.max(...rp.map((p) => p[0])),
+		minY: Math.min(...rp.map((p) => p[1])),
+		maxY: Math.max(...rp.map((p) => p[1])),
+	};
 }
 
 /** Rewrites a library footprint for placement in a board: position, reference/value, pad nets. */
 const ATOM = '("(?:[^"\\\\]|\\\\.)*"|[^\\s()]+)';
 
 /** Rewrites a library footprint for placement in a board: position, reference/value, pad nets. */
-function instantiateFootprint({ libText, libId, ref, value, at, padNet, uuidSeed }) {
+function instantiateFootprint({
+	libText,
+	libId,
+	ref,
+	value,
+	at,
+	padNet,
+	uuidSeed,
+}) {
 	let t = libText;
-	t = t.replace(/\(version\s+\d+\)\s*/, "").replace(/\(generator(?:_version)?\s+[^)]*\)\s*/g, "").replace(/\(tedit\s+[0-9A-Fa-f]+\)\s*/, "");
-	t = t.replace(new RegExp(`^\\(\\s*footprint\\s+${ATOM}`), `(footprint ${q(libId)}`);
+	t = t
+		.replace(/\(version\s+\d+\)\s*/, "")
+		.replace(/\(generator(?:_version)?\s+[^)]*\)\s*/g, "")
+		.replace(/\(tedit\s+[0-9A-Fa-f]+\)\s*/, "");
+	t = t.replace(
+		new RegExp(`^\\(\\s*footprint\\s+${ATOM}`),
+		`(footprint ${q(libId)}`,
+	);
 	// first (layer F.Cu) belongs to the footprint itself (before any pad/graphic); library style may or may not quote it
-	if (!/\(layer\s+"?F\.Cu"?\)/.test(t)) throw new Error(`Cannot place ${libId}: unsupported footprint layout`);
-	t = t.replace(/\(layer\s+"?F\.Cu"?\)/, `(layer "F.Cu")\n  (at ${f(at.x)} ${f(at.y)}${at.rot ? ` ${at.rot}` : ""})\n  (tstamp ${stableUuid(`${uuidSeed}:fp`)})`);
-	t = t.replace(new RegExp(`(\\(fp_text\\s+reference\\s+)${ATOM}`), `$1${q(ref)}`);
-	t = t.replace(new RegExp(`(\\(fp_text\\s+value\\s+)${ATOM}`), `$1${q(value)}`);
-	t = t.replace(new RegExp(`(\\(property\\s+"Reference"\\s+)${ATOM}`), `$1${q(ref)}`);
-	t = t.replace(new RegExp(`(\\(property\\s+"Value"\\s+)${ATOM}`), `$1${q(value)}`);
+	if (!/\(layer\s+"?F\.Cu"?\)/.test(t))
+		throw new Error(`Cannot place ${libId}: unsupported footprint layout`);
+	t = t.replace(
+		/\(layer\s+"?F\.Cu"?\)/,
+		`(layer "F.Cu")\n  (at ${f(at.x)} ${f(at.y)}${at.rot ? ` ${at.rot}` : ""})\n  (tstamp ${stableUuid(`${uuidSeed}:fp`)})`,
+	);
+	t = t.replace(
+		new RegExp(`(\\(fp_text\\s+reference\\s+)${ATOM}`),
+		`$1${q(ref)}`,
+	);
+	t = t.replace(
+		new RegExp(`(\\(fp_text\\s+value\\s+)${ATOM}`),
+		`$1${q(value)}`,
+	);
+	t = t.replace(
+		new RegExp(`(\\(property\\s+"Reference"\\s+)${ATOM}`),
+		`$1${q(ref)}`,
+	);
+	t = t.replace(
+		new RegExp(`(\\(property\\s+"Value"\\s+)${ATOM}`),
+		`$1${q(value)}`,
+	);
 	// drop 3D model references (path variables differ per install)
-	for (const b of childLists(t).filter((c) => c.head === "model").reverse()) t = t.slice(0, b.start) + t.slice(b.end + 1);
+	for (const b of childLists(t)
+		.filter((c) => c.head === "model")
+		.reverse())
+		t = t.slice(0, b.start) + t.slice(b.end + 1);
 	// attach nets to pads (edit from the end so offsets stay valid)
-	const pads = childLists(t).filter((c) => c.head === "pad").reverse();
+	const pads = childLists(t)
+		.filter((c) => c.head === "pad")
+		.reverse();
 	for (const b of pads) {
-		const raw = new RegExp(`^\\(\\s*pad\\s+${ATOM}`).exec(t.slice(b.start, b.start + 200))?.[1];
+		const raw = new RegExp(`^\\(\\s*pad\\s+${ATOM}`).exec(
+			t.slice(b.start, b.start + 200),
+		)?.[1];
 		const num = raw?.startsWith('"') ? raw.slice(1, -1) : raw;
 		const net = padNet(num);
-		if (net) t = `${t.slice(0, b.end)} (net ${net.id} ${q(net.name)})${t.slice(b.end)}`;
+		if (net)
+			t = `${t.slice(0, b.end)} (net ${net.id} ${q(net.name)})${t.slice(b.end)}`;
 	}
-	return t.split("\n").map((l) => `  ${l}`).join("\n");
+	return t
+		.split("\n")
+		.map((l) => `  ${l}`)
+		.join("\n");
 }
 
 export function writePcb(design) {
@@ -97,10 +161,12 @@ export function writePcb(design) {
 	for (const name of Object.keys(d.nets).sort()) netIds.set(name, netIds.size);
 
 	const netOfPin = new Map();
-	for (const [name, net] of Object.entries(d.nets)) for (const p of net.pins) netOfPin.set(p, name);
+	for (const [name, net] of Object.entries(d.nets))
+		for (const p of net.pins) netOfPin.set(p, name);
 
 	const footprints = new Map();
-	for (const p of d.parts) if (p.footprint) footprints.set(p.ref, getFootprint(p.footprint));
+	for (const p of d.parts)
+		if (p.footprint) footprints.set(p.ref, getFootprint(p.footprint));
 
 	const auto = autoPlace(design, footprints);
 	const positions = new Map();
@@ -123,7 +189,10 @@ export function writePcb(design) {
 			minX = Math.min(minX, at.x + b.minX - 3);
 			minY = Math.min(minY, at.y + b.minY - 3);
 		}
-		board = { width: Math.ceil(maxX + 3 - minX), height: Math.ceil(maxY + 3 - minY) };
+		board = {
+			width: Math.ceil(maxX + 3 - minX),
+			height: Math.ceil(maxY + 3 - minY),
+		};
 	}
 
 	const out = [
@@ -133,7 +202,9 @@ export function writePcb(design) {
 		LAYERS,
 		`  (setup (pad_to_mask_clearance 0))`,
 		`  (net 0 "")`,
-		...[...netIds].filter(([n]) => n).map(([name, id]) => `  (net ${id} ${q(name)})`),
+		...[...netIds]
+			.filter(([n]) => n)
+			.map(([name, id]) => `  (net ${id} ${q(name)})`),
 		`  (gr_rect (start ${f(minX)} ${f(minY)}) (end ${f(minX + board.width)} ${f(minY + board.height)}) (layer "Edge.Cuts") (width 0.1) (fill none) (tstamp ${stableUuid(`${d.name}:outline`)}))`,
 	];
 
@@ -159,14 +230,22 @@ export function writePcb(design) {
 
 	d.tracks.forEach((t, ti) => {
 		for (let i = 0; i + 1 < t.points.length; i++) {
-			out.push(`  (segment (start ${f(t.points[i][0])} ${f(t.points[i][1])}) (end ${f(t.points[i + 1][0])} ${f(t.points[i + 1][1])}) (width ${t.width}) (layer ${q(t.layer)}) (net ${netIds.get(t.net)}) (tstamp ${stableUuid(`${d.name}:trk:${ti}:${i}`)}))`);
+			out.push(
+				`  (segment (start ${f(t.points[i][0])} ${f(t.points[i][1])}) (end ${f(t.points[i + 1][0])} ${f(t.points[i + 1][1])}) (width ${t.width}) (layer ${q(t.layer)}) (net ${netIds.get(t.net)}) (tstamp ${stableUuid(`${d.name}:trk:${ti}:${i}`)}))`,
+			);
 		}
 	});
 	d.vias.forEach((v, i) => {
-		out.push(`  (via (at ${f(v.x)} ${f(v.y)}) (size ${v.size}) (drill ${v.drill}) (layers "F.Cu" "B.Cu") (net ${netIds.get(v.net)}) (tstamp ${stableUuid(`${d.name}:via:${i}`)}))`);
+		out.push(
+			`  (via (at ${f(v.x)} ${f(v.y)}) (size ${v.size}) (drill ${v.drill}) (layers "F.Cu" "B.Cu") (net ${netIds.get(v.net)}) (tstamp ${stableUuid(`${d.name}:via:${i}`)}))`,
+		);
 	});
 	out.push(")", "");
-	return { text: out.join("\n"), board: { ...board, originX: minX, originY: minY }, positions: Object.fromEntries(positions) };
+	return {
+		text: out.join("\n"),
+		board: { ...board, originX: minX, originY: minY },
+		positions: Object.fromEntries(positions),
+	};
 }
 
 export function writeProjectFile(name) {

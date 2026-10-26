@@ -147,33 +147,33 @@ test("the checks catch real board faults", {
 		assert.ok(c.placement.some((i) => i.type === "outside_board"));
 		assert.equal(c.ok, false);
 	});
-	await t.test(
-		"two different nets crossing: reported as a short",
-		async () => {
-			const d = await mk("f-short");
-			d.addTrack({
-				net: "A",
-				points: [
-					[30.9125, 30],
-					[39.0875, 30],
-				],
-			});
-			d.addTrack({
-				net: "B",
-				points: [
-					[35, 28],
-					[35, 32],
-				],
-			});
-			P.saveDesign("f-short", d);
-			const c = await P.checkProject("f-short");
-			assert.ok(
-				c.copper.some((i) => i.type === "short" && i.nets.includes("A") && i.nets.includes("B")),
-				JSON.stringify(c.copper),
-			);
-			assert.equal(c.ok, false);
-		},
-	);
+	await t.test("two different nets crossing: reported as a short", async () => {
+		const d = await mk("f-short");
+		d.addTrack({
+			net: "A",
+			points: [
+				[30.9125, 30],
+				[39.0875, 30],
+			],
+		});
+		d.addTrack({
+			net: "B",
+			points: [
+				[35, 28],
+				[35, 32],
+			],
+		});
+		P.saveDesign("f-short", d);
+		const c = await P.checkProject("f-short");
+		assert.ok(
+			c.copper.some(
+				(i) =>
+					i.type === "short" && i.nets.includes("A") && i.nets.includes("B"),
+			),
+			JSON.stringify(c.copper),
+		);
+		assert.equal(c.ok, false);
+	});
 	await t.test(
 		"tracks that are too close (but not touching) are flagged as clearance, and the exact gap is correct",
 		async () => {

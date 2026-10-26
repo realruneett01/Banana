@@ -80,19 +80,40 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 
 	// board edge keepout
 	const edgeCells = Math.ceil(EDGE_KEEPOUT / GRID);
-	for (let l = 0; l < 2; l++) for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) if (c < edgeCells || r < edgeCells || c >= W - edgeCells || r >= H - edgeCells) owner[l][idx(c, r)] = -1;
+	for (let l = 0; l < 2; l++)
+		for (let r = 0; r < H; r++)
+			for (let c = 0; c < W; c++)
+				if (
+					c < edgeCells ||
+					r < edgeCells ||
+					c >= W - edgeCells ||
+					r >= H - edgeCells
+				)
+					owner[l][idx(c, r)] = -1;
 
 	const padRects = [];
 	for (const [pin, p] of pads) {
-		const net = netIds.get([...Object.entries(d.nets)].find(([, n]) => n.pins.includes(pin))?.[0]) ?? 0;
+		const net =
+			netIds.get(
+				[...Object.entries(d.nets)].find(([, n]) => n.pins.includes(pin))?.[0],
+			) ?? 0;
 		padRects.push({ pin, net, ...p });
 		const kx = p.w / 2 + PAD_KEEPOUT;
 		const ky = p.h / 2 + PAD_KEEPOUT;
-		const layers = p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : p.layers.includes("B.Cu") ? [1] : [];
+		const layers = p.thru
+			? [0, 1]
+			: p.layers.includes("F.Cu")
+				? [0]
+				: p.layers.includes("B.Cu")
+					? [1]
+					: [];
 		for (const l of layers) {
 			for (let r = toRow(p.y - ky) - 1; r <= toRow(p.y + ky) + 1; r++) {
 				for (let c = toCol(p.x - kx) - 1; c <= toCol(p.x + kx) + 1; c++) {
-					if (Math.abs(cellX(c) - p.x) <= kx && Math.abs(cellY(r) - p.y) <= ky) {
+					if (
+						Math.abs(cellX(c) - p.x) <= kx &&
+						Math.abs(cellY(r) - p.y) <= ky
+					) {
 						if (net === 0) {
 							if (c >= 0 && r >= 0 && c < W && r < H) owner[l][idx(c, r)] = -1; // unconnected pad: nobody may pass
 						} else stamp(l, c, r, net);
@@ -105,12 +126,22 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 	// A pad's own centre must stay reachable even where a neighbour's keepout touches it.
 	for (const p of padRects) {
 		if (p.net === 0) continue;
-		const layers = p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : p.layers.includes("B.Cu") ? [1] : [];
+		const layers = p.thru
+			? [0, 1]
+			: p.layers.includes("F.Cu")
+				? [0]
+				: p.layers.includes("B.Cu")
+					? [1]
+					: [];
 		for (const l of layers) {
 			for (let r = toRow(p.y) - 1; r <= toRow(p.y) + 1; r++) {
 				for (let c = toCol(p.x) - 1; c <= toCol(p.x) + 1; c++) {
 					if (c < 0 || r < 0 || c >= W || r >= H) continue;
-					if (Math.abs(cellX(c) - p.x) <= p.w / 2 && Math.abs(cellY(r) - p.y) <= p.h / 2) owner[l][idx(c, r)] = p.net;
+					if (
+						Math.abs(cellX(c) - p.x) <= p.w / 2 &&
+						Math.abs(cellY(r) - p.y) <= p.h / 2
+					)
+						owner[l][idx(c, r)] = p.net;
 				}
 			}
 		}
@@ -133,9 +164,15 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 			const edge = Math.hypot(dx, dy);
 			if (p.net !== net && edge < VIA_SIZE / 2 + CLEARANCE + 0.03) return false; // annulus clearance to foreign pads
 			if (edge < VIA_DRILL / 2 + HOLE_GAP) return false; // via hole too close to any pad copper
-			if (p.drill > 0 && Math.hypot(x - p.x, y - p.y) < VIA_DRILL / 2 + p.drill / 2 + HOLE_GAP) return false; // hole-to-hole
+			if (
+				p.drill > 0 &&
+				Math.hypot(x - p.x, y - p.y) < VIA_DRILL / 2 + p.drill / 2 + HOLE_GAP
+			)
+				return false; // hole-to-hole
 		}
-		for (const v of placedVias) if (Math.hypot(x - v.x, y - v.y) < VIA_SIZE + CLEARANCE + 0.03) return false;
+		for (const v of placedVias)
+			if (Math.hypot(x - v.x, y - v.y) < VIA_SIZE + CLEARANCE + 0.03)
+				return false;
 		for (let l = 0; l < 2; l++) {
 			for (let dr = -3; dr <= 3; dr++) {
 				for (let dc = -3; dc <= 3; dc++) {
@@ -147,7 +184,8 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 					if (o === -1 || o === -2) {
 						if (dist < VIA_SIZE / 2 + 0.2) return false;
 					} else if (o !== 0 && o !== net) {
-						if (dist <= VIA_SIZE / 2 + CLEARANCE + TRACK_W / 2 + 0.06) return false; // foreign track copper
+						if (dist <= VIA_SIZE / 2 + CLEARANCE + TRACK_W / 2 + 0.06)
+							return false; // foreign track copper
 					} else if (o === net && dist < VIA_DRILL / 2 + HOLE_GAP) {
 						// own-net cells are fine for the annulus; the hole may not sit on a different net's copper (covered above)
 					}
@@ -165,13 +203,23 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 		.filter(([, n]) => n.pins.filter((p) => pads.has(p)).length > 1)
 		.map(([name, n]) => {
 			const ps = n.pins.filter((p) => pads.has(p)).map((p) => pads.get(p));
-			const bb = [Math.min(...ps.map((p) => p.x)), Math.max(...ps.map((p) => p.x)), Math.min(...ps.map((p) => p.y)), Math.max(...ps.map((p) => p.y))];
-			return { name, pins: n.pins.filter((p) => pads.has(p)), size: bb[1] - bb[0] + (bb[3] - bb[2]) };
+			const bb = [
+				Math.min(...ps.map((p) => p.x)),
+				Math.max(...ps.map((p) => p.x)),
+				Math.min(...ps.map((p) => p.y)),
+				Math.max(...ps.map((p) => p.y)),
+			];
+			return {
+				name,
+				pins: n.pins.filter((p) => pads.has(p)),
+				size: bb[1] - bb[0] + (bb[3] - bb[2]),
+			};
 		})
 		.sort((a, b) => a.size - b.size || a.name.localeCompare(b.name));
 	if (orderSeed) netList.reverse();
 
-	const padLayersOf = (p) => (p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : [1]);
+	const padLayersOf = (p) =>
+		p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : [1];
 
 	for (const net of netList) {
 		const id = netIds.get(net.name);
@@ -179,7 +227,8 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 		// cells already connected to this net: start from the first pad
 		const connected = new Map(); // key l|c|r -> true
 		const first = targets[0];
-		for (const l of padLayersOf(first.pad)) connected.set(`${l}|${toCol(first.pad.x)}|${toRow(first.pad.y)}`, true);
+		for (const l of padLayersOf(first.pad))
+			connected.set(`${l}|${toCol(first.pad.x)}|${toRow(first.pad.y)}`, true);
 		const remaining = targets.slice(1);
 		const netTracks = [];
 		const netVias = [];
@@ -198,7 +247,8 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 			}
 			const goal = new Map();
 			remaining.forEach((t, i) => {
-				for (const l of padLayersOf(t.pad)) goal.set(key(l, toCol(t.pad.x), toRow(t.pad.y)), i);
+				for (const l of padLayersOf(t.pad))
+					goal.set(key(l, toCol(t.pad.x), toRow(t.pad.y)), i);
 			});
 			let found = -1;
 			let foundKey = -1;
@@ -211,14 +261,22 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 					foundKey = kk;
 					break;
 				}
-				for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+				for (const [dc, dr] of [
+					[1, 0],
+					[-1, 0],
+					[0, 1],
+					[0, -1],
+				]) {
 					const nc = c + dc;
 					const nr = r + dr;
 					if (!passable(l, nc, nr, id)) continue;
 					const nk = key(l, nc, nr);
 					// bend penalty keeps tracks straighter
 					const pk = prev[kk];
-					const bend = pk >= 0 && Math.abs(((pk % W) | 0) - c) !== Math.abs(nc - c) ? 0.3 : 0;
+					const bend =
+						pk >= 0 && Math.abs(((pk % W) | 0) - c) !== Math.abs(nc - c)
+							? 0.3
+							: 0;
 					const nd = dd + 1 + bend;
 					if (nd < dist[nk]) {
 						dist[nk] = nd;
@@ -258,13 +316,24 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 			const flush = (layer) => {
 				if (run.length < 1) return;
 				const pts = run.map(([c, r]) => [cellX(c), cellY(r)]);
-				netTracks.push({ net: net.name, layer: LAYERS[layer], width: TRACK_W, points: pts });
+				netTracks.push({
+					net: net.name,
+					layer: LAYERS[layer],
+					width: TRACK_W,
+					points: pts,
+				});
 			};
 			let curLayer = cells[0][0];
 			for (const [l, c, r] of cells) {
 				if (l !== curLayer) {
 					flush(curLayer);
-					netVias.push({ net: net.name, x: cellX(c), y: cellY(r), size: VIA_SIZE, drill: VIA_DRILL });
+					netVias.push({
+						net: net.name,
+						x: cellX(c),
+						y: cellY(r),
+						size: VIA_SIZE,
+						drill: VIA_DRILL,
+					});
 					run = [[c, r]];
 					curLayer = l;
 				} else run.push([c, r]);
@@ -273,17 +342,26 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 			// mark and connect
 			for (const [l, c, r] of cells) {
 				connected.set(`${l}|${c}|${r}`, true);
-				for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) stamp(l, c + dc, r + dr, id);
+				for (let dr = -1; dr <= 1; dr++)
+					for (let dc = -1; dc <= 1; dc++) stamp(l, c + dc, r + dr, id);
 			}
 			for (const v of netVias.slice(viaStart)) {
 				// every via of this path reserves its whole keepout, on both layers
-				for (let l = 0; l < 2; l++) for (let dr = -4; dr <= 4; dr++) for (let dc = -4; dc <= 4; dc++) if (Math.hypot(dc, dr) <= 3.01) stamp(l, toCol(v.x) + dc, toRow(v.y) + dr, id);
+				for (let l = 0; l < 2; l++)
+					for (let dr = -4; dr <= 4; dr++)
+						for (let dc = -4; dc <= 4; dc++)
+							if (Math.hypot(dc, dr) <= 3.01)
+								stamp(l, toCol(v.x) + dc, toRow(v.y) + dr, id);
 			}
 			remaining.splice(found, 1);
 			void target;
 		}
 		if (ok) {
-			tracks.push(...netTracks.map((t) => ({ ...t, points: simplify(t.points) })).filter((t) => t.points.length >= 2));
+			tracks.push(
+				...netTracks
+					.map((t) => ({ ...t, points: simplify(t.points) }))
+					.filter((t) => t.points.length >= 2),
+			);
 			vias.push(...netVias);
 		} else {
 			failed.push(net.name);
@@ -293,7 +371,17 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 
 	// stubs from exact pad centres to the grid cell centre they snapped to
 	const withStubs = tracks.map((t) => attachStubs(t, pads, design));
-	return { tracks: withStubs, vias, failed, stats: { nets: netList.length, routed: netList.length - failed.length, grid: GRID, trackWidth: TRACK_W } };
+	return {
+		tracks: withStubs,
+		vias,
+		failed,
+		stats: {
+			nets: netList.length,
+			routed: netList.length - failed.length,
+			grid: GRID,
+			trackWidth: TRACK_W,
+		},
+	};
 }
 
 function simplify(points) {
@@ -302,7 +390,8 @@ function simplify(points) {
 		const a = out[out.length - 1];
 		const b = points[i];
 		const c = points[i + 1];
-		if ((a[0] === b[0] && b[0] === c[0]) || (a[1] === b[1] && b[1] === c[1])) continue;
+		if ((a[0] === b[0] && b[0] === c[0]) || (a[1] === b[1] && b[1] === c[1]))
+			continue;
 		out.push(b);
 	}
 	out.push(points[points.length - 1]);
@@ -310,21 +399,41 @@ function simplify(points) {
 }
 
 function attachStubs(track, pads, design) {
-	const pinsOnNet = design.data.nets[track.net].pins.map((p) => pads.get(p)).filter(Boolean);
+	const pinsOnNet = design.data.nets[track.net].pins
+		.map((p) => pads.get(p))
+		.filter(Boolean);
 	const pts = track.points.map((p) => [...p]);
 	const snap = (end) => {
 		const pt = pts[end === 0 ? 0 : pts.length - 1];
-		const pad = pinsOnNet.find((p) => track.layer && Math.abs(p.x - pt[0]) <= GRID * 0.75 && Math.abs(p.y - pt[1]) <= GRID * 0.75 && (p.thru || p.layers.includes(track.layer)));
+		const pad = pinsOnNet.find(
+			(p) =>
+				track.layer &&
+				Math.abs(p.x - pt[0]) <= GRID * 0.75 &&
+				Math.abs(p.y - pt[1]) <= GRID * 0.75 &&
+				(p.thru || p.layers.includes(track.layer)),
+		);
 		if (!pad) return;
-		const exact = [Math.round(pad.x * 1000) / 1000, Math.round(pad.y * 1000) / 1000];
+		const exact = [
+			Math.round(pad.x * 1000) / 1000,
+			Math.round(pad.y * 1000) / 1000,
+		];
 		if (exact[0] === pt[0] && exact[1] === pt[1]) return;
 		// L-shaped stub (orthogonal) from the grid cell to the exact centre
 		const corner = [exact[0], pt[1]];
-		const stub = corner[0] === pt[0] || corner[1] === exact[1] ? [exact] : [corner, exact];
+		const stub =
+			corner[0] === pt[0] || corner[1] === exact[1] ? [exact] : [corner, exact];
 		if (end === 0) pts.unshift(...stub.slice().reverse());
 		else pts.push(...stub);
 	};
 	snap(0);
 	snap(1);
-	return { ...track, points: simplify(pts.map(([x, y]) => [Math.round(x * 1000) / 1000, Math.round(y * 1000) / 1000])) };
+	return {
+		...track,
+		points: simplify(
+			pts.map(([x, y]) => [
+				Math.round(x * 1000) / 1000,
+				Math.round(y * 1000) / 1000,
+			]),
+		),
+	};
 }

@@ -6,7 +6,16 @@ import { config } from "../config.js";
 import { computeDiff } from "../diff-pipeline.js";
 import { extractFileFromCommit } from "../git-extractor.js";
 import { isSafeRef } from "../git-safety.js";
-import { absolutePads, copperLite, ercLite, kicadDrc, kicadErc, netlistParity, placementLite, routingStatus } from "./checks.js";
+import {
+	absolutePads,
+	copperLite,
+	ercLite,
+	kicadDrc,
+	kicadErc,
+	netlistParity,
+	placementLite,
+	routingStatus,
+} from "./checks.js";
 import { Design, DesignError, emptyDesign } from "./model.js";
 import { autoroute } from "./router.js";
 import { runAllTests } from "./simulate.js";
@@ -24,7 +33,10 @@ export async function withLock(name, fn) {
 	const next = new Promise((r) => {
 		release = r;
 	});
-	locks.set(name, prev.then(() => next));
+	locks.set(
+		name,
+		prev.then(() => next),
+	);
 	await prev;
 	try {
 		return await fn();
@@ -35,15 +47,31 @@ export async function withLock(name, fn) {
 }
 
 export function projectDir(name) {
-	if (!PROJECT_NAME.test(String(name))) throw new DesignError(`Invalid project name "${name}" (lowercase letters, digits, dash, underscore; max 48)`);
+	if (!PROJECT_NAME.test(String(name)))
+		throw new DesignError(
+			`Invalid project name "${name}" (lowercase letters, digits, dash, underscore; max 48)`,
+		);
 	const root = path.resolve(config.projectsDir);
 	const dir = path.join(root, name);
-	if (!dir.startsWith(root + path.sep)) throw new DesignError("Invalid project path");
+	if (!dir.startsWith(root + path.sep))
+		throw new DesignError("Invalid project path");
 	return dir;
 }
 
 async function git(dir, ...args) {
-	const { stdout } = await execGit("git", ["-c", "user.name=Banana Design", "-c", "user.email=design@banana.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: dir, timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
+	const { stdout } = await execGit(
+		"git",
+		[
+			"-c",
+			"user.name=Banana Design",
+			"-c",
+			"user.email=design@banana.invalid",
+			"-c",
+			"commit.gpgsign=false",
+			...args,
+		],
+		{ cwd: dir, timeout: 30000, maxBuffer: 32 * 1024 * 1024 },
+	);
 	return stdout;
 }
 
@@ -53,21 +81,44 @@ export function listProjects() {
 	if (!fs.existsSync(config.projectsDir)) return [];
 	return fs
 		.readdirSync(config.projectsDir, { withFileTypes: true })
-		.filter((e) => e.isDirectory() && PROJECT_NAME.test(e.name) && fs.existsSync(path.join(config.projectsDir, e.name, "design.json")))
+		.filter(
+			(e) =>
+				e.isDirectory() &&
+				PROJECT_NAME.test(e.name) &&
+				fs.existsSync(path.join(config.projectsDir, e.name, "design.json")),
+		)
 		.map((e) => {
-			const d = JSON.parse(fs.readFileSync(path.join(config.projectsDir, e.name, "design.json"), "utf8"));
-			return { name: e.name, title: d.title || "", parts: d.parts?.length ?? 0, nets: Object.keys(d.nets ?? {}).length, path: path.join(config.projectsDir, e.name) };
+			const d = JSON.parse(
+				fs.readFileSync(
+					path.join(config.projectsDir, e.name, "design.json"),
+					"utf8",
+				),
+			);
+			return {
+				name: e.name,
+				title: d.title || "",
+				parts: d.parts?.length ?? 0,
+				nets: Object.keys(d.nets ?? {}).length,
+				path: path.join(config.projectsDir, e.name),
+			};
 		})
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function createProject(name, title = "") {
 	const dir = projectDir(name);
-	if (fs.existsSync(dir)) throw new DesignError(`Project "${name}" already exists`);
+	if (fs.existsSync(dir))
+		throw new DesignError(`Project "${name}" already exists`);
 	fs.mkdirSync(dir, { recursive: true });
 	await git(dir, "init", "-q", "-b", "main");
-	fs.writeFileSync(path.join(dir, "design.json"), stableJson(emptyDesign(name, String(title).slice(0, 120))));
-	fs.writeFileSync(path.join(dir, ".gitignore"), "results/\n*.bak\n*-backups/\nfp-info-cache\n");
+	fs.writeFileSync(
+		path.join(dir, "design.json"),
+		stableJson(emptyDesign(name, String(title).slice(0, 120))),
+	);
+	fs.writeFileSync(
+		path.join(dir, ".gitignore"),
+		"results/\n*.bak\n*-backups/\nfp-info-cache\n",
+	);
 	await git(dir, "add", "-A");
 	await git(dir, "commit", "-q", "-m", "Create project");
 	return { name, path: dir };
@@ -75,12 +126,18 @@ export async function createProject(name, title = "") {
 
 export function loadDesign(name) {
 	const file = path.join(projectDir(name), "design.json");
-	if (!fs.existsSync(file)) throw new DesignError(`No project named "${name}". Use list_projects or create_project.`);
+	if (!fs.existsSync(file))
+		throw new DesignError(
+			`No project named "${name}". Use list_projects or create_project.`,
+		);
 	return Design.from(JSON.parse(fs.readFileSync(file, "utf8")));
 }
 
 export function saveDesign(name, design) {
-	fs.writeFileSync(path.join(projectDir(name), "design.json"), stableJson(design.data));
+	fs.writeFileSync(
+		path.join(projectDir(name), "design.json"),
+		stableJson(design.data),
+	);
 }
 
 /** Writes the KiCad files from design.json and commits the result. */
@@ -95,12 +152,17 @@ export async function build(name, message = "Update design") {
 	fs.writeFileSync(path.join(dir, "design.json"), stableJson(design.data));
 	await git(dir, "add", "-A");
 	const dirty = (await git(dir, "status", "--porcelain")).trim().length > 0;
-	if (dirty) await git(dir, "commit", "-q", "-m", String(message).slice(0, 200));
+	if (dirty)
+		await git(dir, "commit", "-q", "-m", String(message).slice(0, 200));
 	const commit = (await git(dir, "rev-parse", "HEAD")).trim();
 	return {
 		commit,
 		committed: dirty,
-		files: { schematic: `${name}.kicad_sch`, board: `${name}.kicad_pcb`, project: `${name}.kicad_pro` },
+		files: {
+			schematic: `${name}.kicad_sch`,
+			board: `${name}.kicad_pcb`,
+			project: `${name}.kicad_pro`,
+		},
 		board: pcb.board,
 		placements: pcb.positions,
 		directory: dir,
@@ -110,7 +172,13 @@ export async function build(name, message = "Update design") {
 
 export async function history(name, limit = 30) {
 	const dir = projectDir(name);
-	const out = await git(dir, "log", `-n${Math.min(100, Math.max(1, limit))}`, "--format=%H|%h|%ad|%s", "--date=iso-strict");
+	const out = await git(
+		dir,
+		"log",
+		`-n${Math.min(100, Math.max(1, limit))}`,
+		"--format=%H|%h|%ad|%s",
+		"--date=iso-strict",
+	);
 	return out
 		.split("\n")
 		.filter(Boolean)
@@ -121,18 +189,39 @@ export async function history(name, limit = 30) {
 }
 
 /** Diffs two builds of the project using Banana's own engine. */
-export async function diffBuilds(name, { base = "HEAD~1", target = "HEAD", file = "board" } = {}) {
-	if (!isSafeRef(base) || !isSafeRef(target)) throw new DesignError("Invalid commit reference");
-	if (!["board", "schematic"].includes(file)) throw new DesignError('file must be "board" or "schematic"');
+export async function diffBuilds(
+	name,
+	{ base = "HEAD~1", target = "HEAD", file = "board" } = {},
+) {
+	if (!isSafeRef(base) || !isSafeRef(target))
+		throw new DesignError("Invalid commit reference");
+	if (!["board", "schematic"].includes(file))
+		throw new DesignError('file must be "board" or "schematic"');
 	const dir = projectDir(name);
 	const rel = file === "board" ? `${name}.kicad_pcb` : `${name}.kicad_sch`;
 	const unique = `design_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 	const tmpDirs = [];
 	try {
-		const basePath = await extractFileFromCommit(dir, base, rel, `${unique}/base/${rel}`);
-		const targetPath = await extractFileFromCommit(dir, target, rel, `${unique}/target/${rel}`);
+		const basePath = await extractFileFromCommit(
+			dir,
+			base,
+			rel,
+			`${unique}/base/${rel}`,
+		);
+		const targetPath = await extractFileFromCommit(
+			dir,
+			target,
+			rel,
+			`${unique}/target/${rel}`,
+		);
 		tmpDirs.push(path.join(config.tempRoot, unique));
-		const payload = await computeDiff({ basePath, targetPath, baseCommit: base, targetCommit: target, isPcb: file === "board" });
+		const payload = await computeDiff({
+			basePath,
+			targetPath,
+			baseCommit: base,
+			targetCommit: target,
+			isPcb: file === "board",
+		});
 		return payload;
 	} finally {
 		for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
@@ -143,8 +232,21 @@ export function summarizeDiff(payload) {
 	const mods = payload.modifications ?? [];
 	return {
 		changes: mods.length,
-		byAction: mods.reduce((a, m) => ({ ...a, [m.action]: (a[m.action] ?? 0) + 1 }), {}),
-		items: mods.slice(0, 60).map((m) => ({ action: m.action, type: m.type, title: m.title, detail: m.detail, refDes: m.refDes, net: m.net, layer: m.layer })),
+		byAction: mods.reduce(
+			(a, m) => ({ ...a, [m.action]: (a[m.action] ?? 0) + 1 }),
+			{},
+		),
+		items: mods
+			.slice(0, 60)
+			.map((m) => ({
+				action: m.action,
+				type: m.type,
+				title: m.title,
+				detail: m.detail,
+				refDes: m.refDes,
+				net: m.net,
+				layer: m.layer,
+			})),
 		layersProcessed: payload.telemetry?.layersProcessed,
 	};
 }
@@ -165,21 +267,45 @@ export async function checkProject(name) {
 	const placement = placementLite(design, pcb.positions, pcb.board);
 	const copper = copperLite(design, pcb.positions);
 	const routing = routingStatus(design, pcb.positions);
-	const unrouted = Object.entries(routing).filter(([, r]) => r.pads > 1 && !r.routed).map(([net, r]) => ({ net, islands: r.islands }));
+	const unrouted = Object.entries(routing)
+		.filter(([, r]) => r.pads > 1 && !r.routed)
+		.map(([net, r]) => ({ net, islands: r.islands }));
 
-	const errors = [...lite, ...kErc.issues, ...placement, ...copper, ...drc.issues].filter((i) => i.severity === "error").length + (parity.status === "mismatch" ? 1 : 0);
-	const warnings = [...lite, ...kErc.issues, ...placement, ...copper, ...drc.issues].filter((i) => i.severity === "warning").length;
+	const errors =
+		[...lite, ...kErc.issues, ...placement, ...copper, ...drc.issues].filter(
+			(i) => i.severity === "error",
+		).length + (parity.status === "mismatch" ? 1 : 0);
+	const warnings = [
+		...lite,
+		...kErc.issues,
+		...placement,
+		...copper,
+		...drc.issues,
+	].filter((i) => i.severity === "warning").length;
 	return {
 		commit: built.commit,
 		ok: errors === 0 && unrouted.length === 0,
 		errors,
 		warnings,
-		erc: { lite, kicad: { engine: kErc.engine, status: kErc.status, reason: kErc.reason, issues: kErc.issues } },
+		erc: {
+			lite,
+			kicad: {
+				engine: kErc.engine,
+				status: kErc.status,
+				reason: kErc.reason,
+				issues: kErc.issues,
+			},
+		},
 		netlistParity: parity,
 		placement,
 		copper,
 		routing: { complete: unrouted.length === 0, unrouted, nets: routing },
-		drc: { engine: drc.engine, status: drc.status, reason: drc.reason, issues: drc.issues },
+		drc: {
+			engine: drc.engine,
+			status: drc.status,
+			reason: drc.reason,
+			issues: drc.issues,
+		},
 		note: "ok means no errors and every multi-pad net is routed. Simulation is separate (run_simulation); electrical correctness beyond these checks needs a human review.",
 	};
 }
@@ -197,13 +323,26 @@ export { absolutePads };
 export async function autoRoute(name, { orderSeed = 0 } = {}) {
 	const design = loadDesign(name);
 	const first = writePcb(design);
-	for (const part of design.data.parts) if (!part.at && first.positions[part.ref]) part.at = first.positions[part.ref];
-	if (!design.data.board) design.data.board = { width: first.board.width, height: first.board.height };
+	for (const part of design.data.parts)
+		if (!part.at && first.positions[part.ref])
+			part.at = first.positions[part.ref];
+	if (!design.data.board)
+		design.data.board = {
+			width: first.board.width,
+			height: first.board.height,
+		};
 	design.clearRouting();
 	const laidOut = writePcb(design);
-	const result = autoroute(design, laidOut.positions, laidOut.board, { orderSeed });
+	const result = autoroute(design, laidOut.positions, laidOut.board, {
+		orderSeed,
+	});
 	design.data.tracks = result.tracks;
 	design.data.vias = result.vias;
 	saveDesign(name, design);
-	return { failedNets: result.failed, ...result.stats, tracks: result.tracks.length, vias: result.vias.length };
+	return {
+		failedNets: result.failed,
+		...result.stats,
+		tracks: result.tracks.length,
+		vias: result.vias.length,
+	};
 }

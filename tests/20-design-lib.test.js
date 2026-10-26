@@ -182,14 +182,18 @@ test("footprints: pads, courtyard, smd flag", { skip }, async (t) => {
 		await t.test(`rejects ${bad}`, () => assert.equal(getFootprint(bad), null));
 });
 
-test("footprint pads are read correctly across the library, quoted or bare style (300 random footprints)", { skip }, async (t) => {
+test("footprint pads are read correctly across the library, quoted or bare style (300 random footprints)", {
+	skip,
+}, async (t) => {
 	const fs = await import("node:fs");
 	const path = await import("node:path");
 	const root = findLibraryRoot("footprints");
 	const all = [];
 	for (const d of fs.readdirSync(root)) {
 		if (!d.endsWith(".pretty")) continue;
-		for (const f of fs.readdirSync(path.join(root, d))) if (f.endsWith(".kicad_mod")) all.push(`${d.slice(0, -7)}:${f.slice(0, -10)}`);
+		for (const f of fs.readdirSync(path.join(root, d)))
+			if (f.endsWith(".kicad_mod"))
+				all.push(`${d.slice(0, -7)}:${f.slice(0, -10)}`);
 	}
 	assert.ok(all.length > 5000);
 	const r = rng(77);
@@ -200,7 +204,12 @@ test("footprint pads are read correctly across the library, quoted or bare style
 			assert.ok(fp, "resolves");
 			const expected = (fp.text.match(/^\s*\(pad\s/gm) ?? []).length;
 			assert.equal(fp.pads.length, expected, "pad count");
-			for (const p of fp.pads) assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y) && p.number !== undefined);
+			for (const p of fp.pads)
+				assert.ok(
+					Number.isFinite(p.x) &&
+						Number.isFinite(p.y) &&
+						p.number !== undefined,
+				);
 			assert.ok(fp.bbox.maxX >= fp.bbox.minX && fp.bbox.maxY >= fp.bbox.minY);
 		});
 	}
