@@ -6,7 +6,6 @@ const GAP_Y = 1.5; // between parts in a column
 const GAP_X = 3; // routing channel between columns
 const GRID = 0.5;
 
-const snap = (v) => Math.round(v / GRID) * GRID;
 const round2 = (v) => Math.round(v * 100) / 100;
 const natural = (a, b) => a.localeCompare(b, undefined, { numeric: true });
 
@@ -134,18 +133,7 @@ function assignLayers(parts, signal, power) {
  */
 export function layeredPlace(design, footprints) {
 	const need = design.data.parts.filter((p) => !p.at && footprints.get(p.ref));
-	const placed = new Map();
-	if (need.length === 0) return placed;
-	const refs = need.map((p) => p.ref);
-	const size = new Map(
-		need.map((p) => {
-			const b = footprints.get(p.ref).bbox;
-			return [p.ref, { w: b.maxX - b.minX, h: b.maxY - b.minY, b }];
-		}),
-	);
-	const { signal, power } = buildGraphs(design, refs);
-	const layers = assignLayers(need, signal, power);
-
+	if (need.length === 0) return new Map();
 	// avoid parts the user already placed
 	const fixed = design.data.parts.filter((p) => p.at && footprints.get(p.ref));
 	let x0 = ORIGIN + MARGIN;
@@ -168,17 +156,52 @@ export function layeredPlace(design, footprints) {
 		if (fx - nx >= fy - ny) y0 = Math.max(y0, fy + GAP_Y + 1);
 		else x0 = Math.max(x0, fx + GAP_X);
 	}
+	return placeBoxes(design, need, (ref) => footprints.get(ref).bbox, {
+		x0,
+		y0,
+		boardHeight: design.data.board ? design.data.board.height - 2 * MARGIN : 0,
+	});
+}
+
+/**
+ * The placement core, independent of what the boxes are (footprint courtyards on the board, symbols in the
+ * schematic). `need` is a list of `{ref, footprint?, symbol?}` items, `bboxOf(ref)` gives each item's box
+ * relative to its origin. Items sharing a part reference prefix with the design's nets are linked by those nets.
+ */
+export function placeBoxes(design, need, bboxOf, opts = {}) {
+	const {
+		x0 = ORIGIN + MARGIN,
+		y0 = ORIGIN + MARGIN,
+		gapX = GAP_X,
+		gapY = GAP_Y,
+		grid = GRID,
+		boardHeight = 0,
+		minTargetH = 10,
+		aspect = 1.3,
+	} = opts;
+	const snapTo = (v) => Math.round(v / grid) * grid;
+	const placed = new Map();
+	if (need.length === 0) return placed;
+	const refs = need.map((p) => p.ref);
+	const size = new Map(
+		need.map((p) => {
+			const b = bboxOf(p.ref);
+			return [p.ref, { w: b.maxX - b.minX, h: b.maxY - b.minY, b }];
+		}),
+	);
+	const { signal, power } = buildGraphs(design, refs);
+	const layers = assignLayers(need, signal, power);
 
 	const area = need.reduce(
-		(s, p) => s + (size.get(p.ref).w + GAP_Y) * (size.get(p.ref).h + GAP_Y),
+		(s, p) => s + (size.get(p.ref).w + gapY) * (size.get(p.ref).h + gapY),
 		0,
 	);
 	const maxPartH = Math.max(...need.map((p) => size.get(p.ref).h));
 	const targetH = Math.max(
-		design.data.board ? design.data.board.height - 2 * MARGIN : 0,
-		Math.sqrt(area) * 1.3,
+		boardHeight,
+		Math.sqrt(area) * aspect,
 		maxPartH,
-		10,
+		minTargetH,
 	);
 
 	// columns by layer, ordered by neighbour barycentre (a few sweeps both ways)
@@ -235,12 +258,12 @@ export function layeredPlace(design, footprints) {
 				h = 0;
 			}
 			cur.push(r);
-			h += rh + GAP_Y;
+			h += rh + gapY;
 		}
 		if (cur.length) cols.push(cur);
 	}
 	const colHeight = (c) =>
-		c.reduce((s, r) => s + size.get(r).h, 0) + GAP_Y * (c.length - 1);
+		c.reduce((s, r) => s + size.get(r).h, 0) + gapY * (c.length - 1);
 	const tallest = Math.max(...cols.map(colHeight));
 	let x = x0;
 	for (const col of cols) {
@@ -249,13 +272,13 @@ export function layeredPlace(design, footprints) {
 		for (const r of col) {
 			const { w, h, b } = size.get(r);
 			placed.set(r, {
-				x: round2(snap(x + (colW - w) / 2 - b.minX)),
-				y: round2(snap(y - b.minY)),
+				x: round2(snapTo(x + (colW - w) / 2 - b.minX)),
+				y: round2(snapTo(y - b.minY)),
 				rot: 0,
 			});
-			y += h + GAP_Y;
+			y += h + gapY;
 		}
-		x += colW + GAP_X;
+		x += colW + gapX;
 	}
 	return placed;
 }

@@ -134,6 +134,7 @@ export function getSymbol(libId, opts) {
 			const body = ownText.slice(pin.start, pin.end + 1);
 			const head = /^\(\s*pin\s+(\S+)\s+(\S+)/.exec(body);
 			const at = /\(at\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\)/.exec(body);
+			const len = /\(length\s+(-?[\d.]+)\)/.exec(body);
 			const name = /\(name\s+"((?:[^"\\]|\\.)*)"/.exec(body);
 			const number = /\(number\s+"((?:[^"\\]|\\.)*)"/.exec(body);
 			if (!head || !at || !number) continue;
@@ -148,6 +149,7 @@ export function getSymbol(libId, opts) {
 				x: Number(at[1]),
 				y: Number(at[2]),
 				angle: Number(at[3]),
+				length: len ? Number(len[1]) : 2.54,
 				unit,
 			});
 		}
