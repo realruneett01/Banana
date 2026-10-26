@@ -1,4 +1,5 @@
 import { getFootprint } from "./kicad-lib.js";
+import { layeredPlace } from "./layout.js";
 import { childLists } from "./sexp.js";
 import { q, stableUuid } from "./sexp.js";
 
@@ -27,8 +28,8 @@ const LAYERS = `  (layers
     (49 "F.Fab" user)
   )`;
 
-/** Courtyard-aware shelf packing for parts the user has not placed. Deterministic. */
-export function autoPlace(design, footprints) {
+/** The original courtyard-aware shelf packing; kept as the baseline the layered placer is measured against. */
+export function shelfPlace(design, footprints) {
 	const need = design.data.parts.filter((p) => !p.at && footprints.get(p.ref));
 	const placed = new Map();
 	if (need.length === 0) return placed;
@@ -168,6 +169,42 @@ function instantiateFootprint({
 		.join("\n");
 }
 
+/** Project name on the silkscreen in the board's top-left corner, only when no part or the edge is in the way. */
+function boardTitle(d, footprints, positions, { minX, minY, board }) {
+	const text = String(d.name || "").slice(0, 40);
+	if (!text) return null;
+	const box = {
+		minX: minX + 1,
+		maxX: minX + 1 + text.length * 1.05 + 0.4,
+		minY: minY + 0.5,
+		maxY: minY + 2.1,
+	};
+	if (box.maxX > minX + board.width - 1) return null;
+	for (const p of d.parts) {
+		const fp = footprints.get(p.ref);
+		const at = positions.get(p.ref);
+		if (!fp || !at) continue;
+		const b = rotatedBox(fp.bbox, at.rot || 0);
+		if (
+			at.x + b.minX < box.maxX + 0.5 &&
+			box.minX < at.x + b.maxX + 0.5 &&
+			at.y + b.minY < box.maxY + 0.5 &&
+			box.minY < at.y + b.maxY + 0.5
+		)
+			return null;
+	}
+	for (const t of d.tracks)
+		for (const [x, y] of t.points)
+			if (
+				x > box.minX - 0.5 &&
+				x < box.maxX + 0.5 &&
+				y > box.minY - 0.5 &&
+				y < box.maxY + 0.5
+			)
+				return null;
+	return `  (gr_text ${q(text)} (at ${f(box.minX)} ${f((box.minY + box.maxY) / 2)}) (layer "F.SilkS") (tstamp ${stableUuid(`${d.name}:title`)}) (effects (font (size 1 1) (thickness 0.15)) (justify left)))`;
+}
+
 export function writePcb(design) {
 	const d = design.data;
 	const netIds = new Map([["", 0]]);
@@ -181,7 +218,7 @@ export function writePcb(design) {
 	for (const p of d.parts)
 		if (p.footprint) footprints.set(p.ref, getFootprint(p.footprint));
 
-	const auto = autoPlace(design, footprints);
+	const auto = layeredPlace(design, footprints);
 	const positions = new Map();
 	for (const p of d.parts) positions.set(p.ref, p.at || auto.get(p.ref));
 
@@ -220,6 +257,9 @@ export function writePcb(design) {
 			.map(([name, id]) => `  (net ${id} ${q(name)})`),
 		`  (gr_rect (start ${f(minX)} ${f(minY)}) (end ${f(minX + board.width)} ${f(minY + board.height)}) (layer "Edge.Cuts") (width 0.1) (fill none) (tstamp ${stableUuid(`${d.name}:outline`)}))`,
 	];
+
+	const title = boardTitle(d, footprints, positions, { minX, minY, board });
+	if (title) out.push(title);
 
 	for (const p of d.parts) {
 		const fp = footprints.get(p.ref);

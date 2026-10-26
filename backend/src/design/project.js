@@ -20,6 +20,7 @@ import { getFootprint } from "./kicad-lib.js";
 import { Design, DesignError, emptyDesign } from "./model.js";
 import { autoroute } from "./router.js";
 import { runAllTests } from "./simulate.js";
+import { chamferTracks } from "./tidy.js";
 import {
 	boardViewTransform,
 	renderBoardView,
@@ -340,12 +341,16 @@ export async function autoRoute(name, { orderSeed = 0 } = {}) {
 	const result = autoroute(design, laidOut.positions, laidOut.board, {
 		orderSeed,
 	});
-	design.data.tracks = result.tracks;
 	design.data.vias = result.vias;
+	design.data.tracks = result.tracks;
+	const tidy = chamferTracks(design, laidOut.positions);
+	design.data.tracks = tidy.tracks;
 	saveDesign(name, design);
 	return {
 		failedNets: result.failed,
 		...result.stats,
+		chamfered: tidy.corners,
+		chamferReverted: tidy.reverted,
 		tracks: result.tracks.length,
 		vias: result.vias.length,
 	};
