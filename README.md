@@ -1,6 +1,8 @@
-# Banana — visual Git diff for KiCad designs
+# Banana — visual Git diff and design studio for KiCad
 
-Banana compares two Git versions of a KiCad schematic (`.kicad_sch`) or board (`.kicad_pcb`) and shows **what physically changed** — not a text diff of S-expressions. It renders both versions with `kicad-cli`, diffs the rendered geometry, then maps each difference back to the part, pad or net it belongs to.
+Banana has two modes, switched in the header: **Diff** compares two Git versions of a KiCad design and shows what physically changed; **Studio** is a design environment where you describe a board to an AI assistant (or edit it by hand) and watch KiCad draw it, with every change saved as a build you can compare, undo or open in the Diff view. Both run on KiCad's own engine (`kicad-cli`); see [Banana Studio](#banana-studio) and the honest feature scorecard in [`docs/PARITY.md`](docs/PARITY.md).
+
+The Diff mode compares two Git versions of a KiCad schematic (`.kicad_sch`) or board (`.kicad_pcb`) and shows **what physically changed** — not a text diff of S-expressions. It renders both versions with `kicad-cli`, diffs the rendered geometry, then maps each difference back to the part, pad or net it belongs to.
 
 > **Free, proprietary software.** Free to download and use, including commercially; source code, redistribution and reverse-engineering rights are reserved — see [`LICENSE`](LICENSE). Third-party notices are in [`NOTICE.md`](NOTICE.md).
 
@@ -13,12 +15,13 @@ Banana compares two Git versions of a KiCad schematic (`.kicad_sch`) or board (`
 - Commit evolution timeline between two commits for one file.
 - Sources: a **local Git repository** on the same machine, or **GitHub** (OAuth or personal access token).
 - Optional AI copilot (Google Gemini). Needs your own `GEMINI_API_KEY`; without one the rest of the app works normally.
+- **Studio** (new): design and edit boards inside Banana, rendered by KiCad, with the same change colours in its Changes view. See below.
 
 ## What it does **not** do
 
 - It does not talk to hardware, sensors or devices. "Calibration" below means a software self-check of the computer it runs on.
 - It does not render KiCad files itself; it needs KiCad's `kicad-cli` (KiCad **7 or newer**).
-- It has no user accounts or authentication. Run it on your own machine or a trusted network, not on the open internet (see [Security](#security)).
+- Sign-in is off by default (single-user desktop use). Turn it on for shared or server use (see [Sign-in](#sign-in-accounts) and [Security](#security)); do not put an un-protected instance on the open internet.
 - It is a review aid. Do not use it as the only check before releasing hardware to manufacture.
 
 ## Requirements
@@ -39,6 +42,20 @@ npm start            # preflight + calibration, then starts on http://127.0.0.1:
 
 Hot-reload development: `npm run dev` (backend on :5000 via nodemon, Vite on :5173).
 
+## Banana Studio
+
+Switch to **Studio** in the header. Pick or create a project (each one is a Git repository under `BANANA_PROJECTS_DIR`).
+
+- **Board / Schematic** show KiCad's own drawing (front, back or both). Parts have a handle on top of the picture: click to select, drag to move on a 0.5 mm grid, `R` rotates, `Delete` removes. A move on a routed board re-routes it.
+- **Assistant** (needs your Gemini key, same setting as the Diff copilot): describe what you want. It searches KiCad's real libraries, edits the design, routes, runs the checks and simulations, and says what it checked. Everything from one message is saved as **one build**; **Undo** and **Redo** move over builds and never rewrite history. It can only work on the open project and has no shell or file access.
+- **Changes** compares any two builds with Banana's diff engine and the same renderers as the Diff view: yellow changed, green added, red deleted, grey unchanged. **Open in Diff view** hands the pair to the full viewer.
+- **History** lets you view any earlier build read-only (time travel) or compare it with its predecessor.
+- **Inspector** edits value, footprint, position, rotation and pin-to-net connections. **Parts** adds library parts and a whole-board **copper pour** (filled by KiCad; needs KiCad's Python module).
+- **Checks** runs electrical rules, netlist parity with KiCad, placement, clearance, routing and DRC in one report, plus a **manufacturing check** against typical low-cost fab limits. **Simulate** runs ngspice tests.
+- **Export**: Gerbers and drill files (zip), BOM, pick-and-place, netlist, PDF, board STEP (outline only, no component models yet).
+
+Honest limits: two copper layers, rectangular outline, front-side parts, a basic autorouter (dense boards may not complete: it says so), no hand-drawn wires, no symbol or footprint editor. The assistant has been tested against a scripted model only; it has **not** been run against live Gemini in development. See [`docs/PARITY.md`](docs/PARITY.md) for the full list and the test that backs each row.
+
 ## Board design tools (MCP)
 
 Banana can also **build, edit, check and simulate KiCad boards**, driven by an AI assistant or by scripts, and then show the result in the diff viewer. The tools are exposed three ways: an **MCP server** (stdio), the same MCP over HTTP at `POST /api/design/mcp`, and plain REST at `/api/design/tools/<name>`.
@@ -52,21 +69,22 @@ node scripts/banana-mcp.mjs --print-config    # prints the JSON to paste into yo
 | `create_project`, `list_projects`, `get_design` | Boards live in `BANANA_PROJECTS_DIR` (default `<data dir>/projects`), one git repository each |
 | `search_symbols`, `get_symbol`, `search_footprints`, `get_footprint` | Look up real parts and their real pins in KiCad's libraries, so pinouts are never invented |
 | `edit` | Batch of operations (add/remove parts, connect pins by `REF.PIN`, flags, placement, tracks, tests); atomic: if one fails nothing changes |
-| `autoroute` | Two-layer Manhattan router with vias; reports nets it could not route |
+| `autoroute` | Two-layer router with vias and 45° corners; far-side pads of a copper pour get a via to it; reports nets it could not route |
 | `build` | Writes `.kicad_sch`, `.kicad_pcb`, `.kicad_pro` and commits, so every version is diffable |
 | `run_checks` | Electrical rule checks, KiCad netlist parity, placement, copper clearance, routing completeness, KiCad DRC |
 | `add_test`, `run_simulation` | ngspice tests (op / transient / AC) with pass/fail expectations |
+| `export`, `dfm_check` | Gerbers/drill/BOM/positions/netlist/PDF/STEP via KiCad; manufacturability check against typical fab limits |
 | `diff`, `render`, `history` | Banana's diff engine between builds; layer SVGs; the build log. Open the project folder in Banana's *Local repository* mode to browse it visually |
 
 A typical session: `create_project` → `search_symbols`/`get_symbol` → `edit` (with `build`) → `run_checks` → `autoroute` → `add_test` + `run_simulation` → `diff`/`render`. Open `<project>/<name>.kicad_pro` in KiCad at any time; the files are ordinary KiCad files.
 
 What it can and cannot do (be aware before relying on it):
 
-- **Verified here (KiCad 7.0.11, ngspice 42):** the schematic's connectivity matches KiCad's own netlist export on 30 random circuits; boards load in KiCad with the right nets on the right pads; 40 random autorouted boards pass KiCad's DRC with zero rule violations (the router fully routed 37 of them; the rest are reported as unrouted, never hidden); simulation results match textbook analytic answers (dividers, RC time constant, RC corner frequency).
-- **Routing is basic:** grid-based, Manhattan, two layers, no zones/pours, no differential pairs or length matching. Dense boards may not complete; finish them in KiCad.
+- **Verified here (KiCad 7.0.11, ngspice 42):** the schematic's connectivity matches KiCad's own netlist export (and an independent geometric check) on 270 random circuits; boards load in KiCad with the right nets on the right pads; 40 random autorouted boards pass KiCad's DRC with zero rule violations (the router fully routed 37 of them; the rest are reported as unrouted, never hidden); simulation results match textbook analytic answers (dividers, RC time constant, RC corner frequency).
+- **Routing is basic:** grid-based, two layers, one whole-board pour per layer at most, no differential pairs or length matching. Dense boards may not complete; finish them in KiCad.
 - **Simulation covers analog behaviour only, for parts with a SPICE model.** Resistors, capacitors, inductors, diodes, LEDs, zeners and simple BJTs are automatic; regulators use a behavioural macro (`sim.ldo`); anything else needs a `sim.subckt` model or `sim.exclude`. Microcontrollers and firmware are not simulated. A passing simulation does not prove the physical board works (layout, EMI, heat, tolerances).
 - **Electrical rules are heuristics plus KiCad's checks.** They catch unconnected pins, missing power sources, output conflicts, wrong footprint pad counts and so on, but they cannot tell that a part is the wrong one for the job or rated too low. Review AI-generated designs before manufacturing.
-- **KiCad 8/9/10:** the CLI paths for ERC and DRC on those versions exist but were **not run here** (only KiCad 7 was available); on KiCad 7 DRC uses KiCad's Python `pcbnew`, and ERC uses Banana's built-in rules only.
+- **KiCad versions:** what the installed `kicad-cli` can do is read from its own help output (`backend/src/kicad-compat.js`). On KiCad 7 DRC uses KiCad's Python `pcbnew` and ERC uses Banana's built-in rules; where the CLI has `drc`/`erc` (8+) it is used. Only KiCad 7.0.11 was available in the development sandbox; the CI workflow runs the suite in `kicad/kicad:<version>` containers for 7.0, 8.0, 9.0, 10.0 and nightly, and that workflow's results, not this paragraph, are the evidence for the newer versions.
 - Placement is automatic unless you place parts yourself; rotation is 0/90/180/270; parts go on the front side only.
 - The MCP server exposes file-writing tools. It only touches `BANANA_PROJECTS_DIR`, validates every name and path, and runs ngspice only on sanitised netlists, but treat it as a local trusted tool; over HTTP it is protected by Banana's login or access token.
 
@@ -195,21 +213,24 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 ## Tests
 
 ```bash
-npm test                     # ~6,000 automated cases; KiCad-dependent ones are skipped if KiCad is absent
+npm test                     # ~6,800 automated cases; KiCad-dependent ones are skipped if KiCad is absent
 ```
 
 Includes a headless-browser smoke test of the built UI (needs Playwright; skipped otherwise), generated-input tests for the parser and diff engine, argument-injection and traversal cases for every route, concurrency tests, and end-to-end diffs against a real `kicad-cli`.
 
 ## Verification status (what has and has not been run)
 
-- Linux x64, Node 22, KiCad 7.0.11: full test suite, preflight, portable bundle, server — run.
+- Linux x64, Node 22, KiCad 7.0.11: full test suite (including the Studio in a real browser against a real `kicad-cli`, with a scripted Gemini), preflight, portable bundle, server — run in the development sandbox.
+- GitHub Actions (`.github/workflows/ci.yml`) runs Linux, Linux ARM, Windows and macOS jobs and the KiCad 7/8/9/10/nightly containers on every push; look at the latest run for the current state of each. A platform or KiCad version is only supported to the extent its job is green.
 - Windows, ARM, macOS, Docker image build, systemd runtime, KiCad 8/9/10 output: **not run in the development sandbox.** The code paths exist (KiCad 8+ multi-layer export, Windows launcher, ARM-independent bundle) and the CI workflow in `.github/workflows/ci.yml` is set up to exercise them; treat them as unverified until that workflow is green.
 
 ## Repository layout
 
 ```
 backend/src      Express API, KiCad rendering, parsing, diff engine
-frontend/src     React + Ant Design UI
+backend/src/design  design engine: model, layout, router, writers, checks, exports, agent
+frontend/src     React + Ant Design UI (frontend/src/studio is the Studio)
+docs             PARITY.md: the KiCad feature scorecard
 scripts          preflight/calibration, launcher, portable-bundle + release builder, user management
 website          static download site
 samples          generator for the ground-truth calibration boards
