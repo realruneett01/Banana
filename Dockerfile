@@ -38,6 +38,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     build-essential \
     python3 \
+    ngspice \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -57,6 +58,7 @@ ENV KICAD_CLI_PATH=/usr/bin/kicad-cli
 ENV BANANA_TEMP_DIR=/tmp/banana
 # Accounts and the session secret live here; mount a volume to keep them across restarts.
 ENV BANANA_DATA_DIR=/data
+ENV BANANA_PROJECTS_DIR=/data/projects
 
 # Copy package manifests for workspace resolution
 COPY package*.json ./

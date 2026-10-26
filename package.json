@@ -21,6 +21,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.14",
+		"@modelcontextprotocol/sdk": "^1.32.2",
 		"lefthook": "^2.1.14"
 	},
 	"engines": {

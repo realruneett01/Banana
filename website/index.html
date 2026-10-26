@@ -103,6 +103,7 @@
       <article class="card"><h3>Side-by-side and overlay</h3><p>Synchronised pan and zoom, a before/after slider, per-layer control and pad labels. Unchanged geometry fades to grey so changes stand out.</p></article>
       <article class="card"><h3>History, not just two points</h3><p>Step through every commit that touched a file between two revisions with the evolution timeline.</p></article>
       <article class="card"><h3>Local Git or GitHub</h3><p>Read commits straight from a repository on your machine, or connect GitHub to diff branches, commits and pull requests.</p></article>
+      <article class="card"><h3>Design boards with your AI assistant</h3><p>Banana includes an MCP server: an assistant can build a KiCad schematic and board from real library parts, route it, run checks and an ngspice simulation, then show you exactly what it changed in the diff. Results are drafts to review, not finished products.</p></article>
       <article class="card"><h3>Checks itself before it starts</h3><p>Each launch verifies file integrity, finds KiCad, picks a free port and proves the diff engine on a known pair of boards. If anything is off, it tells you instead of failing quietly.</p></article>
     </div>
   </div>
@@ -160,6 +161,7 @@
         <ul class="reqs">
           <li><strong>KiCad 7 or newer</strong> <span class="muted">renders your files (free, from kicad.org)</span></li>
           <li><strong>Git</strong> <span class="muted">reads your history</span></li>
+          <li><strong>ngspice</strong> <span class="muted">optional: only for circuit simulation</span></li>
           <li><strong>Node.js</strong> <span class="muted">already included in the download for your system</span></li>
         </ul>
         <p class="muted small">Banana runs as a local app that opens in your web browser. There is no installer (.exe / .dmg) yet &mdash; you just unzip and run.</p>

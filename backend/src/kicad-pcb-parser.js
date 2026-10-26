@@ -109,11 +109,12 @@ function toBoardAbsolute(footprint, localX, localY, localRot = 0) {
         absRot = (-frot - localRot) % 360;
         if (absRot < 0) absRot += 360;
     } else {
-        // Front-side transform:
-        // absX = x_f + localX * cos(theta_f) - localY * sin(theta_f)
-        // absY = y_f + localX * sin(theta_f) + localY * cos(theta_f)
-        absX = fx + localX * Math.cos(rad) - localY * Math.sin(rad);
-        absY = fy + localX * Math.sin(rad) + localY * Math.cos(rad);
+        // Front-side transform. KiCad angles are counter-clockwise on screen while Y points down, so
+        // the position is the same transform as the back side (verified against pcbnew's pad positions):
+        // absX = x_f + localX * cos(theta_f) + localY * sin(theta_f)
+        // absY = y_f - localX * sin(theta_f) + localY * cos(theta_f)
+        absX = fx + localX * Math.cos(rad) + localY * Math.sin(rad);
+        absY = fy - localX * Math.sin(rad) + localY * Math.cos(rad);
         absRot = (frot + localRot) % 360;
         if (absRot < 0) absRot += 360;
     }

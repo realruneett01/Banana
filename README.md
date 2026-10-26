@@ -39,6 +39,37 @@ npm start            # preflight + calibration, then starts on http://127.0.0.1:
 
 Hot-reload development: `npm run dev` (backend on :5000 via nodemon, Vite on :5173).
 
+## Board design tools (MCP)
+
+Banana can also **build, edit, check and simulate KiCad boards**, driven by an AI assistant or by scripts, and then show the result in the diff viewer. The tools are exposed three ways: an **MCP server** (stdio), the same MCP over HTTP at `POST /api/design/mcp`, and plain REST at `/api/design/tools/<name>`.
+
+```bash
+node scripts/banana-mcp.mjs --print-config    # prints the JSON to paste into your assistant's MCP settings
+```
+
+| Tool | What it does |
+|---|---|
+| `create_project`, `list_projects`, `get_design` | Boards live in `BANANA_PROJECTS_DIR` (default `<data dir>/projects`), one git repository each |
+| `search_symbols`, `get_symbol`, `search_footprints`, `get_footprint` | Look up real parts and their real pins in KiCad's libraries, so pinouts are never invented |
+| `edit` | Batch of operations (add/remove parts, connect pins by `REF.PIN`, flags, placement, tracks, tests); atomic: if one fails nothing changes |
+| `autoroute` | Two-layer Manhattan router with vias; reports nets it could not route |
+| `build` | Writes `.kicad_sch`, `.kicad_pcb`, `.kicad_pro` and commits, so every version is diffable |
+| `run_checks` | Electrical rule checks, KiCad netlist parity, placement, copper clearance, routing completeness, KiCad DRC |
+| `add_test`, `run_simulation` | ngspice tests (op / transient / AC) with pass/fail expectations |
+| `diff`, `render`, `history` | Banana's diff engine between builds; layer SVGs; the build log. Open the project folder in Banana's *Local repository* mode to browse it visually |
+
+A typical session: `create_project` → `search_symbols`/`get_symbol` → `edit` (with `build`) → `run_checks` → `autoroute` → `add_test` + `run_simulation` → `diff`/`render`. Open `<project>/<name>.kicad_pro` in KiCad at any time; the files are ordinary KiCad files.
+
+What it can and cannot do (be aware before relying on it):
+
+- **Verified here (KiCad 7.0.11, ngspice 42):** the schematic's connectivity matches KiCad's own netlist export on 30 random circuits; boards load in KiCad with the right nets on the right pads; 40 random autorouted boards pass KiCad's DRC with zero rule violations (the router fully routed 37 of them; the rest are reported as unrouted, never hidden); simulation results match textbook analytic answers (dividers, RC time constant, RC corner frequency).
+- **Routing is basic:** grid-based, Manhattan, two layers, no zones/pours, no differential pairs or length matching. Dense boards may not complete; finish them in KiCad.
+- **Simulation covers analog behaviour only, for parts with a SPICE model.** Resistors, capacitors, inductors, diodes, LEDs, zeners and simple BJTs are automatic; regulators use a behavioural macro (`sim.ldo`); anything else needs a `sim.subckt` model or `sim.exclude`. Microcontrollers and firmware are not simulated. A passing simulation does not prove the physical board works (layout, EMI, heat, tolerances).
+- **Electrical rules are heuristics plus KiCad's checks.** They catch unconnected pins, missing power sources, output conflicts, wrong footprint pad counts and so on, but they cannot tell that a part is the wrong one for the job or rated too low. Review AI-generated designs before manufacturing.
+- **KiCad 8/9/10:** the CLI paths for ERC and DRC on those versions exist but were **not run here** (only KiCad 7 was available); on KiCad 7 DRC uses KiCad's Python `pcbnew`, and ERC uses Banana's built-in rules only.
+- Placement is automatic unless you place parts yourself; rotation is 0/90/180/270; parts go on the front side only.
+- The MCP server exposes file-writing tools. It only touches `BANANA_PROJECTS_DIR`, validates every name and path, and runs ngspice only on sanitised netlists, but treat it as a local trusted tool; over HTTP it is protected by Banana's login or access token.
+
 ## Sign-in (accounts)
 
 Off by default so the single-user desktop launcher needs no setup. Turn it on for any shared or server deployment:
@@ -139,6 +170,8 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 | `PORT` | `5000` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only in a container or on a trusted network. |
 | `KICAD_CLI_PATH` | auto-detected | Path to `kicad-cli` |
+| `BANANA_PROJECTS_DIR` | `<data dir>/projects` | Where board projects are stored |
+| `NGSPICE_PATH`, `KICAD_SYMBOL_DIR`, `KICAD_FOOTPRINT_DIR`, `KICAD_PYTHON` | auto | Override tool/library locations for the design tools |
 | `BANANA_AUTH` | off | `required` turns on account sign-in (see above). |
 | `BANANA_DATA_DIR` | `<app>/.banana` | Users file + session secret |
 | `BANANA_SESSION_HOURS`, `BANANA_TRUST_PROXY` | `12`, off | Session lifetime; set `1` behind an HTTPS reverse proxy |
@@ -162,7 +195,7 @@ Environment variables (or a `.env` file in the app folder); they override `.bana
 ## Tests
 
 ```bash
-npm test                     # ~4,000 automated cases; KiCad-dependent ones are skipped if KiCad is absent
+npm test                     # ~6,000 automated cases; KiCad-dependent ones are skipped if KiCad is absent
 ```
 
 Includes a headless-browser smoke test of the built UI (needs Playwright; skipped otherwise), generated-input tests for the parser and diff engine, argument-injection and traversal cases for every route, concurrency tests, and end-to-end diffs against a real `kicad-cli`.

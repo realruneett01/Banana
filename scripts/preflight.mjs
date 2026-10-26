@@ -25,6 +25,9 @@ import {
 	probeKicadVersion,
 	resolveTempRoot,
 } from "../backend/src/runtime-detect.js";
+import { findPython } from "../backend/src/design/checks.js";
+import { findLibraryRoot } from "../backend/src/design/kicad-lib.js";
+import { ngspiceAvailable } from "../backend/src/design/simulate.js";
 import { sampleBoard, sampleSchematic } from "../samples/gen-sample.mjs";
 
 const MIN_NODE = [20, 11];
@@ -109,6 +112,15 @@ export function checkKicad(opts = {}) {
 			source: found.source,
 		},
 	);
+}
+
+/** Optional board-design tooling (MCP tools): libraries, DRC python, ngspice. Missing pieces are warnings, not failures. */
+export async function checkDesignTools() {
+	const missing = [];
+	if (!findLibraryRoot("symbols") || !findLibraryRoot("footprints")) missing.push("KiCad symbol/footprint libraries (needed to design boards)");
+	if (!(await ngspiceAvailable())) missing.push("ngspice (needed for simulation)");
+	if (!findPython()) missing.push("python with pcbnew (needed for DRC on KiCad 7; KiCad 8+ uses kicad-cli)");
+	return missing.length === 0 ? check("design", PASS, "Board design tools ready (libraries, ngspice, DRC)") : check("design", WARN, `Design tools incomplete: ${missing.join("; ")}`, { missing });
 }
 
 export function checkFrontend(appRoot = APP_ROOT) {
@@ -402,6 +414,7 @@ export async function runPreflight(opts = {}) {
 		checkIntegrity(appRoot),
 	);
 	results.push(await checkWritable(tempRoot, "tempdir"));
+	results.push(await checkDesignTools());
 
 	const wantPort = opts.port ?? parsePort(process.env.PORT, 5000);
 	const port = await pickPort(wantPort);

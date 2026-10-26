@@ -64,6 +64,7 @@ export const config = {
 	dataDir: path.resolve(
 		process.env.BANANA_DATA_DIR || path.join(APP_ROOT, ".banana"),
 	),
+	projectsDir: path.resolve(process.env.BANANA_PROJECTS_DIR || path.join(path.resolve(process.env.BANANA_DATA_DIR || path.join(APP_ROOT, ".banana")), "projects")),
 	sessionHours: parsePositiveInt(process.env.BANANA_SESSION_HOURS, 12),
 	trustProxy: process.env.BANANA_TRUST_PROXY === "1",
 	accessToken: process.env.BANANA_ACCESS_TOKEN || "",

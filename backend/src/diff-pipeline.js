@@ -153,6 +153,56 @@ function buildResponsePayload({
 }
 
 /**
+ * Computes the diff payload for two files on disk. Throws an Error with `.stage === "render"` when
+ * KiCad could not render, so callers can report the right failure.
+ */
+export async function computeDiff({
+	basePath,
+	targetPath,
+	baseCommit,
+	targetCommit,
+	isPcb,
+	tExtraction = 0,
+	tTotalStart = performance.now(),
+}) {
+	let baseRenders = null;
+	let targetRenders = null;
+	try {
+		const tCliStart = performance.now();
+		try {
+			baseRenders = await renderKicadFile(basePath, isPcb);
+			targetRenders = await renderKicadFile(targetPath, isPcb);
+		} catch (err) {
+			err.stage = "render";
+			throw err;
+		}
+		const tCli = performance.now() - tCliStart;
+
+		const baseSvgs = readSvgs(baseRenders);
+		const targetSvgs = readSvgs(targetRenders);
+
+		const tDiffStart = performance.now();
+		const pcbMetadata = extractPcbMetadata(basePath, targetPath, isPcb);
+		const footprintChanges = pcbMetadata?.footprintChanges || new Map();
+
+		const layersResult = processAllLayers({ baseSvgs, targetSvgs, pcbMetadata });
+		const tDiff = performance.now() - tDiffStart;
+		const tTotal = performance.now() - tTotalStart;
+
+		return buildResponsePayload({
+			baseCommit,
+			targetCommit,
+			layersResult,
+			pcbMetadata,
+			footprintChanges,
+			timing: { tExtraction, tCli, tDiff, tTotal },
+		});
+	} finally {
+		cleanupFolders([], baseRenders, targetRenders);
+	}
+}
+
+/**
  * Shared Diff Pipeline: Renders KiCad CAD files, generates SVGs, parses AST metadata,
  * executes 5-pass vector/copper corridor diff, and formats consolidated audit response.
  */
@@ -169,55 +219,23 @@ export async function executeDiffPipeline(
 	},
 	res,
 ) {
-	let baseRenders = null;
-	let targetRenders = null;
-
 	try {
-		const tCliStart = performance.now();
-		try {
-			baseRenders = await renderKicadFile(basePath, isPcb);
-			targetRenders = await renderKicadFile(targetPath, isPcb);
-		} catch (err) {
-			console.error("[Banana API] KiCad rendering error:", err);
-			return res.status(500).json({
-				error: "Failed to render KiCad SVG files",
-				details: err.message,
-			});
-		}
-		const tCli = performance.now() - tCliStart;
-
-		const baseSvgs = readSvgs(baseRenders);
-		const targetSvgs = readSvgs(targetRenders);
-
-		const tDiffStart = performance.now();
-		const pcbMetadata = extractPcbMetadata(basePath, targetPath, isPcb);
-		const footprintChanges = pcbMetadata?.footprintChanges || new Map();
-
-		const layersResult = processAllLayers({
-			baseSvgs,
-			targetSvgs,
-			pcbMetadata,
-		});
-		const tDiff = performance.now() - tDiffStart;
-		const tTotal = performance.now() - tTotalStart;
-
-		const payload = buildResponsePayload({
-			baseCommit,
-			targetCommit,
-			layersResult,
-			pcbMetadata,
-			footprintChanges,
-			timing: { tExtraction, tCli, tDiff, tTotal },
-		});
-
+		const payload = await computeDiff({ basePath, targetPath, baseCommit, targetCommit, isPcb, tExtraction, tTotalStart });
 		return res.json(payload);
 	} catch (error) {
+		if (error.stage === "render") {
+			console.error("[Banana API] KiCad rendering error:", error);
+			return res.status(500).json({
+				error: "Failed to render KiCad SVG files",
+				details: error.message,
+			});
+		}
 		console.error("[Banana Diff Pipeline] Unexpected error:", error);
 		return res.status(500).json({
 			error: "Unexpected error during diff processing",
 			details: error.message,
 		});
 	} finally {
-		cleanupFolders(cleanExtractionFolders, baseRenders, targetRenders);
+		cleanupFolders(cleanExtractionFolders, null, null);
 	}
 }
