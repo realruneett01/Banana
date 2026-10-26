@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { API_BASE_URL } from "./config.js";
-import { Space, Button, Tag, Typography, Badge, Tooltip, Avatar } from "antd";
+import { Space, Button, Tag, Typography, Badge, Tooltip, Avatar, Segmented } from "antd";
 import {
 	FileSearchOutlined,
 	RobotOutlined,
@@ -232,6 +232,8 @@ export default function WorkspaceShell({
 	backendStatus,
 	githubUser,
 	onOpenGithubModal,
+	mode,
+	onModeChange,
 }) {
 	return (
 		<div
@@ -248,6 +250,17 @@ export default function WorkspaceShell({
 			<BrandLogo />
 
 			<Space size="middle" align="center">
+				{onModeChange && (
+					<Segmented
+						data-testid="mode-switch"
+						value={mode}
+						onChange={onModeChange}
+						options={[
+							{ label: "Diff", value: "diff" },
+							{ label: "Studio", value: "studio" },
+						]}
+					/>
+				)}
 				<GithubUserButton
 					githubUser={githubUser}
 					onOpenGithubModal={onOpenGithubModal}

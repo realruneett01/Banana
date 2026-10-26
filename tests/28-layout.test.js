@@ -228,7 +228,8 @@ test("the project name is printed on the silkscreen when there is room", {
 	timeout: 60000,
 }, () => {
 	const d = new Design(emptyDesign("my-board"));
-	d.addPart({ symbol: "Device:R", value: "1k", footprint: R });
+	for (let i = 0; i < 4; i++)
+		d.addPart({ symbol: "Device:R", value: "1k", footprint: R });
 	const out = writePcb(d);
 	assert.match(
 		out.text,

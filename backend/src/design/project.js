@@ -277,19 +277,29 @@ export async function diffBuilds(
 	const rel = file === "board" ? `${name}.kicad_pcb` : `${name}.kicad_sch`;
 	const unique = `design_${name}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 	const tmpDirs = [];
+	const extract = async (rev, side) => {
+		try {
+			return await extractFileFromCommit(
+				dir,
+				rev,
+				rel,
+				`${unique}/${side}/${rel}`,
+			);
+		} catch (err) {
+			if (
+				/exists on disk, but not in|does not exist in|bad object|unknown revision|Not a valid object/i.test(
+					String(err.message),
+				)
+			)
+				throw new DesignError(
+					`Build ${rev} has no ${file} (it is from before the first build, or the reference is unknown).`,
+				);
+			throw err;
+		}
+	};
 	try {
-		const basePath = await extractFileFromCommit(
-			dir,
-			base,
-			rel,
-			`${unique}/base/${rel}`,
-		);
-		const targetPath = await extractFileFromCommit(
-			dir,
-			target,
-			rel,
-			`${unique}/target/${rel}`,
-		);
+		const basePath = await extract(base, "base");
+		const targetPath = await extract(target, "target");
 		tmpDirs.push(path.join(config.tempRoot, unique));
 		const payload = await computeDiff({
 			basePath,
@@ -486,6 +496,10 @@ export async function projectState(name) {
 		canRedo: readRedo(dir).length > 0,
 		parts,
 		nets: design.summary().nets,
+		routing: {
+			tracks: design.data.tracks.length,
+			vias: design.data.vias.length,
+		},
 		tests: design.data.tests.map((t) => t.name),
 	};
 }

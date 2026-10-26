@@ -198,10 +198,12 @@ function assembleWorkspaceReturn(params) {
     boardContext,
     viewportProps,
     activeDiffData,
-    handleSelectCopilotMod
+    handleSelectCopilotMod,
+    openDiff
   } = params;
 
   return {
+    openDiff,
     shellProps: {
       onOpenCopilot: () => viewer.setIsCopilotOpen(true),
       kicadVersion: gh.kicadVersion,
@@ -380,6 +382,17 @@ export function useWorkspaceState() {
     activeDiffData, viewer, revisions, sideBySideRef, diffCanvasRef, evolution, padLabelProps
   });
 
+  // Studio -> Diff view: the same fetch the "Fetch and Render Diff" button does, with the values given
+  const openDiff = useCallback(async ({ repoPath, baseCommit, targetCommit, relativeFilePath }) => {
+    gh.handleSourceModeChange('local');
+    revisions.setRepoPath(repoPath);
+    revisions.setBaseCommit(baseCommit);
+    revisions.setTargetCommit(targetCommit);
+    revisions.setRelativeFilePath(relativeFilePath);
+    form.setFieldsValue({ repoPath, baseCommit, targetCommit, relativeFilePath });
+    await diffLoader.fetchDiff({ repoPath, baseCommit, targetCommit, relativeFilePath });
+  }, [gh, revisions, form, diffLoader]);
+
   return assembleWorkspaceReturn({
     viewer,
     gh,
@@ -391,6 +404,7 @@ export function useWorkspaceState() {
     boardContext,
     viewportProps,
     activeDiffData,
-    handleSelectCopilotMod
+    handleSelectCopilotMod,
+    openDiff
   });
 }

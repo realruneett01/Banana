@@ -333,6 +333,12 @@ export async function runAgent({
 				});
 				if (r.ok && !readOnly && name !== "run_checks") {
 					changed = true;
+					// refresh the KiCad files (no commit) so the Studio can render the board while the assistant works
+					try {
+						await P.build(project, "", { commit: false });
+					} catch {
+						/* the design may be mid-way through a multi-step change */
+					}
 					emit("design_changed", { tool: name });
 				}
 				responses.push({

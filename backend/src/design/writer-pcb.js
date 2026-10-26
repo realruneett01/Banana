@@ -227,8 +227,8 @@ export function writePcb(design) {
 	let minX = ORIGIN;
 	let minY = ORIGIN;
 	if (!board) {
-		let maxX = ORIGIN + 20;
-		let maxY = ORIGIN + 20;
+		let maxX = Number.NEGATIVE_INFINITY;
+		let maxY = Number.NEGATIVE_INFINITY;
 		for (const p of d.parts) {
 			const fp = footprints.get(p.ref);
 			const at = positions.get(p.ref);
@@ -238,6 +238,11 @@ export function writePcb(design) {
 			maxY = Math.max(maxY, at.y + b.maxY);
 			minX = Math.min(minX, at.x + b.minX - 3);
 			minY = Math.min(minY, at.y + b.minY - 3);
+		}
+		if (!Number.isFinite(maxX)) {
+			// nothing placed yet: a small empty board
+			maxX = ORIGIN + 20;
+			maxY = ORIGIN + 20;
 		}
 		board = {
 			width: Math.ceil(maxX + 3 - minX),
