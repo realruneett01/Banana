@@ -809,7 +809,9 @@ export async function kicadDrc(pcbPath) {
  */
 export function parseKicadNetlist(text) {
 	const got = new Map();
-	for (const chunk of String(text).split(/\(net\s+\(code\s+"\d+"\)\s*/).slice(1)) {
+	for (const chunk of String(text)
+		.split(/\(net\s+\(code\s+"\d+"\)\s*/)
+		.slice(1)) {
 		const nameMatch = /^\(name\s+"((?:[^"\\]|\\.)*)"\)/.exec(chunk);
 		if (!nameMatch) continue;
 		const name = nameMatch[1].replace(/^\//, "");

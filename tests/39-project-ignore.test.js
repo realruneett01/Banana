@@ -13,13 +13,22 @@ const P = await import("../backend/src/design/project.js");
 after(() => fs.rmSync(projects, { recursive: true, force: true }));
 
 const status = (dir) =>
-	execFileSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" });
+	execFileSync("git", ["status", "--porcelain"], {
+		cwd: dir,
+		encoding: "utf8",
+	});
 
 test("new projects ignore *.kicad_prl and the other local KiCad files", async () => {
 	await P.createProject("fresh");
 	const dir = P.projectDir("fresh");
 	const ign = fs.readFileSync(path.join(dir, ".gitignore"), "utf8");
-	for (const l of ["results/", "*.bak", "*-backups/", "fp-info-cache", "*.kicad_prl"])
+	for (const l of [
+		"results/",
+		"*.bak",
+		"*-backups/",
+		"fp-info-cache",
+		"*.kicad_prl",
+	])
 		assert.ok(ign.split("\n").includes(l), l);
 	fs.writeFileSync(path.join(dir, "fresh.kicad_prl"), "{}");
 	assert.equal(status(dir), "");
@@ -32,7 +41,15 @@ test("older projects get the rule added on their next build, once", async () => 
 	execFileSync("git", ["add", "-A"], { cwd: dir });
 	execFileSync(
 		"git",
-		["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "old ignore"],
+		[
+			"-c",
+			"user.name=t",
+			"-c",
+			"user.email=t@t",
+			"commit",
+			"-qm",
+			"old ignore",
+		],
 		{ cwd: dir },
 	);
 	await P.build("old", "first");

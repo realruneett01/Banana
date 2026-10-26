@@ -101,7 +101,13 @@ async function git(dir, ...args) {
 }
 
 /** Local files KiCad writes next to a project (exports, caches, per-user view settings) are never design history. */
-const IGNORED = ["results/", "*.bak", "*-backups/", "fp-info-cache", "*.kicad_prl"];
+const IGNORED = [
+	"results/",
+	"*.bak",
+	"*-backups/",
+	"fp-info-cache",
+	"*.kicad_prl",
+];
 const GITIGNORE = `${IGNORED.join("\n")}\n`;
 function ensureIgnored(dir) {
 	const file = path.join(dir, ".gitignore");
@@ -155,10 +161,7 @@ export async function createProject(name, title = "") {
 		path.join(dir, "design.json"),
 		stableJson(emptyDesign(name, String(title).slice(0, 120))),
 	);
-	fs.writeFileSync(
-		path.join(dir, ".gitignore"),
-		GITIGNORE,
-	);
+	fs.writeFileSync(path.join(dir, ".gitignore"), GITIGNORE);
 	await git(dir, "add", "-A");
 	await git(dir, "commit", "-q", "-m", "Create project");
 	return { name, path: dir };

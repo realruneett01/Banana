@@ -234,7 +234,10 @@ test("getCapabilities: probes once, remembers, falls back safely", async (t) => 
 			run: () => "",
 		});
 		assert.equal(c.source, "table");
-		assert.deepEqual([c.hasErc, c.hasDrc, c.svg.multiMode], [true, true, false]);
+		assert.deepEqual(
+			[c.hasErc, c.hasDrc, c.svg.multiMode],
+			[true, true, false],
+		);
 	});
 	await t.test("a throwing run is not fatal to the table fallback", () => {
 		assert.throws(

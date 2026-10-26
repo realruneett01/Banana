@@ -50,7 +50,8 @@ export async function extractFileFromCommit(
 			settled = true;
 			// The stream may still be opening the file: remove it only once the stream is closed, or the
 			// open can land after the removal and leave a partial file behind (seen on Windows).
-			const removeFile = () => fs.rm(outputPath, { force: true }, () => reject(err));
+			const removeFile = () =>
+				fs.rm(outputPath, { force: true }, () => reject(err));
 			if (writeStream.closed) removeFile();
 			else {
 				writeStream.once("close", removeFile);

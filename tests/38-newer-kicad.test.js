@@ -90,15 +90,21 @@ test("netlists parse in the one-line (KiCad 7/8) and the multi-line (KiCad 10) l
 		const got = parseKicadNetlist(text);
 		assert.deepEqual([...got.keys()], ["+5V", "GND"]);
 		assert.deepEqual(got.get("+5V"), ["J1.1", "R1.1"]);
-		assert.deepEqual(got.get("GND"), ["J1.2", "R1.2"], "slash stripped, #PWR ignored");
+		assert.deepEqual(
+			got.get("GND"),
+			["J1.2", "R1.2"],
+			"slash stripped, #PWR ignored",
+		);
 	}
 	assert.equal(parseKicadNetlist("").size, 0);
 });
 
 test("library symbols are listed whether the file is indented with spaces (KiCad 7) or tabs (KiCad 8+)", () => {
 	const dir = tmpDir("banana-symlib-");
-	const space = (n) => `  (symbol "${n}"\n    (pin_names)\n    (symbol "${n}_1_1")\n  )\n`;
-	const tab = (n) => `\t(symbol "${n}"\n\t\t(pin_names)\n\t\t(symbol "${n}_1_1")\n\t)\n`;
+	const space = (n) =>
+		`  (symbol "${n}"\n    (pin_names)\n    (symbol "${n}_1_1")\n  )\n`;
+	const tab = (n) =>
+		`\t(symbol "${n}"\n\t\t(pin_names)\n\t\t(symbol "${n}_1_1")\n\t)\n`;
 	fs.writeFileSync(
 		path.join(dir, "Old.kicad_sym"),
 		`(kicad_symbol_lib (version 20220914)\n${space("A")}${space("B")})\n`,
