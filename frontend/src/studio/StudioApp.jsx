@@ -3,6 +3,7 @@ import {
 	Alert,
 	Button,
 	Card,
+	Dropdown,
 	Empty,
 	Form,
 	Input,
@@ -17,6 +18,7 @@ import {
 } from "antd";
 import {
 	BranchesOutlined,
+	DownloadOutlined,
 	FolderAddOutlined,
 	RedoOutlined,
 	ThunderboltOutlined,
@@ -146,6 +148,7 @@ export default function StudioApp({ onOpenDiff }) {
 	const [newOpen, setNewOpen] = useState(false);
 	const [bump, setBump] = useState(0);
 	const [review, setReview] = useState(null);
+	const [exportKinds, setExportKinds] = useState({});
 	const [leftTab, setLeftTab] = useState("parts");
 	const [rightTab, setRightTab] = useState("assistant");
 
@@ -168,6 +171,13 @@ export default function StudioApp({ onOpenDiff }) {
 	useEffect(() => {
 		if (studio.selected) setRightTab("inspector");
 	}, [studio.selected]);
+
+	useEffect(() => {
+		api
+			.exportKinds()
+			.then(setExportKinds)
+			.catch(() => {});
+	}, []);
 
 	// reset view state when switching projects
 	useEffect(() => {
@@ -449,6 +459,23 @@ export default function StudioApp({ onOpenDiff }) {
 						>
 							Check
 						</Button>
+						<Dropdown
+							trigger={["click"]}
+							disabled={!state?.parts.length || Boolean(busy)}
+							menu={{
+								items: Object.entries(exportKinds).map(([key, k]) => ({
+									key,
+									label: <span data-testid={`export-${key}`}>{k.label}</span>,
+									disabled: !k.available,
+									title: k.available ? undefined : k.reason,
+								})),
+								onClick: ({ key }) => studio.exportKind(key),
+							}}
+						>
+							<Button icon={<DownloadOutlined />} data-testid="export-menu">
+								Export
+							</Button>
+						</Dropdown>
 						{statusTag}
 						<div style={{ flex: 1 }} />
 						<Text
@@ -683,6 +710,8 @@ export default function StudioApp({ onOpenDiff }) {
 											checks={studio.checks}
 											onRun={studio.runChecks}
 											busy={studio.busy}
+											dfm={studio.dfm}
+											onRunDfm={studio.runDfm}
 										/>
 									),
 								},

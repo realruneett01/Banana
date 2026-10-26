@@ -9,6 +9,8 @@ import {
 	searchSymbols,
 } from "../design/kicad-lib.js";
 import { Design, DesignError } from "../design/model.js";
+import { DFM_PROFILES, dfmReport } from "../design/dfm.js";
+import { runExport } from "../design/exports.js";
 import * as P from "../design/project.js";
 import { ngspiceAvailable } from "../design/simulate.js";
 import { validate } from "./schema.js";
@@ -590,6 +592,41 @@ export const TOOLS = [
 			}
 			return out;
 		},
+	},
+	{
+		name: "dfm_check",
+		description:
+			"Check the design against typical low-cost manufacturing limits (track width, clearance, drill, annular ring, pad spacing, board size). Profiles: standard, budget, fine. These are typical values, not a specific manufacturer's promise.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: { project, profile: { enum: Object.keys(DFM_PROFILES) } },
+			required: ["project"],
+			additionalProperties: false,
+		},
+		handler: wrap(async (a) => {
+			const design = P.loadDesign(a.project);
+			const state = await P.projectState(a.project);
+			const positions = Object.fromEntries(
+				state.parts.filter((p) => p.at).map((p) => [p.ref, p.at]),
+			);
+			return dfmReport(design, positions, state.board, a.profile ?? "standard");
+		}),
+	},
+	{
+		name: "export",
+		description:
+			"Create files for manufacturing and documentation with KiCad: gerbers (a zip with the drill files), bom (CSV straight from the design), pos (pick-and-place CSV), netlist, pdf (board and schematic) or step (board outline only). Files are written to the project's results/exports/<kind>/ folder and listed in the result. Run run_checks first and only release a board that passes.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				project,
+				kind: { enum: ["gerbers", "bom", "pos", "netlist", "pdf", "step"] },
+			},
+			required: ["project", "kind"],
+			additionalProperties: false,
+		},
+		handler: async (a) => runExport(a.project, a.kind),
 	},
 ];
 

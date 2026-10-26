@@ -55,6 +55,17 @@ export const api = {
 		`${BASE}/projects/${enc(project)}/view/${kind}.svg?view=${enc(view)}&rev=${enc(rev)}`,
 	viewSvg: (project, kind, options) =>
 		fetch(api.viewUrl(project, kind, options), opts()).then(parse),
+	exportKinds: () =>
+		fetch(`${BASE}/exports`, opts())
+			.then(parse)
+			.then((r) => r.kinds),
+	runExport: (project, kind) =>
+		fetch(
+			`${BASE}/projects/${enc(project)}/export/${enc(kind)}`,
+			opts({ method: "POST" }),
+		).then(parse),
+	exportUrl: (project, kind, file) =>
+		`${BASE}/projects/${enc(project)}/export/${enc(kind)}/${enc(file)}`,
 	undo: (project) =>
 		fetch(
 			`${BASE}/projects/${enc(project)}/undo`,

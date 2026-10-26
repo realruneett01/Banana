@@ -29,6 +29,7 @@ export function useStudio() {
 	const [selected, setSelected] = useState(null);
 	const [checks, setChecks] = useState(null);
 	const [simulation, setSimulation] = useState(null);
+	const [dfm, setDfm] = useState(null);
 	const projectRef = useRef(project);
 	projectRef.current = project;
 
@@ -75,6 +76,7 @@ export function useStudio() {
 		setSelected(null);
 		setChecks(null);
 		setSimulation(null);
+		setDfm(null);
 		setState(null);
 		setHistory([]);
 		if (project) {
@@ -189,6 +191,39 @@ export function useStudio() {
 		[guarded],
 	);
 
+	const runDfm = useCallback(
+		(profile) =>
+			guarded("Checking manufacturability", async () => {
+				const r = await api.tool("dfm_check", {
+					project: projectRef.current,
+					profile,
+				});
+				setDfm(r);
+				return r;
+			}),
+		[guarded],
+	);
+
+	/** Runs a KiCad export and hands the produced file to the browser as a download. */
+	const exportKind = useCallback(
+		(kind) =>
+			guarded("Exporting", async () => {
+				const name = projectRef.current;
+				const r = await api.runExport(name, kind);
+				const a = document.createElement("a");
+				a.href = api.exportUrl(name, kind, r.download);
+				a.download = r.download;
+				document.body.appendChild(a);
+				a.click();
+				a.remove();
+				message.success(
+					`${r.label}: ${r.files.length} file${r.files.length === 1 ? "" : "s"}`,
+				);
+				return r;
+			}),
+		[guarded],
+	);
+
 	const undo = useCallback(
 		() =>
 			guarded("Undoing", async () => {
@@ -221,12 +256,15 @@ export function useStudio() {
 		setSelected,
 		checks,
 		simulation,
+		dfm,
+		runDfm,
 		refresh,
 		edit,
 		movePart,
 		autoroute,
 		runChecks,
 		runSimulation,
+		exportKind,
 		undo,
 		redo,
 	};

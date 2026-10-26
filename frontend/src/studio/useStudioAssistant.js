@@ -59,14 +59,12 @@ export function useStudioAssistant({ project, onDesignChanged, onDone }) {
 		safeSet(
 			chatKey(project),
 			JSON.stringify(
-				messages
-					.slice(-30)
-					.map((m) => ({
-						id: m.id,
-						role: m.role,
-						content: m.content,
-						error: m.error,
-					})),
+				messages.slice(-30).map((m) => ({
+					id: m.id,
+					role: m.role,
+					content: m.content,
+					error: m.error,
+				})),
 			),
 		);
 	}, [messages, project]);

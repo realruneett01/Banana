@@ -88,6 +88,7 @@ test("schema conversion: every real tool becomes a valid Gemini declaration", ()
 		"autoroute",
 		"diff",
 		"edit",
+		"export",
 		"get_design",
 		"get_footprint",
 		"get_symbol",
@@ -1076,5 +1077,5 @@ test("POST /api/design/agent streams events over SSE", {
 	});
 });
 
-test("the tool registry still exposes exactly what it did (no accidental change)", () =>
-	assert.equal(TOOLS.length, 16));
+test("the tool registry still exposes exactly what it did (only the export tool was added)", () =>
+	assert.equal(TOOLS.length, 17));

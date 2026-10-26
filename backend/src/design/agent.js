@@ -29,6 +29,8 @@ const ALLOWED = [
 	"run_simulation",
 	"history",
 	"diff",
+	"export",
+	"dfm_check",
 ];
 /** Arguments the assistant never controls: the project is fixed by the session, commits are made once per prompt. */
 const HIDDEN_ARGS = { "*": ["project"], edit: ["build"] };

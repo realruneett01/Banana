@@ -1,10 +1,11 @@
-import React from "react";
-import { Alert, Button, Collapse, Empty, Space, Tag, Typography } from "antd";
+import React, { useState } from "react";
+import { Alert, Button, Collapse, Empty, Select, Space, Tag, Typography } from "antd";
 import {
 	CheckCircleFilled,
 	CloseCircleFilled,
 	ExclamationCircleFilled,
 	SafetyCertificateOutlined,
+	ToolOutlined,
 } from "@ant-design/icons";
 
 const { Text } = Typography;
@@ -62,7 +63,59 @@ function Section({ title, status, issues }) {
 	};
 }
 
-export default function ChecksPanel({ checks, onRun, busy }) {
+const PROFILES = [
+	{ value: "standard", label: "Standard 2-layer" },
+	{ value: "budget", label: "Budget prototype" },
+	{ value: "fine", label: "Fine pitch" },
+];
+
+function ManufacturingSection({ dfm, onRunDfm, busy }) {
+	const [profile, setProfile] = useState("standard");
+	return (
+		<Space direction="vertical" style={{ width: "100%" }} data-testid="dfm-section">
+			<Space.Compact style={{ width: "100%" }}>
+				<Select
+					value={profile}
+					onChange={setProfile}
+					options={PROFILES}
+					style={{ flex: 1 }}
+					data-testid="dfm-profile"
+				/>
+				<Button
+					icon={<ToolOutlined />}
+					onClick={() => onRunDfm(profile)}
+					loading={busy === "Checking manufacturability"}
+					data-testid="run-dfm"
+				>
+					Check for manufacturing
+				</Button>
+			</Space.Compact>
+			{dfm && (
+				<>
+					<Alert
+						data-testid="dfm-summary"
+						type={dfm.ok ? (dfm.warnings ? "warning" : "success") : "error"}
+						showIcon
+						message={
+							dfm.ok
+								? `Meets ${dfm.label} limits${dfm.warnings ? ` (${dfm.warnings} warning${dfm.warnings === 1 ? "" : "s"})` : ""}`
+								: `${dfm.errors} problem${dfm.errors === 1 ? "" : "s"} for ${dfm.label}`
+						}
+						description={dfm.note}
+					/>
+					{dfm.issues.slice(0, 30).map((i, n) => (
+						<Space key={n} align="start" size={6}>
+							{sev(i.severity)}
+							<Text style={{ fontSize: 12 }}>{i.message}</Text>
+						</Space>
+					))}
+				</>
+			)}
+		</Space>
+	);
+}
+
+export default function ChecksPanel({ checks, onRun, busy, dfm, onRunDfm }) {
 	const mismatch =
 		checks?.netlistParity?.mismatches?.map((m) => ({
 			severity: "error",
@@ -138,6 +191,7 @@ export default function ChecksPanel({ checks, onRun, busy }) {
 					</Tag>
 				</>
 			)}
+			<ManufacturingSection dfm={dfm} onRunDfm={onRunDfm} busy={busy} />
 		</Space>
 	);
 }

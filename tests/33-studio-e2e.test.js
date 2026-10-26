@@ -526,6 +526,46 @@ test("Studio end to end", { skip, timeout: 900000 }, async (t) => {
 	});
 
 	await t.test(
+		"manufacturing check: the board meets the standard 2-layer limits",
+		async () => {
+			await page.getByTestId("check").click();
+			await page.getByTestId("run-dfm").click();
+			await page.getByTestId("dfm-summary").waitFor({ timeout: 60000 });
+			assert.match(
+				await page.getByTestId("dfm-summary").textContent(),
+				/Meets Standard 2-layer limits/,
+			);
+			await shot(page, "07b-dfm");
+		},
+	);
+
+	await t.test(
+		"export: the Gerber zip and the BOM download from the toolbar",
+		async () => {
+			const grab = async (key) => {
+				await page.getByTestId("export-menu").click();
+				const [download] = await Promise.all([
+					page.waitForEvent("download", { timeout: 120000 }),
+					page.getByTestId(`export-${key}`).click(),
+				]);
+				return download;
+			};
+			const zip = await grab("gerbers");
+			assert.equal(zip.suggestedFilename(), "led-demo-fabrication.zip");
+			const file = await zip.path();
+			assert.ok(fs.statSync(file).size > 1000);
+			assert.equal(fs.readFileSync(file).subarray(0, 2).toString(), "PK");
+			const bom = await grab("bom");
+			assert.equal(bom.suggestedFilename(), "led-demo-bom.csv");
+			assert.match(
+				fs.readFileSync(await bom.path(), "utf8"),
+				/Reference,Quantity,Value/,
+			);
+			await settled();
+		},
+	);
+
+	await t.test(
 		"a second assistant prompt edits the existing board and the Changes view shows exactly that",
 		async () => {
 			const R1 = P.loadDesign("led-demo").part("R1").at;

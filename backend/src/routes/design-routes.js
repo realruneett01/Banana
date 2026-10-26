@@ -3,6 +3,9 @@ import { createSafeRouter } from "../safe-router.js";
 import { handleMessage } from "../mcp/protocol.js";
 import { callTool, toolList } from "../mcp/tools.js";
 import { AGENT_LIMITS, runAgent } from "../design/agent.js";
+import { exportFile, exportKinds, runExport } from "../design/exports.js";
+import { config } from "../config.js";
+import { getCapabilities } from "../kicad-compat.js";
 import {
 	diffBuilds,
 	diffWorking,
@@ -87,6 +90,27 @@ router.get("/projects/:name/changes", async (req, res) => {
 				})
 			: await diffBuilds(req.params.name, { base, target, file });
 	res.json(payload);
+});
+
+/** GET /api/design/exports - which exports this KiCad can produce (from its own help output). */
+router.get("/exports", (_req, res) =>
+	res.json({
+		kinds: exportKinds(
+			getCapabilities({
+				cliPath: config.kicadCliPath,
+				version: config.kicadVersion,
+			}),
+		),
+	}),
+);
+/** POST /api/design/projects/:name/export/:kind - build the files without committing, run the export. */
+router.post("/projects/:name/export/:kind", async (req, res) =>
+	res.json(await runExport(req.params.name, req.params.kind)),
+);
+/** GET /api/design/projects/:name/export/:kind/:file - download one produced file. */
+router.get("/projects/:name/export/:kind/:file", (req, res) => {
+	const full = exportFile(req.params.name, req.params.kind, req.params.file);
+	res.download(full, req.params.file);
 });
 
 router.post("/projects/:name/undo", async (req, res) =>
