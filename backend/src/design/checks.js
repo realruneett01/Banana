@@ -1,3 +1,4 @@
+import { ZONE_EDGE_INSET } from "./writer-pcb.js";
 import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -160,6 +161,17 @@ export function rotatePoint(x, y, rotDeg) {
 }
 
 /** Absolute pad positions: Map "R1.2" -> {x, y, w, h, rot, layers, thru} */
+/** Rectangle covered by a whole-board pour (the outline pulled in by the copper-to-edge distance). */
+function zoneBox(board) {
+	const inset = ZONE_EDGE_INSET;
+	return {
+		minX: board.originX + inset,
+		maxX: board.originX + board.width - inset,
+		minY: board.originY + inset,
+		maxY: board.originY + board.height - inset,
+	};
+}
+
 export function absolutePads(design, positions) {
 	const out = new Map();
 	for (const part of design.data.parts) {
@@ -264,7 +276,7 @@ function pointRectDist(px, py, r) {
  * touch on a common layer, including a track ending in the middle of another track, a track passing
  * through a pad, and vias joining both layers - the same notion KiCad uses.
  */
-export function routingStatus(design, positions) {
+export function routingStatus(design, positions, board) {
 	const d = design.data;
 	const pads = absolutePads(design, positions);
 	const EPS = 0.011;
@@ -287,6 +299,18 @@ export function routingStatus(design, positions) {
 							],
 				});
 		}
+		// a copper pour joins every pad, via and track of its net that lies on it (KiCad's DRC has the last word on islands)
+		if (board)
+			d.zones
+				.filter((z) => z.net === net)
+				.forEach((z, zi) =>
+					items.push({
+						kind: "zone",
+						id: `zone:${zi}`,
+						layers: [z.layer],
+						poly: zoneBox(board),
+					}),
+				);
 		const polylineGroups = [];
 		d.tracks.forEach((t, ti) => {
 			if (t.net !== net) return;
@@ -331,9 +355,20 @@ export function routingStatus(design, positions) {
 				const a = items[i];
 				const b = items[j];
 				if (a.kind === "pad" && b.kind === "pad") continue;
+				if (a.kind === "zone" && b.kind === "zone") continue;
 				if (!a.layers.some((l) => b.layers.includes(l))) continue;
 				let touch = false;
-				if (a.kind === "seg" && b.kind === "seg")
+				if (a.kind === "zone" || b.kind === "zone") {
+					const [zone, other] = a.kind === "zone" ? [a, b] : [b, a];
+					const inside = (x, y) =>
+						x >= zone.poly.minX &&
+						x <= zone.poly.maxX &&
+						y >= zone.poly.minY &&
+						y <= zone.poly.maxY;
+					if (other.kind === "pad") touch = inside(other.pad.x, other.pad.y);
+					else if (other.kind === "via") touch = inside(other.x, other.y);
+					else touch = other.seg.some(([x, y]) => inside(x, y));
+				} else if (a.kind === "seg" && b.kind === "seg")
 					touch =
 						segSegDist(a.seg, b.seg) <= ((a.width + b.width) / 2) * 0 + EPS;
 				else if (a.kind === "seg" || b.kind === "seg") {

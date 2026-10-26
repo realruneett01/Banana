@@ -526,6 +526,44 @@ test("Studio end to end", { skip, timeout: 900000 }, async (t) => {
 	});
 
 	await t.test(
+		"copper pour: add a GND pour from the Parts panel, KiCad fills it, the checks stay clean, then remove it",
+		async () => {
+			await page.getByText(/^Parts$/).click();
+			await page.getByTestId("pours").waitFor();
+			await page.getByTestId("add-pour").click();
+			await page.getByTestId("pour-GND").waitFor({ timeout: 120000 });
+			await settled();
+			assert.deepEqual(P.loadDesign("led-demo").data.zones, [
+				{ net: "GND", layer: "B.Cu" },
+			]);
+			const board = fs.readFileSync(
+				path.join(projects, "led-demo", "led-demo.kicad_pcb"),
+				"utf8",
+			);
+			assert.match(
+				board,
+				/\(filled_polygon/,
+				"KiCad's fill is in the board file",
+			);
+			assert.match(
+				(await headCommit("led-demo")).message,
+				/Add GND pour on B\.Cu/,
+			);
+			const checks = await P.checkProject("led-demo", { commit: false });
+			assert.equal(checks.ok, true, JSON.stringify(checks.drc.issues));
+			await shot(page, "07c-pour");
+			await page.getByTestId("remove-pour-GND").click();
+			await page.waitForFunction(
+				() => !document.querySelector('[data-testid="pour-GND"]'),
+				null,
+				{ timeout: 120000 },
+			);
+			await settled();
+			assert.deepEqual(P.loadDesign("led-demo").data.zones, []);
+		},
+	);
+
+	await t.test(
 		"manufacturing check: the board meets the standard 2-layer limits",
 		async () => {
 			await page.getByTestId("check").click();

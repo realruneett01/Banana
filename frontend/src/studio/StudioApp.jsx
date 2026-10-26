@@ -526,6 +526,7 @@ export default function StudioApp({ onOpenDiff }) {
 											selected={studio.selected}
 											onSelect={studio.setSelected}
 											onAddPart={onAddPart}
+											onEdit={onInspectorEdit}
 											disabled={Boolean(busy)}
 										/>
 									),

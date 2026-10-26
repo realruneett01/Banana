@@ -199,7 +199,25 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 	const vias = [];
 	const failed = [];
 
+	// Copper pours connect their whole net by themselves. Only SMD pads on the far side need a via down to the pour.
+	const zoneOf = new Map(
+		(d.zones ?? [])
+			.filter((z) => d.nets[z.net])
+			.map((z) => [z.net, LAYERS.indexOf(z.layer)]),
+	);
+	const zoneLayers = new Set(zoneOf.values());
+	const padLayersOf = (p) =>
+		p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : [1];
+	const zoneStubs = [];
+	for (const [net, zl] of zoneOf)
+		for (const pin of d.nets[net].pins) {
+			const p = pads.get(pin);
+			if (p && !padLayersOf(p).includes(zl))
+				zoneStubs.push({ name: net, pins: [pin], size: 0, zoneGoal: zl });
+		}
+
 	const netList = Object.entries(d.nets)
+		.filter(([name]) => !zoneOf.has(name))
 		.filter(([, n]) => n.pins.filter((p) => pads.has(p)).length > 1)
 		.map(([name, n]) => {
 			const ps = n.pins.filter((p) => pads.has(p)).map((p) => pads.get(p));
@@ -217,9 +235,7 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 		})
 		.sort((a, b) => a.size - b.size || a.name.localeCompare(b.name));
 	if (orderSeed) netList.reverse();
-
-	const padLayersOf = (p) =>
-		p.thru ? [0, 1] : p.layers.includes("F.Cu") ? [0] : [1];
+	netList.unshift(...zoneStubs); // pours first: their vias claim space before the signals are routed
 
 	for (const net of netList) {
 		const id = netIds.get(net.name);
@@ -233,8 +249,9 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 		const netTracks = [];
 		const netVias = [];
 		let ok = true;
+		let reachedZone = false;
 
-		while (remaining.length) {
+		while (remaining.length || (net.zoneGoal !== undefined && !reachedZone)) {
 			// multi-source Dijkstra from connected cells to the nearest remaining pad
 			const dist = new Float64Array(2 * W * H).fill(Infinity);
 			const prev = new Int32Array(2 * W * H).fill(-1);
@@ -256,8 +273,8 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 				const [dd, l, c, r] = heap.pop();
 				const kk = key(l, c, r);
 				if (dd > dist[kk]) continue;
-				if (goal.has(kk)) {
-					found = goal.get(kk);
+				if (net.zoneGoal !== undefined ? l === net.zoneGoal : goal.has(kk)) {
+					found = net.zoneGoal !== undefined ? 0 : goal.get(kk);
 					foundKey = kk;
 					break;
 				}
@@ -277,7 +294,10 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 						pk >= 0 && Math.abs(((pk % W) | 0) - c) !== Math.abs(nc - c)
 							? 0.3
 							: 0;
-					const nd = dd + 1 + bend;
+					// signals keep off a copper pour's layer where they reasonably can
+					const lean =
+						net.zoneGoal === undefined && zoneLayers.has(l) ? 0.5 : 0;
+					const nd = dd + 1 + bend + lean;
 					if (nd < dist[nk]) {
 						dist[nk] = nd;
 						prev[nk] = kk;
@@ -354,6 +374,7 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 								stamp(l, toCol(v.x) + dc, toRow(v.y) + dr, id);
 			}
 			remaining.splice(found, 1);
+			reachedZone = true;
 			void target;
 		}
 		if (ok) {
@@ -374,10 +395,10 @@ export function autoroute(design, positions, board, { orderSeed = 0 } = {}) {
 	return {
 		tracks: withStubs,
 		vias,
-		failed,
+		failed: [...new Set(failed)],
 		stats: {
 			nets: netList.length,
-			routed: netList.length - failed.length,
+			routed: netList.length - new Set(failed).size,
 			grid: GRID,
 			trackWidth: TRACK_W,
 		},

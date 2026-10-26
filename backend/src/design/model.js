@@ -34,6 +34,7 @@ export function emptyDesign(name, title = "") {
 		noConnect: [],
 		tracks: [],
 		vias: [],
+		zones: [],
 		tests: [],
 	};
 }
@@ -47,7 +48,7 @@ export class Design {
 	static from(data) {
 		if (!data || typeof data !== "object" || data.schemaVersion !== 1)
 			fail("Unsupported or corrupt design file");
-		for (const k of ["parts", "tracks", "vias", "tests", "noConnect"])
+		for (const k of ["parts", "tracks", "vias", "zones", "tests", "noConnect"])
 			if (!Array.isArray(data[k])) data[k] = [];
 		if (!data.nets || typeof data.nets !== "object") data.nets = {};
 		return new Design(data);
@@ -127,6 +128,7 @@ export class Design {
 			if (net.pins.length === 0 && !net.power && !net.external)
 				delete this.data.nets[name];
 		}
+		this.data.zones = this.data.zones.filter((z) => this.data.nets[z.net]);
 		this.data.noConnect = this.data.noConnect.filter(
 			(p) => !p.startsWith(`${ref}.`),
 		);
@@ -227,6 +229,7 @@ export class Design {
 			net.pins = net.pins.filter((p) => p !== pin);
 			if (net.pins.length === 0 && !net.external) delete this.data.nets[name];
 		}
+		this.data.zones = this.data.zones.filter((z) => this.data.nets[z.net]);
 	}
 
 	renameNet(from, to) {
@@ -235,6 +238,7 @@ export class Design {
 		if (this.data.nets[to]) fail(`Net "${to}" already exists`);
 		this.data.nets[to] = this.data.nets[from];
 		delete this.data.nets[from];
+		for (const z of this.data.zones) if (z.net === from) z.net = to;
 	}
 
 	setNetFlags(name, { power, external }) {
@@ -298,6 +302,29 @@ export class Design {
 		this.data.vias.push({ net, x: round(x), y: round(y), size, drill });
 	}
 
+	/** A copper pour over the whole board on one layer, connected to `net` (KiCad fills it). */
+	addZone({ net, layer = "B.Cu" }) {
+		if (!this.data.nets[net]) fail(`No net "${net}"`);
+		if (!["F.Cu", "B.Cu"].includes(layer))
+			fail('layer must be "F.Cu" or "B.Cu"');
+		if (this.data.zones.some((z) => z.net === net && z.layer === layer))
+			fail(`Net "${net}" already has a copper pour on ${layer}`);
+		if (this.data.zones.some((z) => z.layer === layer))
+			fail(
+				`${layer} already has a copper pour for another net; one whole-board pour per layer`,
+			);
+		this.data.zones.push({ net, layer });
+	}
+
+	removeZone(net, layer) {
+		const before = this.data.zones.length;
+		this.data.zones = this.data.zones.filter(
+			(z) => !(z.net === net && (!layer || z.layer === layer)),
+		);
+		if (this.data.zones.length === before)
+			fail(`No copper pour for net "${net}"${layer ? ` on ${layer}` : ""}`);
+	}
+
 	clearRouting() {
 		this.data.tracks = [];
 		this.data.vias = [];
@@ -350,6 +377,7 @@ export class Design {
 			noConnect: d.noConnect,
 			trackCount: d.tracks.length,
 			viaCount: d.vias.length,
+			zones: d.zones,
 			tests: d.tests.map((t) => t.name),
 		};
 	}

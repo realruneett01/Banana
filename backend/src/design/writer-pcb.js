@@ -205,7 +205,28 @@ function boardTitle(d, footprints, positions, { minX, minY, board }) {
 	return `  (gr_text ${q(text)} (at ${f(box.minX)} ${f((box.minY + box.maxY) / 2)}) (layer "F.SilkS") (tstamp ${stableUuid(`${d.name}:title`)}) (effects (font (size 1 1) (thickness 0.15)) (justify left)))`;
 }
 
-export function writePcb(design) {
+/** Distance between the board outline and a pour's edge. KiCad's default copper-to-edge clearance is 0.5 mm. */
+export const ZONE_EDGE_INSET = 0.5;
+
+/** Corners of the copper pour polygon for a board with its outline at (originX, originY). */
+export function zonePolygon(board) {
+	const x0 = board.originX + ZONE_EDGE_INSET;
+	const y0 = board.originY + ZONE_EDGE_INSET;
+	const x1 = board.originX + board.width - ZONE_EDGE_INSET;
+	const y1 = board.originY + board.height - ZONE_EDGE_INSET;
+	return [
+		[x0, y0],
+		[x1, y0],
+		[x1, y1],
+		[x0, y1],
+	];
+}
+
+/**
+ * `zoneFills` maps "net|layer" to the (filled_polygon ...) text KiCad computed for that pour; without it the
+ * zones are written unfilled (KiCad fills them itself when it opens the board).
+ */
+export function writePcb(design, { zoneFills } = {}) {
 	const d = design.data;
 	const netIds = new Map([["", 0]]);
 	for (const name of Object.keys(d.nets).sort()) netIds.set(name, netIds.size);
@@ -298,6 +319,17 @@ export function writePcb(design) {
 			`  (via (at ${f(v.x)} ${f(v.y)}) (size ${v.size}) (drill ${v.drill}) (layers "F.Cu" "B.Cu") (net ${netIds.get(v.net)}) (tstamp ${stableUuid(`${d.name}:via:${i}`)}))`,
 		);
 	});
+	d.zones
+		.filter((z) => netIds.has(z.net))
+		.forEach((z, i) => {
+			const pts = zonePolygon({ originX: minX, originY: minY, ...board })
+				.map(([x, y]) => `(xy ${f(x)} ${f(y)})`)
+				.join(" ");
+			const fills = zoneFills?.get(`${z.net}|${z.layer}`) ?? "";
+			out.push(
+				`  (zone (net ${netIds.get(z.net)}) (net_name ${q(z.net)}) (layer ${q(z.layer)}) (tstamp ${stableUuid(`${d.name}:zone:${i}`)}) (hatch edge 0.5) (connect_pads (clearance 0.2)) (min_thickness 0.25) (filled_areas_thickness no) (fill yes (thermal_gap 0.3) (thermal_bridge_width 0.3)) (polygon (pts ${pts}))${fills ? ` ${fills}` : ""})`,
+			);
+		});
 	out.push(")", "");
 	return {
 		text: out.join("\n"),

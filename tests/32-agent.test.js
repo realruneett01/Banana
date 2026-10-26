@@ -86,6 +86,7 @@ test("schema conversion: every real tool becomes a valid Gemini declaration", ()
 	assert.deepEqual(decls.map((d) => d.name).sort(), [
 		"add_test",
 		"autoroute",
+		"dfm_check",
 		"diff",
 		"edit",
 		"export",
@@ -1077,5 +1078,5 @@ test("POST /api/design/agent streams events over SSE", {
 	});
 });
 
-test("the tool registry still exposes exactly what it did (only the export tool was added)", () =>
-	assert.equal(TOOLS.length, 17));
+test("the tool registry still exposes exactly what it did (only export and dfm_check were added)", () =>
+	assert.equal(TOOLS.length, 18));

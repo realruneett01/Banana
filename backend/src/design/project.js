@@ -28,6 +28,24 @@ import {
 } from "./views.js";
 import { writeSchematic } from "./writer-sch.js";
 import { rotatedBox, writePcb, writeProjectFile } from "./writer-pcb.js";
+import { fillZones } from "./zonefill.js";
+
+/**
+ * The board as it is written to disk: the pure writer's output plus KiCad's own fill for any copper pours.
+ * `zones` reports what happened to the fill (ok, unavailable, error) so callers can say so.
+ */
+export async function pcbFor(design) {
+	const unfilled = writePcb(design);
+	if (!design.data.zones.length)
+		return { ...unfilled, zones: { status: "none" } };
+	const fill = await fillZones(unfilled.text);
+	if (fill.status !== "ok")
+		return { ...unfilled, zones: { status: fill.status, reason: fill.reason } };
+	return {
+		...writePcb(design, { zoneFills: fill.fills }),
+		zones: { status: "ok", filled: fill.fills.size },
+	};
+}
 
 const execGit = promisify(execFile);
 export const PROJECT_NAME = /^[a-z0-9][a-z0-9_-]{0,47}$/;
@@ -156,7 +174,7 @@ export async function build(
 	const dir = projectDir(name);
 	const design = loadDesign(name);
 	const sch = writeSchematic(design);
-	const pcb = writePcb(design);
+	const pcb = await pcbFor(design);
 	fs.writeFileSync(path.join(dir, `${name}.kicad_sch`), sch);
 	fs.writeFileSync(path.join(dir, `${name}.kicad_pcb`), pcb.text);
 	fs.writeFileSync(path.join(dir, `${name}.kicad_pro`), writeProjectFile(name));
@@ -180,6 +198,7 @@ export async function build(
 			project: `${name}.kicad_pro`,
 		},
 		board: pcb.board,
+		zones: pcb.zones,
 		placements: pcb.positions,
 		directory: dir,
 		openInKicad: path.join(dir, `${name}.kicad_pro`),
@@ -350,7 +369,7 @@ export async function checkProject(name, { commit = true } = {}) {
 	const drc = await kicadDrc(pcbPath);
 	const placement = placementLite(design, pcb.positions, pcb.board);
 	const copper = copperLite(design, pcb.positions);
-	const routing = routingStatus(design, pcb.positions);
+	const routing = routingStatus(design, pcb.positions, pcb.board);
 	const unrouted = Object.entries(routing)
 		.filter(([, r]) => r.pads > 1 && !r.routed)
 		.map(([net, r]) => ({ net, islands: r.islands }));
@@ -439,7 +458,7 @@ export async function autoRoute(name, { orderSeed = 0 } = {}) {
 export async function projectState(name) {
 	const dir = projectDir(name);
 	const design = loadDesign(name);
-	const pcb = writePcb(design);
+	const pcb = await pcbFor(design);
 	const boardFile = path.join(dir, `${name}.kicad_pcb`);
 	const built = fs.existsSync(boardFile);
 	const needsBuild = !built || fs.readFileSync(boardFile, "utf8") !== pcb.text;
@@ -492,6 +511,7 @@ export async function projectState(name) {
 		needsBuild,
 		board: pcb.board,
 		transform: boardViewTransform(pcb.board),
+		zones: design.data.zones.map((z) => ({ ...z, fill: pcb.zones?.status })),
 		canUndo: Boolean(await revParse(dir, "HEAD~1")),
 		canRedo: readRedo(dir).length > 0,
 		parts,
@@ -572,7 +592,7 @@ export async function diffWorking(
 		fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 		fs.writeFileSync(
 			targetPath,
-			file === "board" ? writePcb(design).text : writeSchematic(design),
+			file === "board" ? (await pcbFor(design)).text : writeSchematic(design),
 		);
 		return await computeDiff({
 			basePath,

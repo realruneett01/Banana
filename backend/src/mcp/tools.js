@@ -166,6 +166,8 @@ const OPS = {
 	set_board: (d, a) => d.setBoard(a.width, a.height),
 	add_track: (d, a) => d.addTrack(a),
 	add_via: (d, a) => d.addVia(a),
+	add_zone: (d, a) => d.addZone({ net: a.net, layer: a.layer }),
+	remove_zone: (d, a) => d.removeZone(a.net, a.layer),
 	clear_routing: (d) => d.clearRouting(),
 	add_test: (d, a) => d.addTest(a.test),
 };
