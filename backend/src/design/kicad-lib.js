@@ -97,6 +97,11 @@ function symbolFile(lib, opts) {
  * Reads a library symbol and returns its pins and the exact text needed to embed it in a schematic.
  * `(extends "Parent")` symbols are flattened onto their parent, as KiCad does when it embeds them.
  */
+/** Older libraries mark power symbols "(power)"; KiCad 9 and newer write "(power global)" or "(power local)". */
+export function isPowerSymbolText(text) {
+	return /\(power(?:\s+\w+)?\)/.test(String(text).slice(0, 600));
+}
+
 export function getSymbol(libId, opts) {
 	const id = parseLibId(libId);
 	if (!id) return null;
@@ -170,7 +175,7 @@ export function getSymbol(libId, opts) {
 			(prop("Reference") || "U").replace(/[^A-Za-z#]/g, "") || "U",
 		defaultFootprint: prop("Footprint"),
 		fpFilters: prop("ki_fp_filters"),
-		isPower: /\(power\)/.test(ownText.slice(0, 600)),
+		isPower: isPowerSymbolText(ownText),
 		pins,
 		units: [...units].sort((a, b) => a - b),
 		/** Text of the symbol block renamed to `Lib:Name`, ready for the schematic's lib_symbols. */

@@ -77,11 +77,13 @@ jobs:
       - name: Capabilities detected for this KiCad
         run: node -e "import('./backend/src/config.js').then(async c=>{const k=await import('./backend/src/kicad-compat.js');console.log(k.describeCapabilities(k.getCapabilities({cliPath:c.config.kicadCliPath,version:c.config.kicadVersion})))})"
       - name: Tests
+        shell: bash
         run: |
           set -o pipefail
           npm test 2>&1 | tee test.log
       - name: Failures from the test run (the full log is too long to read)
         if: failure()
+        shell: bash
         run: grep -n -E -B1 -A18 '^[[:space:]]*not ok ' test.log | head -600 || true
       - name: What this KiCad does with a small board
         if: failure()

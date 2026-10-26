@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { isolatedGitEnv } from "../scripts/lib/git-env.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -42,11 +43,7 @@ export function git(cwd, ...args) {
 		cwd,
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
-		env: {
-			...process.env,
-			GIT_CONFIG_GLOBAL: os.devNull,
-			GIT_CONFIG_SYSTEM: os.devNull,
-		},
+		env: isolatedGitEnv(),
 	});
 }
 

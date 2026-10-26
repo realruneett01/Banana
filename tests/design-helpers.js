@@ -30,13 +30,19 @@ export function randomCircuit(
 	const r = rng(seed);
 	const syms = Object.keys(FOOTPRINTS);
 	const n = int(r, minParts, maxParts);
-	for (let i = 0; i < n; i++) {
+	// only parts the installed libraries have (the set of symbols differs between KiCad versions)
+	for (let i = 0, tries = 0; i < n && tries < n * 20; tries++) {
 		const symbol = pick(r, syms);
-		design.addPart({
-			symbol,
-			value: pick(r, VALUES[symbol] ?? ["CONN"]),
-			footprint: FOOTPRINTS[symbol],
-		});
+		try {
+			design.addPart({
+				symbol,
+				value: pick(r, VALUES[symbol] ?? ["CONN"]),
+				footprint: FOOTPRINTS[symbol],
+			});
+			i++;
+		} catch (err) {
+			if (!/not found/.test(err.message)) throw err;
+		}
 	}
 	const pins = design.parts.flatMap((p) =>
 		design.symbolOf(p).pins.map((pin) => `${p.ref}.${pin.number}`),
