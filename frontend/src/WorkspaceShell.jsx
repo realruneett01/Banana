@@ -1,6 +1,15 @@
 import React, { useEffect, useState } from "react";
 import { API_BASE_URL } from "./config.js";
-import { Space, Button, Tag, Typography, Badge, Tooltip, Avatar, Segmented } from "antd";
+import {
+	Space,
+	Button,
+	Tag,
+	Typography,
+	Badge,
+	Tooltip,
+	Avatar,
+	Segmented,
+} from "antd";
 import {
 	FileSearchOutlined,
 	RobotOutlined,
