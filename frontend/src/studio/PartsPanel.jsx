@@ -163,21 +163,39 @@ function PoursSection({ state, onEdit, disabled }) {
 	const zones = state?.zones ?? [];
 	useEffect(() => {
 		if (!net || !nets.includes(net))
-			setNet(nets.find((n) => /^(GND|AGND|DGND|VSS)$/i.test(n)) ?? nets[0] ?? "");
+			setNet(
+				nets.find((n) => /^(GND|AGND|DGND|VSS)$/i.test(n)) ?? nets[0] ?? "",
+			);
 	}, [nets, net]);
 	if (!nets.length) return null;
 	return (
-		<div data-testid="pours" style={{ borderTop: "1px solid #232738", paddingTop: 10 }}>
+		<div
+			data-testid="pours"
+			style={{ borderTop: "1px solid #232738", paddingTop: 10 }}
+		>
 			<Text type="secondary" style={{ fontSize: 12 }}>
 				Copper pour
 			</Text>
 			{zones.map((z) => (
-				<div key={`${z.net}|${z.layer}`} style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0" }} data-testid={`pour-${z.net}`}>
+				<div
+					key={`${z.net}|${z.layer}`}
+					style={{
+						display: "flex",
+						alignItems: "center",
+						gap: 8,
+						margin: "6px 0",
+					}}
+					data-testid={`pour-${z.net}`}
+				>
 					<Tag color="blue" style={{ margin: 0 }}>
 						{z.net} · {z.layer}
 					</Tag>
 					{z.fill && z.fill !== "ok" && (
-						<Text type="warning" style={{ fontSize: 11 }} title="KiCad's Python module is needed to draw the fill here">
+						<Text
+							type="warning"
+							style={{ fontSize: 11 }}
+							title="KiCad's Python module is needed to draw the fill here"
+						>
 							not filled
 						</Text>
 					)}
@@ -187,14 +205,27 @@ function PoursSection({ state, onEdit, disabled }) {
 						danger
 						disabled={disabled}
 						data-testid={`remove-pour-${z.net}`}
-						onClick={() => onEdit([{ op: "remove_zone", net: z.net, layer: z.layer }], `Remove ${z.net} pour`, { reroute: true })}
+						onClick={() =>
+							onEdit(
+								[{ op: "remove_zone", net: z.net, layer: z.layer }],
+								`Remove ${z.net} pour`,
+								{ reroute: true },
+							)
+						}
 					>
 						Remove
 					</Button>
 				</div>
 			))}
 			<Space.Compact style={{ width: "100%", marginTop: 6 }}>
-				<Select size="small" value={net} onChange={setNet} options={nets.map((n) => ({ value: n }))} style={{ flex: 1 }} data-testid="pour-net" />
+				<Select
+					size="small"
+					value={net}
+					onChange={setNet}
+					options={nets.map((n) => ({ value: n }))}
+					style={{ flex: 1 }}
+					data-testid="pour-net"
+				/>
 				<Select
 					size="small"
 					value={layer}
@@ -210,7 +241,13 @@ function PoursSection({ state, onEdit, disabled }) {
 					size="small"
 					disabled={disabled || !net || zones.some((z) => z.layer === layer)}
 					data-testid="add-pour"
-					onClick={() => onEdit([{ op: "add_zone", net, layer }], `Add ${net} pour on ${layer}`, { reroute: true })}
+					onClick={() =>
+						onEdit(
+							[{ op: "add_zone", net, layer }],
+							`Add ${net} pour on ${layer}`,
+							{ reroute: true },
+						)
+					}
 				>
 					Add pour
 				</Button>
