@@ -158,7 +158,16 @@ test("REGRESSION: preflight self-test still passes when login and an access toke
 
 test("preflight --json prints only JSON on stdout (library logging goes to stderr)", async () => {
 	const { execFileSync } = await import("node:child_process");
-	const out = execFileSync(process.execPath, [path.resolve("scripts/preflight.mjs"), "--json", "--skip-selftest", "--no-write"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60000 });
+	const out = execFileSync(
+		process.execPath,
+		[
+			path.resolve("scripts/preflight.mjs"),
+			"--json",
+			"--skip-selftest",
+			"--no-write",
+		],
+		{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 60000 },
+	);
 	const parsed = JSON.parse(out);
 	assert.ok(Array.isArray(parsed.results));
 	assert.ok(parsed.results.some((r) => r.id === "kicad"));
