@@ -55,12 +55,13 @@ const SYNTHETIC8 = {
 		"svg",
 	]),
 	schExport: usage("export", ["bom", "dxf", "netlist", "pdf", "svg"]),
-	pcbExportSvg: svgHelp(["--mode-multi"]),
+	pcbExportSvg: svgHelp(), // KiCad 8.0.9 really has no --mode-multi (CI log of kicad/kicad:8.0)
 };
 const SYNTHETIC9 = {
 	...SYNTHETIC8,
 	pcb: usage("pcb", ["drc", "export", "render", "upgrade"]),
 	sch: usage("sch", ["erc", "export", "upgrade"]),
+	pcbExportSvg: svgHelp(["--mode-multi"]), // added in KiCad 9
 };
 const SYNTHETIC10 = {
 	...SYNTHETIC9,
@@ -171,17 +172,17 @@ test("capabilities from the real KiCad 7 help: per-layer SVG, no CLI ERC/DRC/3D"
 });
 
 test("capabilities branch correctly for newer versions (synthetic help)", async (t) => {
-	for (const [ver, help, render] of [
-		["8.0.4", SYNTHETIC8, false],
-		["9.0.1", SYNTHETIC9, true],
-		["10.0.0", SYNTHETIC10, true],
+	for (const [ver, help, multi, render] of [
+		["8.0.4", SYNTHETIC8, false, false],
+		["9.0.1", SYNTHETIC9, true, true],
+		["10.0.0", SYNTHETIC10, true, true],
 	]) {
 		await t.test(`KiCad ${ver}`, () => {
 			const c = capabilitiesFromHelp(ver, help);
 			assert.equal(c.major, Number.parseInt(ver, 10));
 			assert.deepEqual(
 				[c.hasErc, c.hasDrc, c.svg.multiMode, c.hasRender3d],
-				[true, true, true, render],
+				[true, true, multi, render],
 			);
 			assert.ok(c.schExports.includes("bom"));
 			assert.match(describeCapabilities(c), new RegExp(`KiCad ${ver}`));
@@ -233,7 +234,7 @@ test("getCapabilities: probes once, remembers, falls back safely", async (t) => 
 			run: () => "",
 		});
 		assert.equal(c.source, "table");
-		assert.deepEqual([c.hasErc, c.hasDrc, c.svg.multiMode], [true, true, true]);
+		assert.deepEqual([c.hasErc, c.hasDrc, c.svg.multiMode], [true, true, false]);
 	});
 	await t.test("a throwing run is not fatal to the table fallback", () => {
 		assert.throws(
@@ -257,7 +258,7 @@ test("fallback table by major version (unknown versions are treated as modern, a
 	const cases = [
 		["7.0.11", false, false, false, false],
 		["6.0.0", false, false, false, false],
-		["8.0.0", true, true, true, false],
+		["8.0.0", true, true, false, false],
 		["9.0.0", true, true, true, true],
 		["10.0.0", true, true, true, true],
 		["11.0.0", true, true, true, true],
@@ -275,11 +276,11 @@ test("fallback table by major version (unknown versions are treated as modern, a
 });
 
 test("renderer: SVG strategy follows capabilities, not just the version string", async (t) => {
-	for (const v of ["7.0.11", "7.0.0", "6.0.0"])
+	for (const v of ["7.0.11", "7.0.0", "6.0.0", "8.0.0", "8.0.9"])
 		await t.test(`supportsModeMulti(${v}) is false`, () =>
 			assert.equal(supportsModeMulti(v), false),
 		);
-	for (const v of ["8.0.0", "9.0.1", "10.0.0", "11.0.0"])
+	for (const v of ["9.0.1", "10.0.0", "11.0.0"])
 		await t.test(`supportsModeMulti(${v}) is true`, () =>
 			assert.equal(supportsModeMulti(v), true),
 		);

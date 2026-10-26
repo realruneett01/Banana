@@ -295,8 +295,16 @@ test("rotation: library symbols turned by the layout still land their pins on th
 	skip,
 }, () => {
 	const d = new Design(emptyDesign("rot"));
+	// the transistor symbols differ between library versions: use whichever three-pin NPN is installed
+	const npn = [
+		"Device:Q_NPN_BCE",
+		"Device:Q_NPN_BEC",
+		"Device:Q_NPN_CBE",
+		"Device:Q_NPN_EBC",
+	].find((id) => getSymbol(id)?.pins.length === 3);
+	assert.ok(npn, "an installed three-pin NPN symbol");
 	d.addPart({
-		symbol: "Device:Q_NPN_BCE",
+		symbol: npn,
 		value: "BC847",
 		footprint: "Package_TO_SOT_SMD:SOT-23",
 	});

@@ -9,13 +9,13 @@ import {
 } from "../backend/src/kicad-renderer.js";
 import { tmpDir } from "./helpers.js";
 
-test("supportsModeMulti: --mode-multi exists from KiCad 8", async (t) => {
+test("supportsModeMulti: --mode-multi exists from KiCad 9 (8.0.9's own help does not list it)", async (t) => {
 	const cases = [
 		["7.0.11", false],
 		["7.0.0", false],
 		["6.0.2", false],
-		["8.0.0", true],
-		["8.0.9", true],
+		["8.0.0", false],
+		["8.0.9", false],
 		["9.0.1", true],
 		["10.0.0", true],
 		["11.0.0-rc1", true],

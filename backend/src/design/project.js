@@ -100,6 +100,21 @@ async function git(dir, ...args) {
 	return stdout;
 }
 
+/** Local files KiCad writes next to a project (exports, caches, per-user view settings) are never design history. */
+const IGNORED = ["results/", "*.bak", "*-backups/", "fp-info-cache", "*.kicad_prl"];
+const GITIGNORE = `${IGNORED.join("\n")}\n`;
+function ensureIgnored(dir) {
+	const file = path.join(dir, ".gitignore");
+	const have = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+	const lines = new Set(have.split(/\r?\n/));
+	const missing = IGNORED.filter((l) => !lines.has(l));
+	if (missing.length)
+		fs.writeFileSync(
+			file,
+			`${have}${have && !have.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n`,
+		);
+}
+
 const stableJson = (data) => `${JSON.stringify(data, null, 2)}\n`;
 
 export function listProjects() {
@@ -142,7 +157,7 @@ export async function createProject(name, title = "") {
 	);
 	fs.writeFileSync(
 		path.join(dir, ".gitignore"),
-		"results/\n*.bak\n*-backups/\nfp-info-cache\n",
+		GITIGNORE,
 	);
 	await git(dir, "add", "-A");
 	await git(dir, "commit", "-q", "-m", "Create project");
@@ -173,6 +188,7 @@ export async function build(
 ) {
 	const dir = projectDir(name);
 	const design = loadDesign(name);
+	ensureIgnored(dir);
 	const sch = writeSchematic(design);
 	const pcb = await pcbFor(design);
 	fs.writeFileSync(path.join(dir, `${name}.kicad_sch`), sch);

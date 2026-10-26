@@ -803,6 +803,26 @@ export async function kicadDrc(pcbPath) {
 	}
 }
 
+/**
+ * Nets of a KiCad s-expression netlist as Map(name -> sorted "REF.PIN"). KiCad 7 and 8 write each net on
+ * one line, KiCad 10 spreads it over many lines with a `(class ...)` entry; whitespace is therefore free.
+ */
+export function parseKicadNetlist(text) {
+	const got = new Map();
+	for (const chunk of String(text).split(/\(net\s+\(code\s+"\d+"\)\s*/).slice(1)) {
+		const nameMatch = /^\(name\s+"((?:[^"\\]|\\.)*)"\)/.exec(chunk);
+		if (!nameMatch) continue;
+		const name = nameMatch[1].replace(/^\//, "");
+		const pins = [
+			...chunk.matchAll(/\(node\s+\(ref\s+"([^"]+)"\)\s*\(pin\s+"([^"]+)"\)/g),
+		]
+			.map((n) => `${n[1]}.${n[2]}`)
+			.filter((p) => !p.startsWith("#"));
+		if (pins.length) got.set(name, pins.sort());
+	}
+	return got;
+}
+
 /** Connectivity as KiCad itself sees it: exports the netlist and compares it with the design. */
 export async function netlistParity(design, schPath) {
 	if (!config.kicadCliPath)
@@ -830,19 +850,7 @@ export async function netlistParity(design, schPath) {
 			],
 			{ timeout: config.renderTimeoutMs },
 		);
-		const text = fs.readFileSync(tmp, "utf8");
-		const got = new Map();
-		for (const chunk of text.split(/\(net \(code "\d+"\) /).slice(1)) {
-			const nameMatch = /^\(name "((?:[^"\\]|\\.)*)"\)/.exec(chunk);
-			if (!nameMatch) continue;
-			const name = nameMatch[1].replace(/^\//, "");
-			const pins = [
-				...chunk.matchAll(/\(node \(ref "([^"]+)"\) \(pin "([^"]+)"\)/g),
-			]
-				.map((n) => `${n[1]}.${n[2]}`)
-				.filter((p) => !p.startsWith("#"));
-			if (pins.length) got.set(name, pins.sort());
-		}
+		const got = parseKicadNetlist(fs.readFileSync(tmp, "utf8"));
 		const mismatches = [];
 		for (const [name, net] of Object.entries(design.data.nets)) {
 			const want = [...net.pins].sort();

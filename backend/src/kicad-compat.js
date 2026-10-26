@@ -72,7 +72,8 @@ export function fallbackCapabilities(version) {
 			? ["bom", "dxf", "hpgl", "netlist", "pdf", "ps", "python-bom", "svg"]
 			: ["dxf", "hpgl", "netlist", "pdf", "ps", "python-bom", "svg"],
 		svg: {
-			multiMode: modern,
+			// `--mode-multi` appeared in KiCad 9 (8.0.9's `pcb export svg --help` does not list it)
+			multiMode: v.major >= 9 || v.major === 0,
 			pageSizeMode: true,
 			excludeDrawingSheet: true,
 			theme: true,

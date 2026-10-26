@@ -126,6 +126,21 @@ try {
 			),
 		);
 	}
+	// how this KiCad writes reference text: the diff engine finds components through it
+	for (const sv of files.filter((x) => /F_Silk/.test(x.filename))) {
+		const lines = sv.content.split("\n");
+		const hit = (l) => /R1|<desc|<text|stroked|<g\b[^>]*class=|<title/.test(l);
+		const idx = lines.map((l, i) => (hit(l) ? i : -1)).filter((i) => i >= 0);
+		console.log(`silk ${sv.filename}: ${lines.length} lines, ${idx.length} matching`);
+		console.log(
+			idx
+				.slice(0, 14)
+				.map((i) => `${i}: ${lines[i].slice(0, 160)}`)
+				.join("\n"),
+		);
+		const r1 = sv.content.indexOf("R1");
+		if (r1 >= 0) console.log("around R1:", JSON.stringify(sv.content.slice(Math.max(0, r1 - 300), r1 + 300)));
+	}
 	const f = files.find((s) => /F_Cu/.test(s.filename)) ?? files[0];
 	if (f) {
 		console.log("first 700 chars of", f.filename);
@@ -196,4 +211,32 @@ try {
 	console.log(nets.slice(0, 1800));
 } catch (e) {
 	console.log("netlist diagnostic failed:", e.stack ?? e.message);
+}
+
+section("board with a GND pour: DRC");
+try {
+	console.log(cli("pcb", "drc", "--help").split("\n").slice(0, 40).join("\n"));
+	await P.createProject("pour");
+	const z = P.loadDesign("pour");
+	z.addPart({ symbol: "Device:R", value: "1k", footprint: R, at: { x: 30, y: 30 } });
+	z.addPart({ symbol: "Device:R", value: "2k", footprint: R, at: { x: 40, y: 30 } });
+	z.connect("GND", ["R1.2", "R2.2"]);
+	z.connect("SIG", ["R1.1", "R2.1"]);
+	z.setBoard(40, 30);
+	z.addZone({ net: "GND", layer: "B.Cu" });
+	P.saveDesign("pour", z);
+	await P.build("pour", "pour");
+	const pcb = path.join(P.projectDir("pour"), "pour.kicad_pcb");
+	const text = fs.readFileSync(pcb, "utf8");
+	const at = text.indexOf("(zone");
+	console.log("zone block start:", JSON.stringify(text.slice(at, at + 700)));
+	console.log("filled_polygon count:", (text.match(/filled_polygon/g) ?? []).length);
+	if (!caps.hasDrc) throw new Error("this KiCad has no `pcb drc` command (skipped)");
+	const out = path.join(P.projectDir("pour"), "drc.json");
+	console.log(cli("pcb", "drc", "--format", "json", "--severity-all", "--all-track-errors", "-o", out, pcb).slice(0, 300));
+	const j = JSON.parse(fs.readFileSync(out, "utf8"));
+	console.log("unconnected:", JSON.stringify(j.unconnected_items ?? []).slice(0, 1200));
+	console.log("violations:", JSON.stringify((j.violations ?? []).map((v) => v.type)));
+} catch (e) {
+	console.log("pour diagnostic failed:", e.stack ?? e.message);
 }

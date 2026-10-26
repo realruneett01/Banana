@@ -44,16 +44,24 @@ export async function extractFileFromCommit(
 
 	return new Promise((resolve, reject) => {
 		let settled = false;
+		let writeStream;
 		const fail = (err) => {
 			if (settled) return;
 			settled = true;
-			fs.rm(outputPath, { force: true }, () => reject(err));
+			// The stream may still be opening the file: remove it only once the stream is closed, or the
+			// open can land after the removal and leave a partial file behind (seen on Windows).
+			const removeFile = () => fs.rm(outputPath, { force: true }, () => reject(err));
+			if (writeStream.closed) removeFile();
+			else {
+				writeStream.once("close", removeFile);
+				writeStream.destroy();
+			}
 		};
 
 		const child = spawn("git", ["show", `${commitHash}:${gitFilePath}`], {
 			cwd: repoPath,
 		});
-		const writeStream = fs.createWriteStream(outputPath);
+		writeStream = fs.createWriteStream(outputPath);
 		child.stdout.pipe(writeStream);
 
 		let stderrData = "";

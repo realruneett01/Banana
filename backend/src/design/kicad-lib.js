@@ -220,7 +220,8 @@ export function listSymbolIds(opts) {
 		if (!f.endsWith(".kicad_sym")) continue;
 		const lib = f.slice(0, -".kicad_sym".length);
 		const text = fs.readFileSync(path.join(root, f), "utf8");
-		const re = /^ {2}\(symbol "((?:[^"\\]|\\.)*)"/gm;
+		// top-level symbols are indented by two spaces (KiCad 7) or one tab (KiCad 8 and newer)
+		const re = /^(?: {2}|\t)\(symbol "((?:[^"\\]|\\.)*)"/gm;
 		for (let m = re.exec(text); m; m = re.exec(text))
 			if (!/_\d+_\d+$/.test(m[1])) ids.push(`${lib}:${m[1]}`);
 	}
