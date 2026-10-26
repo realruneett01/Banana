@@ -236,17 +236,15 @@ export function summarizeDiff(payload) {
 			(a, m) => ({ ...a, [m.action]: (a[m.action] ?? 0) + 1 }),
 			{},
 		),
-		items: mods
-			.slice(0, 60)
-			.map((m) => ({
-				action: m.action,
-				type: m.type,
-				title: m.title,
-				detail: m.detail,
-				refDes: m.refDes,
-				net: m.net,
-				layer: m.layer,
-			})),
+		items: mods.slice(0, 60).map((m) => ({
+			action: m.action,
+			type: m.type,
+			title: m.title,
+			detail: m.detail,
+			refDes: m.refDes,
+			net: m.net,
+			layer: m.layer,
+		})),
 		layersProcessed: payload.telemetry?.layersProcessed,
 	};
 }
