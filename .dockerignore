@@ -18,6 +18,7 @@ backend/temp_storage
 scratch
 dist
 frontend/dist
+dist-desktop
 
 # Diagnostic scripts & documentation artifacts
 generate_pdf.mjs

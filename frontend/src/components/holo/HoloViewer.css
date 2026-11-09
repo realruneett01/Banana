@@ -1,0 +1,73 @@
+.holo-root { position: relative; width: 100%; height: 100%; min-height: 320px; overflow: hidden; background: #05070c; border-radius: 0 0 var(--bn-radius) var(--bn-radius); }
+.holo-canvas { position: absolute; inset: 0; }
+.holo-canvas canvas { width: 100% !important; height: 100% !important; }
+
+.holo-status {
+  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 10px;
+  padding: 24px; text-align: center; pointer-events: none;
+}
+.holo-status-title { font-size: 15px; font-weight: 700; color: var(--bn-accent); letter-spacing: 0.04em; }
+.holo-status-text { max-width: 420px; font-size: 12px; color: var(--bn-text-muted); line-height: 1.5; }
+
+.holo-tip {
+  position: absolute; pointer-events: none; padding: 3px 8px;
+  font: 12px ui-monospace, Consolas, monospace; color: #ffb547;
+  border: 1px solid rgba(255, 181, 71, 0.5); background: rgba(20, 10, 0, 0.7); border-radius: 4px;
+}
+.holo-readout {
+  position: absolute; left: 14px; bottom: 12px; pointer-events: none;
+  font: 11px ui-monospace, Consolas, monospace; color: var(--bn-text-muted); letter-spacing: 0.04em;
+}
+
+.holo-panel {
+  position: absolute; top: 12px; right: 12px; width: 270px; max-height: calc(100% - 24px);
+  display: flex; flex-direction: column;
+  background: rgba(18, 21, 28, 0.82); backdrop-filter: blur(8px);
+  border: 1px solid var(--bn-border-strong); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+.holo-sheet-handle { display: none; }
+.holo-panel-body { overflow: auto; padding: 12px; display: grid; gap: 10px; }
+
+.holo-section-title { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--bn-text-muted); }
+.holo-layers { display: grid; gap: 2px; }
+.holo-layer {
+  display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--bn-text); border-left: 2px solid transparent; transition: background 0.12s;
+}
+.holo-layer:hover { background: var(--bn-surface-3); }
+.holo-layer.is-solo { border-left-color: var(--bn-accent); background: var(--bn-accent-soft); }
+.holo-layer.is-off { opacity: 0.4; }
+.holo-swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.15); }
+.holo-layer-name { flex: 1; }
+.holo-layer-z { font: 11px ui-monospace, Consolas, monospace; color: var(--bn-text-faint); }
+.holo-eye {
+  all: unset; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 6px;
+  color: var(--bn-text-muted); cursor: pointer;
+}
+.holo-eye:hover { color: var(--bn-text); background: var(--bn-surface-2); }
+.holo-empty { font-size: 12px; color: var(--bn-text-faint); padding: 4px 6px; }
+
+.holo-row { display: grid; grid-template-columns: 78px 1fr; align-items: center; gap: 8px; font-size: 12px; color: var(--bn-text-muted); }
+.holo-row .ant-slider { margin: 6px 4px; }
+.holo-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+/* phones / narrow viewports: the panel becomes a bottom sheet */
+@media (max-width: 767px) {
+  .holo-panel {
+    top: auto; right: 0; left: 0; bottom: 0; width: auto; max-height: 62%;
+    border-radius: 14px 14px 0 0; border-bottom: none;
+    padding-bottom: env(safe-area-inset-bottom);
+    transform: translateY(calc(100% - 44px - env(safe-area-inset-bottom)));
+    transition: transform 0.25s ease;
+  }
+  .holo-panel.is-open { transform: none; }
+  .holo-sheet-handle {
+    all: unset; display: flex; align-items: center; justify-content: center; gap: 8px;
+    height: 44px; flex: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; color: var(--bn-text);
+  }
+  .holo-eye { width: 36px; height: 36px; }   /* 36px+ touch targets */
+  .holo-layer { padding: 8px 6px; font-size: 14px; }
+  .holo-readout { bottom: calc(52px + env(safe-area-inset-bottom)); left: 10px; font-size: 10px; }
+}

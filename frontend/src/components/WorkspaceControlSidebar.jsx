@@ -1,79 +1,113 @@
-import React from 'react';
-import { Layout, Space, Typography, Button, Segmented } from 'antd';
-import { SettingOutlined, MenuFoldOutlined, DesktopOutlined, GithubOutlined } from '@ant-design/icons';
-import { LocalRepoControls } from './LocalRepoControls.jsx';
-import GithubControls from './GithubControls.jsx';
-import { LayerSelector } from './LayerSelector.jsx';
+import {
+	DesktopOutlined,
+	GithubOutlined,
+	MenuFoldOutlined,
+	SettingOutlined,
+} from "@ant-design/icons";
+import { Button, Drawer, Layout, Segmented, Space } from "antd";
+import GithubControls from "./GithubControls.jsx";
+import { LayerSelector } from "./LayerSelector.jsx";
+import { LocalRepoControls } from "./LocalRepoControls.jsx";
 
 const { Sider } = Layout;
-const { Title } = Typography;
 
 export function WorkspaceControlSidebar({
-  leftCollapsed,
-  setLeftCollapsed,
-  onFolderDrop,
-  sourceMode,
-  onSourceModeChange,
-  localProps,
-  githubProps,
-  layerProps,
+	leftCollapsed,
+	setLeftCollapsed,
+	onFolderDrop,
+	sourceMode,
+	onSourceModeChange,
+	localProps,
+	githubProps,
+	layerProps,
+	compact = false,
 }) {
-  return (
-    <Sider
-      width={340}
-      collapsible
-      collapsed={leftCollapsed}
-      collapsedWidth={0}
-      trigger={null}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={onFolderDrop}
-      style={{
-        background: '#161821',
-        borderRight: leftCollapsed ? 'none' : '1px solid #232738',
-        padding: leftCollapsed ? 0 : '20px',
-        overflowY: 'auto',
-        height: 'calc(100vh - 64px)',
-        transition: 'all 0.2s',
-      }}
-    >
-      {!leftCollapsed && (
-        <Space direction="vertical" size="large" style={{ width: '100%' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-              <Title level={5} style={{ margin: 0, color: '#f5f5f5', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <SettingOutlined /> Repository Source
-              </Title>
-              <Button
-                type="text"
-                size="small"
-                icon={<MenuFoldOutlined />}
-                onClick={() => setLeftCollapsed(true)}
-                title="Hide Controls (Left Panel)"
-                style={{ color: '#94a3b8' }}
-              />
-            </div>
+	const body = (
+		<Space orientation="vertical" size="large" style={{ width: "100%" }}>
+			<div>
+				<div
+					style={{
+						display: "flex",
+						alignItems: "center",
+						justifyContent: "space-between",
+						marginBottom: "12px",
+					}}
+				>
+					<h5 className="bn-panel-title">
+						<SettingOutlined /> Repository Source
+					</h5>
+					{!compact && (
+						<Button
+							type="text"
+							size="small"
+							icon={<MenuFoldOutlined />}
+							onClick={() => setLeftCollapsed(true)}
+							title="Hide Controls (Left Panel)"
+							style={{ color: "var(--bn-text-muted)" }}
+						/>
+					)}
+				</div>
 
-            <Segmented
-              block
-              options={[
-                { label: 'Local Git', value: 'local', icon: <DesktopOutlined /> },
-                { label: 'GitHub Cloud', value: 'github', icon: <GithubOutlined /> }
-              ]}
-              value={sourceMode}
-              onChange={onSourceModeChange}
-              style={{ marginBottom: '16px', background: '#0f1015' }}
-            />
+				<Segmented
+					block
+					options={[
+						{ label: "Local Git", value: "local", icon: <DesktopOutlined /> },
+						{
+							label: "GitHub Cloud",
+							value: "github",
+							icon: <GithubOutlined />,
+						},
+					]}
+					value={sourceMode}
+					onChange={onSourceModeChange}
+					style={{ marginBottom: "16px" }}
+				/>
 
-            {sourceMode === 'local' ? (
-              <LocalRepoControls {...localProps} />
-            ) : (
-              <GithubControls {...githubProps} />
-            )}
-          </div>
+				{sourceMode === "local" ? (
+					<LocalRepoControls {...localProps} />
+				) : (
+					<GithubControls {...githubProps} />
+				)}
+			</div>
 
-          <LayerSelector {...layerProps} />
-        </Space>
-      )}
-    </Sider>
-  );
+			<LayerSelector {...layerProps} />
+		</Space>
+	);
+
+	if (compact) {
+		return (
+			<Drawer
+				className="bn-drawer"
+				placement="left"
+				open={!leftCollapsed}
+				onClose={() => setLeftCollapsed(true)}
+				size="min(92vw, 380px)"
+				title="Controls"
+			>
+				{body}
+			</Drawer>
+		);
+	}
+
+	return (
+		<Sider
+			width={340}
+			collapsible
+			collapsed={leftCollapsed}
+			collapsedWidth={0}
+			trigger={null}
+			onDragOver={(e) => e.preventDefault()}
+			onDrop={onFolderDrop}
+			style={{
+				background: "var(--bn-surface)",
+				borderRight: leftCollapsed ? "none" : "1px solid var(--bn-border)",
+				padding: leftCollapsed ? 0 : "20px",
+				overflowY: "auto",
+				height: "calc(100vh - var(--bn-header-h))",
+				transition: "all 0.2s",
+			}}
+		>
+			{!leftCollapsed && body}
+		</Sider>
+	);
 }

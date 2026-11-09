@@ -1,18 +1,74 @@
 {
-  "name": "banana2.0",
-  "version": "1.0.0",
-  "private": true,
-  "workspaces": [
-    "backend",
-    "frontend"
-  ],
-  "scripts": {
-    "dev:backend": "npm run dev --workspace=backend",
-    "dev:frontend": "npm run dev --workspace=frontend",
-    "dev": "npm run dev --workspaces"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.5.14",
-    "lefthook": "^2.1.14"
-  }
+	"name": "banana2.0",
+	"version": "1.0.0",
+	"private": true,
+	"workspaces": [
+		"backend",
+		"frontend"
+	],
+	"main": "electron/main.cjs",
+	"scripts": {
+		"dev:backend": "npm run dev --workspace=backend",
+		"dev:frontend": "npm run dev --workspace=frontend",
+		"dev": "concurrently -k \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+		"desktop": "electron .",
+		"desktop:dev": "concurrently -k \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\" \"wait-on tcp:5173 && electron .\"",
+		"desktop:build": "npm run build --workspace=frontend && electron-builder",
+		"test": "node --test test/**/*.test.mjs test/**/*.test.cjs"
+	},
+	"build": {
+		"appId": "com.banana.diffstudio",
+		"productName": "Banana Diff Studio",
+		"publish": {
+			"provider": "github",
+			"owner": "realruneett01",
+			"repo": "Banana"
+		},
+		"directories": {
+			"output": "dist-desktop"
+		},
+		"files": [
+			"electron/**/*",
+			"backend/**/*",
+			"frontend/dist/**/*",
+			"!**/*.map",
+			"!backend/temp_storage/**/*",
+			"!temp_storage/**/*"
+		],
+		"asar": true,
+		"asarUnpack": [
+			"backend/src/**/*"
+		],
+		"win": {
+			"target": [
+				"nsis",
+				"portable"
+			]
+		},
+		"mac": {
+			"target": [
+				"dmg",
+				"zip"
+			],
+			"category": "public.app-category.developer-tools"
+		},
+		"linux": {
+			"target": [
+				"AppImage",
+				"deb"
+			],
+			"category": "Development"
+		}
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"concurrently": "^10.0.5",
+		"electron": "^44.4.5",
+		"electron-builder": "^26.15.3",
+		"lefthook": "^2.1.14",
+		"wait-on": "^9.4.0"
+	},
+	"dependencies": {
+		"electron-updater": "^6.8.9"
+	}
 }

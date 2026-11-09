@@ -5,6 +5,8 @@ node_modules/
 # Build outputs
 dist/
 **/dist/
+dist-desktop/
+**/dist-desktop/
 dist-ssr/
 **/dist-ssr/
 
@@ -45,6 +47,8 @@ backend/temp_storage/
 # Local tooling & scratch
 .repowise/
 .claude/
+.agents/
+.playwright-mcp/
 scratch/
 .antigravity.md
 claude.md

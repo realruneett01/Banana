@@ -68,6 +68,9 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 
 	const handleDisconnectGithub = useCallback(() => {
 		localStorage.removeItem("banana:githubToken");
+		if (window.banana?.github?.clearSavedToken) {
+			window.banana.github.clearSavedToken();
+		}
 		setGithubToken("");
 		setGithubUser(null);
 		setSelectedRemoteRepo(null);
@@ -106,6 +109,22 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 	useEffect(() => {
 		checkHealth();
 		if (onMountRepoInit) onMountRepoInit();
+		if (window.banana?.github?.getSavedToken) {
+			window.banana.github
+				.getSavedToken()
+				.then((saved) => {
+					if (saved) {
+						setGithubToken(saved);
+						verifyGithubToken(saved);
+					}
+				})
+				.catch((err) =>
+					console.warn(
+						"[Banana] Could not load saved GitHub token:",
+						err?.message,
+					),
+				);
+		}
 		handleUrlAuthCallback({
 			setGithubToken,
 			setSourceMode,
@@ -121,7 +140,12 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 	}, []);
 
 	const handleAuthSuccess = useCallback((token, user) => {
-		localStorage.setItem("banana:githubToken", token);
+		// Desktop keeps the token only in the OS keychain, never in plaintext localStorage
+		if (window.banana?.github?.saveToken) {
+			window.banana.github.saveToken(token);
+		} else {
+			localStorage.setItem("banana:githubToken", token);
+		}
 		setGithubToken(token);
 		setGithubUser(user);
 		setSourceMode("github");

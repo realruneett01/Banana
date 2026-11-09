@@ -1,197 +1,148 @@
-import React from 'react';
 import {
-  Space,
-  Button,
-  Tag,
-  Typography,
-  Badge,
-  Tooltip,
-  Avatar
-} from 'antd';
-import {
-  FileSearchOutlined,
-  RobotOutlined,
-  GithubOutlined
-} from '@ant-design/icons';
+	FileSearchOutlined,
+	GithubOutlined,
+	MenuOutlined,
+	RobotOutlined,
+	UnorderedListOutlined,
+} from "@ant-design/icons";
+import { Avatar, Button, Space, Tooltip } from "antd";
 
-const { Title } = Typography;
+const BUTTON_HEIGHT = 32;
 
-const BANANA_GRADIENT = 'linear-gradient(135deg, #fadb14 0%, #faad14 100%)';
-const BANANA_GLOW = '0 0 12px rgba(250, 219, 20, 0.45)';
-const BUTTON_HEIGHT = '32px';
-
-function BrandLogo() {
-  return (
-    <Space size="large" align="center">
-      <Space size="small" align="center">
-        <div style={{
-          width: 32,
-          height: 32,
-          background: BANANA_GRADIENT,
-          borderRadius: '50%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontWeight: 'bold',
-          color: '#000',
-          fontSize: 16,
-          boxShadow: BANANA_GLOW
-        }}>
-          🍌
-        </div>
-        <div>
-          <Title level={5} style={{ margin: 0, color: '#fff', lineHeight: 1.2, fontWeight: 700 }}>
-            Banana 2.0
-          </Title>
-          <div style={{ fontSize: '10px', color: '#8890a6', lineHeight: 1, letterSpacing: '0.4px' }}>
-            Visual Hardware Diff Studio
-          </div>
-        </div>
-      </Space>
-
-      <Tag
-        icon={<FileSearchOutlined style={{ color: '#fadb14' }} />}
-        style={{
-          background: 'rgba(250, 219, 20, 0.08)',
-          border: '1px solid rgba(250, 219, 20, 0.25)',
-          color: '#fadb14',
-          fontWeight: 600,
-          fontSize: '11px',
-          padding: '2px 8px',
-          borderRadius: '4px'
-        }}
-      >
-        PCB Diff Engine
-      </Tag>
-    </Space>
-  );
+function BrandLogo({ compact }) {
+	return (
+		<div className="bn-brand">
+			<div className="bn-brand-mark" aria-hidden="true">
+				🍌
+			</div>
+			<div className="bn-brand-text">
+				<span className="bn-brand-name">Banana 2.0</span>
+				{!compact && (
+					<span className="bn-brand-sub">Visual Hardware Diff Studio</span>
+				)}
+			</div>
+			{!compact && (
+				<span className="bn-chip">
+					<FileSearchOutlined /> PCB Diff Engine
+				</span>
+			)}
+		</div>
+	);
 }
 
-function GithubUserButton({ githubUser, onOpenGithubModal }) {
-  if (githubUser) {
-    return (
-      <Tooltip title={`Connected as @${githubUser.login} (Click to manage)`}>
-        <Button
-          type="text"
-          onClick={onOpenGithubModal}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            padding: '4px 10px',
-            height: BUTTON_HEIGHT,
-            background: '#0f1015',
-            border: '1px solid #30363d',
-            borderRadius: '6px',
-            color: '#fff'
-          }}
-        >
-          <Avatar
-            src={githubUser.avatarUrl}
-            size={20}
-            icon={<GithubOutlined />}
-          />
-          <span style={{ fontSize: '12px', fontWeight: 600 }}>{githubUser.login}</span>
-          <span style={{
-            width: 7,
-            height: 7,
-            borderRadius: '50%',
-            background: '#00ff66',
-            display: 'inline-block',
-            boxShadow: '0 0 6px #00ff66'
-          }} />
-        </Button>
-      </Tooltip>
-    );
-  }
+function GithubUserButton({ githubUser, onOpenGithubModal, compact }) {
+	if (githubUser) {
+		return (
+			<Tooltip title={`Connected as @${githubUser.login} (Click to manage)`}>
+				<Button
+					className="bn-ghost-btn"
+					onClick={onOpenGithubModal}
+					style={{ height: BUTTON_HEIGHT }}
+				>
+					<Avatar
+						src={githubUser.avatarUrl}
+						size={20}
+						icon={<GithubOutlined />}
+					/>
+					{!compact && <span className="bn-gh-login">{githubUser.login}</span>}
+					<span className="bn-dot bn-dot-ok" />
+				</Button>
+			</Tooltip>
+		);
+	}
 
-  return (
-    <Tooltip title="Connect GitHub to diff remote repos & Pull Requests">
-      <Button
-        type="default"
-        icon={<GithubOutlined />}
-        onClick={onOpenGithubModal}
-        style={{
-          background: '#1c1f2b',
-          borderColor: '#30363d',
-          color: '#e2e8f0',
-          fontSize: '12px',
-          fontWeight: 500,
-          height: BUTTON_HEIGHT
-        }}
-      >
-        Connect GitHub
-      </Button>
-    </Tooltip>
-  );
+	return (
+		<Tooltip title="Connect GitHub to diff remote repos & Pull Requests">
+			<Button
+				className="bn-ghost-btn"
+				icon={<GithubOutlined />}
+				onClick={onOpenGithubModal}
+				style={{ height: BUTTON_HEIGHT }}
+			>
+				{!compact && "Connect GitHub"}
+			</Button>
+		</Tooltip>
+	);
 }
 
-function BackendStatusBadge({ backendStatus, kicadVersion }) {
-  const isHealthy = backendStatus === 'healthy';
-  const label = isHealthy ? `KiCad ${kicadVersion || 'CLI'}` : 'Backend Offline';
-  const color = isHealthy ? '#237804' : '#cf1322';
-
-  return (
-    <Badge
-      count={label}
-      style={{ backgroundColor: color, fontSize: '10px', fontWeight: isHealthy ? 600 : 400 }}
-    />
-  );
+function BackendStatusBadge({ backendStatus, kicadVersion, compact }) {
+	const isHealthy = backendStatus === "healthy";
+	const label = isHealthy
+		? `KiCad ${kicadVersion || "CLI"}`
+		: "Backend offline";
+	return (
+		<Tooltip title={isHealthy ? "Backend connected" : "Backend not reachable"}>
+			<span className={`bn-status ${isHealthy ? "is-ok" : "is-down"}`}>
+				<span className={`bn-dot ${isHealthy ? "bn-dot-ok" : "bn-dot-down"}`} />
+				{!compact && label}
+			</span>
+		</Tooltip>
+	);
 }
 
-function CopilotButton({ onOpenCopilot }) {
-  return (
-    <Tooltip title="Open Banana Hardware Copilot (AI PCB Diff Assistant)">
-      <Button
-        type="primary"
-        icon={<RobotOutlined />}
-        onClick={() => onOpenCopilot?.()}
-        style={{
-          background: BANANA_GRADIENT,
-          color: '#000',
-          fontWeight: 600,
-          border: 'none',
-          boxShadow: BANANA_GLOW
-        }}
-      >
-        Copilot ✨
-      </Button>
-    </Tooltip>
-  );
+function CopilotButton({ onOpenCopilot, compact }) {
+	return (
+		<Tooltip title="Open Banana Hardware Copilot (AI PCB Diff Assistant)">
+			<Button
+				type="primary"
+				icon={<RobotOutlined />}
+				onClick={() => onOpenCopilot?.()}
+				className="bn-copilot-btn"
+				style={{ height: BUTTON_HEIGHT }}
+			>
+				{!compact && "Copilot"}
+			</Button>
+		</Tooltip>
+	);
 }
 
 export default function WorkspaceShell({
-  onOpenCopilot,
-  kicadVersion,
-  backendStatus,
-  githubUser,
-  onOpenGithubModal
+	onOpenCopilot,
+	kicadVersion,
+	backendStatus,
+	githubUser,
+	onOpenGithubModal,
+	compact = false,
+	onOpenControls,
+	onOpenAudit,
 }) {
-  return (
-    <div style={{
-      background: '#161821',
-      borderBottom: '1px solid #232738',
-      padding: '0 20px',
-      height: '56px',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between'
-    }}>
-      <BrandLogo />
+	return (
+		<header className={`bn-header${compact ? " is-compact" : ""}`}>
+			<div className="bn-header-left">
+				{compact && (
+					<Button
+						type="text"
+						className="bn-icon-btn"
+						icon={<MenuOutlined />}
+						onClick={onOpenControls}
+						aria-label="Open controls"
+					/>
+				)}
+				<BrandLogo compact={compact} />
+			</div>
 
-      <Space size="middle" align="center">
-        <GithubUserButton
-          githubUser={githubUser}
-          onOpenGithubModal={onOpenGithubModal}
-        />
-        <BackendStatusBadge
-          backendStatus={backendStatus}
-          kicadVersion={kicadVersion}
-        />
-        <CopilotButton
-          onOpenCopilot={onOpenCopilot}
-        />
-      </Space>
-    </div>
-  );
+			<Space size={compact ? 6 : 10} align="center">
+				<GithubUserButton
+					githubUser={githubUser}
+					onOpenGithubModal={onOpenGithubModal}
+					compact={compact}
+				/>
+				<BackendStatusBadge
+					backendStatus={backendStatus}
+					kicadVersion={kicadVersion}
+					compact={compact}
+				/>
+				<CopilotButton onOpenCopilot={onOpenCopilot} compact={compact} />
+				{compact && (
+					<Button
+						type="text"
+						className="bn-icon-btn"
+						icon={<UnorderedListOutlined />}
+						onClick={onOpenAudit}
+						aria-label="Open audit list"
+					/>
+				)}
+			</Space>
+		</header>
+	);
 }

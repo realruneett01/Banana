@@ -1,12 +1,36 @@
 :root {
   --diff-trace-width: inherit; /* Dimension-to-dimension: inherit KiCad's exact native stroke-widths */
+
+  /* ─── Harness design tokens (shared by App theme + shell components) ─── */
+  --bn-bg: #0b0d12;
+  --bn-surface: #12151c;
+  --bn-surface-2: #181c25;
+  --bn-surface-3: #1f2430;
+  --bn-border: #232836;
+  --bn-border-strong: #2f3546;
+  --bn-text: #e6e8ee;
+  --bn-text-muted: #8a91a3;
+  --bn-text-faint: #5d6476;
+  --bn-accent: #f5c542;
+  --bn-accent-strong: #ffd666;
+  --bn-accent-ink: #1a1400;
+  --bn-accent-soft: rgba(245, 197, 66, 0.12);
+  --bn-accent-line: rgba(245, 197, 66, 0.32);
+  --bn-success: #3dd68c;
+  --bn-danger: #f0606a;
+  --bn-info: #5b9dff;
+  --bn-header-h: 56px;
+  --bn-radius: 8px;
 }
 
 body {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  background: var(--bn-bg);
+  color: var(--bn-text);
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ─── Pad/Net Label Overlay ─────────────────────────────────────────────────── */
