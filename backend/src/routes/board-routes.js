@@ -13,6 +13,71 @@ function hasRepositoryTarget({ repoPath, owner, repo }) {
 	return Boolean(repoPath || (owner && repo));
 }
 
+const COMMIT_HEX_REGEX = /^[0-9a-fA-F]{4,40}$/;
+const BRANCH_TAG_REGEX = /^[A-Za-z0-9._/-]{1,200}$/;
+
+function isValidCommitRef(ref) {
+	if (typeof ref !== "string" || !ref) {
+		return false;
+	}
+	if (COMMIT_HEX_REGEX.test(ref)) {
+		return true;
+	}
+	if (!BRANCH_TAG_REGEX.test(ref)) {
+		return false;
+	}
+	if (ref.startsWith("-") || ref.includes("..")) {
+		return false;
+	}
+	return true;
+}
+
+function isAbsolutePath(filePath) {
+	if (path.isAbsolute(filePath)) return true;
+	if (path.win32.isAbsolute(filePath)) return true;
+	if (path.posix.isAbsolute(filePath)) return true;
+	return /^[a-zA-Z]:/.test(filePath);
+}
+
+function hasTraversalSegment(filePath) {
+	const segments = filePath.split(/[/\\]/);
+	return segments.includes("..");
+}
+
+function hasValidExtension(filePath) {
+	return filePath.endsWith(".kicad_pcb") || filePath.endsWith(".kicad_sch");
+}
+
+function isValidFilePath(filePath) {
+	if (typeof filePath !== "string" || !filePath) {
+		return false;
+	}
+	if (isAbsolutePath(filePath)) {
+		return false;
+	}
+	if (hasTraversalSegment(filePath)) {
+		return false;
+	}
+	return hasValidExtension(filePath);
+}
+
+function isLocalBoardRequest(boardReq) {
+	return Boolean(boardReq.repoPath || !(boardReq.owner && boardReq.repo));
+}
+
+function checkBoardRepoAllowed(req, boardReq, res) {
+	if (
+		isLocalBoardRequest(boardReq) &&
+		req.app?.locals?.allowLocalRepos !== true
+	) {
+		res.status(403).json({
+			error: "Local repositories are disabled on this server",
+		});
+		return false;
+	}
+	return true;
+}
+
 function validatePadRequest({ commit, targetFile, repoPath, owner, repo }) {
 	if (!commit || !targetFile) {
 		return "Missing required fields: commit, (relativeFilePath OR filePath)";
@@ -20,8 +85,11 @@ function validatePadRequest({ commit, targetFile, repoPath, owner, repo }) {
 	if (!hasRepositoryTarget({ repoPath, owner, repo })) {
 		return "Missing required fields: repoPath OR (owner and repo)";
 	}
-	if (!targetFile.endsWith(".kicad_pcb")) {
-		return "Only .kicad_pcb files are supported by this endpoint";
+	if (!isValidCommitRef(commit)) {
+		return "Invalid commit ref";
+	}
+	if (!isValidFilePath(targetFile)) {
+		return "Invalid target file path";
 	}
 	return null;
 }
@@ -168,6 +236,10 @@ async function processBoardRequest({
 	handler,
 }) {
 	const boardReq = extractBoardRequest(req);
+	if (!checkBoardRepoAllowed(req, boardReq, res)) {
+		return;
+	}
+
 	const validationError = validatePadRequest(boardReq);
 	if (validationError) {
 		return res.status(400).json({ error: validationError });

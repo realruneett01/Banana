@@ -39,6 +39,64 @@ function findMissingParamError(body, required, prefix) {
 	return hasMissing ? `${prefix}${required.join(", ")}` : null;
 }
 
+const COMMIT_HEX_REGEX = /^[0-9a-fA-F]{4,40}$/;
+const BRANCH_TAG_REGEX = /^[A-Za-z0-9._/-]{1,200}$/;
+
+function isValidCommitRef(ref) {
+	if (typeof ref !== "string" || !ref) {
+		return false;
+	}
+	if (COMMIT_HEX_REGEX.test(ref)) {
+		return true;
+	}
+	if (!BRANCH_TAG_REGEX.test(ref)) {
+		return false;
+	}
+	if (ref.startsWith("-") || ref.includes("..")) {
+		return false;
+	}
+	return true;
+}
+
+function isAbsolutePath(filePath) {
+	if (path.isAbsolute(filePath)) return true;
+	if (path.win32.isAbsolute(filePath)) return true;
+	if (path.posix.isAbsolute(filePath)) return true;
+	return /^[a-zA-Z]:/.test(filePath);
+}
+
+function hasTraversalSegment(filePath) {
+	const segments = filePath.split(/[/\\]/);
+	return segments.includes("..");
+}
+
+function hasValidExtension(filePath) {
+	return filePath.endsWith(".kicad_pcb") || filePath.endsWith(".kicad_sch");
+}
+
+function isValidFilePath(filePath) {
+	if (typeof filePath !== "string" || !filePath) {
+		return false;
+	}
+	if (isAbsolutePath(filePath)) {
+		return false;
+	}
+	if (hasTraversalSegment(filePath)) {
+		return false;
+	}
+	return hasValidExtension(filePath);
+}
+
+function validateDiffGuards({ baseCommit, targetCommit, relativeFilePath }) {
+	if (!isValidCommitRef(baseCommit) || !isValidCommitRef(targetCommit)) {
+		return "Invalid commit ref";
+	}
+	if (!isValidFilePath(relativeFilePath)) {
+		return "Invalid relative file path";
+	}
+	return null;
+}
+
 function validateLocalDiffParams(body) {
 	return findMissingParamError(
 		body,
@@ -199,8 +257,17 @@ async function runGithubPipeline({
  * Local Git diff processor
  */
 router.post("/diff/process", async (req, res) => {
+	if (req.app?.locals?.allowLocalRepos !== true) {
+		return res
+			.status(403)
+			.json({ error: "Local repositories are disabled on this server" });
+	}
+
 	const err = validateLocalDiffParams(req.body);
 	if (err) return res.status(400).json({ error: err });
+
+	const guardErr = validateDiffGuards(req.body);
+	if (guardErr) return res.status(400).json({ error: guardErr });
 
 	const tTotalStart = performance.now();
 	const { baseCommit, targetCommit, relativeFilePath } = req.body;
