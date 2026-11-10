@@ -115,18 +115,34 @@ function buildWindowOptions(isDev) {
 // Navigation lockdown (T1.6)
 function attachNavigationGuards(win) {
 	win.webContents.setWindowOpenHandler(({ url }) => {
-		if (url.startsWith("https://") || url.startsWith("http://")) {
-			shell.openExternal(url);
+		try {
+			const parsed = new URL(url);
+			if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+				shell.openExternal(url);
+			}
+		} catch {
+			// Malformed or non-http(s) URL
 		}
 		return { action: "deny" };
 	});
 
 	win.webContents.on("will-navigate", (event, url) => {
-		const parsed = new URL(url);
-		const isLocal =
-			parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-		if (!isLocal) {
+		let parsed;
+		try {
+			parsed = new URL(url);
+		} catch {
+			// Fail closed: malformed URL, prevent navigation before returning
 			event.preventDefault();
+			return;
+		}
+
+		const appOrigin = serverPort ? `http://127.0.0.1:${serverPort}` : null;
+		const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+		if (appOrigin && parsed.origin === appOrigin) return;
+		if (isDev && parsed.origin === "http://localhost:5173") return;
+
+		event.preventDefault();
+		if (parsed.protocol === "https:" || parsed.protocol === "http:") {
 			shell.openExternal(url);
 		}
 	});
@@ -249,21 +265,44 @@ app.on("before-quit", () => {
 // ==========================================
 // IPC Handlers: GitHub Connect & Local Tools
 // ==========================================
+/**
+ * Validates that an IPC event originated from the trusted application origin.
+ */
+function isTrustedSender(event) {
+	try {
+		if (!event?.senderFrame?.url) return false;
+		const origin = new URL(event.senderFrame.url).origin;
+		const appOrigin = serverPort ? `http://127.0.0.1:${serverPort}` : null;
+		const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+		if (appOrigin && origin === appOrigin) return true;
+		if (isDev && origin === "http://localhost:5173") return true;
+		return false;
+	} catch {
+		// Invalid sender frame URL or malformed origin
+		return false;
+	}
+}
+
 function registerIpcHandlers() {
 	// Safe External URL Opener (T1.6)
 	ipcMain.handle("banana:open-external", async (_, url) => {
-		if (
-			typeof url === "string" &&
-			(url.startsWith("https://") || url.startsWith("http://"))
-		) {
-			await shell.openExternal(url);
-			return true;
+		try {
+			const parsed = new URL(url);
+			if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+				await shell.openExternal(url);
+				return true;
+			}
+		} catch {
+			// Malformed or non-http(s) external URL
 		}
 		return false;
 	});
 
 	// Per-launch API token (T2.1)
-	ipcMain.handle("banana:get-api-token", () => apiSecret);
+	ipcMain.handle("banana:get-api-token", (event) => {
+		if (!isTrustedSender(event)) return null;
+		return apiSecret;
+	});
 
 	// Native Folder Selector Dialog (T3.6)
 	ipcMain.handle("banana:select-folder", async () => {
@@ -278,7 +317,8 @@ function registerIpcHandlers() {
 	});
 
 	// GitHub System Detection (T3.1)
-	ipcMain.handle("banana:gh-detect", async () => {
+	ipcMain.handle("banana:gh-detect", async (event) => {
+		if (!isTrustedSender(event)) return null;
 		return detectSystemGitHub();
 	});
 
@@ -296,15 +336,18 @@ function registerIpcHandlers() {
 	);
 
 	// Secure Token Storage via OS Keychain (T3.4)
-	ipcMain.handle("banana:gh-save-token", async (_, token) => {
+	ipcMain.handle("banana:gh-save-token", async (event, token) => {
+		if (!isTrustedSender(event)) return false;
 		return saveEncryptedToken(token, safeStorage, tokenFilePath);
 	});
 
-	ipcMain.handle("banana:gh-get-token", async () => {
+	ipcMain.handle("banana:gh-get-token", async (event) => {
+		if (!isTrustedSender(event)) return null;
 		return loadEncryptedToken(safeStorage, tokenFilePath);
 	});
 
-	ipcMain.handle("banana:gh-clear-token", async () => {
+	ipcMain.handle("banana:gh-clear-token", async (event) => {
+		if (!isTrustedSender(event)) return false;
 		return clearEncryptedToken(tokenFilePath);
 	});
 
@@ -316,7 +359,8 @@ function registerIpcHandlers() {
 		return null;
 	});
 
-	ipcMain.handle("banana:quit-and-install", () => {
+	ipcMain.handle("banana:quit-and-install", (event) => {
+		if (!isTrustedSender(event)) return false;
 		if (app.isPackaged) {
 			autoUpdater.quitAndInstall();
 		}
