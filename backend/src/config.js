@@ -99,6 +99,8 @@ try {
 	console.warn("[Banana] Could not create BANANA_DATA_DIR:", e.message);
 }
 
+let explicitAllowLocalRepos = null;
+
 export const config = {
 	port: process.env.PORT || 5000,
 	tempStorageDir: BANANA_DATA_DIR,
@@ -112,4 +114,13 @@ export const config = {
 		process.env.GITHUB_CALLBACK_URL ||
 		"http://localhost:5000/api/auth/github/callback",
 	frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
+	get allowLocalRepos() {
+		if (explicitAllowLocalRepos !== null) {
+			return explicitAllowLocalRepos;
+		}
+		return process.env.BANANA_ALLOW_LOCAL_REPOS === "1";
+	},
+	set allowLocalRepos(val) {
+		explicitAllowLocalRepos = typeof val === "boolean" ? val : null;
+	},
 };
