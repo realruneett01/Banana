@@ -1,257 +1,385 @@
-const { test, describe, after } = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const os = require('node:os');
+const { test, describe, after } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
 
 const {
-  parseGitCredential,
-  checkGhCliToken,
-  checkGitCredentialToken,
-  verifyTokenWithGithub,
-  detectSystemGitHub,
-  startDeviceFlow,
-  pollDeviceFlow,
-  saveEncryptedToken,
-  loadEncryptedToken,
-  clearEncryptedToken
-} = require('../../electron/github-auth.cjs');
+	parseGitCredential,
+	checkGhCliToken,
+	checkGitCredentialToken,
+	verifyTokenWithGithub,
+	detectSystemGitHub,
+	startDeviceFlow,
+	pollDeviceFlow,
+	saveEncryptedToken,
+	loadEncryptedToken,
+	clearEncryptedToken,
+} = require("../../electron/github-auth.cjs");
 
-describe('GitHub Auth Unit Tests (Phase 7 / T7.1)', () => {
-  describe('Credential Parsers', () => {
-    test('parseGitCredential parses password from git credential stdout', () => {
-      const output = [
-        'protocol=https',
-        'host=github.com',
-        'username=testuser',
-        'password=gho_secret_token_12345',
-        ''
-      ].join('\n');
+describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
+	describe("Credential Parsers", () => {
+		test("parseGitCredential parses password from git credential stdout", () => {
+			const output = [
+				"protocol=https",
+				"host=github.com",
+				"username=testuser",
+				"password=gho_secret_token_12345",
+				"",
+			].join("\n");
 
-      const parsed = parseGitCredential(output);
-      assert.equal(parsed, 'gho_secret_token_12345');
-    });
+			const parsed = parseGitCredential(output);
+			assert.equal(parsed, "gho_secret_token_12345");
+		});
 
-    test('parseGitCredential returns null when password is missing or empty', () => {
-      assert.equal(parseGitCredential('protocol=https\nhost=github.com\n'), null);
-      assert.equal(parseGitCredential('password=\n'), null);
-      assert.equal(parseGitCredential(null), null);
-      assert.equal(parseGitCredential(''), null);
-    });
+		test("parseGitCredential returns null when password is missing or empty", () => {
+			assert.equal(
+				parseGitCredential("protocol=https\nhost=github.com\n"),
+				null,
+			);
+			assert.equal(parseGitCredential("password=\n"), null);
+			assert.equal(parseGitCredential(null), null);
+			assert.equal(parseGitCredential(""), null);
+		});
 
-    test('checkGhCliToken returns token when gh CLI is logged in', async () => {
-      const mockExec = (cmd, args, opts, cb) => {
-        assert.equal(cmd, 'gh');
-        assert.deepEqual(args, ['auth', 'token']);
-        cb(null, 'gho_cli_token_99999\n');
-      };
+		test("checkGhCliToken returns token when gh CLI is logged in", async () => {
+			const mockExec = (cmd, args, opts, cb) => {
+				assert.equal(cmd, "gh");
+				assert.deepEqual(args, ["auth", "token"]);
+				cb(null, "gho_cli_token_99999\n");
+			};
 
-      const token = await checkGhCliToken(mockExec);
-      assert.equal(token, 'gho_cli_token_99999');
-    });
+			const token = await checkGhCliToken(mockExec);
+			assert.equal(token, "gho_cli_token_99999");
+		});
 
-    test('checkGhCliToken returns null when gh is not logged in or missing', async () => {
-      const mockExecError = (cmd, args, opts, cb) => {
-        cb(new Error('command not found: gh'), '');
-      };
+		test("checkGhCliToken returns null when gh is not logged in or missing", async () => {
+			const mockExecError = (cmd, args, opts, cb) => {
+				cb(new Error("command not found: gh"), "");
+			};
 
-      const token = await checkGhCliToken(mockExecError);
-      assert.equal(token, null);
-    });
+			const token = await checkGhCliToken(mockExecError);
+			assert.equal(token, null);
+		});
 
-    test('checkGitCredentialToken communicates via stdin and parses output', async () => {
-      let writtenData = '';
-      let streamEnded = false;
+		test("checkGitCredentialToken communicates via stdin and parses output", async () => {
+			let writtenData = "";
+			let streamEnded = false;
 
-      const mockExec = (cmd, args, opts, cb) => {
-        assert.equal(cmd, 'git');
-        assert.deepEqual(args, ['credential', 'fill']);
-        
-        // Return dummy child process with stdin
-        const child = {
-          stdin: {
-            write: (data) => { writtenData += data; },
-            end: () => {
-              streamEnded = true;
-              cb(null, 'protocol=https\nhost=github.com\npassword=gho_git_token_88888\n');
-            }
-          }
-        };
-        return child;
-      };
+			const mockExec = (cmd, args, opts, cb) => {
+				assert.equal(cmd, "git");
+				assert.deepEqual(args, ["credential", "fill"]);
 
-      const token = await checkGitCredentialToken(mockExec);
-      assert.equal(writtenData, 'protocol=https\nhost=github.com\n\n');
-      assert.equal(streamEnded, true);
-      assert.equal(token, 'gho_git_token_88888');
-    });
-  });
+				// Return dummy child process with stdin
+				const child = {
+					stdin: {
+						write: (data) => {
+							writtenData += data;
+						},
+						end: () => {
+							streamEnded = true;
+							cb(
+								null,
+								"protocol=https\nhost=github.com\npassword=gho_git_token_88888\n",
+							);
+						},
+					},
+				};
+				return child;
+			};
 
-  describe('Token Verification & System Detection', () => {
-    test('verifyTokenWithGithub returns valid:true and user on 200 OK', async () => {
-      const mockFetch = async (url, options) => {
-        assert.equal(url, 'https://api.github.com/user');
-        assert.equal(options.headers.Authorization, 'Bearer gho_valid');
-        return {
-          ok: true,
-          json: async () => ({
-            login: 'octocat',
-            name: 'The Octocat',
-            avatar_url: 'https://avatars.githubusercontent.com/u/583231',
-            id: 583231
-          })
-        };
-      };
+			const token = await checkGitCredentialToken(mockExec);
+			assert.equal(writtenData, "protocol=https\nhost=github.com\n\n");
+			assert.equal(streamEnded, true);
+			assert.equal(token, "gho_git_token_88888");
+		});
+	});
 
-      const res = await verifyTokenWithGithub('gho_valid', mockFetch);
-      assert.equal(res.valid, true);
-      assert.equal(res.user.login, 'octocat');
-      assert.equal(res.user.id, 583231);
-    });
+	describe("Token Verification & System Detection", () => {
+		test("verifyTokenWithGithub returns valid:true and user on 200 OK", async () => {
+			const mockFetch = async (url, options) => {
+				assert.equal(url, "https://api.github.com/user");
+				assert.equal(options.headers.Authorization, "Bearer gho_valid");
+				return {
+					ok: true,
+					json: async () => ({
+						login: "octocat",
+						name: "The Octocat",
+						avatar_url: "https://avatars.githubusercontent.com/u/583231",
+						id: 583231,
+					}),
+				};
+			};
 
-    test('verifyTokenWithGithub returns valid:false on 401 Unauthorized', async () => {
-      const mockFetch = async () => ({
-        ok: false,
-        status: 401
-      });
+			const res = await verifyTokenWithGithub("gho_valid", mockFetch);
+			assert.equal(res.valid, true);
+			assert.equal(res.user.login, "octocat");
+			assert.equal(res.user.id, 583231);
+		});
 
-      const res = await verifyTokenWithGithub('gho_invalid', mockFetch);
-      assert.equal(res.valid, false);
-      assert.equal(res.user, null);
-    });
+		test("verifyTokenWithGithub returns valid:false on 401 Unauthorized", async () => {
+			const mockFetch = async () => ({
+				ok: false,
+				status: 401,
+			});
 
-    const DETECTION_CASES = [
-      { name: 'detectSystemGitHub prioritizes gh CLI over git credentials', gh: 'gho_cli_token', git: 'gho_git_token', login: 'cliuser', source: 'GitHub CLI', token: 'gho_cli_token' },
-      { name: 'detectSystemGitHub falls back to git credential manager', gh: null, git: 'gho_git_token', login: 'gituser', source: 'Git Credential Manager', token: 'gho_git_token' },
-    ];
+			const res = await verifyTokenWithGithub("gho_invalid", mockFetch);
+			assert.equal(res.valid, false);
+			assert.equal(res.user, null);
+		});
 
-    for (const c of DETECTION_CASES) {
-      test(c.name, async () => {
-        const result = await detectSystemGitHub({
-          checkGh: async () => c.gh,
-          checkGit: async () => c.git,
-          verifyToken: async () => ({ valid: true, user: { login: c.login, name: c.login, avatarUrl: '', id: 1 } })
-        });
-        assert.equal(result.detected, true);
-        assert.equal(result.source, c.source);
-        assert.equal(result.token, c.token);
-        assert.equal(result.user.login, c.login);
-      });
-    }
+		const DETECTION_CASES = [
+			{
+				name: "detectSystemGitHub prioritizes gh CLI over git credentials",
+				gh: "gho_cli_token",
+				git: "gho_git_token",
+				login: "cliuser",
+				source: "GitHub CLI",
+				token: "gho_cli_token",
+			},
+			{
+				name: "detectSystemGitHub falls back to git credential manager",
+				gh: null,
+				git: "gho_git_token",
+				login: "gituser",
+				source: "Git Credential Manager",
+				token: "gho_git_token",
+			},
+		];
 
-    test('detectSystemGitHub returns detected:false when no valid credentials exist', async () => {
-      const options = {
-        checkGh: async () => null,
-        checkGit: async () => null,
-        verifyToken: async () => ({ valid: false, user: null })
-      };
+		for (const c of DETECTION_CASES) {
+			test(c.name, async () => {
+				const result = await detectSystemGitHub({
+					checkGh: async () => c.gh,
+					checkGit: async () => c.git,
+					verifyToken: async () => ({
+						valid: true,
+						user: { login: c.login, name: c.login, avatarUrl: "", id: 1 },
+					}),
+				});
+				assert.equal(result.detected, true);
+				assert.equal(result.source, c.source);
+				assert.equal(result.token, c.token);
+				assert.equal(result.user.login, c.login);
+			});
+		}
 
-      const result = await detectSystemGitHub(options);
-      assert.equal(result.detected, false);
-    });
-  });
+		test("detectSystemGitHub returns detected:false when no valid credentials exist", async () => {
+			const options = {
+				checkGh: async () => null,
+				checkGit: async () => null,
+				verifyToken: async () => ({ valid: false, user: null }),
+			};
 
-  describe('Device Flow (RFC 8628)', () => {
-    test('startDeviceFlow calls GitHub device endpoint and returns codes', async () => {
-      const mockFetch = async (url, options) => {
-        assert.equal(url, 'https://github.com/login/device/code');
-        assert.equal(options.method, 'POST');
-        const body = JSON.parse(options.body);
-        assert.equal(body.client_id, 'test_client_id');
-        assert.equal(body.scope, 'repo,read:user');
-        return {
-          ok: true,
-          json: async () => ({
-            device_code: 'dev_code_123',
-            user_code: 'ABCD-1234',
-            verification_uri: 'https://github.com/login/device',
-            expires_in: 900,
-            interval: 5
-          })
-        };
-      };
+			const result = await detectSystemGitHub(options);
+			assert.equal(result.detected, false);
+		});
+	});
 
-      const result = await startDeviceFlow('test_client_id', mockFetch);
-      assert.equal(result.device_code, 'dev_code_123');
-      assert.equal(result.user_code, 'ABCD-1234');
-      assert.equal(result.interval, 5);
-    });
+	describe("Device Flow (RFC 8628)", () => {
+		test("startDeviceFlow calls GitHub device endpoint and returns codes", async () => {
+			const mockFetch = async (url, options) => {
+				assert.equal(url, "https://github.com/login/device/code");
+				assert.equal(options.method, "POST");
+				const body = JSON.parse(options.body);
+				assert.equal(body.client_id, "test_client_id");
+				assert.equal(body.scope, "repo,read:user");
+				return {
+					ok: true,
+					json: async () => ({
+						device_code: "dev_code_123",
+						user_code: "ABCD-1234",
+						verification_uri: "https://github.com/login/device",
+						expires_in: 900,
+						interval: 5,
+					}),
+				};
+			};
 
-    const POLL_ERROR_STATES = [
-      { error: 'authorization_pending' },
-      { error: 'slow_down', interval: 10 },
-      { error: 'expired_token' },
-      { error: 'access_denied' },
-    ];
+			const result = await startDeviceFlow("test_client_id", mockFetch);
+			assert.equal(result.device_code, "dev_code_123");
+			assert.equal(result.user_code, "ABCD-1234");
+			assert.equal(result.interval, 5);
+		});
 
-    for (const payload of POLL_ERROR_STATES) {
-      test(`pollDeviceFlow handles ${payload.error} state`, async () => {
-        const mockFetch = async () => ({ ok: true, json: async () => payload });
-        const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-        assert.equal(res.error, payload.error);
-      });
-    }
+		const POLL_ERROR_STATES = [
+			{ error: "authorization_pending" },
+			{ error: "slow_down", interval: 10 },
+			{ error: "expired_token" },
+			{ error: "access_denied" },
+		];
 
-    test('pollDeviceFlow handles successful authorization', async () => {
-      const mockFetch = async () => ({
-        ok: true,
-        json: async () => ({
-          access_token: 'gho_granted_access_token_777',
-          token_type: 'bearer',
-          scope: 'repo,read:user'
-        })
-      });
+		for (const payload of POLL_ERROR_STATES) {
+			test(`pollDeviceFlow handles ${payload.error} state`, async () => {
+				const mockFetch = async () => ({ ok: true, json: async () => payload });
+				const res = await pollDeviceFlow(
+					"dev_code_123",
+					"test_client",
+					mockFetch,
+				);
+				assert.equal(res.error, payload.error);
+			});
+		}
 
-      const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-      assert.equal(res.access_token, 'gho_granted_access_token_777');
-      assert.equal(res.scope, 'repo,read:user');
-    });
-  });
+		test("pollDeviceFlow handles successful authorization", async () => {
+			const mockFetch = async () => ({
+				ok: true,
+				json: async () => ({
+					access_token: "gho_granted_access_token_777",
+					token_type: "bearer",
+					scope: "repo,read:user",
+				}),
+			});
 
-  describe('Token Keychain Storage', () => {
-    const testDir = path.join(os.tmpdir(), `banana_test_${Date.now()}`);
-    const testTokenPath = path.join(testDir, 'test_token.enc');
+			const res = await pollDeviceFlow(
+				"dev_code_123",
+				"test_client",
+				mockFetch,
+			);
+			assert.equal(res.access_token, "gho_granted_access_token_777");
+			assert.equal(res.scope, "repo,read:user");
+		});
+	});
 
-    test('saves and loads encrypted token with safeStorage mock', () => {
-      fs.mkdirSync(testDir, { recursive: true });
+	describe("Token Keychain Storage", () => {
+		const testDir = path.join(os.tmpdir(), `banana_test_${Date.now()}`);
+		const testTokenPath = path.join(testDir, "test_token.enc");
 
-      const mockSafeStorage = {
-        isEncryptionAvailable: () => true,
-        encryptString: (str) => Buffer.from(`enc:${str}`, 'utf8'),
-        decryptString: (buf) => buf.toString('utf8').replace(/^enc:/, '')
-      };
+		test("saves and loads encrypted token with safeStorage mock", () => {
+			fs.mkdirSync(testDir, { recursive: true });
 
-      const saved = saveEncryptedToken('gho_super_secret', mockSafeStorage, testTokenPath);
-      assert.equal(saved, true);
-      assert.equal(fs.existsSync(testTokenPath), true);
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => true,
+				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
+				decryptString: (buf) => buf.toString("utf8").replace(/^enc:/, ""),
+			};
 
-      const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
-      assert.equal(loaded, 'gho_super_secret');
+			const saved = saveEncryptedToken(
+				"gho_super_secret",
+				mockSafeStorage,
+				testTokenPath,
+			);
+			assert.equal(saved, true);
+			assert.equal(fs.existsSync(testTokenPath), true);
 
-      const cleared = clearEncryptedToken(testTokenPath);
-      assert.equal(cleared, true);
-      assert.equal(fs.existsSync(testTokenPath), false);
-    });
+			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
+			assert.equal(loaded, "gho_super_secret");
 
-    test('falls back gracefully to base64 obfuscation when safeStorage is unavailable', () => {
-      const mockSafeStorage = {
-        isEncryptionAvailable: () => false
-      };
+			const cleared = clearEncryptedToken(testTokenPath);
+			assert.equal(cleared, true);
+			assert.equal(fs.existsSync(testTokenPath), false);
+		});
 
-      const saved = saveEncryptedToken('gho_fallback_secret', mockSafeStorage, testTokenPath);
-      assert.equal(saved, true);
+		test("falls back gracefully to base64 obfuscation when safeStorage is unavailable", () => {
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => false,
+			};
 
-      const rawContent = fs.readFileSync(testTokenPath, 'utf8');
-      assert.notEqual(rawContent, 'gho_fallback_secret'); // Plaintext is not stored directly
+			const saved = saveEncryptedToken(
+				"gho_fallback_secret",
+				mockSafeStorage,
+				testTokenPath,
+			);
+			assert.equal(saved, false);
+			assert.equal(fs.existsSync(testTokenPath), false);
+		});
 
-      const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
-      assert.equal(loaded, 'gho_fallback_secret');
+		test("writes encrypted file with 0o600 mode", {
+			skip:
+				process.platform === "win32"
+					? "File mode permissions (0o600) are not supported on win32"
+					: false,
+		}, () => {
+			fs.mkdirSync(testDir, { recursive: true });
 
-      clearEncryptedToken(testTokenPath);
-    });
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => true,
+				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
+				decryptString: (buf) => buf.toString("utf8").replace(/^enc:/, ""),
+			};
 
-    after(() => {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    });
-  });
+			const saved = saveEncryptedToken(
+				"gho_mode_secret",
+				mockSafeStorage,
+				testTokenPath,
+			);
+			assert.equal(saved, true);
+			assert.equal(fs.existsSync(testTokenPath), true);
+
+			const stats = fs.statSync(testTokenPath);
+			assert.equal(stats.mode & 0o777, 0o600);
+
+			clearEncryptedToken(testTokenPath);
+		});
+
+		test("loads legacy base64 token once, deletes file, and never writes base64", () => {
+			fs.mkdirSync(testDir, { recursive: true });
+			fs.writeFileSync(
+				testTokenPath,
+				Buffer.from("gho_legacy_secret").toString("base64"),
+				"utf8",
+			);
+
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => false,
+			};
+
+			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
+			assert.equal(loaded, "gho_legacy_secret");
+			assert.equal(fs.existsSync(testTokenPath), false);
+
+			const secondLoad = loadEncryptedToken(mockSafeStorage, testTokenPath);
+			assert.equal(secondLoad, null);
+		});
+
+		test("decrypt throws -> returns null and file still exists", () => {
+			fs.mkdirSync(testDir, { recursive: true });
+			fs.writeFileSync(
+				testTokenPath,
+				Buffer.from([0x00, 0x11, 0x22, 0x33, 0xff]),
+				{ mode: 0o600 },
+			);
+
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => true,
+				decryptString: () => {
+					throw new Error("OS Keychain is temporarily locked");
+				},
+			};
+
+			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
+			assert.equal(loaded, null);
+			assert.equal(fs.existsSync(testTokenPath), true);
+
+			clearEncryptedToken(testTokenPath);
+		});
+
+		test("legacy base64 GitHub token -> migrated and file removed", () => {
+			fs.mkdirSync(testDir, { recursive: true });
+			const legacyToken = "gho_12345678901234567890";
+			fs.writeFileSync(
+				testTokenPath,
+				Buffer.from(legacyToken).toString("base64"),
+				"utf8",
+			);
+
+			const mockSafeStorage = {
+				isEncryptionAvailable: () => true,
+				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
+				decryptString: (buf) => {
+					const str = buf.toString("utf8");
+					if (!str.startsWith("enc:")) throw new Error("Decryption failed");
+					return str.replace(/^enc:/, "");
+				},
+			};
+
+			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
+			assert.equal(loaded, legacyToken);
+			assert.equal(fs.existsSync(testTokenPath), false);
+		});
+
+		after(() => {
+			fs.rmSync(testDir, { recursive: true, force: true });
+		});
+	});
 });
