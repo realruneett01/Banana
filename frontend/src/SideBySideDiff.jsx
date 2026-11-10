@@ -18,16 +18,41 @@ import {
 } from "./utils/diffLayerUtils.js";
 import { drawFocusRing } from "./utils/focusRingUtils.js";
 
+const SPLIT_DIVIDER_STYLE = {
+	width: "3px",
+	background:
+		"linear-gradient(to bottom, #fadb14 0%, #faad14 50%, #fadb14 100%)",
+	borderRadius: "2px",
+	flexShrink: 0,
+	opacity: 0.7,
+};
+
+const CONTAINER_BASE_STYLE = {
+	display: "flex",
+	flexDirection: "column",
+	width: "100%",
+	height: "100%",
+	gap: 0,
+};
+
+const INITIAL_TRANSFORM = { scale: 1, x: 0, y: 0 };
+
 function normalizeToRect(pointOrRect) {
 	if (!pointOrRect) return null;
+	const { left, width, x, y } = pointOrRect;
 	// Already a DOMRect or rect-like object with left/width
-	if (pointOrRect.left !== undefined && pointOrRect.width !== undefined)
-		return pointOrRect;
+	const hasBounds = left !== undefined && width !== undefined;
+	if (hasBounds) return pointOrRect;
 	// Point from getScreenCoordsFromSvg → synthesize a small rect so computeFocusTarget works
-	if (typeof pointOrRect.x === "number" && typeof pointOrRect.y === "number") {
-		return { left: pointOrRect.x, top: pointOrRect.y, width: 0, height: 0 };
-	}
-	return null;
+	const isPoint = typeof x === "number" && typeof y === "number";
+	return isPoint ? { left: x, top: y, width: 0, height: 0 } : null;
+}
+
+function locateTargetRect(root, coords, diffIdx) {
+	// Try coords first, then fall back to DOM lookup by diffIdx — always try both
+	const screenPt = coords ? getScreenCoordsFromSvg(root, coords) : null;
+	const fromCoords = screenPt ? normalizeToRect(screenPt) : null;
+	return fromCoords || findDiffDomRect(root, diffIdx);
 }
 
 function resolveSideParams(contentRef, coords, diffIdx) {
@@ -35,12 +60,7 @@ function resolveSideParams(contentRef, coords, diffIdx) {
 	const viewport = root?.parentElement;
 	if (!root || !viewport) return null;
 
-	// Try coords first, then fall back to DOM lookup by diffIdx — always try both
-	const fromCoords = coords
-		? normalizeToRect(getScreenCoordsFromSvg(root, coords))
-		: null;
-	const fromDom = findDiffDomRect(root, diffIdx);
-	const elRect = fromCoords || fromDom;
+	const elRect = locateTargetRect(root, coords, diffIdx);
 	if (!elRect) return null;
 
 	return {
@@ -50,127 +70,168 @@ function resolveSideParams(contentRef, coords, diffIdx) {
 	};
 }
 
-function useSideBySideApi(ref, apiConfig) {
+function computeBboxTransform(bbox, width, height) {
+	const scale = 2.5;
+	const cx = (bbox.x1 + bbox.x2) / 2;
+	const cy = (bbox.y1 + bbox.y2) / 2;
+	return {
+		scale,
+		x: width / 2 - cx * scale,
+		y: height / 2 - cy * scale,
+	};
+}
+
+function drawSideFocusRing(contentEl, params, ringClass, coords) {
+	if (!params || !contentEl) return;
+	drawFocusRing(contentEl, params.elRect, ringClass, coords);
+}
+
+function drawSideRings({
+	leftEl,
+	rightEl,
+	leftParams,
+	rightParams,
+	diffType,
+	baseCoords,
+	targetCoords,
+}) {
+	const leftClass = diffType === "delete" ? "diff-deleted" : "diff-changed";
+	const rightClass = diffType === "add" ? "diff-added" : "diff-changed";
+	drawSideFocusRing(leftEl, leftParams, leftClass, baseCoords);
+	drawSideFocusRing(rightEl, rightParams, rightClass, targetCoords);
+}
+
+function syncParams(leftParams, rightParams, synced) {
+	if (!synced) return { left: leftParams, right: rightParams };
+	if (leftParams && !rightParams) {
+		return { left: leftParams, right: { ...leftParams } };
+	}
+	if (rightParams && !leftParams) {
+		return { left: { ...rightParams }, right: rightParams };
+	}
+	return { left: leftParams, right: rightParams };
+}
+
+function applyHoveredDiff(root, diffIdx) {
+	if (!root) return;
+	for (const el of root.querySelectorAll('[data-diff-hovered="true"]')) {
+		el.removeAttribute("data-diff-hovered");
+	}
+	if (diffIdx == null) return;
+	for (const el of root.querySelectorAll(`[data-diff-idx="${diffIdx}"]`)) {
+		el.setAttribute("data-diff-hovered", "true");
+	}
+}
+
+function focusSideElement({
+	options,
+	leftRef,
+	rightRef,
+	synced,
+	animateTo,
+	focusBbox,
+}) {
+	const { diffIdx, diffType, baseCoords, targetCoords, bbox } = options || {};
+	const leftParams = resolveSideParams(leftRef, baseCoords, diffIdx);
+	const rightParams = resolveSideParams(rightRef, targetCoords, diffIdx);
+	drawSideRings({
+		leftEl: leftRef.current,
+		rightEl: rightRef.current,
+		leftParams,
+		rightParams,
+		diffType,
+		baseCoords,
+		targetCoords,
+	});
+	const { left, right } = syncParams(leftParams, rightParams, synced);
+	if (left || right) {
+		animateTo(left, right, 450);
+		return;
+	}
+	focusBbox(bbox);
+}
+
+function applyBboxToDom(next, refs) {
+	refs.baseTransformRef.current = next;
+	refs.targetTransformRef.current = next;
+	refs.setBaseTransform(next);
+	refs.setTargetTransform(next);
+	applyTransformToDom(refs.leftContentRef.current, next);
+	applyTransformToDom(refs.rightContentRef.current, next);
+}
+
+function useBoundingBoxFocus(refs) {
+	const { outerRef } = refs;
+	const focusBox = useCallback(
+		(bbox, w, h) => {
+			if (!bbox) return;
+			applyBboxToDom(computeBboxTransform(bbox, w, h), refs);
+		},
+		[refs],
+	);
+
+	return useCallback(
+		(bbox) => {
+			const el = outerRef.current;
+			if (!bbox || !el) return;
+			const rect = el.getBoundingClientRect();
+			focusBox(bbox, rect.width / 2, rect.height);
+		},
+		[outerRef, focusBox],
+	);
+}
+
+function buildImperativeHandle(apiConfig, focusBbox) {
 	const {
 		leftContentRef,
 		rightContentRef,
-		outerRef,
 		synced,
-		baseTransformRef,
-		targetTransformRef,
-		setBaseTransform,
-		setTargetTransform,
 		animateTo,
 		resetTransform,
 		setActiveAuditIdx,
 	} = apiConfig;
-
-	const focusOnBoundingBox = useCallback(
-		(bbox, containerWidth, containerHeight) => {
-			if (!bbox) return;
-			const targetScale = 2.5;
-			const centerX = (bbox.x1 + bbox.x2) / 2;
-			const centerY = (bbox.y1 + bbox.y2) / 2;
-			const newTransform = {
-				scale: targetScale,
-				x: containerWidth / 2 - centerX * targetScale,
-				y: containerHeight / 2 - centerY * targetScale,
-			};
-			baseTransformRef.current = newTransform;
-			targetTransformRef.current = newTransform;
-			setBaseTransform(newTransform);
-			setTargetTransform(newTransform);
-			applyTransformToDom(leftContentRef.current, newTransform);
-			applyTransformToDom(rightContentRef.current, newTransform);
+	return {
+		focusElement: (options) =>
+			focusSideElement({
+				options,
+				leftRef: leftContentRef,
+				rightRef: rightContentRef,
+				synced,
+				animateTo,
+				focusBbox,
+			}),
+		focusOnBoundingBox: focusBbox,
+		setHoveredDiff: (idx) => {
+			applyHoveredDiff(leftContentRef.current, idx);
+			applyHoveredDiff(rightContentRef.current, idx);
 		},
-		[
-			leftContentRef,
-			rightContentRef,
-			setBaseTransform,
-			setTargetTransform,
-			baseTransformRef,
-			targetTransformRef,
-		],
-	);
+		resetView: () => {
+			resetTransform();
+			if (setActiveAuditIdx) setActiveAuditIdx(null);
+		},
+	};
+}
 
-	useImperativeHandle(
-		ref,
-		() => ({
-			focusElement(options) {
-				const { diffIdx, diffType, baseCoords, targetCoords, bbox } = options;
-				let leftParams = resolveSideParams(leftContentRef, baseCoords, diffIdx);
-				let rightParams = resolveSideParams(
-					rightContentRef,
-					targetCoords,
-					diffIdx,
-				);
-
-				if (leftParams) {
-					drawFocusRing(
-						leftContentRef.current,
-						leftParams.elRect,
-						diffType === "delete" ? "diff-deleted" : "diff-changed",
-						baseCoords,
-					);
-				}
-				if (rightParams) {
-					drawFocusRing(
-						rightContentRef.current,
-						rightParams.elRect,
-						diffType === "add" ? "diff-added" : "diff-changed",
-						targetCoords,
-					);
-				}
-
-				if (synced) {
-					if (leftParams && !rightParams) rightParams = { ...leftParams };
-					else if (rightParams && !leftParams) leftParams = { ...rightParams };
-				}
-
-				if (leftParams || rightParams) {
-					animateTo(leftParams, rightParams, 450);
-				} else if (bbox && outerRef.current) {
-					const rect = outerRef.current.getBoundingClientRect();
-					focusOnBoundingBox(bbox, rect.width / 2, rect.height);
-				}
-			},
-
-			focusOnBoundingBox(bbox) {
-				if (!outerRef.current) return;
-				const rect = outerRef.current.getBoundingClientRect();
-				focusOnBoundingBox(bbox, rect.width / 2, rect.height);
-			},
-
-			setHoveredDiff(diffIdx) {
-				[leftContentRef.current, rightContentRef.current].forEach((root) => {
-					if (!root) return;
-					root
-						.querySelectorAll('[data-diff-hovered="true"]')
-						.forEach((el) => el.removeAttribute("data-diff-hovered"));
-					if (diffIdx !== undefined && diffIdx !== null) {
-						root
-							.querySelectorAll(`[data-diff-idx="${diffIdx}"]`)
-							.forEach((el) => el.setAttribute("data-diff-hovered", "true"));
-					}
-				});
-			},
-
-			resetView() {
-				resetTransform();
-				if (setActiveAuditIdx) setActiveAuditIdx(null);
-			},
-		}),
-		[
-			animateTo,
-			focusOnBoundingBox,
-			leftContentRef,
-			outerRef,
-			resetTransform,
-			rightContentRef,
-			setActiveAuditIdx,
-			synced,
-		],
-	);
+function useSideBySideApi(ref, apiConfig) {
+	const {
+		leftContentRef,
+		rightContentRef,
+		synced,
+		animateTo,
+		resetTransform,
+		setActiveAuditIdx,
+	} = apiConfig;
+	const focusBbox = useBoundingBoxFocus(apiConfig);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: apiConfig object changes every render; dependencies track its members
+	useImperativeHandle(ref, () => buildImperativeHandle(apiConfig, focusBbox), [
+		animateTo,
+		focusBbox,
+		leftContentRef,
+		resetTransform,
+		rightContentRef,
+		setActiveAuditIdx,
+		synced,
+	]);
 }
 
 function FocusedDiffStyle({ activeAuditIdx }) {
@@ -185,58 +246,49 @@ function FocusedDiffStyle({ activeAuditIdx }) {
 	);
 }
 
-function SideBySideSplitView({
-	baseSvgs,
-	targetSvgs,
-	activeLayers,
-	soloLayer,
-	layerOpacities,
-	leftContentRef,
-	rightContentRef,
-	baseCommit,
-	targetCommit,
-	baseTransform,
-	targetTransform,
-}) {
+function SplitSvgPanel({ panelProps, sideConfig }) {
+	const { activeLayers, soloLayer, layerOpacities } = panelProps;
+	const { svgs, contentRef, side, commit, transform } = sideConfig;
+	const fallback = side === "base" ? "Base" : "Target";
+	const commitLabel = commit
+		? `Commit: ${String(commit).substring(0, 10)}`
+		: fallback;
+	return (
+		<SvgPanel
+			svgs={svgs}
+			activeLayers={activeLayers}
+			soloLayer={soloLayer}
+			layerOpacities={layerOpacities}
+			contentRef={contentRef}
+			side={side}
+			commitLabel={commitLabel}
+			transform={transform}
+		/>
+	);
+}
+
+function makeSideConfig(props, side) {
+	const isBase = side === "base";
+	return {
+		side,
+		svgs: isBase ? props.baseSvgs : props.targetSvgs,
+		contentRef: isBase ? props.leftContentRef : props.rightContentRef,
+		commit: isBase ? props.baseCommit : props.targetCommit,
+		transform: isBase ? props.baseTransform : props.targetTransform,
+	};
+}
+
+function SideBySideSplitView(props) {
 	return (
 		<div style={{ display: "flex", flex: 1, gap: "4px", minHeight: 0 }}>
-			<SvgPanel
-				svgs={baseSvgs}
-				activeLayers={activeLayers}
-				soloLayer={soloLayer}
-				layerOpacities={layerOpacities}
-				contentRef={leftContentRef}
-				side="base"
-				commitLabel={
-					baseCommit ? `Commit: ${String(baseCommit).substring(0, 10)}` : "Base"
-				}
-				transform={baseTransform}
+			<SplitSvgPanel
+				panelProps={props}
+				sideConfig={makeSideConfig(props, "base")}
 			/>
-
-			<div
-				style={{
-					width: "3px",
-					background:
-						"linear-gradient(to bottom, #fadb14 0%, #faad14 50%, #fadb14 100%)",
-					borderRadius: "2px",
-					flexShrink: 0,
-					opacity: 0.7,
-				}}
-			/>
-
-			<SvgPanel
-				svgs={targetSvgs}
-				activeLayers={activeLayers}
-				soloLayer={soloLayer}
-				layerOpacities={layerOpacities}
-				contentRef={rightContentRef}
-				side="target"
-				commitLabel={
-					targetCommit
-						? `Commit: ${String(targetCommit).substring(0, 10)}`
-						: "Target"
-				}
-				transform={targetTransform}
+			<div style={SPLIT_DIVIDER_STYLE} />
+			<SplitSvgPanel
+				panelProps={props}
+				sideConfig={makeSideConfig(props, "target")}
 			/>
 		</div>
 	);
@@ -256,26 +308,25 @@ function useSideBySideListeners({
 	}, [outerRef, onWheel]);
 
 	useEffect(() => {
-		const handleKeyDown = (e) => {
-			if (e.key === "Escape" && activeAuditIdx !== null) {
-				onReset();
-			}
+		const onKeyDown = ({ key }) => {
+			if (key === "Escape" && activeAuditIdx !== null) onReset();
 		};
-		window.addEventListener("keydown", handleKeyDown);
-		return () => window.removeEventListener("keydown", handleKeyDown);
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
 	}, [activeAuditIdx, onReset]);
 }
 
-function SideBySidePadOverlay({
-	padLabelProps,
-	leftContentRef,
-	rightContentRef,
-	activeLayers,
-	soloLayer,
-	layerOpacities,
-	baseTransform,
-	targetTransform,
-}) {
+function SideBySidePadOverlay(props) {
+	const {
+		padLabelProps,
+		leftContentRef,
+		rightContentRef,
+		activeLayers,
+		soloLayer,
+		layerOpacities,
+		baseTransform,
+		targetTransform,
+	} = props;
 	if (!padLabelProps) return null;
 	return (
 		<PadLabelOverlay
@@ -291,55 +342,23 @@ function SideBySidePadOverlay({
 	);
 }
 
-export default forwardRef(function SideBySideDiff(
-	{
-		isSchematic,
-		baseSvgs,
-		targetSvgs,
-		activeLayers,
-		soloLayer,
-		layerOpacities,
-		baseCommit,
-		targetCommit,
-		activeAuditIdx,
-		setActiveAuditIdx,
-		padLabelProps,
-		traceWidth = DIFF_CONFIG.DEFAULT_TRACE_WIDTH,
-	},
-	ref,
-) {
-	const isSchematicMode =
-		isSchematic ?? !padLabelProps?.relativeFilePath?.endsWith(".kicad_pcb");
-	const [selectedTraceWidth, setSelectedTraceWidth] = useState(
-		traceWidth || DIFF_CONFIG.DEFAULT_TRACE_WIDTH,
-	);
-
+function useTraceWidth(traceWidth = DIFF_CONFIG.DEFAULT_TRACE_WIDTH) {
+	const [selected, setSelected] = useState(traceWidth);
 	useEffect(() => {
-		if (traceWidth) setSelectedTraceWidth(traceWidth);
+		if (traceWidth) setSelected(traceWidth);
 	}, [traceWidth]);
+	return [selected, setSelected];
+}
 
+function useSideBySideTransforms() {
 	const leftContentRef = useRef(null);
 	const rightContentRef = useRef(null);
 	const outerRef = useRef(null);
 	const [synced, setSynced] = useState(true);
+	const [baseTransform, setBaseTransform] = useState(INITIAL_TRANSFORM);
+	const [targetTransform, setTargetTransform] = useState(INITIAL_TRANSFORM);
 
-	const [baseTransform, setBaseTransform] = useState({ scale: 1, x: 0, y: 0 });
-	const [targetTransform, setTargetTransform] = useState({
-		scale: 1,
-		x: 0,
-		y: 0,
-	});
-
-	const {
-		onWheel,
-		onMouseDown,
-		onMouseMove,
-		onMouseUp,
-		resetTransform,
-		animateTo,
-		baseTransformRef,
-		targetTransformRef,
-	} = useSyncedTransform({
+	const state = {
 		baseTransform,
 		setBaseTransform,
 		targetTransform,
@@ -348,90 +367,75 @@ export default forwardRef(function SideBySideDiff(
 		rightContentRef,
 		outerRef,
 		synced,
-	});
+	};
+	const syncedTransform = useSyncedTransform(state);
+	return { ...state, setSynced, ...syncedTransform };
+}
 
-	const handleReset = useCallback(() => {
-		resetTransform();
-		if (setActiveAuditIdx) setActiveAuditIdx(null);
-	}, [resetTransform, setActiveAuditIdx]);
-
-	useSideBySideApi(ref, {
-		leftContentRef,
-		rightContentRef,
-		outerRef,
-		synced,
-		baseTransformRef,
-		targetTransformRef,
-		setBaseTransform,
-		setTargetTransform,
-		animateTo,
-		resetTransform,
-		setActiveAuditIdx,
-	});
-
-	useSideBySideListeners({
-		outerRef,
-		onWheel,
+function useSideBySideController(props = {}, ref) {
+	const {
+		isSchematic,
+		padLabelProps,
+		traceWidth = DIFF_CONFIG.DEFAULT_TRACE_WIDTH,
 		activeAuditIdx,
-		onReset: handleReset,
-	});
+		setActiveAuditIdx,
+	} = props;
+	const isSchematicMode =
+		isSchematic ?? !padLabelProps?.relativeFilePath?.endsWith(".kicad_pcb");
+	const [width, setWidth] = useTraceWidth(traceWidth);
+	const state = useSideBySideTransforms();
+	const onReset = useCallback(() => {
+		state.resetTransform();
+		if (setActiveAuditIdx) setActiveAuditIdx(null);
+	}, [state.resetTransform, setActiveAuditIdx]);
 
+	useSideBySideApi(ref, { ...state, setActiveAuditIdx });
+	useSideBySideListeners({
+		outerRef: state.outerRef,
+		onWheel: state.onWheel,
+		activeAuditIdx,
+		onReset,
+	});
+	return { isSchematicMode, width, setWidth, state, onReset };
+}
+
+function SideBySideContainer({ props, ctrl }) {
+	const { state, isSchematicMode, width, setWidth, onReset } = ctrl;
+	const mode = isSchematicMode ? "schematic-mode" : "pcb-mode";
+	const focus = props.activeAuditIdx !== null ? "has-focus" : "";
+	return (
+		// biome-ignore lint/a11y/noStaticElementInteractions: pointer pan/zoom surface; keyboard users use the toolbar controls
+		<div
+			ref={state.outerRef}
+			className={`mode-side-by-side ${mode} ${focus}`}
+			onMouseDown={state.onMouseDown}
+			onMouseMove={state.onMouseMove}
+			onMouseUp={state.onMouseUp}
+			onMouseLeave={state.onMouseUp}
+			style={{ ...CONTAINER_BASE_STYLE, "--diff-trace-width": width }}
+		>
+			<SideBySideToolbar
+				synced={state.synced}
+				setSynced={state.setSynced}
+				selectedTraceWidth={width}
+				setSelectedTraceWidth={setWidth}
+				activeAuditIdx={props.activeAuditIdx}
+				onReset={onReset}
+			/>
+			<SideBySideSplitView {...props} {...state} />
+			<SideBySidePadOverlay {...props} {...state} />
+		</div>
+	);
+}
+
+export default forwardRef(function SideBySideDiff(props = {}, ref) {
+	const ctrl = useSideBySideController(props, ref);
 	return (
 		<>
 			<style>{FOCUS_CSS}</style>
 			<style>{DIFF_CSS}</style>
-			<FocusedDiffStyle activeAuditIdx={activeAuditIdx} />
-
-			<div
-				ref={outerRef}
-				className={`mode-side-by-side ${isSchematicMode ? "schematic-mode" : "pcb-mode"} ${activeAuditIdx !== null ? "has-focus" : ""}`}
-				onMouseDown={onMouseDown}
-				onMouseMove={onMouseMove}
-				onMouseUp={onMouseUp}
-				onMouseLeave={onMouseUp}
-				style={{
-					display: "flex",
-					flexDirection: "column",
-					width: "100%",
-					height: "100%",
-					gap: 0,
-					"--diff-trace-width": selectedTraceWidth,
-				}}
-			>
-				<SideBySideToolbar
-					synced={synced}
-					setSynced={setSynced}
-					selectedTraceWidth={selectedTraceWidth}
-					setSelectedTraceWidth={setSelectedTraceWidth}
-					activeAuditIdx={activeAuditIdx}
-					onReset={handleReset}
-				/>
-
-				<SideBySideSplitView
-					baseSvgs={baseSvgs}
-					targetSvgs={targetSvgs}
-					activeLayers={activeLayers}
-					soloLayer={soloLayer}
-					layerOpacities={layerOpacities}
-					leftContentRef={leftContentRef}
-					rightContentRef={rightContentRef}
-					baseCommit={baseCommit}
-					targetCommit={targetCommit}
-					baseTransform={baseTransform}
-					targetTransform={targetTransform}
-				/>
-
-				<SideBySidePadOverlay
-					padLabelProps={padLabelProps}
-					leftContentRef={leftContentRef}
-					rightContentRef={rightContentRef}
-					activeLayers={activeLayers}
-					soloLayer={soloLayer}
-					layerOpacities={layerOpacities}
-					baseTransform={baseTransform}
-					targetTransform={targetTransform}
-				/>
-			</div>
+			<FocusedDiffStyle activeAuditIdx={props.activeAuditIdx} />
+			<SideBySideContainer props={props} ctrl={ctrl} />
 		</>
 	);
 });
