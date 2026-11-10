@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import express from "express";
 import {
 	exchangeCodeForToken,
@@ -10,11 +11,80 @@ import {
 	verifyTokenAndGetUser,
 } from "../github-service.js";
 
+const DEFAULT_MAX_STATES = 1000;
+const DEFAULT_TTL_MS = 10 * 60 * 1000;
+
+export class StateStore {
+	constructor(options = {}) {
+		this.maxEntries = options.maxEntries ?? DEFAULT_MAX_STATES;
+		this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+		this.now = options.now ?? (() => Date.now());
+		this.states = new Map();
+	}
+
+	set(state, createdAt = this.now()) {
+		if (!state) return state;
+		if (!this.states.has(state) && this.states.size >= this.maxEntries) {
+			const oldest = this.states.keys().next().value;
+			this.states.delete(oldest);
+		}
+		this.states.set(state, createdAt);
+		return state;
+	}
+
+	generate() {
+		const state = crypto.randomBytes(16).toString("hex");
+		this.set(state);
+		return state;
+	}
+
+	validate(state) {
+		if (!state || typeof state !== "string") return false;
+		const createdAt = this.states.get(state);
+		if (createdAt === undefined) return false;
+		if (this.now() - createdAt > this.ttlMs) {
+			this.states.delete(state);
+			return false;
+		}
+		return true;
+	}
+
+	consume(state) {
+		if (!this.validate(state)) return false;
+		this.states.delete(state);
+		return true;
+	}
+
+	clear() {
+		this.states.clear();
+	}
+
+	get size() {
+		return this.states.size;
+	}
+}
+
+export function createStateStore(options) {
+	return new StateStore(options);
+}
+
+export const stateStore = createStateStore();
+
 const router = express.Router();
 
-function getDynamicOrigin(req) {
-	const protocol = req.headers["x-forwarded-proto"] || req.protocol || "http";
-	const host = req.headers["x-forwarded-host"] || req.get("host");
+export function getDynamicOrigin(req) {
+	if (process.env.FRONTEND_URL) {
+		return process.env.FRONTEND_URL.trim().replace(/\/+$/, "");
+	}
+	const trustProxy = process.env.TRUST_PROXY === "1";
+	const forwardedProto = trustProxy
+		? req?.headers?.["x-forwarded-proto"]
+		: null;
+	const protocol = forwardedProto || req?.protocol || "http";
+	const forwardedHost = trustProxy ? req?.headers?.["x-forwarded-host"] : null;
+	const rawHost =
+		typeof req?.get === "function" ? req.get("host") : req?.headers?.host;
+	const host = forwardedHost || rawHost || "localhost";
 	return `${protocol}://${host}`;
 }
 
@@ -28,10 +98,8 @@ router.get("/auth/github/url", (req, res) => {
 				? process.env.GITHUB_CALLBACK_URL
 				: `${dynamicOrigin}/api/auth/github/callback`;
 
-		const url = getOAuthAuthorizeUrl(
-			req.query.state || "banana_auth",
-			dynamicCallback,
-		);
+		const state = stateStore.generate();
+		const url = getOAuthAuthorizeUrl(state, dynamicCallback);
 		res.json({ url, configured: true });
 	} catch (err) {
 		res.json({ configured: false, error: err.message });
@@ -40,25 +108,24 @@ router.get("/auth/github/url", (req, res) => {
 
 // 2. OAuth Callback
 router.get("/auth/github/callback", async (req, res) => {
-	const { code } = req.query;
+	const { code, state } = req.query;
+	if (!state || !stateStore.consume(state)) {
+		return res.status(400).send("Invalid OAuth state");
+	}
 	if (!code) {
 		return res.status(400).send("Authorization code missing");
 	}
 
-	const dynamicOrigin = getDynamicOrigin(req);
-	const targetFrontend =
-		process.env.FRONTEND_URL && !process.env.FRONTEND_URL.includes("localhost")
-			? process.env.FRONTEND_URL.trim().replace(/\/+$/, "")
-			: dynamicOrigin;
+	const targetFrontend = getDynamicOrigin(req);
 
 	try {
 		const token = await exchangeCodeForToken(code);
-		const redirectUrl = `${targetFrontend}/?github_token=${encodeURIComponent(token)}`;
+		const redirectUrl = `${targetFrontend}/#github_token=${encodeURIComponent(token)}`;
 		res.redirect(redirectUrl);
 	} catch (err) {
 		console.error("[Banana API] GitHub OAuth callback error:", err);
 		res.redirect(
-			`${targetFrontend}/?github_error=${encodeURIComponent(err.message)}`,
+			`${targetFrontend}/#github_error=${encodeURIComponent(err.message)}`,
 		);
 	}
 });
