@@ -15,14 +15,62 @@ function setupStaticServing(expressApp, customStaticDir) {
 		path.resolve(process.cwd(), "public"),
 	];
 	const staticDir = candidateDirs.find((d) => Boolean(d && fs.existsSync(d)));
+	if (!staticDir) return;
 
-	if (staticDir) {
-		console.log(`[Banana] Serving static frontend from: ${staticDir}`);
-		expressApp.use(express.static(staticDir));
-		expressApp.get("*", (req, res, next) => {
-			if (req.path.startsWith("/api")) return next();
-			res.sendFile(path.join(staticDir, "index.html"));
-		});
+	console.log(`[Banana] Serving static frontend from: ${staticDir}`);
+	expressApp.use(express.static(staticDir));
+	expressApp.get("*", (req, res, next) => {
+		if (req.path.startsWith("/api")) return next();
+		res.sendFile(path.join(staticDir, "index.html"));
+	});
+}
+
+function getHostValidator(options) {
+	if (typeof options.validateHost === "function") {
+		return options.validateHost;
+	}
+	if (options.allowedHost) {
+		return (host) => host === options.allowedHost;
+	}
+	return null;
+}
+
+function createHostValidationMiddleware(isValidHost) {
+	return (req, res, next) => {
+		const host = req.headers.host;
+		if (!host || !isValidHost(host)) {
+			return res.status(403).json({ error: "Forbidden: Invalid Host header" });
+		}
+		next();
+	};
+}
+
+function setupHostValidation(expressApp, options) {
+	const isValidHost = getHostValidator(options);
+	if (isValidHost) {
+		expressApp.use(createHostValidationMiddleware(isValidHost));
+	}
+}
+
+function createTokenValidationMiddleware(apiSecret) {
+	const expectedSecret = Buffer.from(String(apiSecret));
+	return (req, res, next) => {
+		const token = Buffer.from(String(req.headers["x-banana-auth"] || ""));
+		if (
+			token.length !== expectedSecret.length ||
+			!crypto.timingSafeEqual(token, expectedSecret)
+		) {
+			return res
+				.status(401)
+				.json({ error: "Unauthorized: Invalid or missing local auth token" });
+		}
+		next();
+	};
+}
+
+function setupSecurityTokenValidation(expressApp, apiSecret) {
+	if (apiSecret) {
+		expressApp.use("/api", createTokenValidationMiddleware(apiSecret));
 	}
 }
 
@@ -30,44 +78,10 @@ export function createApp(options = {}) {
 	const app = express();
 
 	// Host validation if specified (Phase 2 hardening)
-	if (typeof options.validateHost === "function") {
-		app.use((req, res, next) => {
-			const host = req.headers.host;
-			if (!host || !options.validateHost(host)) {
-				return res
-					.status(403)
-					.json({ error: "Forbidden: Invalid Host header" });
-			}
-			next();
-		});
-	} else if (options.allowedHost) {
-		app.use((req, res, next) => {
-			const host = req.headers.host;
-			if (!host || host !== options.allowedHost) {
-				return res
-					.status(403)
-					.json({ error: "Forbidden: Invalid Host header" });
-			}
-			next();
-		});
-	}
+	setupHostValidation(app, options);
 
 	// Security token validation if specified (Phase 2 hardening)
-	if (options.apiSecret) {
-		const expectedSecret = Buffer.from(String(options.apiSecret));
-		app.use("/api", (req, res, next) => {
-			const token = Buffer.from(String(req.headers["x-banana-auth"] || ""));
-			if (
-				token.length !== expectedSecret.length ||
-				!crypto.timingSafeEqual(token, expectedSecret)
-			) {
-				return res
-					.status(401)
-					.json({ error: "Unauthorized: Invalid or missing local auth token" });
-			}
-			next();
-		});
-	}
+	setupSecurityTokenValidation(app, options.apiSecret);
 
 	app.use(cors());
 	app.use(express.json());
