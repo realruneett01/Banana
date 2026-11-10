@@ -86,6 +86,61 @@ const SANDBOX_NOTICE = Object.freeze({
 	},
 });
 
+const VERSION_CONFIG = Object.freeze({
+	"target-branch": Object.freeze({
+		label: "Target Branch",
+		placeholder: "Select target branch",
+		name: "targetCommit",
+		kind: "target",
+	}),
+	"target-commit": Object.freeze({
+		label: "Target Commit",
+		placeholder: "Select target commit",
+		name: "targetCommit",
+		kind: "target",
+	}),
+	"base-branch": Object.freeze({
+		label: "Base Branch",
+		placeholder: "Select base branch",
+		name: "baseCommit",
+		kind: "base",
+	}),
+	"base-commit": Object.freeze({
+		label: "Base Commit",
+		placeholder: "Select base commit",
+		name: "baseCommit",
+		kind: "base",
+	}),
+});
+
+const VERSION_FIELD_ITEMS = Object.freeze([
+	{
+		isTarget: false,
+		key: "base",
+		valKey: "baseCommit",
+		handlerKey: "handleBaseChange",
+	},
+	{
+		isTarget: true,
+		key: "target",
+		valKey: "targetCommit",
+		handlerKey: "handleTargetChange",
+	},
+]);
+
+const COMMIT_FIELD_CONFIG = Object.freeze({
+	base: Object.freeze({
+		field: "baseCommit",
+		setter: "setBaseCommit",
+		other: "targetCommit",
+	}),
+	target: Object.freeze({
+		field: "targetCommit",
+		setter: "setTargetCommit",
+		other: "baseCommit",
+	}),
+});
+
 function CommitMeta({ hash, date }) {
 	return (
 		<div style={COMMIT_HEADER_STYLE}>
@@ -284,19 +339,16 @@ function SandboxSecurityNotice() {
 	);
 }
 
-function ChangedFilesSelect({ files, value, onChange }) {
-	if (!files || files.length === 0) {
-		return <Select placeholder="No changed KiCad files found" disabled />;
-	}
+function FileListSelect({ files, value, onChange, placeholder, keyPrefix }) {
 	return (
 		<Select
 			showSearch
-			placeholder="Select changed KiCad file"
+			placeholder={placeholder}
 			onChange={onChange}
 			value={value}
 		>
 			{files.map((file) => (
-				<Select.Option key={`changed-${file}`} value={file}>
+				<Select.Option key={`${keyPrefix}-${file}`} value={file}>
 					{file}
 				</Select.Option>
 			))}
@@ -304,8 +356,23 @@ function ChangedFilesSelect({ files, value, onChange }) {
 	);
 }
 
+function ChangedFilesSelect({ files, value, onChange }) {
+	if (!files?.length) {
+		return <Select placeholder="No changed KiCad files found" disabled />;
+	}
+	return (
+		<FileListSelect
+			files={files}
+			value={value}
+			onChange={onChange}
+			placeholder="Select changed KiCad file"
+			keyPrefix="changed"
+		/>
+	);
+}
+
 function RepoFilesSelect({ files, value, onChange }) {
-	if (!files || files.length === 0) {
+	if (!files?.length) {
 		return (
 			<Input
 				placeholder="e.g. layout/board.kicad_pcb"
@@ -314,18 +381,13 @@ function RepoFilesSelect({ files, value, onChange }) {
 		);
 	}
 	return (
-		<Select
-			showSearch
-			placeholder="Select KiCad file"
-			onChange={onChange}
+		<FileListSelect
+			files={files}
 			value={value}
-		>
-			{files.map((file) => (
-				<Select.Option key={`file-${file}`} value={file}>
-					{file}
-				</Select.Option>
-			))}
-		</Select>
+			onChange={onChange}
+			placeholder="Select KiCad file"
+			keyPrefix="file"
+		/>
 	);
 }
 
@@ -369,28 +431,23 @@ function BranchToggleFormItem({ compareBranches, onChange }) {
 	);
 }
 
+function getVersionConfig(isTarget, compareBranches) {
+	const role = isTarget ? "target" : "base";
+	const mode = compareBranches ? "branch" : "commit";
+	return VERSION_CONFIG[`${role}-${mode}`];
+}
+
 function VersionSelectFormItem(props) {
 	const { isTarget, compareBranches, repoInfo, value, onChange } = props;
-	const kind = isTarget ? "target" : "base";
-	const label = isTarget
-		? compareBranches
-			? "Target Branch"
-			: "Target Commit"
-		: compareBranches
-			? "Base Branch"
-			: "Base Commit";
-	const placeholder = isTarget
-		? compareBranches
-			? "Select target branch"
-			: "Select target commit"
-		: compareBranches
-			? "Select base branch"
-			: "Select base commit";
+	const { label, placeholder, name, kind } = getVersionConfig(
+		isTarget,
+		compareBranches,
+	);
 
 	return (
 		<Form.Item
 			label={label}
-			name={isTarget ? "targetCommit" : "baseCommit"}
+			name={name}
 			rules={[{ required: true, message: `Please select ${kind} version` }]}
 		>
 			<CommitOrBranchSelect
@@ -405,43 +462,27 @@ function VersionSelectFormItem(props) {
 }
 
 function VersionSelectionFields(props) {
-	const {
-		compareBranches,
-		repoInfo,
-		baseCommit,
-		targetCommit,
-		handleBaseChange,
-		handleTargetChange,
-	} = props;
 	return (
 		<>
-			<VersionSelectFormItem
-				isTarget={false}
-				compareBranches={compareBranches}
-				repoInfo={repoInfo}
-				value={baseCommit}
-				onChange={handleBaseChange}
-			/>
-			<VersionSelectFormItem
-				isTarget
-				compareBranches={compareBranches}
-				repoInfo={repoInfo}
-				value={targetCommit}
-				onChange={handleTargetChange}
-			/>
+			{VERSION_FIELD_ITEMS.map((item) => (
+				<VersionSelectFormItem
+					key={item.key}
+					isTarget={item.isTarget}
+					compareBranches={props.compareBranches}
+					repoInfo={props.repoInfo}
+					value={props[item.valKey]}
+					onChange={props[item.handlerKey]}
+				/>
+			))}
 		</>
 	);
 }
 
 function DesignFileFormItem(props) {
-	const {
-		compareBranches,
-		changedFiles,
-		repoInfo,
-		relativeFilePath,
-		setRelativeFilePath,
-		form,
-	} = props;
+	const handleSelectFile = (val) => {
+		props.setRelativeFilePath(val);
+		props.form.setFieldValue("relativeFilePath", val);
+	};
 
 	return (
 		<Form.Item
@@ -450,14 +491,11 @@ function DesignFileFormItem(props) {
 			rules={[{ required: true, message: "Please select file path" }]}
 		>
 			<LocalDesignFileSelector
-				compareBranches={compareBranches}
-				changedFiles={changedFiles}
-				repoInfo={repoInfo}
-				relativeFilePath={relativeFilePath}
-				onSelectFile={(val) => {
-					setRelativeFilePath(val);
-					form.setFieldValue("relativeFilePath", val);
-				}}
+				compareBranches={props.compareBranches}
+				changedFiles={props.changedFiles}
+				repoInfo={props.repoInfo}
+				relativeFilePath={props.relativeFilePath}
+				onSelectFile={handleSelectFile}
 			/>
 		</Form.Item>
 	);
@@ -496,12 +534,7 @@ function LocalRepoForm(props) {
 			initialValues={{ repoPath, baseCommit, targetCommit, relativeFilePath }}
 			onFinish={onFetchDiff}
 		>
-			<RepoPathInput
-				repoPath={repoPath}
-				setRepoPath={props.setRepoPath}
-				loadRepoInfo={props.loadRepoInfo}
-				form={form}
-			/>
+			<RepoPathInput {...props} />
 			<SandboxSecurityNotice />
 			<BranchToggleFormItem
 				compareBranches={props.compareBranches}
@@ -534,36 +567,26 @@ function applyBranchToggle(checked, props) {
 	}
 }
 
-function applyBaseCommitChange(val, props) {
-	const {
-		setBaseCommit,
-		form,
-		compareBranches,
-		targetCommit,
-		fetchChangedFiles,
-		repoPath,
-	} = props;
-	setBaseCommit(val);
-	form.setFieldValue("baseCommit", val);
-	if (compareBranches && targetCommit) {
-		fetchChangedFiles(repoPath, val, targetCommit);
+function applyCommitSelection(type, val, props) {
+	const cfg = COMMIT_FIELD_CONFIG[type];
+	props[cfg.setter](val);
+	props.form.setFieldValue(cfg.field, val);
+
+	const otherVal = props[cfg.other];
+	if (props.compareBranches && otherVal) {
+		const isBase = type === "base";
+		const baseCommit = isBase ? val : otherVal;
+		const targetCommit = isBase ? otherVal : val;
+		props.fetchChangedFiles(props.repoPath, baseCommit, targetCommit);
 	}
 }
 
+function applyBaseCommitChange(val, props) {
+	applyCommitSelection("base", val, props);
+}
+
 function applyTargetCommitChange(val, props) {
-	const {
-		setTargetCommit,
-		form,
-		compareBranches,
-		baseCommit,
-		fetchChangedFiles,
-		repoPath,
-	} = props;
-	setTargetCommit(val);
-	form.setFieldValue("targetCommit", val);
-	if (compareBranches && baseCommit) {
-		fetchChangedFiles(repoPath, baseCommit, val);
-	}
+	applyCommitSelection("target", val, props);
 }
 
 export function LocalRepoControls(props) {
