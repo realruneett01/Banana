@@ -43,22 +43,52 @@ function handleUrlAuthCallback({
 	}
 }
 
-export function useBackendHealthAndGithub({ onMountRepoInit }) {
+const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
+
+function isLocalHost() {
+	if (typeof window === "undefined") return false;
+	const host = window.location.hostname;
+	return LOCAL_HOSTNAMES.has(host) || host.endsWith(".local");
+}
+
+function initialSourceMode() {
+	return (
+		localStorage.getItem("banana:sourceMode") ||
+		(isLocalHost() ? "local" : "github")
+	);
+}
+
+function loadDesktopSavedToken({ setGithubToken, verifyGithubToken }) {
+	if (!window.banana?.github?.getSavedToken) return;
+	window.banana.github
+		.getSavedToken()
+		.then((saved) => {
+			if (saved) {
+				setGithubToken(saved);
+				verifyGithubToken(saved);
+			}
+		})
+		.catch((err) =>
+			console.warn("[Banana] Could not load saved GitHub token:", err?.message),
+		);
+}
+
+function useBackendHealth() {
 	const [backendStatus, setBackendStatus] = useState("checking"); // checking | healthy | unhealthy
 	const [kicadVersion, setKicadVersion] = useState("");
 
-	const isLocalHost =
-		typeof window !== "undefined" &&
-		(window.location.hostname === "localhost" ||
-			window.location.hostname === "127.0.0.1" ||
-			window.location.hostname.endsWith(".local"));
+	const checkHealth = useCallback(async () => {
+		setBackendStatus("checking");
+		const result = await fetchBackendHealthStatus();
+		setBackendStatus(result.status);
+		setKicadVersion(result.version);
+	}, []);
 
-	const [sourceMode, setSourceMode] = useState(
-		() =>
-			localStorage.getItem("banana:sourceMode") ||
-			(isLocalHost ? "local" : "github"),
-	);
+	return { backendStatus, kicadVersion, checkHealth };
+}
 
+function useGithubSession() {
+	const [sourceMode, setSourceMode] = useState(initialSourceMode);
 	const [githubToken, setGithubToken] = useState(
 		localStorage.getItem("banana:githubToken") || "",
 	);
@@ -98,42 +128,6 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 		[handleDisconnectGithub],
 	);
 
-	const checkHealth = useCallback(async () => {
-		setBackendStatus("checking");
-		const result = await fetchBackendHealthStatus();
-		setBackendStatus(result.status);
-		setKicadVersion(result.version);
-	}, []);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: onMount initialization only
-	useEffect(() => {
-		checkHealth();
-		if (onMountRepoInit) onMountRepoInit();
-		if (window.banana?.github?.getSavedToken) {
-			window.banana.github
-				.getSavedToken()
-				.then((saved) => {
-					if (saved) {
-						setGithubToken(saved);
-						verifyGithubToken(saved);
-					}
-				})
-				.catch((err) =>
-					console.warn(
-						"[Banana] Could not load saved GitHub token:",
-						err?.message,
-					),
-				);
-		}
-		handleUrlAuthCallback({
-			setGithubToken,
-			setSourceMode,
-			verifyGithubToken,
-			existingToken: githubToken,
-		});
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
-
 	const handleSourceModeChange = useCallback((val) => {
 		setSourceMode(val);
 		localStorage.setItem("banana:sourceMode", val);
@@ -153,18 +147,52 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 	}, []);
 
 	return {
-		backendStatus,
-		kicadVersion,
 		sourceMode,
+		setSourceMode,
 		githubToken,
+		setGithubToken,
 		githubUser,
 		githubModalOpen,
 		setGithubModalOpen,
 		selectedRemoteRepo,
 		setSelectedRemoteRepo,
 		handleDisconnectGithub,
+		verifyGithubToken,
 		handleSourceModeChange,
 		handleAuthSuccess,
-		checkHealth,
+	};
+}
+
+export function useBackendHealthAndGithub({ onMountRepoInit }) {
+	const health = useBackendHealth();
+	const session = useGithubSession();
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: onMount initialization only
+	useEffect(() => {
+		health.checkHealth();
+		if (onMountRepoInit) onMountRepoInit();
+		loadDesktopSavedToken(session);
+		handleUrlAuthCallback({
+			setGithubToken: session.setGithubToken,
+			setSourceMode: session.setSourceMode,
+			verifyGithubToken: session.verifyGithubToken,
+			existingToken: session.githubToken,
+		});
+	}, []);
+
+	return {
+		backendStatus: health.backendStatus,
+		kicadVersion: health.kicadVersion,
+		sourceMode: session.sourceMode,
+		githubToken: session.githubToken,
+		githubUser: session.githubUser,
+		githubModalOpen: session.githubModalOpen,
+		setGithubModalOpen: session.setGithubModalOpen,
+		selectedRemoteRepo: session.selectedRemoteRepo,
+		setSelectedRemoteRepo: session.setSelectedRemoteRepo,
+		handleDisconnectGithub: session.handleDisconnectGithub,
+		handleSourceModeChange: session.handleSourceModeChange,
+		handleAuthSuccess: session.handleAuthSuccess,
+		checkHealth: health.checkHealth,
 	};
 }
