@@ -7,94 +7,6 @@ import { Typography } from "antd";
 
 const { Text } = Typography;
 
-const BUTTON_BASE_STYLE = {
-	background: "#1e2230",
-	border: "1px solid #333a4d",
-	color: "#cbd5e1",
-	borderRadius: "4px",
-	padding: "3px 8px",
-	fontSize: "11px",
-	cursor: "pointer",
-	display: "flex",
-	alignItems: "center",
-	gap: "4px",
-};
-
-const PERCENT_BUTTON_STYLE = {
-	color: "#fadb14",
-	fontFamily: "monospace",
-	minWidth: "50px",
-	textAlign: "center",
-};
-
-const CENTER_RESET_STYLE = {
-	padding: "3px 10px",
-	marginLeft: "4px",
-};
-
-const TOOLBAR_CONTAINER_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	padding: "6px 14px",
-	background: "#0e1017",
-	borderBottom: "1px solid #1e2230",
-	zIndex: 20,
-	flexShrink: 0,
-	userSelect: "none",
-};
-
-const MODE_CONTAINER_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-};
-
-const MODE_TITLE_STYLE = {
-	color: "#cbd5e1",
-	fontSize: "12px",
-	fontWeight: 500,
-};
-
-const MODE_HINT_STYLE = {
-	color: "#64748b",
-	fontSize: "11px",
-	marginLeft: "6px",
-};
-
-const ZOOM_CONTROLS_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	gap: "6px",
-};
-
-const SLIDER_DIVIDER_STYLE = {
-	width: "2px",
-	height: "100%",
-	backgroundColor: "#fadb14",
-	boxShadow: "0 0 8px rgba(250, 219, 20, 0.9)",
-	pointerEvents: "none",
-};
-
-const SLIDER_KNOB_STYLE = {
-	position: "absolute",
-	top: "50%",
-	transform: "translateY(-50%)",
-	width: "24px",
-	height: "24px",
-	borderRadius: "50%",
-	backgroundColor: "#161821",
-	border: "2px solid #fadb14",
-	boxShadow: "0 0 10px rgba(0,0,0,0.5), 0 0 8px rgba(250, 219, 20, 0.6)",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
-	color: "#fadb14",
-	fontSize: "11px",
-	cursor: "ew-resize",
-	userSelect: "none",
-};
-
 const TOOLBAR_MODES = {
 	slider: {
 		color: "#fadb14",
@@ -108,103 +20,142 @@ const TOOLBAR_MODES = {
 	},
 };
 
-function getModeDotStyle(accentColor) {
-	return {
-		width: "8px",
-		height: "8px",
-		borderRadius: "50%",
-		backgroundColor: accentColor,
-		boxShadow: `0 0 6px ${accentColor}`,
-	};
-}
-
-function getSliderHandleStyle(sliderValue) {
-	return {
+const STYLES = {
+	toolbar: {
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+		padding: "6px 14px",
+		background: "#0e1017",
+		borderBottom: "1px solid #1e2230",
+		zIndex: 20,
+		flexShrink: 0,
+		userSelect: "none",
+	},
+	modeBox: {
+		display: "flex",
+		alignItems: "center",
+		gap: "8px",
+	},
+	modeTitle: {
+		color: "#cbd5e1",
+		fontSize: "12px",
+		fontWeight: 500,
+	},
+	modeHint: {
+		color: "#64748b",
+		fontSize: "11px",
+		marginLeft: "6px",
+	},
+	zoomRow: {
+		display: "flex",
+		alignItems: "center",
+		gap: "6px",
+	},
+	btnBase: {
+		background: "#1e2230",
+		border: "1px solid #333a4d",
+		color: "#cbd5e1",
+		borderRadius: "4px",
+		padding: "3px 8px",
+		fontSize: "11px",
+		cursor: "pointer",
+		display: "flex",
+		alignItems: "center",
+		gap: "4px",
+	},
+	percentBtn: {
+		color: "#fadb14",
+		fontFamily: "monospace",
+		minWidth: "50px",
+		textAlign: "center",
+	},
+	centerBtn: {
+		padding: "3px 10px",
+		marginLeft: "4px",
+	},
+	sliderDivider: {
+		width: "2px",
+		height: "100%",
+		backgroundColor: "#fadb14",
+		boxShadow: "0 0 8px rgba(250, 219, 20, 0.9)",
+		pointerEvents: "none",
+	},
+	sliderKnob: {
 		position: "absolute",
-		top: 0,
-		bottom: 0,
-		left: `${sliderValue}%`,
-		width: "14px",
-		marginLeft: "-7px",
-		cursor: "ew-resize",
-		zIndex: 30,
+		top: "50%",
+		transform: "translateY(-50%)",
+		width: "24px",
+		height: "24px",
+		borderRadius: "50%",
+		backgroundColor: "#161821",
+		border: "2px solid #fadb14",
+		boxShadow: "0 0 10px rgba(0,0,0,0.5), 0 0 8px rgba(250, 219, 20, 0.6)",
 		display: "flex",
 		alignItems: "center",
 		justifyContent: "center",
-	};
-}
+		color: "#fadb14",
+		fontSize: "11px",
+		cursor: "ew-resize",
+		userSelect: "none",
+	},
+};
 
-function ZoomButton({ onClick, title, children, style = {} }) {
+function ZoomButton({ onClick, title, style, children }) {
 	return (
 		<button
 			type="button"
 			onClick={onClick}
 			title={title}
-			style={{ ...BUTTON_BASE_STYLE, ...style }}
+			style={{ ...STYLES.btnBase, ...style }}
 		>
 			{children}
 		</button>
 	);
 }
 
-function PercentResetButton({ percent, onReset }) {
-	return (
-		<ZoomButton
-			onClick={onReset}
-			title="Click to reset to 100%"
-			style={PERCENT_BUTTON_STYLE}
-		>
-			{percent}%
-		</ZoomButton>
-	);
-}
-
-function CenterResetButton({ onReset }) {
-	return (
-		<ZoomButton
-			onClick={onReset}
-			title="Reset to Center (Double-click canvas)"
-			style={CENTER_RESET_STYLE}
-		>
-			<UndoOutlined /> Reset
-		</ZoomButton>
-	);
-}
-
-function ModeIndicatorDot({ color }) {
-	return <span style={getModeDotStyle(color)} />;
-}
-
-function ModeIndicatorText({ title, hint }) {
-	return (
-		<>
-			<Text style={MODE_TITLE_STYLE}>{title}</Text>
-			<Text style={MODE_HINT_STYLE}>{hint}</Text>
-		</>
-	);
-}
-
 function ToolbarModeIndicator({ isSlider }) {
 	const mode = isSlider ? TOOLBAR_MODES.slider : TOOLBAR_MODES.delta;
 	return (
-		<div style={MODE_CONTAINER_STYLE}>
-			<ModeIndicatorDot color={mode.color} />
-			<ModeIndicatorText title={mode.title} hint={mode.hint} />
+		<div style={STYLES.modeBox}>
+			<span
+				style={{
+					width: "8px",
+					height: "8px",
+					borderRadius: "50%",
+					backgroundColor: mode.color,
+					boxShadow: `0 0 6px ${mode.color}`,
+				}}
+			/>
+			<Text style={STYLES.modeTitle}>{mode.title}</Text>
+			<Text style={STYLES.modeHint}>{mode.hint}</Text>
 		</div>
 	);
 }
 
 function ZoomControls({ currentZoomPercent, onZoomIn, onZoomOut, onReset }) {
 	return (
-		<div style={ZOOM_CONTROLS_STYLE}>
+		<div style={STYLES.zoomRow}>
 			<ZoomButton onClick={onZoomOut} title="Zoom Out (Scroll Down)">
 				<ZoomOutOutlined />
 			</ZoomButton>
-			<PercentResetButton percent={currentZoomPercent} onReset={onReset} />
+			<ZoomButton
+				onClick={onReset}
+				title="Click to reset to 100%"
+				style={STYLES.percentBtn}
+			>
+				{currentZoomPercent}%
+			</ZoomButton>
 			<ZoomButton onClick={onZoomIn} title="Zoom In (Scroll Up)">
 				<ZoomInOutlined />
 			</ZoomButton>
-			<CenterResetButton onReset={onReset} />
+			<ZoomButton
+				onClick={onReset}
+				title="Reset to Center (Double-click canvas)"
+				style={STYLES.centerBtn}
+			>
+				<UndoOutlined /> Reset
+			</ZoomButton>
 		</div>
 	);
 }
@@ -217,7 +168,7 @@ export function CanvasTopToolbar({
 	onReset,
 }) {
 	return (
-		<div style={TOOLBAR_CONTAINER_STYLE}>
+		<div style={STYLES.toolbar}>
 			<ToolbarModeIndicator isSlider={isSlider} />
 			<ZoomControls
 				currentZoomPercent={currentZoomPercent}
@@ -229,22 +180,26 @@ export function CanvasTopToolbar({
 	);
 }
 
-function SliderDivider() {
-	return <div style={SLIDER_DIVIDER_STYLE} />;
-}
-
-function SliderKnob() {
-	return <div style={SLIDER_KNOB_STYLE}>↔</div>;
-}
-
 export function SliderSplitHandle({ sliderValue }) {
 	return (
 		<div
 			className="diff-slider-handle"
-			style={getSliderHandleStyle(sliderValue)}
+			style={{
+				position: "absolute",
+				top: 0,
+				bottom: 0,
+				left: `${sliderValue}%`,
+				width: "14px",
+				marginLeft: "-7px",
+				cursor: "ew-resize",
+				zIndex: 30,
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "center",
+			}}
 		>
-			<SliderDivider />
-			<SliderKnob />
+			<div style={STYLES.sliderDivider} />
+			<div style={STYLES.sliderKnob}>↔</div>
 		</div>
 	);
 }
