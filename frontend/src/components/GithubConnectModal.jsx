@@ -251,7 +251,25 @@ function ProfileUserInfo({ user }) {
 	);
 }
 
+function isGithubProfileUrl(url) {
+	if (typeof url !== "string") return false;
+	try {
+		const parsed = new URL(url);
+		const isHttpsGithub =
+			parsed.protocol === "https:" && parsed.hostname === "github.com";
+		return isHttpsGithub && url.startsWith("https://github.com/");
+	} catch {
+		// Return false for invalid profile URLs
+		return false;
+	}
+}
+
 function ViewGithubLink({ href }) {
+	if (!isGithubProfileUrl(href)) {
+		return (
+			<span style={{ color: "#8b949e", fontSize: "12px" }}>View on GitHub</span>
+		);
+	}
 	return (
 		<a href={href} target="_blank" rel="noreferrer" style={GITHUB_LINK_STYLE}>
 			View on GitHub <ExportOutlined />
@@ -418,12 +436,23 @@ async function requestDeviceCode() {
 	return await window.banana.github.startDeviceFlow();
 }
 
+function resolveVerificationUrl(uri) {
+	try {
+		const parsed = new URL(uri);
+		if (parsed.protocol === "https:" && parsed.hostname === "github.com") {
+			return uri;
+		}
+	} catch {
+		// Fall back to default device login on invalid URL
+	}
+	return "https://github.com/login/device";
+}
+
 function openDeviceVerification(deviceData) {
 	if (!deviceData) return;
 	navigator.clipboard.writeText(deviceData.user_code);
 	message.success("Code copied to clipboard!");
-	const targetUrl =
-		deviceData.verification_uri || "https://github.com/login/device";
+	const targetUrl = resolveVerificationUrl(deviceData.verification_uri);
 	if (window.banana?.openExternal) {
 		window.banana.openExternal(targetUrl);
 		return;
