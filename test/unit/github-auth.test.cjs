@@ -1,4 +1,4 @@
-const { test, describe } = require('node:test');
+const { test, describe, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -120,39 +120,24 @@ describe('GitHub Auth Unit Tests (Phase 7 / T7.1)', () => {
       assert.equal(res.user, null);
     });
 
-    test('detectSystemGitHub prioritizes gh CLI over git credentials', async () => {
-      const options = {
-        checkGh: async () => 'gho_cli_token',
-        checkGit: async () => 'gho_git_token',
-        verifyToken: async (tok) => ({
-          valid: true,
-          user: { login: 'cliuser', name: 'CLI User', avatarUrl: '', id: 1 }
-        })
-      };
+    const DETECTION_CASES = [
+      { name: 'detectSystemGitHub prioritizes gh CLI over git credentials', gh: 'gho_cli_token', git: 'gho_git_token', login: 'cliuser', source: 'GitHub CLI', token: 'gho_cli_token' },
+      { name: 'detectSystemGitHub falls back to git credential manager', gh: null, git: 'gho_git_token', login: 'gituser', source: 'Git Credential Manager', token: 'gho_git_token' },
+    ];
 
-      const result = await detectSystemGitHub(options);
-      assert.equal(result.detected, true);
-      assert.equal(result.source, 'GitHub CLI');
-      assert.equal(result.token, 'gho_cli_token');
-      assert.equal(result.user.login, 'cliuser');
-    });
-
-    test('detectSystemGitHub falls back to git credential manager', async () => {
-      const options = {
-        checkGh: async () => null,
-        checkGit: async () => 'gho_git_token',
-        verifyToken: async (tok) => ({
-          valid: true,
-          user: { login: 'gituser', name: 'Git User', avatarUrl: '', id: 2 }
-        })
-      };
-
-      const result = await detectSystemGitHub(options);
-      assert.equal(result.detected, true);
-      assert.equal(result.source, 'Git Credential Manager');
-      assert.equal(result.token, 'gho_git_token');
-      assert.equal(result.user.login, 'gituser');
-    });
+    for (const c of DETECTION_CASES) {
+      test(c.name, async () => {
+        const result = await detectSystemGitHub({
+          checkGh: async () => c.gh,
+          checkGit: async () => c.git,
+          verifyToken: async () => ({ valid: true, user: { login: c.login, name: c.login, avatarUrl: '', id: 1 } })
+        });
+        assert.equal(result.detected, true);
+        assert.equal(result.source, c.source);
+        assert.equal(result.token, c.token);
+        assert.equal(result.user.login, c.login);
+      });
+    }
 
     test('detectSystemGitHub returns detected:false when no valid credentials exist', async () => {
       const options = {
@@ -192,45 +177,20 @@ describe('GitHub Auth Unit Tests (Phase 7 / T7.1)', () => {
       assert.equal(result.interval, 5);
     });
 
-    test('pollDeviceFlow handles authorization_pending state', async () => {
-      const mockFetch = async () => ({
-        ok: true,
-        json: async () => ({ error: 'authorization_pending' })
+    const POLL_ERROR_STATES = [
+      { error: 'authorization_pending' },
+      { error: 'slow_down', interval: 10 },
+      { error: 'expired_token' },
+      { error: 'access_denied' },
+    ];
+
+    for (const payload of POLL_ERROR_STATES) {
+      test(`pollDeviceFlow handles ${payload.error} state`, async () => {
+        const mockFetch = async () => ({ ok: true, json: async () => payload });
+        const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
+        assert.equal(res.error, payload.error);
       });
-
-      const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-      assert.equal(res.error, 'authorization_pending');
-    });
-
-    test('pollDeviceFlow handles slow_down state', async () => {
-      const mockFetch = async () => ({
-        ok: true,
-        json: async () => ({ error: 'slow_down', interval: 10 })
-      });
-
-      const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-      assert.equal(res.error, 'slow_down');
-    });
-
-    test('pollDeviceFlow handles expired_token state', async () => {
-      const mockFetch = async () => ({
-        ok: true,
-        json: async () => ({ error: 'expired_token' })
-      });
-
-      const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-      assert.equal(res.error, 'expired_token');
-    });
-
-    test('pollDeviceFlow handles access_denied state', async () => {
-      const mockFetch = async () => ({
-        ok: true,
-        json: async () => ({ error: 'access_denied' })
-      });
-
-      const res = await pollDeviceFlow('dev_code_123', 'test_client', mockFetch);
-      assert.equal(res.error, 'access_denied');
-    });
+    }
 
     test('pollDeviceFlow handles successful authorization', async () => {
       const mockFetch = async () => ({
@@ -288,9 +248,10 @@ describe('GitHub Auth Unit Tests (Phase 7 / T7.1)', () => {
       assert.equal(loaded, 'gho_fallback_secret');
 
       clearEncryptedToken(testTokenPath);
-      try {
-        fs.rmSync(testDir, { recursive: true, force: true });
-      } catch (_) {}
+    });
+
+    after(() => {
+      fs.rmSync(testDir, { recursive: true, force: true });
     });
   });
 });

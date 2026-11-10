@@ -20,9 +20,7 @@ describe('API Security and Hardening (Phase 7 / T7.3)', () => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
         res.on('end', () => {
-          let json = null;
-          try { json = JSON.parse(data); } catch (_) {}
-          resolve({ status: res.statusCode, body: json, raw: data });
+          resolve({ status: res.statusCode, body: parseJsonOrNull(data), raw: data });
         });
       });
       req.on('error', reject);
@@ -52,57 +50,38 @@ describe('API Security and Hardening (Phase 7 / T7.3)', () => {
     }
   });
 
-  test('rejects API request without x-banana-auth header (401 Unauthorized)', async () => {
-    const res = await sendHttpRequest({
-      headers: {
-        Host: `127.0.0.1:${testPort}`
-      }
-    });
-    assert.equal(res.status, 401);
-    assert.match(res.body.error, /Unauthorized/);
-  });
+  // Each case: auth header (undefined = omitted), Host prefix, expected status, and the body check.
+  const CASES = [
+    { name: 'rejects API request without x-banana-auth header (401 Unauthorized)', auth: undefined, host: '127.0.0.1', status: 401, error: /Unauthorized/ },
+    { name: 'rejects API request with wrong x-banana-auth header (401 Unauthorized)', auth: 'wrong-secret-token', host: '127.0.0.1', status: 401, error: /Unauthorized/ },
+    { name: 'accepts API request with valid x-banana-auth header (200 OK)', auth: TEST_SECRET, host: '127.0.0.1', status: 200 },
+    { name: 'blocks DNS rebinding attack with invalid Host header (403 Forbidden)', auth: TEST_SECRET, host: 'attacker-evil-site.com', status: 403, error: /Forbidden: Invalid Host header/ },
+    { name: 'allows requests with valid localhost Host header', auth: TEST_SECRET, host: 'localhost', status: 200 },
+  ];
 
-  test('rejects API request with wrong x-banana-auth header (401 Unauthorized)', async () => {
-    const res = await sendHttpRequest({
-      headers: {
-        'x-banana-auth': 'wrong-secret-token',
-        Host: `127.0.0.1:${testPort}`
-      }
+  for (const c of CASES) {
+    test(c.name, async () => {
+      const headers = { Host: `${c.host}:${testPort}` };
+      if (c.auth !== undefined) headers['x-banana-auth'] = c.auth;
+      const res = await sendHttpRequest({ headers });
+      assertResponse(res, c);
     });
-    assert.equal(res.status, 401);
-    assert.match(res.body.error, /Unauthorized/);
-  });
-
-  test('accepts API request with valid x-banana-auth header (200 OK)', async () => {
-    const res = await sendHttpRequest({
-      headers: {
-        'x-banana-auth': TEST_SECRET,
-        Host: `127.0.0.1:${testPort}`
-      }
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.status, 'healthy');
-  });
-
-  test('blocks DNS rebinding attack with invalid Host header (403 Forbidden)', async () => {
-    const res = await sendHttpRequest({
-      headers: {
-        'x-banana-auth': TEST_SECRET,
-        Host: `attacker-evil-site.com:${testPort}`
-      }
-    });
-    assert.equal(res.status, 403);
-    assert.match(res.body.error, /Forbidden: Invalid Host header/);
-  });
-
-  test('allows requests with valid localhost Host header', async () => {
-    const res = await sendHttpRequest({
-      headers: {
-        'x-banana-auth': TEST_SECRET,
-        Host: `localhost:${testPort}`
-      }
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.body.status, 'healthy');
-  });
+  }
 });
+
+function parseJsonOrNull(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null; // non-JSON body: tests assert on status and fail on body checks explicitly
+  }
+}
+
+function assertResponse(res, expected) {
+  assert.equal(res.status, expected.status);
+  if (expected.error) {
+    assert.match(res.body.error, expected.error);
+  } else {
+    assert.equal(res.body.status, 'healthy');
+  }
+}
