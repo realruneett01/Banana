@@ -1,4 +1,4 @@
-# Banana 2.0 — Audit Modification Data Pipeline Forensic Report
+# Banana — Audit Modification Data Pipeline Forensic Report
 
 ## 1. Frontend Audit Sidebar Component Location
 - **Render File & Line**: [`frontend/src/App.jsx:1128-1182`](file:///c:/Users/realr/OneDrive/Desktop/Banana2.0/frontend/src/App.jsx#L1128-L1182)

@@ -100,23 +100,27 @@ function parseAuditMessageContent(content) {
 		/\[\[audit:([^|\]]+)(?:\|([^\]]+))?\]\]|\[audit:([^|\]]+)(?:\|([^\]]+))?\]/g;
 	const parts = [];
 	let lastIndex = 0;
-	let match;
 
-	while ((match = auditRegex.exec(content)) !== null) {
+	for (const match of content.matchAll(auditRegex)) {
 		if (match.index > lastIndex) {
 			parts.push({
 				type: "text",
+				start: lastIndex,
 				value: content.substring(lastIndex, match.index),
 			});
 		}
 		const id = match[1] || match[3];
 		const label = match[2] || match[4] || id;
-		parts.push({ type: "audit-tag", id, label });
-		lastIndex = auditRegex.lastIndex;
+		parts.push({ type: "audit-tag", start: match.index, id, label });
+		lastIndex = match.index + match[0].length;
 	}
 
 	if (lastIndex < content.length) {
-		parts.push({ type: "text", value: content.substring(lastIndex) });
+		parts.push({
+			type: "text",
+			start: lastIndex,
+			value: content.substring(lastIndex),
+		});
 	}
 	return parts;
 }
@@ -130,11 +134,11 @@ function MessageBody({ content, onSelectModification }) {
 			className="copilot-message-body"
 			style={{ fontSize: "13px", lineHeight: "1.6", color: "#e1e7f0" }}
 		>
-			{parts.map((part, pIdx) => {
+			{parts.map((part) => {
 				if (part.type === "audit-tag") {
 					return (
 						<Tag
-							key={`audit-tag-${pIdx}`}
+							key={`audit-tag-${part.start}`}
 							color="gold"
 							icon={<AimOutlined />}
 							style={{
@@ -152,7 +156,7 @@ function MessageBody({ content, onSelectModification }) {
 					);
 				}
 				return (
-					<span key={`text-${pIdx}`} style={{ whiteSpace: "pre-wrap" }}>
+					<span key={`text-${part.start}`} style={{ whiteSpace: "pre-wrap" }}>
 						{part.value}
 					</span>
 				);
@@ -452,6 +456,7 @@ function ChatMessagesList({ messages, onSelectModification, messagesEndRef }) {
 		>
 			{messages.map((msg, idx) => (
 				<ChatMessageItem
+					// biome-ignore lint/suspicious/noArrayIndexKey: chat log is append-only, so the index is a stable identity
 					key={`msg-${idx}`}
 					msg={msg}
 					onSelectModification={onSelectModification}
@@ -482,9 +487,9 @@ function QuickPromptsScroll({ isStreaming, onSelectPrompt }) {
 				msOverflowStyle: "none",
 			}}
 		>
-			{QUICK_PROMPTS.map((qp, qIdx) => (
+			{QUICK_PROMPTS.map((qp) => (
 				<Button
-					key={`quick-prompt-${qIdx}`}
+					key={qp.label}
 					size="small"
 					type="dashed"
 					icon={qp.icon}
@@ -531,7 +536,7 @@ function ChatInputBar({
 						onSend();
 					}
 				}}
-				placeholder="Ask anything about Banana 2.0, PCB diffs, KiCad, or hardware engineering..."
+				placeholder="Ask anything about Banana, PCB diffs, KiCad, or hardware engineering..."
 				autoSize={{ minRows: 1, maxRows: 4 }}
 				disabled={isStreaming}
 				style={{

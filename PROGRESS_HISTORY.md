@@ -1,4 +1,4 @@
-# Banana 2.0 Code Health Refactoring & Session History
+# Banana Code Health Refactoring & Session History
 
 ## Overview
 This document tracks the code health refactoring progress, repowise diagnostic scores, target files, and current work status across sessions to ensure full continuity in the event of usage limits or quota cooldowns.

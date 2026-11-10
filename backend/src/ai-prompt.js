@@ -1,8 +1,8 @@
 /**
- * Banana 2.0 — AI System Prompt Builder & Context Categorizer
+ * Banana — AI System Prompt Builder & Context Categorizer
  */
 
-export const HARDWARE_ENGINEER_GUIDELINES = `You are a sharp, seasoned Principal Hardware & PCB Design Engineer colleague working alongside the user in Banana 2.0 (the KiCad diff and hardware workspace).
+export const HARDWARE_ENGINEER_GUIDELINES = `You are a sharp, seasoned Principal Hardware & PCB Design Engineer colleague working alongside the user in Banana (the KiCad diff and hardware workspace).
 
 ### SPEAK NATURALLY LIKE A REAL HUMAN PEER:
 - **Tone & Demeanor**: You sound like a friendly, practical senior hardware engineer sitting right beside the user at the lab bench looking at the schematic or layout together.
@@ -68,114 +68,126 @@ export const HARDWARE_ENGINEER_GUIDELINES = `You are a sharp, seasoned Principal
 `;
 
 export const CATEGORY = Object.freeze({
-  COMPONENTS: 'components',
-  MECHANICALS: 'mechanicals',
-  POWER_NETS: 'powerNets',
-  HIGH_SPEED_NETS: 'highSpeedNets',
-  SIGNALS: 'signals'
+	COMPONENTS: "components",
+	MECHANICALS: "mechanicals",
+	POWER_NETS: "powerNets",
+	HIGH_SPEED_NETS: "highSpeedNets",
+	SIGNALS: "signals",
 });
 
 export function formatAuditBadge(id, label) {
-  return `[[audit:${id}|${label}]]`;
+	return `[[audit:${id}|${label}]]`;
 }
 
 export function resolveAuditId(item, idx) {
-  if (item.id) return item.id;
-  if (item.diffIdx !== undefined) return `mod-${item.diffIdx}`;
-  if (idx !== null && idx !== undefined) return `mod-${idx}`;
-  return 'active-item';
+	if (item.id) return item.id;
+	if (item.diffIdx !== undefined) return `mod-${item.diffIdx}`;
+	if (idx !== null && idx !== undefined) return `mod-${idx}`;
+	return "active-item";
 }
 
 function getCategoryForLayerOrNet(layer, net, title, regexes) {
-  const l = (layer ?? '').toLowerCase();
-  if (l.includes('edge.cuts') || l.includes('courtyard') || l.includes('silks')) {
-    return CATEGORY.MECHANICALS;
-  }
-  const text = `${net} ${title}`;
-  if (regexes.power.test(text)) return CATEGORY.POWER_NETS;
-  if (regexes.highSpeed.test(text)) return CATEGORY.HIGH_SPEED_NETS;
-  return CATEGORY.SIGNALS;
+	const l = (layer ?? "").toLowerCase();
+	if (
+		l.includes("edge.cuts") ||
+		l.includes("courtyard") ||
+		l.includes("silks")
+	) {
+		return CATEGORY.MECHANICALS;
+	}
+	const text = `${net} ${title}`;
+	if (regexes.power.test(text)) return CATEGORY.POWER_NETS;
+	if (regexes.highSpeed.test(text)) return CATEGORY.HIGH_SPEED_NETS;
+	return CATEGORY.SIGNALS;
 }
 
 export function determineCategory(m, netContext) {
-  if (m.type === 'COMPONENT') return CATEGORY.COMPONENTS;
-  return getCategoryForLayerOrNet(m.layer, m.net, m.title ?? '', netContext);
+	if (m.type === "COMPONENT") return CATEGORY.COMPONENTS;
+	return getCategoryForLayerOrNet(m.layer, m.net, m.title ?? "", netContext);
 }
 
 function extractModificationFields(m, idx) {
-  const label = m.name ?? m.refDes ?? 'item';
-  const action = m.action ?? 'CHANGED';
-  const disp = m.displacement ? `${m.displacement.toFixed(2)}mm` : '';
-  const title = m.title ?? `${action.toLowerCase()} ${label}`;
+	const label = m.name ?? m.refDes ?? "item";
+	const action = m.action ?? "CHANGED";
+	const disp = m.displacement ? `${m.displacement.toFixed(2)}mm` : "";
+	const title = m.title ?? `${action.toLowerCase()} ${label}`;
 
-  return {
-    id: resolveAuditId(m, idx),
-    refDes: m.refDes ?? '',
-    net: m.net ?? m.name ?? '',
-    layer: m.layer ?? 'F.Cu',
-    action,
-    detail: m.detail ?? '',
-    disp,
-    type: m.type,
-    title
-  };
+	return {
+		id: resolveAuditId(m, idx),
+		refDes: m.refDes ?? "",
+		net: m.net ?? m.name ?? "",
+		layer: m.layer ?? "F.Cu",
+		action,
+		detail: m.detail ?? "",
+		disp,
+		type: m.type,
+		title,
+	};
 }
 
 export function categorizeSingleModification(m, idx, netContext) {
-  const entry = extractModificationFields(m, idx);
-  const category = determineCategory(entry, netContext);
-  return { entry, category };
+	const entry = extractModificationFields(m, idx);
+	const category = determineCategory(entry, netContext);
+	return { entry, category };
 }
 
 export function categorizeModifications(modifications = []) {
-  const categories = {
-    [CATEGORY.COMPONENTS]: [],
-    [CATEGORY.POWER_NETS]: [],
-    [CATEGORY.HIGH_SPEED_NETS]: [],
-    [CATEGORY.SIGNALS]: [],
-    [CATEGORY.MECHANICALS]: []
-  };
+	const categories = {
+		[CATEGORY.COMPONENTS]: [],
+		[CATEGORY.POWER_NETS]: [],
+		[CATEGORY.HIGH_SPEED_NETS]: [],
+		[CATEGORY.SIGNALS]: [],
+		[CATEGORY.MECHANICALS]: [],
+	};
 
-  const netContext = {
-    power: /\b(gnd|vcc|vdd|vss|3v3|\+3\.3v|5v|\+5v|12v|\+12v|vbat|vbus|pwr|vin|vout)\b/i,
-    highSpeed: /\b(spi|i2c|scl|sda|clk|clock|tx|rx|uart|usb|dp|dm|d\+|d\-|eth|rmii|rgmii|can|miso|mosi|sck|pcie|hdmi|lvds|diff)\b/i
-  };
+	const netContext = {
+		power:
+			/\b(gnd|vcc|vdd|vss|3v3|\+3\.3v|5v|\+5v|12v|\+12v|vbat|vbus|pwr|vin|vout)\b/i,
+		highSpeed:
+			/\b(spi|i2c|scl|sda|clk|clock|tx|rx|uart|usb|dp|dm|d\+|d-|eth|rmii|rgmii|can|miso|mosi|sck|pcie|hdmi|lvds|diff)\b/i,
+	};
 
-  for (let idx = 0; idx < modifications.length; idx++) {
-    const { entry, category } = categorizeSingleModification(modifications[idx], idx, netContext);
-    categories[category].push(entry);
-  }
+	for (let idx = 0; idx < modifications.length; idx++) {
+		const { entry, category } = categorizeSingleModification(
+			modifications[idx],
+			idx,
+			netContext,
+		);
+		categories[category].push(entry);
+	}
 
-  return categories;
+	return categories;
 }
 
 function formatFocusCoords(coords) {
-  if (coords && typeof coords.x === 'number') {
-    return `Target (${coords.x.toFixed(2)}, ${coords.y.toFixed(2)})`;
-  }
-  return 'N/A';
+	if (coords && typeof coords.x === "number") {
+		return `Target (${coords.x.toFixed(2)}, ${coords.y.toFixed(2)})`;
+	}
+	return "N/A";
 }
 
 function extractFocusMetadata(item) {
-  return {
-    label: item.refDes ?? item.name ?? item.title ?? 'Selected Element',
-    coords: formatFocusCoords(item.targetCoords),
-    shiftText: item.displacement ? ` (Shifted ${item.displacement.toFixed(2)} mm)` : '',
-    itemType: item.type ?? 'Element',
-    action: item.action ?? 'CHANGED',
-    layer: item.layer ?? 'unknown',
-    net: item.net ?? 'N/A',
-    refDes: item.refDes ?? 'N/A',
-    detail: item.detail ?? 'N/A'
-  };
+	return {
+		label: item.refDes ?? item.name ?? item.title ?? "Selected Element",
+		coords: formatFocusCoords(item.targetCoords),
+		shiftText: item.displacement
+			? ` (Shifted ${item.displacement.toFixed(2)} mm)`
+			: "",
+		itemType: item.type ?? "Element",
+		action: item.action ?? "CHANGED",
+		layer: item.layer ?? "unknown",
+		net: item.net ?? "N/A",
+		refDes: item.refDes ?? "N/A",
+		detail: item.detail ?? "N/A",
+	};
 }
 
 export function formatActiveFocusText(item, idx) {
-  if (!item) return '';
-  const actId = resolveAuditId(item, idx);
-  const meta = extractFocusMetadata(item);
+	if (!item) return "";
+	const actId = resolveAuditId(item, idx);
+	const meta = extractFocusMetadata(item);
 
-  return `
+	return `
 ### USER ACTIVE FOCUS (The user is currently inspecting this specific item on the board):
 - Item: ${formatAuditBadge(actId, meta.label)}
 - Type: ${meta.itemType} | Action: ${meta.action} | Layer: ${meta.layer}
@@ -186,75 +198,119 @@ export function formatActiveFocusText(item, idx) {
 }
 
 function formatNetList(list, limit) {
-  return list.slice(0, limit).map(item => {
-    const label = item.net || item.title;
-    const detail = item.detail ? `, ${item.detail}` : '';
-    return `- ${formatAuditBadge(item.id, label)} [${item.action}] Layer: ${item.layer}${detail}`;
-  }).join('\n');
+	return list
+		.slice(0, limit)
+		.map((item) => {
+			const label = item.net || item.title;
+			const detail = item.detail ? `, ${item.detail}` : "";
+			return `- ${formatAuditBadge(item.id, label)} [${item.action}] Layer: ${item.layer}${detail}`;
+		})
+		.join("\n");
 }
 
-export function formatCategorySummaries({ components, powerNets, highSpeedNets, signals, mechanicals }) {
-  const compSummary = components.slice(0, 30).map(c =>
-    `- ${formatAuditBadge(c.id, c.refDes || c.title)} [${c.action}] ${c.detail || c.layer}${c.disp ? ` (${c.disp})` : ''}`
-  ).join('\n');
+export function formatCategorySummaries({
+	components,
+	powerNets,
+	highSpeedNets,
+	signals,
+	mechanicals,
+}) {
+	const compSummary = components
+		.slice(0, 30)
+		.map(
+			(c) =>
+				`- ${formatAuditBadge(c.id, c.refDes || c.title)} [${c.action}] ${c.detail || c.layer}${c.disp ? ` (${c.disp})` : ""}`,
+		)
+		.join("\n");
 
-  const pwrSummary = formatNetList(powerNets, 20);
-  const hsSummary = formatNetList(highSpeedNets, 25);
-  const sigSummary = formatNetList(signals, 25);
+	const pwrSummary = formatNetList(powerNets, 20);
+	const hsSummary = formatNetList(highSpeedNets, 25);
+	const sigSummary = formatNetList(signals, 25);
 
-  const mechSummary = mechanicals.slice(0, 15).map(m =>
-    `- ${formatAuditBadge(m.id, m.title)} [${m.action}] Layer: ${m.layer}`
-  ).join('\n');
+	const mechSummary = mechanicals
+		.slice(0, 15)
+		.map(
+			(m) =>
+				`- ${formatAuditBadge(m.id, m.title)} [${m.action}] Layer: ${m.layer}`,
+		)
+		.join("\n");
 
-  return { compSummary, pwrSummary, hsSummary, sigSummary, mechSummary };
+	return { compSummary, pwrSummary, hsSummary, sigSummary, mechSummary };
 }
 
 function formatModificationsSection(modsCount, categories, summaries) {
-  if (modsCount === 0) {
-    return '\n(No active diffs detected between these revisions)';
-  }
-  const { components, powerNets, highSpeedNets, signals, mechanicals } = categories;
-  const { compSummary, pwrSummary, hsSummary, sigSummary, mechSummary } = summaries;
-  const sections = [];
+	if (modsCount === 0) {
+		return "\n(No active diffs detected between these revisions)";
+	}
+	const { components, powerNets, highSpeedNets, signals, mechanicals } =
+		categories;
+	const { compSummary, pwrSummary, hsSummary, sigSummary, mechSummary } =
+		summaries;
+	const sections = [];
 
-  if (components.length > 0) sections.push(`**Components Changed (${components.length}):**\n${compSummary}`);
-  if (powerNets.length > 0) sections.push(`**Power & Ground Modifications (${powerNets.length}):**\n${pwrSummary}`);
-  if (highSpeedNets.length > 0) sections.push(`**High-Speed & Bus Signals (${highSpeedNets.length}):**\n${hsSummary}`);
-  if (signals.length > 0) sections.push(`**Signal Routing Changes (${signals.length}):**\n${sigSummary}`);
-  if (mechanicals.length > 0) sections.push(`**Mechanical & Silkscreen Changes (${mechanicals.length}):**\n${mechSummary}`);
+	if (components.length > 0)
+		sections.push(
+			`**Components Changed (${components.length}):**\n${compSummary}`,
+		);
+	if (powerNets.length > 0)
+		sections.push(
+			`**Power & Ground Modifications (${powerNets.length}):**\n${pwrSummary}`,
+		);
+	if (highSpeedNets.length > 0)
+		sections.push(
+			`**High-Speed & Bus Signals (${highSpeedNets.length}):**\n${hsSummary}`,
+		);
+	if (signals.length > 0)
+		sections.push(
+			`**Signal Routing Changes (${signals.length}):**\n${sigSummary}`,
+		);
+	if (mechanicals.length > 0)
+		sections.push(
+			`**Mechanical & Silkscreen Changes (${mechanicals.length}):**\n${mechSummary}`,
+		);
 
-  return `### DETECTED MODIFICATIONS BY CATEGORY:\n` + sections.join('\n\n');
+	return `### DETECTED MODIFICATIONS BY CATEGORY:\n${sections.join("\n\n")}`;
 }
 
 export function buildSystemPrompt(boardContext = {}) {
-  const {
-    relativeFilePath = 'No board loaded',
-    baseCommit = 'N/A',
-    targetCommit = 'N/A',
-    selectedLayers = [],
-    diffMode = 'Overlay Slider',
-    modifications = [],
-    pcbMetadata = null,
-    activeAuditItem = null,
-    activeAuditIdx = null,
-    evolutionInfo = null
-  } = boardContext;
+	const {
+		relativeFilePath = "No board loaded",
+		baseCommit = "N/A",
+		targetCommit = "N/A",
+		selectedLayers = [],
+		diffMode = "Overlay Slider",
+		modifications = [],
+		pcbMetadata = null,
+		activeAuditItem = null,
+		activeAuditIdx = null,
+		evolutionInfo = null,
+	} = boardContext;
 
-  const categories = categorizeModifications(modifications);
-  const modsCount = modifications.length;
-  const layersList = selectedLayers.length > 0 ? selectedLayers.join(', ') : 'F.Cu, B.Cu, Edge.Cuts';
-  const activeFocusText = formatActiveFocusText(activeAuditItem, activeAuditIdx);
-  const summaries = formatCategorySummaries(categories);
-  const modsSection = formatModificationsSection(modsCount, categories, summaries);
+	const categories = categorizeModifications(modifications);
+	const modsCount = modifications.length;
+	const layersList =
+		selectedLayers.length > 0
+			? selectedLayers.join(", ")
+			: "F.Cu, B.Cu, Edge.Cuts";
+	const activeFocusText = formatActiveFocusText(
+		activeAuditItem,
+		activeAuditIdx,
+	);
+	const summaries = formatCategorySummaries(categories);
+	const modsSection = formatModificationsSection(
+		modsCount,
+		categories,
+		summaries,
+	);
 
-  const stats = pcbMetadata
-    ? `- Board Stats: ${pcbMetadata.footprintCount || 0} footprints, ${pcbMetadata.padCount || 0} pads, ${pcbMetadata.segmentCount || 0} tracks, ${(pcbMetadata.nets || []).length} nets\n`
-    : '';
-  const evolution = evolutionInfo
-    ? `- Evolution Path: Step ${evolutionInfo.step + 1} of ${evolutionInfo.totalSteps} (${evolutionInfo.mode} mode)\n`
-    : '';
+	const stats = pcbMetadata
+		? `- Board Stats: ${pcbMetadata.footprintCount || 0} footprints, ${pcbMetadata.padCount || 0} pads, ${pcbMetadata.segmentCount || 0} tracks, ${(pcbMetadata.nets || []).length} nets\n`
+		: "";
+	const evolution = evolutionInfo
+		? `- Evolution Path: Step ${evolutionInfo.step + 1} of ${evolutionInfo.totalSteps} (${evolutionInfo.mode} mode)\n`
+		: "";
 
-  return `${HARDWARE_ENGINEER_GUIDELINES}
+	return `${HARDWARE_ENGINEER_GUIDELINES}
 
 ---
 

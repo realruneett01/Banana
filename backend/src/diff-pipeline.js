@@ -1,5 +1,5 @@
 /**
- * Banana 2.0 — High-Performance KiCad Diff Pipeline
+ * Banana — High-Performance KiCad Diff Pipeline
  */
 
 import fs from "node:fs";

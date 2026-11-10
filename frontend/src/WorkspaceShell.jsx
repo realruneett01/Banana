@@ -16,7 +16,7 @@ function BrandLogo({ compact }) {
 				🍌
 			</div>
 			<div className="bn-brand-text">
-				<span className="bn-brand-name">Banana 2.0</span>
+				<span className="bn-brand-name">Banana</span>
 				{!compact && (
 					<span className="bn-brand-sub">Visual Hardware Diff Studio</span>
 				)}
@@ -65,11 +65,9 @@ function GithubUserButton({ githubUser, onOpenGithubModal, compact }) {
 	);
 }
 
-function BackendStatusBadge({ backendStatus, kicadVersion, compact }) {
+function BackendStatusBadge({ backendStatus, compact }) {
 	const isHealthy = backendStatus === "healthy";
-	const label = isHealthy
-		? `KiCad ${kicadVersion || "CLI"}`
-		: "Backend offline";
+	const label = isHealthy ? "Connected" : "Backend offline";
 	return (
 		<Tooltip title={isHealthy ? "Backend connected" : "Backend not reachable"}>
 			<span className={`bn-status ${isHealthy ? "is-ok" : "is-down"}`}>
@@ -98,7 +96,6 @@ function CopilotButton({ onOpenCopilot, compact }) {
 
 export default function WorkspaceShell({
 	onOpenCopilot,
-	kicadVersion,
 	backendStatus,
 	githubUser,
 	onOpenGithubModal,
@@ -127,11 +124,7 @@ export default function WorkspaceShell({
 					onOpenGithubModal={onOpenGithubModal}
 					compact={compact}
 				/>
-				<BackendStatusBadge
-					backendStatus={backendStatus}
-					kicadVersion={kicadVersion}
-					compact={compact}
-				/>
+				<BackendStatusBadge backendStatus={backendStatus} compact={compact} />
 				<CopilotButton onOpenCopilot={onOpenCopilot} compact={compact} />
 				{compact && (
 					<Button
