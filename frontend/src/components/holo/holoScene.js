@@ -88,27 +88,37 @@ function physical(def) {
 	return m;
 }
 
+function isGoldPin(r, g, b) {
+	if (r <= 0.6 || b >= 0.35) return false;
+	return g < 0.6 * r + 0.15;
+}
+
+function isTinTerminal(r, b, lum) {
+	if (lum <= 0.55 || lum > 0.7) return false;
+	return Math.abs(r - b) < 0.12;
+}
+
+function deriveFinish(c) {
+	const { r, g, b } = c.clone().convertLinearToSRGB();
+	const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+	if (isGoldPin(r, g, b)) {
+		return { metal: 1, rough: 0.2, cc: 0 }; // gold pins
+	}
+	if (isTinTerminal(r, b, lum)) {
+		return { metal: 1, rough: 0.3, cc: 0 }; // tin terminals
+	}
+	if (lum < 0.05) {
+		return { metal: 0, rough: 0.45, cc: 0.3 }; // epoxy mould
+	}
+	return { metal: 0, rough: 0.5, cc: 0 };
+}
+
 // glTF materials from KiCad omit metallicFactor (spec default = 1, fully metallic), which renders
 // plastic parts as dark mirrors. Re-derive a plausible finish from the base colour instead.
 function componentMaterial(src) {
 	const c = src.color ? src.color.clone() : new THREE.Color(0.5, 0.5, 0.5);
-	const { r, g, b } = c.clone().convertLinearToSRGB();
-	const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-	let metal = 0,
-		rough = 0.5,
-		cc = 0;
-	if (r > 0.6 && g < 0.6 * r + 0.15 && b < 0.35) {
-		metal = 1;
-		rough = 0.2;
-	} // gold pins
-	else if (lum > 0.55 && lum <= 0.7 && Math.abs(r - b) < 0.12) {
-		metal = 1;
-		rough = 0.3;
-	} // tin terminals
-	else if (lum < 0.05) {
-		rough = 0.45;
-		cc = 0.3;
-	} // epoxy mould
+	const { metal, rough, cc } = deriveFinish(c);
+	const op = src.opacity ?? 1;
 	const m = new THREE.MeshPhysicalMaterial({
 		color: c,
 		metalness: metal,
@@ -117,10 +127,10 @@ function componentMaterial(src) {
 		clearcoatRoughness: 0.1,
 		side: THREE.DoubleSide,
 		envMapIntensity: metal ? 1.4 : 0.8,
-		transparent: (src.opacity ?? 1) < 1,
-		opacity: src.opacity ?? 1,
+		transparent: op < 1,
+		opacity: op,
 	});
-	m.userData.op = src.opacity ?? 1;
+	m.userData.op = op;
 	return m;
 }
 
@@ -151,89 +161,168 @@ function holoMaterial(color, alpha, shared) {
 	});
 }
 
+function computeTriangleCentroids(pos, matrixWorld) {
+	const triCount = pos.count / 3;
+	const ys = new Float64Array(triCount);
+	const v = new THREE.Vector3();
+	for (let t = 0; t < triCount; t++) {
+		let y = 0;
+		for (let k = 0; k < 3; k++) {
+			v.fromBufferAttribute(pos, t * 3 + k).applyMatrix4(matrixWorld);
+			y += v.y;
+		}
+		ys[t] = Math.round((y / 3) * 1e6) / 1e6;
+	}
+	return ys;
+}
+
+function clusterHeightBands(ys, gap) {
+	const uniq = Array.from(new Set(ys)).sort((a, b) => a - b);
+	const bands = [];
+	let start = uniq[0];
+	for (let i = 1; i < uniq.length; i++) {
+		if (uniq[i] - uniq[i - 1] > gap) {
+			bands.push([start, uniq[i - 1]]);
+			start = uniq[i];
+		}
+	}
+	bands.push([start, uniq[uniq.length - 1]]);
+	return bands;
+}
+
+function copyBandAttributes(idx, pos, nrm) {
+	const p = new Float32Array(idx.length * 9);
+	const n = nrm ? new Float32Array(idx.length * 9) : null;
+	for (let j = 0; j < idx.length; j++) {
+		const t = idx[j];
+		for (let k = 0; k < 9; k++) {
+			p[j * 9 + k] = pos.array[t * 9 + k];
+			if (n) n[j * 9 + k] = nrm.array[t * 9 + k];
+		}
+	}
+	return { p, n };
+}
+
+function createBandMesh(mesh, { pos, nrm, ys, lo, hi }) {
+	const triCount = pos.count / 3;
+	const idx = [];
+	for (let t = 0; t < triCount; t++) {
+		if (ys[t] >= lo - 1e-9 && ys[t] <= hi + 1e-9) idx.push(t);
+	}
+	const { p, n } = copyBandAttributes(idx, pos, nrm);
+	const g = new THREE.BufferGeometry();
+	g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+	if (n) g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
+	else g.computeVertexNormals();
+	const m = new THREE.Mesh(g, mesh.material);
+	m.name = mesh.name;
+	mesh.matrixWorld.decompose(m.position, m.quaternion, m.scale);
+	m.updateMatrixWorld(true);
+	m.userData.kind = mesh.userData.kind;
+	return m;
+}
+
 /** Split a mesh into one mesh per height band (triangle centroid Y, world space). */
 function splitByHeight(mesh, gap = 5e-5) {
 	const src = mesh.geometry.index
 		? mesh.geometry.toNonIndexed()
 		: mesh.geometry;
-	const pos = src.attributes.position,
-		nrm = src.attributes.normal;
-	const mw = mesh.matrixWorld,
-		v = new THREE.Vector3();
-	const triCount = pos.count / 3,
-		ys = new Float64Array(triCount);
-	for (let t = 0; t < triCount; t++) {
-		let y = 0;
-		for (let k = 0; k < 3; k++) {
-			v.fromBufferAttribute(pos, t * 3 + k).applyMatrix4(mw);
-			y += v.y;
-		}
-		ys[t] = Math.round((y / 3) * 1e6) / 1e6;
-	}
-	const uniq = Array.from(new Set(ys)).sort((a, b) => a - b);
-	const bands = [];
-	let start = uniq[0];
-	for (let i = 1; i < uniq.length; i++)
-		if (uniq[i] - uniq[i - 1] > gap) {
-			bands.push([start, uniq[i - 1]]);
-			start = uniq[i];
-		}
-	bands.push([start, uniq[uniq.length - 1]]);
+	const pos = src.attributes.position;
+	const nrm = src.attributes.normal;
+	const ys = computeTriangleCentroids(pos, mesh.matrixWorld);
+	const bands = clusterHeightBands(ys, gap);
 	if (bands.length === 1) return [mesh];
-	return bands.map(([lo, hi]) => {
-		const idx = [];
-		for (let t = 0; t < triCount; t++)
-			if (ys[t] >= lo - 1e-9 && ys[t] <= hi + 1e-9) idx.push(t);
-		const p = new Float32Array(idx.length * 9),
-			n = nrm ? new Float32Array(idx.length * 9) : null;
-		idx.forEach((t, j) => {
-			for (let k = 0; k < 9; k++) {
-				p[j * 9 + k] = pos.array[t * 9 + k];
-				if (n) n[j * 9 + k] = nrm.array[t * 9 + k];
-			}
-		});
-		const g = new THREE.BufferGeometry();
-		g.setAttribute("position", new THREE.BufferAttribute(p, 3));
-		if (n) g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
-		else g.computeVertexNormals();
-		const m = new THREE.Mesh(g, mesh.material);
-		m.name = mesh.name;
-		mesh.matrixWorld.decompose(m.position, m.quaternion, m.scale);
-		m.updateMatrixWorld(true);
-		m.userData.kind = mesh.userData.kind;
-		return m;
-	});
+	return bands.map(([lo, hi]) =>
+		createBandMesh(mesh, { pos, nrm, ys, lo, hi }),
+	);
 }
 
 const centerY = (o) =>
 	new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3()).y;
 
+function cleanGeometryAttributes(g) {
+	for (const name of Object.keys(g.attributes)) {
+		if (name !== "position" && name !== "normal") {
+			g.deleteAttribute(name);
+		}
+	}
+	g.morphAttributes = {};
+	if (!g.attributes.normal) {
+		g.computeVertexNormals();
+	}
+}
+
+function bakeMeshGeometry(mesh, indexed) {
+	mesh.updateMatrixWorld(true);
+	const geom = mesh.geometry;
+	const g = !indexed && geom.index ? geom.toNonIndexed() : geom.clone();
+	cleanGeometryAttributes(g);
+	return g.applyMatrix4(mesh.matrixWorld);
+}
+
 /** Merge meshes into one geometry, baking each world transform (layer groups start at the holder origin). */
 function mergeBaked(meshes) {
 	const indexed = meshes.every((o) => o.geometry.index);
-	const geoms = meshes.map((o) => {
-		o.updateMatrixWorld(true);
-		const g = indexed
-			? o.geometry.clone()
-			: o.geometry.index
-				? o.geometry.toNonIndexed()
-				: o.geometry.clone();
-		for (const name of Object.keys(g.attributes))
-			if (name !== "position" && name !== "normal") g.deleteAttribute(name);
-		g.morphAttributes = {};
-		if (!g.attributes.normal) g.computeVertexNormals();
-		return g.applyMatrix4(o.matrixWorld);
-	});
+	const geoms = meshes.map((o) => bakeMeshGeometry(o, indexed));
 	const merged = geoms.length === 1 ? geoms[0] : mergeGeometries(geoms);
-	if (!merged)
+	if (!merged) {
 		throw new Error("Could not merge board meshes (incompatible attributes)");
-	if (geoms.length > 1) geoms.forEach((g) => g.dispose());
+	}
+	if (geoms.length > 1) {
+		geoms.forEach((g) => {
+			g.dispose();
+		});
+	}
 	merged.computeBoundingSphere();
 	merged.computeBoundingBox();
 	return merged;
 }
 
-export function createHoloScene(container, { onHover } = {}) {
+function createAdditiveMaterial(color, opacity) {
+	return new THREE.MeshBasicMaterial({
+		color,
+		transparent: true,
+		opacity,
+		blending: THREE.AdditiveBlending,
+		side: THREE.DoubleSide,
+		depthWrite: false,
+	});
+}
+
+function addProjectorRings(base) {
+	for (const [r, o] of [
+		[9.05, 0.6],
+		[6.4, 0.3],
+		[3.2, 0.2],
+	]) {
+		const ring = new THREE.Mesh(
+			new THREE.RingGeometry(r - 0.03, r, 160),
+			createAdditiveMaterial(0x4fe3ff, o),
+		);
+		ring.rotation.x = -Math.PI / 2;
+		base.add(ring);
+	}
+}
+
+function createProjectorBase(scene) {
+	const base = new THREE.Group();
+	scene.add(base);
+	const polar = new THREE.PolarGridHelper(9, 24, 8, 96, 0x1a6f8a, 0x0d3a4a);
+	polar.material.transparent = true;
+	polar.material.opacity = 0.3;
+	polar.material.blending = THREE.AdditiveBlending;
+	base.add(polar);
+	addProjectorRings(base);
+	const tick = new THREE.Mesh(
+		new THREE.RingGeometry(9.25, 9.6, 160, 1, 0, Math.PI * 0.35),
+		createAdditiveMaterial(0xffb547, 0.45),
+	);
+	tick.rotation.x = -Math.PI / 2;
+	base.add(tick);
+	return { base, polar, tick };
+}
+
+function initRenderer(container) {
 	const renderer = new THREE.WebGLRenderer({
 		antialias: true,
 		powerPreference: "high-performance",
@@ -243,7 +332,10 @@ export function createHoloScene(container, { onHover } = {}) {
 	container.appendChild(renderer.domElement);
 	renderer.domElement.style.display = "block";
 	renderer.domElement.style.touchAction = "none"; // OrbitControls handles pinch/rotate on phones
+	return renderer;
+}
 
+function initScene(renderer) {
 	const scene = new THREE.Scene();
 	scene.background = new THREE.Color(0x05070c);
 	scene.fog = new THREE.FogExp2(0x05070c, 0.012);
@@ -256,10 +348,13 @@ export function createHoloScene(container, { onHover } = {}) {
 	const rim = new THREE.DirectionalLight(0x9fdcff, 1.2);
 	rim.position.set(10, 6, -12);
 	scene.add(rim);
+	return { scene, pmrem };
+}
 
+function initCameraAndControls(domElement) {
 	const camera = new THREE.PerspectiveCamera(38, 1, 0.02, 500);
 	camera.position.set(-14, 12, 18);
-	const controls = new OrbitControls(camera, renderer.domElement);
+	const controls = new OrbitControls(camera, domElement);
 	controls.enableDamping = true;
 	controls.dampingFactor = 0.06;
 	controls.autoRotate = true;
@@ -267,589 +362,767 @@ export function createHoloScene(container, { onHover } = {}) {
 	controls.target.set(0, 3.2, 0);
 	controls.minDistance = 1;
 	controls.maxDistance = 60;
+	return { camera, controls };
+}
 
+function initComposer(renderer, scene, camera) {
 	const composer = new EffectComposer(renderer);
 	composer.addPass(new RenderPass(scene, camera));
 	const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0, 0.3, 0.9); // off by default: crisp parts
 	bloom.enabled = false;
 	composer.addPass(bloom);
 	composer.addPass(new OutputPass());
+	return { composer, bloom };
+}
 
-	const shared = {
-		uTime: { value: 0 },
-		uGlow: { value: 1 },
-		uScanY: { value: -99 },
-	};
+const HOLO_ALPHA = {
+	copper: 0.1,
+	pad: 0.1,
+	via: 0.1,
+	silkscreen: 0.3,
+	soldermask: 0.035,
+	PCB: 0.02,
+};
 
-	// projector base
-	const base = new THREE.Group();
-	scene.add(base);
-	const additive = (color, opacity) =>
-		new THREE.MeshBasicMaterial({
-			color,
-			transparent: true,
-			opacity,
-			blending: THREE.AdditiveBlending,
-			side: THREE.DoubleSide,
-			depthWrite: false,
-		});
-	const polar = new THREE.PolarGridHelper(9, 24, 8, 96, 0x1a6f8a, 0x0d3a4a);
-	polar.material.transparent = true;
-	polar.material.opacity = 0.3;
-	polar.material.blending = THREE.AdditiveBlending;
-	base.add(polar);
-	for (const [r, o] of [
-		[9.05, 0.6],
-		[6.4, 0.3],
-		[3.2, 0.2],
-	]) {
-		const ring = new THREE.Mesh(
-			new THREE.RingGeometry(r - 0.03, r, 160),
-			additive(0x4fe3ff, o),
-		);
-		ring.rotation.x = -Math.PI / 2;
-		base.add(ring);
+const SPLITTABLE_KINDS = new Set(["copper", "pad", "soldermask", "silkscreen"]);
+
+function getMeshKind(o, gltf) {
+	const a = gltf.parser.associations.get(o);
+	const meshName =
+		a?.meshes !== undefined
+			? gltf.parser.json.meshes[a.meshes]?.name || ""
+			: "";
+	return /_(copper|pad|via|silkscreen|soldermask|PCB)$/.exec(meshName)?.[1];
+}
+
+function hasBoardMesh(node) {
+	let found = false;
+	node.traverse((o) => {
+		if (o.userData.kind) found = true;
+	});
+	return found;
+}
+
+function classifyGltfNodes(gltf) {
+	const boardMeshes = [];
+	const comps = [];
+	gltf.scene.traverse((o) => {
+		if (!o.isMesh) return;
+		const kind = getMeshKind(o, gltf);
+		if (kind) {
+			o.userData.kind = kind;
+			boardMeshes.push(o);
+		}
+	});
+	const topNodes = gltf.scene.children[0]?.children ?? gltf.scene.children;
+	for (const top of topNodes) {
+		if (!hasBoardMesh(top) && top.name) comps.push(top);
 	}
-	const tick = new THREE.Mesh(
-		new THREE.RingGeometry(9.25, 9.6, 160, 1, 0, Math.PI * 0.35),
-		additive(0xffb547, 0.45),
+	return { boardMeshes, comps };
+}
+
+function copperSlot(y, cu) {
+	const near = cu.reduce(
+		(a, c) => (Math.abs(c - y) < Math.abs(a - y) ? c : a),
+		cu[0],
 	);
-	tick.rotation.x = -Math.PI / 2;
-	base.add(tick);
+	if (Math.abs(near - y) > 1e-4) return 4; // through-hole barrels span the board
+	const i = cu.indexOf(near);
+	const n = cu.length;
+	if (i === n - 1) return 6;
+	if (i === 0) return 2;
+	return i === n - 2 ? 5 : 3;
+}
 
-	const holder = new THREE.Group();
-	scene.add(holder);
-	let layers = [],
-		parts = [],
-		style = "kicad",
-		explode = 1,
-		spacing = 1,
-		solo = null,
-		resHeight = 0,
-		scanT = -1;
-	let quality = "auto"; // auto | low | medium | high | ultra
-	let autoPr = Math.min(window.devicePixelRatio || 1, 2); // auto mode: adjusted live to hold 60 fps
-	let autoCeil = Infinity; // auto mode: lowest pixel ratio that already failed 60 fps
-	let disposed = false,
-		loadSeq = 0;
+function createSlotResolver(mid, cu) {
+	return (m) => {
+		const k = m.userData.kind;
+		const y = centerY(m);
+		if (k === "silkscreen") return y > mid ? 8 : 0;
+		if (k === "soldermask") return y > mid ? 7 : 1;
+		if (k === "copper" || k === "pad") return copperSlot(y, cu);
+		return 4;
+	};
+}
 
-	function clearBoard() {
-		holder.traverse((o) => {
-			if (o.geometry) o.geometry.dispose();
-			for (const m of [o.material, o.userData?.metal, o.userData?.holo].flat())
-				m?.dispose?.();
-		});
-		holder.clear();
-		layers = [];
-		parts = [];
-		solo = null;
-		hovered = null;
+function getBoardHeights(split) {
+	const body = split.find((m) => m.userData.kind === "PCB");
+	if (!body) {
+		throw new Error("3D model has no board body (missing *_PCB mesh)");
 	}
+	const bb = new THREE.Box3().setFromObject(body);
+	const mid = (bb.min.y + bb.max.y) / 2;
+	const cu = Array.from(
+		new Set(
+			split
+				.filter((m) => m.userData.kind === "copper")
+				.map((m) => Math.round(centerY(m) * 1e5) / 1e5),
+		),
+	).sort((a, b) => a - b);
+	return { mid, cu };
+}
 
-	async function loadGlb(arrayBuffer) {
-		const seq = ++loadSeq;
-		const gltf = await new GLTFLoader().parseAsync(arrayBuffer, "");
-		if (seq !== loadSeq || disposed)
-			throw new Error("Superseded by a newer board load");
-		clearBoard();
-		const root = gltf.scene;
-		root.updateMatrixWorld(true);
-		const json = gltf.parser.json;
+function fitHolder(holder, root) {
+	const full = new THREE.Box3().setFromObject(root);
+	const size = full.getSize(new THREE.Vector3());
+	const ctr = full.getCenter(new THREE.Vector3());
+	const s = FIT_SIZE / Math.max(size.x, size.z);
+	holder.scale.setScalar(s);
+	holder.position.set(-ctr.x * s, -full.min.y * s + 1.2, -ctr.z * s);
+	return size;
+}
 
-		// classify: board meshes by glTF mesh name suffix, components by top-level node (= reference)
-		const boardMeshes = [],
-			comps = [];
-		root.traverse((o) => {
+function createGroupManager(holder) {
+	const groups = new Map();
+	const groupFor = (slot) => {
+		if (!groups.has(slot)) {
+			const def = LAYER_SLOTS.find((d) => d.slot === slot);
+			const g = new THREE.Group();
+			holder.add(g);
+			groups.set(slot, {
+				...def,
+				k: 0,
+				group: g,
+				meshes: [],
+				lines: [],
+				fade: 0,
+				target: 1,
+				visible: true,
+			});
+		}
+		return groups.get(slot);
+	};
+	return { groups, groupFor };
+}
+
+// KiCad emits thousands of tiny meshes (~56k draw calls/frame unmerged). Bake each into board space
+// and merge per layer+kind (board) or per component+material (parts) → a few hundred draw calls.
+function collectMeshBuckets({ split, comps, slotOf, mid, groupFor }) {
+	const buckets = new Map();
+	const bucket = (key, init) => {
+		if (!buckets.has(key)) buckets.set(key, { ...init, srcs: [] });
+		return buckets.get(key);
+	};
+	for (const m of split) {
+		const slot = slotOf(m);
+		const kind = m.userData.kind;
+		bucket(`b|${slot}|${kind}`, { L: groupFor(slot), kind }).srcs.push(m);
+	}
+	for (const c of comps) {
+		const L = groupFor(centerY(c) > mid ? 9 : -1);
+		c.traverse((o) => {
 			if (!o.isMesh) return;
-			const a = gltf.parser.associations.get(o);
-			const meshName =
-				a?.meshes !== undefined ? json.meshes[a.meshes]?.name || "" : "";
-			const kind = /_(copper|pad|via|silkscreen|soldermask|PCB)$/.exec(
-				meshName,
-			)?.[1];
-			if (kind) {
-				o.userData.kind = kind;
-				boardMeshes.push(o);
-			}
-		});
-		for (const top of root.children[0]?.children ?? root.children) {
-			let isBoard = false;
-			top.traverse((o) => {
-				if (o.userData.kind) isBoard = true;
-			});
-			if (!isBoard && top.name) comps.push(top);
-		}
-
-		const split = boardMeshes.flatMap((m) =>
-			["copper", "pad", "soldermask", "silkscreen"].includes(m.userData.kind)
-				? splitByHeight(m)
-				: [m],
-		);
-		const body = split.find((m) => m.userData.kind === "PCB");
-		if (!body)
-			throw new Error("3D model has no board body (missing *_PCB mesh)");
-		const bb = new THREE.Box3().setFromObject(body);
-		const mid = (bb.min.y + bb.max.y) / 2;
-		const cu = Array.from(
-			new Set(
-				split
-					.filter((m) => m.userData.kind === "copper")
-					.map((m) => Math.round(centerY(m) * 1e5) / 1e5),
-			),
-		).sort((a, b) => a - b);
-		const slotOf = (m) => {
-			const k = m.userData.kind,
-				y = centerY(m);
-			if (k === "silkscreen") return y > mid ? 8 : 0;
-			if (k === "soldermask") return y > mid ? 7 : 1;
-			if (k === "copper" || k === "pad") {
-				const near = cu.reduce(
-					(a, c) => (Math.abs(c - y) < Math.abs(a - y) ? c : a),
-					cu[0],
-				);
-				if (Math.abs(near - y) > 1e-4) return 4; // through-hole barrels span the board
-				const i = cu.indexOf(near),
-					n = cu.length;
-				if (i === n - 1) return 6;
-				if (i === 0) return 2;
-				return i === n - 2 ? 5 : 3;
-			}
-			return 4;
-		};
-
-		const full = new THREE.Box3().setFromObject(root);
-		const size = full.getSize(new THREE.Vector3()),
-			ctr = full.getCenter(new THREE.Vector3());
-		const s = FIT_SIZE / Math.max(size.x, size.z);
-		holder.scale.setScalar(s);
-		holder.position.set(-ctr.x * s, -full.min.y * s + 1.2, -ctr.z * s);
-
-		const groups = new Map();
-		const groupFor = (slot) => {
-			if (!groups.has(slot)) {
-				const def = LAYER_SLOTS.find((d) => d.slot === slot);
-				const g = new THREE.Group();
-				holder.add(g);
-				groups.set(slot, {
-					...def,
-					k: 0,
-					group: g,
-					meshes: [],
-					lines: [],
-					fade: 0,
-					target: 1,
-					visible: true,
-				});
-			}
-			return groups.get(slot);
-		};
-		const holoAlpha = {
-			copper: 0.1,
-			pad: 0.1,
-			via: 0.1,
-			silkscreen: 0.3,
-			soldermask: 0.035,
-			PCB: 0.02,
-		};
-
-		// KiCad emits thousands of tiny meshes (~56k draw calls/frame unmerged). Bake each into board space
-		// and merge per layer+kind (board) or per component+material (parts) → a few hundred draw calls.
-		const buckets = new Map();
-		const bucket = (key, init) => {
-			if (!buckets.has(key)) buckets.set(key, { ...init, srcs: [] });
-			return buckets.get(key);
-		};
-		for (const m of split) {
-			const slot = slotOf(m),
-				kind = m.userData.kind;
-			bucket(`b|${slot}|${kind}`, { L: groupFor(slot), kind }).srcs.push(m);
-		}
-		for (const c of comps) {
-			const L = groupFor(centerY(c) > mid ? 9 : -1);
-			c.traverse((o) => {
-				if (!o.isMesh) return;
-				const mat = o.material,
-					key = `c|${c.name}|${mat.color?.getHexString()}|${mat.opacity ?? 1}`;
-				bucket(key, { L, ref: c.name, src: mat }).srcs.push(o);
-			});
-		}
-
-		for (const b of buckets.values()) {
-			const m = new THREE.Mesh(mergeBaked(b.srcs));
-			if (b.ref) {
-				m.userData.metal = componentMaterial(b.src);
-				m.userData.holo = holoMaterial(b.L.holo, 0.05, shared);
-				m.userData.ref = b.ref;
-				parts.push(m);
-			} else {
-				m.userData.kind = b.kind;
-				m.userData.metal = physical(KICAD_MATERIALS[b.kind]);
-				m.userData.holo = holoMaterial(
-					b.L.holo,
-					holoAlpha[b.kind] ?? 0.1,
-					shared,
-				);
-				if (b.kind === "PCB") {
-					// faint outline keeps the stack readable as a projection
-					const ls = new THREE.LineSegments(
-						new THREE.EdgesGeometry(m.geometry, 35),
-						new THREE.LineBasicMaterial({
-							color: 0x4fe3ff,
-							transparent: true,
-							opacity: 0.35,
-							depthWrite: false,
-							blending: THREE.AdditiveBlending,
-						}),
-					);
-					ls.userData.base = 0.35;
-					m.add(ls);
-					b.L.lines.push(ls);
-				}
-			}
-			m.material = m.userData.metal;
-			b.L.group.add(m);
-			b.L.meshes.push(m);
-		}
-		for (const m of split) m.geometry.dispose(); // split pieces are copies; the glTF originals are dropped with gltf
-		[...groups.values()]
-			.sort((a, b) => a.slot - b.slot)
-			.forEach((L, i) => {
-				L.k = i;
-			}); // rank from the bottom
-		layers = [...groups.values()].sort((a, b) => b.k - a.k);
-		for (const L of layers) L.baseY = L.group.position.y;
-		applyExplode();
-		setStyle(style);
-		frameStack();
-		return {
-			layers: layers.map(({ key, label, k }) => ({
-				key,
-				label,
-				k,
-				swatch: layerSwatch(key),
-			})),
-			parts: comps.length,
-			sizeMm: [size.x * 1000, size.z * 1000],
-		};
-	}
-
-	// Bottom visible layer never moves. Gaps open top-down as `explode` goes 0 → 1, so layers peel off
-	// one at a time, each carrying the layers stacked on it. Hidden layers drop out and the stack closes up.
-	function applyExplode() {
-		const stack = layers.filter((L) => L.visible).sort((a, b) => a.k - b.k);
-		const n = stack.length - 1,
-			step = (GAP * spacing) / (holder.scale.x || 1);
-		let y = 0;
-		stack.forEach((L, r) => {
-			if (r > 0) y += step * Math.min(1, Math.max(0, explode * n - (n - r)));
-			L.targetY = L.baseY + y;
+			const mat = o.material;
+			const key = `c|${c.name}|${mat.color?.getHexString()}|${mat.opacity ?? 1}`;
+			bucket(key, { L, ref: c.name, src: mat }).srcs.push(o);
 		});
 	}
-	// aim at the middle of the fully exploded stack and back off far enough to see all of it
-	function frameStack() {
-		const h = Math.max(0, layers.length - 1) * GAP * spacing,
-			k = Math.max(1, (h + 2) / 11);
-		controls.target.set(0, 1.2 + h / 2, 0);
-		camera.position.set(-14 * k, 1.2 + h / 2 + 8.8 * k, 18 * k);
-	}
-	function refresh() {
-		for (const L of layers)
-			L.target =
-				L.visible && (!solo || solo === L.key)
-					? 1
-					: solo && L.visible
-						? 0.08
-						: 0;
-	}
-	function setStyle(next) {
-		style = next;
-		const holo = style === "holo";
-		for (const L of layers)
-			for (const o of L.meshes)
-				o.material = holo ? o.userData.holo : o.userData.metal;
-		bloom.strength = holo ? 0.7 : 0;
-		bloom.radius = holo ? 0.45 : 0.3;
-		bloom.threshold = holo ? 0.12 : 0.9;
-		bloom.enabled = bloom.strength > 0; // the pass blurs 5 mip levels per frame even at strength 0
-	}
+	return buckets;
+}
 
-	function targetPixelRatio() {
-		const dpr = window.devicePixelRatio || 1;
-		if (quality === "auto") return autoPr;
-		if (quality === "ultra") return Math.min(dpr * 2, QUALITY.ultra.pr);
-		return Math.min(dpr, QUALITY[quality].pr);
-	}
-	function applySamples() {
-		const n = Math.min(
-			QUALITY[quality === "auto" ? "high" : quality].samples,
-			renderer.capabilities.maxSamples || 0,
-		);
-		for (const rt of [composer.renderTarget1, composer.renderTarget2])
-			if (rt.samples !== n) {
-				rt.samples = n;
-				rt.dispose();
-			}
-	}
-	// Direct render when bloom is off: skips the post chain and uses the canvas native MSAA.
-	const draw = () =>
-		bloom.enabled ? composer.render() : renderer.render(scene, camera);
+function createPcbOutline(geometry) {
+	// faint outline keeps the stack readable as a projection
+	const ls = new THREE.LineSegments(
+		new THREE.EdgesGeometry(geometry, 35),
+		new THREE.LineBasicMaterial({
+			color: 0x4fe3ff,
+			transparent: true,
+			opacity: 0.35,
+			depthWrite: false,
+			blending: THREE.AdditiveBlending,
+		}),
+	);
+	ls.userData.base = 0.35;
+	return ls;
+}
 
-	function resize() {
-		const w = container.clientWidth || 1,
-			h = container.clientHeight || 1;
-		const pr = resHeight ? resHeight / h : targetPixelRatio();
-		renderer.setPixelRatio(pr);
-		composer.setPixelRatio(pr);
-		renderer.setSize(w, h);
-		composer.setSize(w, h);
-		camera.aspect = w / h;
-		camera.updateProjectionMatrix();
+function buildBucketMesh(b, shared, parts) {
+	const m = new THREE.Mesh(mergeBaked(b.srcs));
+	if (b.ref) {
+		m.userData.metal = componentMaterial(b.src);
+		m.userData.holo = holoMaterial(b.L.holo, 0.05, shared);
+		m.userData.ref = b.ref;
+		parts.push(m);
+	} else {
+		m.userData.kind = b.kind;
+		m.userData.metal = physical(KICAD_MATERIALS[b.kind]);
+		m.userData.holo = holoMaterial(b.L.holo, HOLO_ALPHA[b.kind] ?? 0.1, shared);
+		if (b.kind === "PCB") {
+			const ls = createPcbOutline(m.geometry);
+			m.add(ls);
+			b.L.lines.push(ls);
+		}
 	}
-	applySamples();
-	const ro = new ResizeObserver(resize);
-	ro.observe(container);
-	resize();
+	m.material = m.userData.metal;
+	b.L.group.add(m);
+	b.L.meshes.push(m);
+}
 
-	// hover / tap → reference designator
-	const ray = new THREE.Raycaster(),
-		ndc = new THREE.Vector2();
-	let hovered = null; // reference designator; a part is several merged meshes (one per material)
+function populateBuckets(buckets, shared, parts, split) {
+	for (const b of buckets.values()) {
+		buildBucketMesh(b, shared, parts);
+	}
+	for (const m of split) m.geometry.dispose();
+}
+
+function finalizeLayers(groups) {
+	const sorted = [...groups.values()].sort((a, b) => a.slot - b.slot);
+	sorted.forEach((L, i) => {
+		L.k = i;
+	}); // rank from the bottom
+	const layers = [...groups.values()].sort((a, b) => b.k - a.k);
+	for (const L of layers) {
+		L.baseY = L.group.position.y;
+	}
+	return layers;
+}
+
+function formatLayerSummary(layers, partsCount, size) {
+	return {
+		layers: layers.map(({ key, label, k }) => ({
+			key,
+			label,
+			k,
+			swatch: layerSwatch(key),
+		})),
+		parts: partsCount,
+		sizeMm: [size.x * 1000, size.z * 1000],
+	};
+}
+
+function setPartHighlight(o, on, amber) {
+	o.userData.holo.uniforms.uBoost.value = on ? 4 : 1;
+	const m = o.userData.metal;
+	if (on) {
+		m.userData.em = [m.emissive.clone(), m.emissiveIntensity];
+		m.emissive = amber;
+		m.emissiveIntensity = 0.6;
+	} else if (m.userData.em) {
+		[m.emissive, m.emissiveIntensity] = m.userData.em;
+	}
+}
+
+function highlightParts(parts, ref, on) {
+	if (!ref) return;
 	const amber = new THREE.Color(0xffb547);
-	function highlight(ref, on) {
-		if (!ref) return;
-		for (const o of parts) {
-			if (o.userData.ref !== ref) continue;
-			o.userData.holo.uniforms.uBoost.value = on ? 4 : 1;
-			const m = o.userData.metal;
-			if (on) {
-				m.userData.em = [m.emissive.clone(), m.emissiveIntensity];
-				m.emissive = amber;
-				m.emissiveIntensity = 0.6;
-			} else if (m.userData.em)
-				[m.emissive, m.emissiveIntensity] = m.userData.em;
+	for (const o of parts) {
+		if (o.userData.ref === ref) setPartHighlight(o, on, amber);
+	}
+}
+
+function findHoveredPart({ e, domElement, camera, layers, parts }) {
+	const r = domElement.getBoundingClientRect();
+	const ndc = new THREE.Vector2(
+		((e.clientX - r.left) / r.width) * 2 - 1,
+		-((e.clientY - r.top) / r.height) * 2 + 1,
+	);
+	const ray = new THREE.Raycaster();
+	ray.setFromCamera(ndc, camera);
+	const vis = new Set(
+		layers.filter((L) => L.fade > 0.5).flatMap((L) => L.meshes),
+	);
+	const hit = ray.intersectObjects(
+		parts.filter((p) => vis.has(p)),
+		false,
+	)[0];
+	return { ref: hit?.object.userData.ref || null, rect: r };
+}
+
+function isThrottledOrFixed(state, rawDt) {
+	if (state.quality !== "auto" || state.resHeight) return true;
+	return rawDt >= 0.25;
+}
+
+function canIncreasePr(autoPr, native, autoCeil) {
+	if (autoPr + 0.25 > native) return false;
+	return autoPr + 0.25 < autoCeil;
+}
+
+function adjustAutoQuality(state, rawDt, onResize) {
+	if (isThrottledOrFixed(state, rawDt)) return;
+	state.perfTime += rawDt;
+	state.perfFrames++;
+	if (state.perfTime <= 1) return;
+	const avg = state.perfTime / state.perfFrames;
+	const native = Math.min(window.devicePixelRatio || 1, 2);
+	if (avg > 1 / 55 && state.autoPr > 0.5) {
+		state.autoCeil = state.autoPr;
+		state.autoPr = Math.max(0.5, state.autoPr - 0.25);
+		onResize();
+	} else if (
+		avg < 1 / 58 &&
+		canIncreasePr(state.autoPr, native, state.autoCeil)
+	) {
+		state.autoPr += 0.25;
+		onResize();
+	}
+	state.perfTime = 0;
+	state.perfFrames = 0;
+}
+
+function updateLayerMeshes(L) {
+	for (const o of L.meshes) {
+		o.userData.holo.uniforms.uFade.value = L.fade;
+		const m = o.userData.metal;
+		const op = m.userData.op * L.fade;
+		const tr = op < 0.999;
+		if (m.transparent !== tr) {
+			m.transparent = tr;
+			m.needsUpdate = true;
+		}
+		m.opacity = op;
+		m.depthWrite = L.fade > 0.6;
+	}
+	for (const ls of L.lines) ls.material.opacity = ls.userData.base * L.fade;
+	L.group.visible = L.fade > 0.01;
+}
+
+function updateLayer(L, dt) {
+	const targetY = L.targetY ?? L.baseY;
+	const isNearY = Math.abs(targetY - L.group.position.y) < 1e-4;
+	const isNearFade = Math.abs(L.target - L.fade) < 1e-3;
+	if (isNearY && isNearFade) {
+		if (L.idle) return; // settled: nothing to update this frame
+		L.group.position.y = targetY;
+		L.fade = L.target;
+		L.idle = true;
+	} else {
+		L.idle = false;
+		L.group.position.y += (targetY - L.group.position.y) * Math.min(1, dt * 6);
+		L.fade += (L.target - L.fade) * Math.min(1, dt * 5);
+	}
+	updateLayerMeshes(L);
+}
+
+function updateLayers(layers, dt) {
+	for (const L of layers) updateLayer(L, dt);
+}
+
+function updateScan(state, shared, dt, layers) {
+	if (state.scanT < 0 || !layers.length) return;
+	state.scanT += dt / 6;
+	const ys = layers.map((L) => L.group.getWorldPosition(new THREE.Vector3()).y);
+	const lo = Math.min(...ys) - 0.6;
+	const hi = Math.max(...ys) + 1.2;
+	shared.uScanY.value = lo + (hi - lo) * state.scanT;
+	if (state.scanT >= 1) {
+		state.scanT = -1;
+		shared.uScanY.value = -99;
+	}
+}
+
+// Bottom visible layer never moves. Gaps open top-down as `explode` goes 0 → 1, so layers peel off
+// one at a time, each carrying the layers stacked on it. Hidden layers drop out and the stack closes up.
+function applyExplode(layers, explode, spacing, holder) {
+	const stack = layers.filter((L) => L.visible).sort((a, b) => a.k - b.k);
+	const n = stack.length - 1;
+	const step = (GAP * spacing) / (holder.scale.x || 1);
+	let y = 0;
+	stack.forEach((L, r) => {
+		if (r > 0) y += step * Math.min(1, Math.max(0, explode * n - (n - r)));
+		L.targetY = L.baseY + y;
+	});
+}
+
+// aim at the middle of the fully exploded stack and back off far enough to see all of it
+function frameStack(layers, spacing, controls, camera) {
+	const h = Math.max(0, layers.length - 1) * GAP * spacing;
+	const k = Math.max(1, (h + 2) / 11);
+	controls.target.set(0, 1.2 + h / 2, 0);
+	camera.position.set(-14 * k, 1.2 + h / 2 + 8.8 * k, 18 * k);
+}
+
+function getLayerTargetFade(L, solo) {
+	if (!L.visible) return 0;
+	if (!solo || solo === L.key) return 1;
+	return 0.08;
+}
+
+function refreshLayers(layers, solo) {
+	for (const L of layers) {
+		L.target = getLayerTargetFade(L, solo);
+	}
+}
+
+function applySceneStyle(style, layers, bloom) {
+	const holo = style === "holo";
+	for (const L of layers) {
+		for (const o of L.meshes) {
+			o.material = holo ? o.userData.holo : o.userData.metal;
 		}
 	}
-	function pick(e) {
-		const r = renderer.domElement.getBoundingClientRect();
-		ndc.set(
-			((e.clientX - r.left) / r.width) * 2 - 1,
-			-((e.clientY - r.top) / r.height) * 2 + 1,
-		);
-		ray.setFromCamera(ndc, camera);
-		const vis = new Set(
-			layers.filter((L) => L.fade > 0.5).flatMap((L) => L.meshes),
-		);
-		const hit = ray.intersectObjects(
-			parts.filter((p) => vis.has(p)),
-			false,
-		)[0];
-		const ref = hit?.object.userData.ref || null;
-		if (hovered !== ref) {
-			highlight(hovered, false);
-			hovered = ref;
-			highlight(hovered, true);
+	bloom.strength = holo ? 0.7 : 0;
+	bloom.radius = holo ? 0.45 : 0.3;
+	bloom.threshold = holo ? 0.12 : 0.9;
+	bloom.enabled = bloom.strength > 0; // the pass blurs 5 mip levels per frame even at strength 0
+}
+
+function clearBoard(holder) {
+	holder.traverse((o) => {
+		if (o.geometry) o.geometry.dispose();
+		for (const m of [o.material, o.userData?.metal, o.userData?.holo].flat()) {
+			m?.dispose?.();
 		}
-		onHover?.(
-			hovered
-				? { ref: hovered, x: e.clientX - r.left, y: e.clientY - r.top }
+	});
+	holder.clear();
+}
+
+function captureFrame({ renderer, composer, camera, draw, resize, height }) {
+	const h = height || renderer.domElement.height;
+	const w = Math.round((h * 16) / 9);
+	renderer.setPixelRatio(1);
+	composer.setPixelRatio(1);
+	renderer.setSize(w, h, false);
+	composer.setSize(w, h);
+	camera.aspect = w / h;
+	camera.updateProjectionMatrix();
+	draw();
+	return new Promise((res) =>
+		renderer.domElement.toBlob((b) => {
+			resize();
+			res(b);
+		}, "image/png"),
+	);
+}
+
+function applySamples(quality, renderer, composer) {
+	const n = Math.min(
+		QUALITY[quality === "auto" ? "high" : quality].samples,
+		renderer.capabilities.maxSamples || 0,
+	);
+	for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
+		if (rt.samples !== n) {
+			rt.samples = n;
+			rt.dispose();
+		}
+	}
+}
+
+function calcTargetPixelRatio(quality, autoPr) {
+	const dpr = window.devicePixelRatio || 1;
+	if (quality === "auto") return autoPr;
+	if (quality === "ultra") return Math.min(dpr * 2, QUALITY.ultra.pr);
+	return Math.min(dpr, QUALITY[quality].pr);
+}
+
+function updateRendererSize({ container, renderer, composer, camera, pr }) {
+	const w = container.clientWidth || 1;
+	const h = container.clientHeight || 1;
+	renderer.setPixelRatio(pr);
+	composer.setPixelRatio(pr);
+	renderer.setSize(w, h);
+	composer.setSize(w, h);
+	camera.aspect = w / h;
+	camera.updateProjectionMatrix();
+}
+
+class HoloSceneSession {
+	constructor(container, { onHover } = {}) {
+		this.container = container;
+		this.onHover = onHover;
+		this.renderer = initRenderer(container);
+		const { scene, pmrem } = initScene(this.renderer);
+		this.scene = scene;
+		this.pmrem = pmrem;
+		const { camera, controls } = initCameraAndControls(
+			this.renderer.domElement,
+		);
+		this.camera = camera;
+		this.controls = controls;
+		const { composer, bloom } = initComposer(this.renderer, scene, camera);
+		this.composer = composer;
+		this.bloom = bloom;
+		this.shared = {
+			uTime: { value: 0 },
+			uGlow: { value: 1 },
+			uScanY: { value: -99 },
+		};
+		const { polar, tick } = createProjectorBase(scene);
+		this.polar = polar;
+		this.tick = tick;
+		this.holder = new THREE.Group();
+		scene.add(this.holder);
+		this.initState();
+		this.initEvents();
+		this.initLoop();
+	}
+
+	initState() {
+		this.layers = [];
+		this.parts = [];
+		this.style = "kicad";
+		this.explode = 1;
+		this.spacing = 1;
+		this.solo = null;
+		this.resHeight = 0;
+		this.scanT = -1;
+		this.quality = "auto";
+		this.autoPr = Math.min(window.devicePixelRatio || 1, 2);
+		this.autoCeil = Infinity;
+		this.disposed = false;
+		this.loadSeq = 0;
+		this.hovered = null;
+		this.pendingPick = null;
+		this.perfTime = 0;
+		this.perfFrames = 0;
+	}
+
+	initEvents() {
+		this.onMove = (e) => {
+			if (e.pointerType === "mouse" && !e.buttons) this.pendingPick = e;
+		};
+		this.onTap = (e) => {
+			if (e.pointerType !== "mouse") this.pendingPick = e;
+		};
+		this.renderer.domElement.addEventListener("pointermove", this.onMove);
+		this.renderer.domElement.addEventListener("pointerup", this.onTap);
+		this.applySamples();
+		this.ro = new ResizeObserver(() => this.resize());
+		this.ro.observe(this.container);
+		this.resize();
+	}
+
+	initLoop() {
+		this.timer = new THREE.Timer();
+		this.timer.connect(document);
+		this.renderer.setAnimationLoop((ts) => this.onFrame(ts));
+	}
+
+	// Direct render when bloom is off: skips the post chain and uses the canvas native MSAA.
+	draw() {
+		if (this.bloom.enabled) this.composer.render();
+		else this.renderer.render(this.scene, this.camera);
+	}
+
+	resize() {
+		const h = this.container.clientHeight || 1;
+		const pr = this.resHeight
+			? this.resHeight / h
+			: calcTargetPixelRatio(this.quality, this.autoPr);
+		updateRendererSize({
+			container: this.container,
+			renderer: this.renderer,
+			composer: this.composer,
+			camera: this.camera,
+			pr,
+		});
+	}
+
+	applySamples() {
+		applySamples(this.quality, this.renderer, this.composer);
+	}
+
+	pick(e) {
+		const { ref, rect } = findHoveredPart({
+			e,
+			domElement: this.renderer.domElement,
+			camera: this.camera,
+			layers: this.layers,
+			parts: this.parts,
+		});
+		if (this.hovered !== ref) {
+			highlightParts(this.parts, this.hovered, false);
+			this.hovered = ref;
+			highlightParts(this.parts, this.hovered, true);
+		}
+		this.onHover?.(
+			this.hovered
+				? {
+						ref: this.hovered,
+						x: e.clientX - rect.left,
+						y: e.clientY - rect.top,
+					}
 				: null,
 		);
 	}
-	// raycasting every part is costly: pick at most once per frame, and never while orbiting
-	let pendingPick = null;
-	const onMove = (e) => {
-		if (e.pointerType === "mouse" && !e.buttons) pendingPick = e;
-	};
-	const onTap = (e) => {
-		if (e.pointerType !== "mouse") pendingPick = e;
-	};
-	renderer.domElement.addEventListener("pointermove", onMove);
-	renderer.domElement.addEventListener("pointerup", onTap);
 
-	const timer = new THREE.Timer();
-	timer.connect(document);
-	let perfTime = 0,
-		perfFrames = 0;
-	renderer.setAnimationLoop((ts) => {
-		if (disposed) return;
-		timer.update(ts);
-		const rawDt = timer.getDelta(),
-			dt = Math.min(rawDt, 0.05),
-			t = timer.getElapsed();
-		shared.uTime.value = t;
+	onFrame(ts) {
+		if (this.disposed) return;
+		this.timer.update(ts);
+		const rawDt = this.timer.getDelta();
+		const dt = Math.min(rawDt, 0.05);
+		const t = this.timer.getElapsed();
+		this.shared.uTime.value = t;
+		adjustAutoQuality(this, rawDt, () => this.resize());
+		if (this.pendingPick) {
+			this.pick(this.pendingPick);
+			this.pendingPick = null;
+		}
+		updateLayers(this.layers, dt);
+		updateScan(this, this.shared, dt, this.layers);
+		this.tick.rotation.z = t * 0.35;
+		this.polar.rotation.y = -t * 0.05;
+		this.controls.update();
+		this.draw();
+	}
 
-		// auto quality: hold 60 fps. Drop resolution when frames are slow; climb back (up to native) when there is headroom,
-		// but never retry a level that already failed. rawDt > 0.25 means the tab was hidden/throttled: ignore it.
-		if (quality === "auto" && !resHeight && rawDt < 0.25) {
-			perfTime += rawDt;
-			perfFrames++;
-			if (perfTime > 1) {
-				const avg = perfTime / perfFrames,
-					native = Math.min(window.devicePixelRatio || 1, 2);
-				if (avg > 1 / 55 && autoPr > 0.5) {
-					autoCeil = autoPr;
-					autoPr = Math.max(0.5, autoPr - 0.25);
-					resize();
-				} else if (
-					avg < 1 / 58 &&
-					autoPr + 0.25 <= native &&
-					autoPr + 0.25 < autoCeil
-				) {
-					autoPr += 0.25;
-					resize();
-				}
-				perfTime = 0;
-				perfFrames = 0;
-			}
-		}
-		if (pendingPick) {
-			pick(pendingPick);
-			pendingPick = null;
-		}
+	clearBoard() {
+		clearBoard(this.holder);
+		this.layers = [];
+		this.parts = [];
+		this.solo = null;
+		this.hovered = null;
+	}
 
-		for (const L of layers) {
-			const targetY = L.targetY ?? L.baseY;
-			if (
-				Math.abs(targetY - L.group.position.y) < 1e-4 &&
-				Math.abs(L.target - L.fade) < 1e-3
-			) {
-				if (L.idle) continue; // settled: nothing to update this frame
-				L.group.position.y = targetY;
-				L.fade = L.target;
-				L.idle = true;
-			} else {
-				L.idle = false;
-				L.group.position.y +=
-					(targetY - L.group.position.y) * Math.min(1, dt * 6);
-				L.fade += (L.target - L.fade) * Math.min(1, dt * 5);
-			}
-			for (const o of L.meshes) {
-				o.userData.holo.uniforms.uFade.value = L.fade;
-				const m = o.userData.metal,
-					op = m.userData.op * L.fade,
-					tr = op < 0.999;
-				if (m.transparent !== tr) {
-					m.transparent = tr;
-					m.needsUpdate = true;
-				}
-				m.opacity = op;
-				m.depthWrite = L.fade > 0.6;
-			}
-			for (const ls of L.lines) ls.material.opacity = ls.userData.base * L.fade;
-			L.group.visible = L.fade > 0.01;
+	async loadGlb(arrayBuffer) {
+		const seq = ++this.loadSeq;
+		const gltf = await new GLTFLoader().parseAsync(arrayBuffer, "");
+		if (seq !== this.loadSeq || this.disposed) {
+			throw new Error("Superseded by a newer board load");
 		}
-		if (scanT >= 0 && layers.length) {
-			scanT += dt / 6;
-			const ys = layers.map(
-				(L) => L.group.getWorldPosition(new THREE.Vector3()).y,
-			);
-			const lo = Math.min(...ys) - 0.6,
-				hi = Math.max(...ys) + 1.2;
-			shared.uScanY.value = lo + (hi - lo) * scanT;
-			if (scanT >= 1) {
-				scanT = -1;
-				shared.uScanY.value = -99;
-			}
-		}
-		tick.rotation.z = t * 0.35;
-		polar.rotation.y = -t * 0.05;
-		controls.update();
-		draw();
-	});
+		this.clearBoard();
+		gltf.scene.updateMatrixWorld(true);
+		const { boardMeshes, comps } = classifyGltfNodes(gltf);
+		const split = boardMeshes.flatMap((m) =>
+			SPLITTABLE_KINDS.has(m.userData.kind) ? splitByHeight(m) : [m],
+		);
+		const { mid, cu } = getBoardHeights(split);
+		const size = fitHolder(this.holder, gltf.scene);
+		const { groups, groupFor } = createGroupManager(this.holder);
+		const slotOf = createSlotResolver(mid, cu);
+		const buckets = collectMeshBuckets({ split, comps, slotOf, mid, groupFor });
+		populateBuckets(buckets, this.shared, this.parts, split);
+		this.layers = finalizeLayers(groups);
+		this.applyExplode();
+		this.setStyle(this.style);
+		this.frameStack();
+		return formatLayerSummary(this.layers, comps.length, size);
+	}
 
+	applyExplode() {
+		applyExplode(this.layers, this.explode, this.spacing, this.holder);
+	}
+
+	frameStack() {
+		frameStack(this.layers, this.spacing, this.controls, this.camera);
+	}
+
+	refresh() {
+		refreshLayers(this.layers, this.solo);
+	}
+
+	setStyle(next) {
+		this.style = next;
+		applySceneStyle(this.style, this.layers, this.bloom);
+		for (const L of this.layers) L.idle = false;
+	}
+
+	setExplode(v) {
+		this.explode = v;
+		this.applyExplode();
+	}
+
+	setSpacing(v) {
+		this.spacing = v;
+		this.applyExplode();
+	}
+
+	setGlow(v) {
+		if (this.style === "holo") this.shared.uGlow.value = v;
+		else {
+			this.bloom.strength = v;
+			this.bloom.enabled = v > 0;
+		}
+	}
+
+	setAutoRotate(on) {
+		this.controls.autoRotate = on;
+	}
+
+	setResolution(h) {
+		this.resHeight = h;
+		this.resize();
+		return `${this.renderer.domElement.width} × ${this.renderer.domElement.height}`;
+	}
+
+	/** Graphics preset: auto (holds 60 fps) | low | medium | high | ultra (max device quality). Returns the render size. */
+	setQuality(q) {
+		this.quality = QUALITY[q] || q === "auto" ? q : "auto";
+		if (this.quality === "auto") {
+			this.autoPr = Math.min(window.devicePixelRatio || 1, 2);
+			this.autoCeil = Infinity;
+		}
+		this.applySamples();
+		this.resize();
+		return `${this.renderer.domElement.width} × ${this.renderer.domElement.height}`;
+	}
+
+	setLayerVisible(key, on) {
+		const L = this.layers.find((x) => x.key === key);
+		if (L) {
+			L.visible = on;
+			this.refresh();
+			this.applyExplode();
+		}
+	}
+
+	setSolo(key) {
+		this.solo = key;
+		this.refresh();
+	}
+
+	showAll() {
+		this.solo = null;
+		this.layers.forEach((L) => {
+			L.visible = true;
+		});
+		this.refresh();
+		this.applyExplode();
+	}
+
+	scan() {
+		this.scanT = 0;
+	}
+
+	resetView() {
+		this.frameStack();
+	}
+
+	/** Render one exact 16:9 frame at `height` px and resolve a PNG blob. */
+	capture(height) {
+		return captureFrame({
+			renderer: this.renderer,
+			composer: this.composer,
+			camera: this.camera,
+			draw: () => this.draw(),
+			resize: () => this.resize(),
+			height,
+		});
+	}
+
+	dispose() {
+		this.disposed = true;
+		this.ro.disconnect();
+		this.timer.dispose();
+		this.renderer.domElement.removeEventListener("pointermove", this.onMove);
+		this.renderer.domElement.removeEventListener("pointerup", this.onTap);
+		this.renderer.setAnimationLoop(null);
+		this.clearBoard();
+		this.controls.dispose();
+		this.pmrem.dispose();
+		this.composer.dispose?.();
+		this.renderer.dispose();
+		this.renderer.domElement.remove();
+	}
+}
+
+export function createHoloScene(container, { onHover } = {}) {
+	const session = new HoloSceneSession(container, { onHover });
 	return {
-		loadGlb,
-		setExplode(v) {
-			explode = v;
-			applyExplode();
-		},
-		setSpacing(v) {
-			spacing = v;
-			applyExplode();
-		},
-		setStyle(next) {
-			setStyle(next);
-			for (const L of layers) L.idle = false;
-		},
-		setGlow(v) {
-			if (style === "holo") shared.uGlow.value = v;
-			else {
-				bloom.strength = v;
-				bloom.enabled = v > 0;
-			}
-		},
-		setAutoRotate(on) {
-			controls.autoRotate = on;
-		},
-		setResolution(h) {
-			resHeight = h;
-			resize();
-			return `${renderer.domElement.width} × ${renderer.domElement.height}`;
-		},
-		/** Graphics preset: auto (holds 60 fps) | low | medium | high | ultra (max device quality). Returns the render size. */
-		setQuality(q) {
-			quality = QUALITY[q] || q === "auto" ? q : "auto";
-			if (quality === "auto") {
-				autoPr = Math.min(window.devicePixelRatio || 1, 2);
-				autoCeil = Infinity;
-			}
-			applySamples();
-			resize();
-			return `${renderer.domElement.width} × ${renderer.domElement.height}`;
-		},
-		setLayerVisible(key, on) {
-			const L = layers.find((x) => x.key === key);
-			if (L) {
-				L.visible = on;
-				refresh();
-				applyExplode();
-			}
-		},
-		setSolo(key) {
-			solo = key;
-			refresh();
-		},
-		showAll() {
-			solo = null;
-			layers.forEach((L) => (L.visible = true));
-			refresh();
-			applyExplode();
-		},
-		scan() {
-			scanT = 0;
-		},
-		resetView: frameStack,
-		/** Render one exact 16:9 frame at `height` px and resolve a PNG blob. */
-		capture(height) {
-			const h = height || renderer.domElement.height,
-				w = Math.round((h * 16) / 9);
-			renderer.setPixelRatio(1);
-			composer.setPixelRatio(1);
-			renderer.setSize(w, h, false);
-			composer.setSize(w, h);
-			camera.aspect = w / h;
-			camera.updateProjectionMatrix();
-			draw();
-			return new Promise((res) =>
-				renderer.domElement.toBlob((b) => {
-					resize();
-					res(b);
-				}, "image/png"),
-			);
-		},
-		dispose() {
-			disposed = true;
-			ro.disconnect();
-			timer.dispose();
-			renderer.domElement.removeEventListener("pointermove", onMove);
-			renderer.domElement.removeEventListener("pointerup", onTap);
-			renderer.setAnimationLoop(null);
-			clearBoard();
-			controls.dispose();
-			pmrem.dispose();
-			composer.dispose?.();
-			renderer.dispose();
-			renderer.domElement.remove();
-		},
+		loadGlb: (buf) => session.loadGlb(buf),
+		setExplode: (v) => session.setExplode(v),
+		setSpacing: (v) => session.setSpacing(v),
+		setStyle: (next) => session.setStyle(next),
+		setGlow: (v) => session.setGlow(v),
+		setAutoRotate: (on) => session.setAutoRotate(on),
+		setResolution: (h) => session.setResolution(h),
+		setQuality: (q) => session.setQuality(q),
+		setLayerVisible: (k, on) => session.setLayerVisible(k, on),
+		setSolo: (k) => session.setSolo(k),
+		showAll: () => session.showAll(),
+		scan: () => session.scan(),
+		resetView: () => session.resetView(),
+		capture: (h) => session.capture(h),
+		dispose: () => session.dispose(),
 	};
 }
