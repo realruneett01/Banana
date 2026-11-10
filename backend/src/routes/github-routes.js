@@ -63,10 +63,31 @@ router.get("/auth/github/callback", async (req, res) => {
 	}
 });
 
+function extractToken(req) {
+	return (
+		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token
+	);
+}
+
+/**
+ * Registers a token-guarded GitHub read route: 401 without a token,
+ * { [key]: data } on success, 500 { error, details } on failure.
+ */
+function githubReadRoute(path, { key, errorMessage, fetch }) {
+	router.get(path, async (req, res) => {
+		const token = extractToken(req);
+		if (!token) return res.status(401).json({ error: "GitHub token required" });
+		try {
+			res.json({ [key]: await fetch(token, req) });
+		} catch (err) {
+			res.status(500).json({ error: errorMessage, details: err.message });
+		}
+	});
+}
+
 // 3. Verify Token & Get User
 router.get("/auth/github/verify", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
+	const token = extractToken(req);
 	if (!token) {
 		return res.status(401).json({ error: "GitHub token required" });
 	}
@@ -79,92 +100,51 @@ router.get("/auth/github/verify", async (req, res) => {
 });
 
 // 4. List User Repositories
-router.get("/github/repos", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
-	if (!token) return res.status(401).json({ error: "GitHub token required" });
-
-	try {
-		const page = parseInt(req.query.page, 10) || 1;
-		const repos = await getUserRepositories(token, page);
-		res.json({ repos });
-	} catch (err) {
-		res
-			.status(500)
-			.json({ error: "Failed to list repositories", details: err.message });
-	}
+githubReadRoute("/github/repos", {
+	key: "repos",
+	errorMessage: "Failed to list repositories",
+	fetch: (token, req) =>
+		getUserRepositories(token, parseInt(req.query.page, 10) || 1),
 });
 
 // 5. Get Repo Branches
-router.get("/github/repos/:owner/:repo/branches", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
-	const { owner, repo } = req.params;
-	if (!token) return res.status(401).json({ error: "GitHub token required" });
-
-	try {
-		const branches = await getRepoBranches(token, owner, repo);
-		res.json({ branches });
-	} catch (err) {
-		res
-			.status(500)
-			.json({ error: "Failed to fetch branches", details: err.message });
-	}
+githubReadRoute("/github/repos/:owner/:repo/branches", {
+	key: "branches",
+	errorMessage: "Failed to fetch branches",
+	fetch: (token, { params }) =>
+		getRepoBranches(token, params.owner, params.repo),
 });
 
 // 6. Get Repo Commits
-router.get("/github/repos/:owner/:repo/commits", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
-	const { owner, repo } = req.params;
-	const { sha, path: filePath } = req.query;
-	if (!token) return res.status(401).json({ error: "GitHub token required" });
-
-	try {
-		const commits = await getRepoCommits(token, owner, repo, { sha, filePath });
-		res.json({ commits });
-	} catch (err) {
-		res
-			.status(500)
-			.json({ error: "Failed to fetch commits", details: err.message });
-	}
+githubReadRoute("/github/repos/:owner/:repo/commits", {
+	key: "commits",
+	errorMessage: "Failed to fetch commits",
+	fetch: (token, { params, query }) =>
+		getRepoCommits(token, params.owner, params.repo, {
+			sha: query.sha,
+			filePath: query.path,
+		}),
 });
 
 // 7. Get Repo Pull Requests
-router.get("/github/repos/:owner/:repo/pulls", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
-	const { owner, repo } = req.params;
-	const state = req.query.state || "open";
-	if (!token) return res.status(401).json({ error: "GitHub token required" });
-
-	try {
-		const pulls = await getRepoPullRequests(token, owner, repo, state);
-		res.json({ pulls });
-	} catch (err) {
-		res
-			.status(500)
-			.json({ error: "Failed to fetch pull requests", details: err.message });
-	}
+githubReadRoute("/github/repos/:owner/:repo/pulls", {
+	key: "pulls",
+	errorMessage: "Failed to fetch pull requests",
+	fetch: (token, { params, query }) =>
+		getRepoPullRequests(
+			token,
+			params.owner,
+			params.repo,
+			query.state || "open",
+		),
 });
 
 // 8. Get Repo Hardware Files (.kicad_pcb / .kicad_sch)
-router.get("/github/repos/:owner/:repo/files", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.query.token;
-	const { owner, repo } = req.params;
-	const ref = req.query.ref || "main";
-	if (!token) return res.status(401).json({ error: "GitHub token required" });
-
-	try {
-		const files = await getRepoHardwareFiles(token, owner, repo, ref);
-		res.json({ files });
-	} catch (err) {
-		res.status(500).json({
-			error: "Failed to fetch hardware files from repository",
-			details: err.message,
-		});
-	}
+githubReadRoute("/github/repos/:owner/:repo/files", {
+	key: "files",
+	errorMessage: "Failed to fetch hardware files from repository",
+	fetch: (token, { params, query }) =>
+		getRepoHardwareFiles(token, params.owner, params.repo, query.ref || "main"),
 });
 
 export default router;
