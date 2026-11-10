@@ -142,6 +142,76 @@ const STYLES = Object.freeze({
 const matchesFilter = (val, input) =>
 	(val ?? "").toLowerCase().includes((input ?? "").toLowerCase());
 
+const REPO_PART_REGEX = /^[A-Za-z0-9_.-]{1,100}$/;
+const COMMIT_HASH_REGEX = /^[0-9a-fA-F]{7,40}$/;
+const BRANCH_NAME_REGEX = /^[A-Za-z0-9._/-]{1,200}$/;
+
+function isValidRepoPart(part) {
+	if (!part || !REPO_PART_REGEX.test(part)) return false;
+	return part !== "." && part !== "..";
+}
+
+function isPathTraversalOrAbsolute(path) {
+	if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) return true;
+	if (path.includes("\\") || path.split("/").includes("..")) return true;
+	return false;
+}
+
+function hasHardwareExtension(path) {
+	return path.endsWith(".kicad_pcb") || path.endsWith(".kicad_sch");
+}
+
+function isValidHardwareFilePath(path) {
+	if (!path || typeof path !== "string") return false;
+	const trimmed = path.trim();
+	if (isPathTraversalOrAbsolute(trimmed)) return false;
+	return hasHardwareExtension(trimmed);
+}
+
+function isValidBranchName(val) {
+	if (!BRANCH_NAME_REGEX.test(val)) return false;
+	return !val.startsWith("-") && !val.includes("..");
+}
+
+function isValidCommitOrBranch(val) {
+	if (!val || typeof val !== "string") return false;
+	const trimmed = val.trim();
+	if (COMMIT_HASH_REGEX.test(trimmed)) return true;
+	return isValidBranchName(trimmed);
+}
+
+const COMMIT_INPUT_RULES = Object.freeze([
+	{ required: true, message: "Please select a revision" },
+	{
+		validator(_, value) {
+			if (!value || isValidCommitOrBranch(value)) {
+				return Promise.resolve();
+			}
+			return Promise.reject(
+				new Error(
+					"Must be a commit hash (7-40 hex) or branch name without .. or leading -",
+				),
+			);
+		},
+	},
+]);
+
+const HARDWARE_FILE_RULES = Object.freeze([
+	{ required: true, message: "Please select a hardware design file" },
+	{
+		validator(_, value) {
+			if (!value || isValidHardwareFilePath(value)) {
+				return Promise.resolve();
+			}
+			return Promise.reject(
+				new Error(
+					"File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
+				),
+			);
+		},
+	},
+]);
+
 function GithubPromptCard({ onOpenAuthModal }) {
 	return (
 		<div style={{ padding: "10px 0" }}>
@@ -457,10 +527,12 @@ function CommitSelectFormItem(props) {
 		onChange,
 		keyPrefix,
 		marginBottom = "8px",
+		name,
+		rules,
 	} = props;
 
 	return (
-		<Form.Item label={label} style={{ marginBottom }}>
+		<Form.Item label={label} name={name} rules={rules} style={{ marginBottom }}>
 			<Select
 				showSearch
 				placeholder={placeholder}
@@ -521,6 +593,8 @@ function CommitPairSelectSection(props) {
 		<>
 			<CommitSelectFormItem
 				label="Base Commit"
+				name="baseCommit"
+				rules={COMMIT_INPUT_RULES}
 				placeholder="Select base commit..."
 				value={baseCommit}
 				loading={loading}
@@ -530,6 +604,8 @@ function CommitPairSelectSection(props) {
 			/>
 			<CommitSelectFormItem
 				label="Target Commit"
+				name="targetCommit"
+				rules={COMMIT_INPUT_RULES}
 				placeholder="Select target commit..."
 				value={targetCommit}
 				loading={loading}
@@ -647,6 +723,8 @@ function HardwareFileSelector(props) {
 	return (
 		<Form.Item
 			label={<HardwareFileLabel loadingFiles={loadingFiles} />}
+			name="relativeFilePath"
+			rules={HARDWARE_FILE_RULES}
 			style={{ marginBottom: "16px" }}
 		>
 			{hardwareFiles.length === 0 ? (
@@ -761,22 +839,44 @@ function validateGithubSubmission(options) {
 		message.error("Please select base and target revisions");
 		return false;
 	}
+	if (
+		!isValidCommitOrBranch(baseCommit) ||
+		!isValidCommitOrBranch(targetCommit)
+	) {
+		message.error(
+			"Must be a commit hash (7-40 hex) or branch name without .. or leading -",
+		);
+		return false;
+	}
 	if (!relativeFilePath) {
 		message.error("Please select a hardware design file");
+		return false;
+	}
+	if (!isValidHardwareFilePath(relativeFilePath)) {
+		message.error(
+			"File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
+		);
 		return false;
 	}
 	return true;
 }
 
 function parseManualRepoString(input) {
-	const trimmed = input.trim();
-	if (!trimmed.includes("/")) {
+	const trimmed = (input ?? "").trim();
+	const parts = trimmed.split("/");
+	if (parts.length !== 2) {
 		message.error(
 			"Format must be owner/repository (e.g. OLIMEX/OLIMEXINO-328)",
 		);
 		return null;
 	}
-	const [owner, name] = trimmed.split("/");
+	const [owner, name] = parts;
+	if (!isValidRepoPart(owner) || !isValidRepoPart(name)) {
+		message.error(
+			"Format must be owner/repository (e.g. OLIMEX/OLIMEXINO-328)",
+		);
+		return null;
+	}
 	return {
 		id: trimmed,
 		name,
@@ -805,7 +905,16 @@ function GithubDiffForm(props) {
 	const { form, compareMode, setCompareMode, syncState } = formState;
 
 	return (
-		<Form form={form} layout="vertical" onFinish={handleSubmit}>
+		<Form
+			form={form}
+			layout="vertical"
+			onFinish={handleSubmit}
+			initialValues={{
+				baseCommit: controlsProps.baseCommit,
+				targetCommit: controlsProps.targetCommit,
+				relativeFilePath: controlsProps.relativeFilePath,
+			}}
+		>
 			<RepoSelector {...buildRepoProps(controlsProps, formState)} />
 			<CompareModeToggle
 				compareMode={compareMode}
