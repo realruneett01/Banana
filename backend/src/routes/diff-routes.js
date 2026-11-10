@@ -24,32 +24,174 @@ function buildTempFolder(prefix, commit, filePath) {
 	return { folderName, folderDir, targetPath };
 }
 
+function buildTempPair(prefix, baseCommit, targetCommit, filePath) {
+	const baseLoc = buildTempFolder(prefix, baseCommit, filePath);
+	const targetLoc = buildTempFolder(prefix, targetCommit, filePath);
+	return {
+		baseLoc,
+		targetLoc,
+		cleanFolders: [baseLoc.folderDir, targetLoc.folderDir],
+	};
+}
+
+function findMissingParamError(body, required, prefix) {
+	const hasMissing = required.some((k) => !body[k]);
+	return hasMissing ? `${prefix}${required.join(", ")}` : null;
+}
+
 function validateLocalDiffParams(body) {
-	const required = [
-		"repoPath",
-		"baseCommit",
-		"targetCommit",
-		"relativeFilePath",
-	];
-	const missing = required.filter((k) => !body[k]);
-	if (missing.length > 0) {
-		return `Missing required parameters in request body. Required: ${required.join(", ")}`;
-	}
-	return null;
+	return findMissingParamError(
+		body,
+		["repoPath", "baseCommit", "targetCommit", "relativeFilePath"],
+		"Missing required parameters in request body. Required: ",
+	);
 }
 
 function validateGithubDiffParams(token, body) {
-	if (!token)
+	if (!token) {
 		return { error: "GitHub authentication token required", status: 401 };
-	const required = ["owner", "repo", "baseCommit", "targetCommit", "filePath"];
-	const missing = required.filter((k) => !body[k]);
-	if (missing.length > 0) {
-		return {
-			error: `Missing required parameters: ${required.join(", ")}`,
-			status: 400,
-		};
 	}
-	return null;
+	const error = findMissingParamError(
+		body,
+		["owner", "repo", "baseCommit", "targetCommit", "filePath"],
+		"Missing required parameters: ",
+	);
+	return error ? { error, status: 400 } : null;
+}
+
+function extractAuthToken(req) {
+	return (
+		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body?.token
+	);
+}
+
+function sendInternalError(res, error, details) {
+	return res.status(500).json({ error, details });
+}
+
+async function extractCommitTarget({
+	repoPath,
+	commit,
+	relativeFilePath,
+	folderName,
+	role,
+}) {
+	const fileBasename = path.basename(relativeFilePath);
+	const targetPath = path.join(folderName, fileBasename);
+	try {
+		return await extractFileFromCommit(
+			repoPath,
+			commit,
+			relativeFilePath,
+			targetPath,
+		);
+	} catch (err) {
+		const error = new Error(
+			`Failed to extract file at ${role} commit (${commit})`,
+		);
+		error.details = err.message;
+		throw error;
+	}
+}
+
+async function extractLocalDiff(body, baseLoc, targetLoc) {
+	const { repoPath, baseCommit, targetCommit, relativeFilePath } = body;
+	const basePath = await extractCommitTarget({
+		repoPath,
+		commit: baseCommit,
+		relativeFilePath,
+		folderName: baseLoc.folderName,
+		role: "base",
+	});
+	const targetPath = await extractCommitTarget({
+		repoPath,
+		commit: targetCommit,
+		relativeFilePath,
+		folderName: targetLoc.folderName,
+		role: "target",
+	});
+	return { basePath, targetPath };
+}
+
+async function downloadGithubPair(token, body, baseLoc, targetLoc) {
+	const { owner, repo, filePath, baseCommit, targetCommit } = body;
+	await Promise.all([
+		downloadRepoFile(
+			token,
+			owner,
+			repo,
+			filePath,
+			baseCommit,
+			baseLoc.targetPath,
+		),
+		downloadRepoFile(
+			token,
+			owner,
+			repo,
+			filePath,
+			targetCommit,
+			targetLoc.targetPath,
+		),
+	]);
+}
+
+function resolveGithubIsPcb(isPcb, filePath) {
+	return isPcb !== undefined ? isPcb : /\.kicad_pcb$/i.test(filePath);
+}
+
+function dispatchPipelineResult(
+	res,
+	{ paths, commits, isPcb, tExtraction, cleanFolders, tTotalStart },
+) {
+	return executeDiffPipeline(
+		{
+			basePath: paths.basePath,
+			targetPath: paths.targetPath,
+			baseCommit: commits.baseCommit,
+			targetCommit: commits.targetCommit,
+			isPcb,
+			tExtraction,
+			cleanExtractionFolders: cleanFolders,
+			tTotalStart,
+		},
+		res,
+	);
+}
+
+async function runLocalPipeline({ req, res, pair, tGitStart, tTotalStart }) {
+	const { baseCommit, targetCommit, isPcb } = req.body;
+	const paths = await extractLocalDiff(req.body, pair.baseLoc, pair.targetLoc);
+	return dispatchPipelineResult(res, {
+		paths,
+		commits: { baseCommit, targetCommit },
+		isPcb,
+		tExtraction: performance.now() - tGitStart,
+		cleanFolders: pair.cleanFolders,
+		tTotalStart,
+	});
+}
+
+async function runGithubPipeline({
+	req,
+	res,
+	token,
+	pair,
+	tGhStart,
+	tTotalStart,
+}) {
+	const { baseCommit, targetCommit, filePath, isPcb } = req.body;
+	await downloadGithubPair(token, req.body, pair.baseLoc, pair.targetLoc);
+	return dispatchPipelineResult(res, {
+		paths: {
+			basePath: pair.baseLoc.targetPath,
+			targetPath: pair.targetLoc.targetPath,
+		},
+		commits: { baseCommit, targetCommit },
+		isPcb: resolveGithubIsPcb(isPcb, filePath),
+		tExtraction: performance.now() - tGhStart,
+		cleanFolders: pair.cleanFolders,
+		tTotalStart,
+	});
 }
 
 /**
@@ -57,62 +199,25 @@ function validateGithubDiffParams(token, body) {
  * Local Git diff processor
  */
 router.post("/diff/process", async (req, res) => {
-	const { repoPath, baseCommit, targetCommit, relativeFilePath, isPcb } =
-		req.body;
-	const validationError = validateLocalDiffParams(req.body);
-	if (validationError) {
-		return res.status(400).json({ error: validationError });
-	}
+	const err = validateLocalDiffParams(req.body);
+	if (err) return res.status(400).json({ error: err });
 
 	const tTotalStart = performance.now();
-	const fileBasename = path.basename(relativeFilePath);
-	const baseLoc = buildTempFolder("git", baseCommit, relativeFilePath);
-	const targetLoc = buildTempFolder("git", targetCommit, relativeFilePath);
-
+	const { baseCommit, targetCommit, relativeFilePath } = req.body;
+	const pair = buildTempPair("git", baseCommit, targetCommit, relativeFilePath);
 	const tGitStart = performance.now();
-	let basePath, targetPath;
-	try {
-		basePath = await extractFileFromCommit(
-			repoPath,
-			baseCommit,
-			relativeFilePath,
-			path.join(baseLoc.folderName, fileBasename),
-		);
-	} catch (err) {
-		return res.status(500).json({
-			error: `Failed to extract file at base commit (${baseCommit})`,
-			details: err.message,
-		});
-	}
 
 	try {
-		targetPath = await extractFileFromCommit(
-			repoPath,
-			targetCommit,
-			relativeFilePath,
-			path.join(targetLoc.folderName, fileBasename),
-		);
-	} catch (err) {
-		return res.status(500).json({
-			error: `Failed to extract file at target commit (${targetCommit})`,
-			details: err.message,
-		});
-	}
-	const tGit = performance.now() - tGitStart;
-
-	return executeDiffPipeline(
-		{
-			basePath,
-			targetPath,
-			baseCommit,
-			targetCommit,
-			isPcb,
-			tExtraction: tGit,
-			cleanExtractionFolders: [baseLoc.folderDir, targetLoc.folderDir],
+		return await runLocalPipeline({
+			req,
+			res,
+			pair,
+			tGitStart,
 			tTotalStart,
-		},
-		res,
-	);
+		});
+	} catch (extractErr) {
+		return sendInternalError(res, extractErr.message, extractErr.details);
+	}
 });
 
 /**
@@ -120,62 +225,31 @@ router.post("/diff/process", async (req, res) => {
  * Remote GitHub diff processor (directly diffs remote branches, commits, or PRs)
  */
 router.post("/github/diff/process", async (req, res) => {
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body.token;
-	const { owner, repo, baseCommit, targetCommit, filePath, isPcb } = req.body;
-
-	const authOrParamError = validateGithubDiffParams(token, req.body);
-	if (authOrParamError) {
-		return res
-			.status(authOrParamError.status)
-			.json({ error: authOrParamError.error });
-	}
+	const token = extractAuthToken(req);
+	const authErr = validateGithubDiffParams(token, req.body);
+	if (authErr) return res.status(authErr.status).json({ error: authErr.error });
 
 	const tTotalStart = performance.now();
-	const baseLoc = buildTempFolder("gh", baseCommit, filePath);
-	const targetLoc = buildTempFolder("gh", targetCommit, filePath);
-
+	const { baseCommit, targetCommit, filePath } = req.body;
+	const pair = buildTempPair("gh", baseCommit, targetCommit, filePath);
 	const tGhStart = performance.now();
-	try {
-		await Promise.all([
-			downloadRepoFile(
-				token,
-				owner,
-				repo,
-				filePath,
-				baseCommit,
-				baseLoc.targetPath,
-			),
-			downloadRepoFile(
-				token,
-				owner,
-				repo,
-				filePath,
-				targetCommit,
-				targetLoc.targetPath,
-			),
-		]);
-	} catch (err) {
-		return res.status(500).json({
-			error: "Failed to download hardware file from GitHub",
-			details: err.message,
-		});
-	}
-	const tGh = performance.now() - tGhStart;
 
-	return executeDiffPipeline(
-		{
-			basePath: baseLoc.targetPath,
-			targetPath: targetLoc.targetPath,
-			baseCommit,
-			targetCommit,
-			isPcb: isPcb !== undefined ? isPcb : /\.kicad_pcb$/i.test(filePath),
-			tExtraction: tGh,
-			cleanExtractionFolders: [baseLoc.folderDir, targetLoc.folderDir],
+	try {
+		return await runGithubPipeline({
+			req,
+			res,
+			token,
+			pair,
+			tGhStart,
 			tTotalStart,
-		},
-		res,
-	);
+		});
+	} catch (err) {
+		return sendInternalError(
+			res,
+			"Failed to download hardware file from GitHub",
+			err.message,
+		);
+	}
 });
 
 export default router;
