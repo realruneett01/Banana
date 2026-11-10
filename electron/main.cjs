@@ -92,10 +92,8 @@ async function startLocalBackend() {
 /**
  * Creates the main native application window (T1.2, T1.6)
  */
-async function createMainWindow(port) {
-	const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
-
-	mainWindow = new BrowserWindow({
+function buildWindowOptions(isDev) {
+	return {
 		width: 1440,
 		height: 920,
 		minWidth: 1024,
@@ -111,21 +109,19 @@ async function createMainWindow(port) {
 			devTools: isDev,
 		},
 		autoHideMenuBar: true,
-	});
+	};
+}
 
-	mainWindow.once("ready-to-show", () => {
-		mainWindow.show();
-	});
-
-	// Navigation lockdown (T1.6)
-	mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+// Navigation lockdown (T1.6)
+function attachNavigationGuards(win) {
+	win.webContents.setWindowOpenHandler(({ url }) => {
 		if (url.startsWith("https://") || url.startsWith("http://")) {
 			shell.openExternal(url);
 		}
 		return { action: "deny" };
 	});
 
-	mainWindow.webContents.on("will-navigate", (event, url) => {
+	win.webContents.on("will-navigate", (event, url) => {
 		const parsed = new URL(url);
 		const isLocal =
 			parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
@@ -134,18 +130,33 @@ async function createMainWindow(port) {
 			shell.openExternal(url);
 		}
 	});
+}
 
-	let targetUrl = `http://127.0.0.1:${port}`;
-	if (isDev) {
-		try {
-			const ping = await fetch("http://localhost:5173");
-			if (ping.status < 500) {
-				targetUrl = "http://localhost:5173";
-			}
-		} catch (_) {}
+async function resolveTargetUrl(port, isDev) {
+	const prodUrl = `http://127.0.0.1:${port}`;
+	if (!isDev) return prodUrl;
+	try {
+		const ping = await fetch("http://localhost:5173");
+		return ping.status < 500 ? "http://localhost:5173" : prodUrl;
+	} catch (err) {
+		console.debug(
+			"[Banana Desktop] Vite dev server not reachable:",
+			err.message,
+		);
+		return prodUrl;
 	}
+}
 
-	mainWindow.loadURL(targetUrl);
+async function createMainWindow(port) {
+	const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+
+	mainWindow = new BrowserWindow(buildWindowOptions(isDev));
+	mainWindow.once("ready-to-show", () => {
+		mainWindow.show();
+	});
+	attachNavigationGuards(mainWindow);
+
+	mainWindow.loadURL(await resolveTargetUrl(port, isDev));
 
 	mainWindow.on("closed", () => {
 		mainWindow = null;
@@ -226,7 +237,12 @@ app.on("before-quit", () => {
 	if (serverInstance) {
 		try {
 			serverInstance.close();
-		} catch (_) {}
+		} catch (err) {
+			console.debug(
+				"[Banana Desktop] Server close on quit failed:",
+				err.message,
+			);
+		}
 	}
 });
 
