@@ -35,22 +35,22 @@ const DIFF_RING_CLASS_MAP = {
 	add: "diff-added",
 };
 
-const SVG_LAYER_STYLE = {
+const FULL_ABSOLUTE_STYLE = {
 	position: "absolute",
 	top: 0,
 	left: 0,
 	width: "100%",
 	height: "100%",
+};
+
+const SVG_LAYER_STYLE = {
+	...FULL_ABSOLUTE_STYLE,
 	transition: "filter 0.25s ease, opacity 0.25s ease",
 	pointerEvents: "none",
 };
 
 const LAYER_PANE_STYLE = {
-	position: "absolute",
-	top: 0,
-	left: 0,
-	width: "100%",
-	height: "100%",
+	...FULL_ABSOLUTE_STYLE,
 	display: "flex",
 	justifyContent: "center",
 	alignItems: "center",
@@ -186,6 +186,12 @@ function resolveCoords(targetCoords, baseCoords, bbox) {
 	return null;
 }
 
+function findDiffDomElement(root, diffIdx) {
+	return diffIdx != null && root
+		? root.querySelector(`[data-diff-idx="${diffIdx}"]`)
+		: null;
+}
+
 function resolveTargetRect(contentRef, options) {
 	const { diffIdx, baseCoords, targetCoords, bbox } = options;
 	const coords = resolveCoords(targetCoords, baseCoords, bbox);
@@ -196,19 +202,20 @@ function resolveTargetRect(contentRef, options) {
 		: null;
 	const fromDom = findDiffDomRect(root, diffIdx);
 	const elRect = fromCoords || fromDom;
-	const target =
-		diffIdx != null && root
-			? root.querySelector(`[data-diff-idx="${diffIdx}"]`)
-			: null;
+	const target = findDiffDomElement(root, diffIdx);
 	return { elRect, target, coords };
 }
 
-function setDiffSelected(root, targetEl) {
+function clearDiffAttr(root, attr, className) {
 	if (!root) return;
-	root.querySelectorAll('[data-diff-selected="true"]').forEach((el) => {
-		el.removeAttribute("data-diff-selected");
-		el.classList.remove("diff-highlight-active");
+	root.querySelectorAll(`[${attr}="true"]`).forEach((el) => {
+		el.removeAttribute(attr);
+		if (className) el.classList.remove(className);
 	});
+}
+
+function setDiffSelected(root, targetEl) {
+	clearDiffAttr(root, "data-diff-selected", "diff-highlight-active");
 	if (targetEl) {
 		targetEl.setAttribute("data-diff-selected", "true");
 		targetEl.classList.add("diff-highlight-active");
@@ -216,11 +223,8 @@ function setDiffSelected(root, targetEl) {
 }
 
 function updateDiffHovered(root, diffIdx) {
-	if (!root) return;
-	root.querySelectorAll('[data-diff-hovered="true"]').forEach((el) => {
-		el.removeAttribute("data-diff-hovered");
-	});
-	if (diffIdx != null) {
+	clearDiffAttr(root, "data-diff-hovered");
+	if (diffIdx != null && root) {
 		root.querySelectorAll(`[data-diff-idx="${diffIdx}"]`).forEach((el) => {
 			el.setAttribute("data-diff-hovered", "true");
 		});
@@ -303,12 +307,7 @@ function useCanvasEscapeKey(activeAuditIdx, resetView, setActiveAuditIdx) {
 function useActiveDiffDomHighlight(contentRef, activeAuditIdx) {
 	useEffect(() => {
 		const root = contentRef.current;
-		if (!root) return;
-		const target =
-			activeAuditIdx != null
-				? root.querySelector(`[data-diff-idx="${activeAuditIdx}"]`)
-				: null;
-		setDiffSelected(root, target);
+		setDiffSelected(root, findDiffDomElement(root, activeAuditIdx));
 	}, [contentRef, activeAuditIdx]);
 }
 
@@ -318,20 +317,20 @@ function filterActiveSvgs(svgs, activeLayers) {
 	);
 }
 
-function BaseLayerPane({
-	baseSvgs,
-	activeBaseSvgs,
-	activeLayers,
-	isSlider,
-	soloLayer,
-	layerOpacities,
-}) {
-	const svgs = activeBaseSvgs || filterActiveSvgs(baseSvgs, activeLayers);
+function DiffLayerPane(props) {
+	const { isBase, isSlider, soloLayer, layerOpacities, activeLayers } = props;
+	const rawSvgs = isBase ? props.baseSvgs : props.targetSvgs;
+	const active = isBase ? props.activeBaseSvgs : props.activeTargetSvgs;
+	const svgs = active || filterActiveSvgs(rawSvgs, activeLayers);
+	const clipPath = isSlider ? `inset(0 0 0 ${props.sliderValue}%)` : "none";
+	const style = isBase
+		? LAYER_PANE_STYLE
+		: { ...TARGET_PANE_BASE_STYLE, clipPath };
 	return (
-		<div style={LAYER_PANE_STYLE}>
+		<div style={style}>
 			<LayerStack
 				svgs={svgs}
-				isBase={true}
+				isBase={isBase}
 				isSlider={isSlider}
 				soloLayer={soloLayer}
 				layerOpacities={layerOpacities}
@@ -340,28 +339,12 @@ function BaseLayerPane({
 	);
 }
 
-function TargetLayerPane({
-	targetSvgs,
-	activeTargetSvgs,
-	activeLayers,
-	isSlider,
-	soloLayer,
-	layerOpacities,
-	sliderValue,
-}) {
-	const svgs = activeTargetSvgs || filterActiveSvgs(targetSvgs, activeLayers);
-	const clipPath = isSlider ? `inset(0 0 0 ${sliderValue}%)` : "none";
-	return (
-		<div style={{ ...TARGET_PANE_BASE_STYLE, clipPath }}>
-			<LayerStack
-				svgs={svgs}
-				isBase={false}
-				isSlider={isSlider}
-				soloLayer={soloLayer}
-				layerOpacities={layerOpacities}
-			/>
-		</div>
-	);
+function makeContentTransformStyle({ x, y, scale }) {
+	return {
+		...FULL_ABSOLUTE_STYLE,
+		transformOrigin: "0 0",
+		transform: `translate(${x}px, ${y}px) scale(${scale})`,
+	};
 }
 
 function DiffCanvasSurface(props) {
@@ -373,15 +356,6 @@ function DiffCanvasSurface(props) {
 		isSlider,
 		sliderValue,
 	} = props;
-	const contentStyle = {
-		position: "absolute",
-		top: 0,
-		left: 0,
-		width: "100%",
-		height: "100%",
-		transformOrigin: "0 0",
-		transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-	};
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: pointer pan/zoom surface; keyboard users use the canvas controls
 		<div
@@ -392,9 +366,9 @@ function DiffCanvasSurface(props) {
 			onDoubleClick={mouseHandlers?.onDoubleClick}
 			style={SURFACE_WRAPPER_STYLE}
 		>
-			<div ref={contentRef} style={contentStyle}>
-				<BaseLayerPane {...props} />
-				<TargetLayerPane {...props} />
+			<div ref={contentRef} style={makeContentTransformStyle(transform)}>
+				<DiffLayerPane isBase={true} {...props} />
+				<DiffLayerPane isBase={false} {...props} />
 			</div>
 			{isSlider && <SliderSplitHandle sliderValue={sliderValue} />}
 		</div>
@@ -429,18 +403,6 @@ function useCanvasInteractions(ref, props, refs) {
 	return { isSlider, transform, zoomIn, zoomOut, resetView, mouseHandlers };
 }
 
-function DiffCanvasToolbar({ isSlider, scale, zoomIn, zoomOut, resetView }) {
-	return (
-		<CanvasTopToolbar
-			isSlider={isSlider}
-			currentZoomPercent={Math.round(scale * 100)}
-			onZoomIn={zoomIn}
-			onZoomOut={zoomOut}
-			onReset={resetView}
-		/>
-	);
-}
-
 const DiffCanvas = forwardRef(function DiffCanvas(props, ref) {
 	const outerRef = useRef(null);
 	const contentRef = useRef(null);
@@ -451,12 +413,12 @@ const DiffCanvas = forwardRef(function DiffCanvas(props, ref) {
 
 	return (
 		<div style={CANVAS_CONTAINER_STYLE}>
-			<DiffCanvasToolbar
+			<CanvasTopToolbar
 				isSlider={interactions.isSlider}
-				scale={interactions.transform.scale}
-				zoomIn={interactions.zoomIn}
-				zoomOut={interactions.zoomOut}
-				resetView={interactions.resetView}
+				currentZoomPercent={Math.round(interactions.transform.scale * 100)}
+				onZoomIn={interactions.zoomIn}
+				onZoomOut={interactions.zoomOut}
+				onReset={interactions.resetView}
 			/>
 			<DiffCanvasSurface
 				{...props}
