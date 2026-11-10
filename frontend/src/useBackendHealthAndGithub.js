@@ -17,18 +17,39 @@ async function fetchBackendHealthStatus() {
 	return { status: "unhealthy", version: "" };
 }
 
+function parseUrlAuthParams() {
+	if (typeof window === "undefined" || !window.location) {
+		return { token: null, error: null };
+	}
+	const hashParams = new URLSearchParams(
+		window.location.hash ? window.location.hash.replace(/^#\/?/, "") : "",
+	);
+	const searchParams = new URLSearchParams(window.location.search);
+	const hashToken = hashParams.get("github_token");
+	const hashError = hashParams.get("github_error");
+	if (hashToken || hashError) {
+		return { token: hashToken, error: hashError };
+	}
+	return {
+		token: searchParams.get("github_token"),
+		error: searchParams.get("github_error"),
+	};
+}
+
 function handleUrlAuthCallback({
 	setGithubToken,
 	setSourceMode,
 	verifyGithubToken,
 	existingToken,
 }) {
-	const params = new URLSearchParams(window.location.search);
-	const tokenFromUrl = params.get("github_token");
-	const errorFromUrl = params.get("github_error");
+	const { token: tokenFromUrl, error: errorFromUrl } = parseUrlAuthParams();
 
 	if (tokenFromUrl) {
-		localStorage.setItem("banana:githubToken", tokenFromUrl);
+		if (window.banana?.github?.saveToken) {
+			window.banana.github.saveToken(tokenFromUrl);
+		} else {
+			localStorage.setItem("banana:githubToken", tokenFromUrl);
+		}
 		setGithubToken(tokenFromUrl);
 		setSourceMode("github");
 		localStorage.setItem("banana:sourceMode", "github");
@@ -48,7 +69,7 @@ const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1"]);
 function isLocalHost() {
 	if (typeof window === "undefined") return false;
 	const host = window.location.hostname;
-	return LOCAL_HOSTNAMES.has(host) || host.endsWith(".local");
+	return LOCAL_HOSTNAMES.has(host);
 }
 
 function initialSourceMode() {
