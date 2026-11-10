@@ -4,123 +4,121 @@ import { DIFF_CONFIG } from "../sideBySideStyles.js";
 
 const { Text } = Typography;
 
-const TOOLBAR_CONTAINER_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	padding: "6px 14px",
-	background: "#0e0f18",
-	borderBottom: "1px solid #232738",
-	flexShrink: 0,
+const TOOLBAR_STYLES = {
+	container: {
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+		padding: "6px 14px",
+		background: "#0e0f18",
+		borderBottom: "1px solid #232738",
+		flexShrink: 0,
+	},
+	section: {
+		display: "flex",
+		alignItems: "center",
+		gap: "8px",
+	},
+	swapIcon: {
+		color: "#fadb14",
+	},
+	hint: {
+		color: "#a6adbb",
+		fontSize: "12px",
+	},
+	traceContainer: {
+		background: "#161823",
+		border: "1px solid #2e334d",
+		color: "#94a3b8",
+		fontSize: "11px",
+		padding: "2px 8px",
+		borderRadius: "4px",
+		fontFamily: "monospace",
+		display: "inline-flex",
+		alignItems: "center",
+		gap: "6px",
+	},
+	traceLabel: {
+		color: "#fadb14",
+		fontWeight: 600,
+	},
+	traceSelect: {
+		background: "transparent",
+		border: "none",
+		color: "#f1f5f9",
+		fontSize: "11px",
+		fontFamily: "monospace",
+		cursor: "pointer",
+		outline: "none",
+	},
+	traceOption: {
+		background: "#1e2030",
+		color: "#e2e8f0",
+	},
+	focusBtn: {
+		borderRadius: 4,
+		padding: "2px 10px",
+		fontSize: "11px",
+		cursor: "pointer",
+		background: "rgba(250, 219, 20, 0.15)",
+		border: "1px solid #fadb14",
+		color: "#fadb14",
+		fontWeight: 600,
+		display: "inline-flex",
+		alignItems: "center",
+		gap: "4px",
+	},
+	resetBtn: {
+		borderRadius: 4,
+		padding: "2px 10px",
+		fontSize: "11px",
+		cursor: "pointer",
+		background: "transparent",
+		border: "1px solid #333",
+		color: "#fadb14",
+	},
 };
 
-const SECTION_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-};
-
-const SWAP_ICON_STYLE = {
-	color: "#fadb14",
-};
-
-const HINT_STYLE = {
-	color: "#a6adbb",
-	fontSize: "12px",
-};
-
-const SYNC_LABEL_BASE = {
-	fontSize: "11px",
-	fontWeight: 600,
-	marginLeft: "12px",
-	userSelect: "none",
-};
-
-const SYNC_LABEL_STYLES = {
-	active: { ...SYNC_LABEL_BASE, color: "#faad14" },
-	inactive: { ...SYNC_LABEL_BASE, color: "#6b7280" },
-};
-
-const SWITCH_STYLES = {
-	active: { background: "#faad14" },
-	inactive: { background: "#3f3f46" },
-};
-
-const TRACE_CONTAINER_STYLE = {
-	background: "#161823",
-	border: "1px solid #2e334d",
-	color: "#94a3b8",
-	fontSize: "11px",
-	padding: "2px 8px",
-	borderRadius: "4px",
-	fontFamily: "monospace",
-	display: "inline-flex",
-	alignItems: "center",
-	gap: "6px",
-};
-
-const TRACE_LABEL_STYLE = {
-	color: "#fadb14",
-	fontWeight: 600,
-};
-
-const TRACE_SELECT_STYLE = {
-	background: "transparent",
-	border: "none",
-	color: "#f1f5f9",
-	fontSize: "11px",
-	fontFamily: "monospace",
-	cursor: "pointer",
-	outline: "none",
-};
-
-const TRACE_OPTION_STYLE = {
-	background: "#1e2030",
-	color: "#e2e8f0",
-};
-
-const BTN_BASE_STYLE = {
-	borderRadius: 4,
-	padding: "2px 10px",
-	fontSize: "11px",
-	cursor: "pointer",
-};
-
-const FOCUS_BTN_STYLE = {
-	...BTN_BASE_STYLE,
-	background: "rgba(250, 219, 20, 0.15)",
-	border: "1px solid #fadb14",
-	color: "#fadb14",
-	fontWeight: 600,
-	display: "inline-flex",
-	alignItems: "center",
-	gap: "4px",
-};
-
-const RESET_BTN_STYLE = {
-	...BTN_BASE_STYLE,
-	background: "transparent",
-	border: "1px solid #333",
-	color: "#fadb14",
+const SYNC_MODES = {
+	true: {
+		hint: "(Linked Views)",
+		labelStyle: {
+			fontSize: "11px",
+			fontWeight: 600,
+			marginLeft: "12px",
+			userSelect: "none",
+			color: "#faad14",
+		},
+		switchStyle: { background: "#faad14" },
+	},
+	false: {
+		hint: "(Independent Views)",
+		labelStyle: {
+			fontSize: "11px",
+			fontWeight: 600,
+			marginLeft: "12px",
+			userSelect: "none",
+			color: "#6b7280",
+		},
+		switchStyle: { background: "#3f3f46" },
+	},
 };
 
 function SyncSection({ synced, setSynced }) {
-	const hint = synced ? "(Linked Views)" : "(Independent Views)";
-	const labelStyle = synced
-		? SYNC_LABEL_STYLES.active
-		: SYNC_LABEL_STYLES.inactive;
-	const switchStyle = synced ? SWITCH_STYLES.active : SWITCH_STYLES.inactive;
+	const mode = SYNC_MODES[Boolean(synced)];
 
 	return (
-		<div style={SECTION_STYLE}>
-			<SwapOutlined style={SWAP_ICON_STYLE} />
-			<Text style={HINT_STYLE}>Scroll to zoom · Drag to pan {hint}</Text>
-			<span style={labelStyle}>Sync Views</span>
+		<div style={TOOLBAR_STYLES.section}>
+			<SwapOutlined style={TOOLBAR_STYLES.swapIcon} />
+			<Text style={TOOLBAR_STYLES.hint}>
+				Scroll to zoom · Drag to pan {mode.hint}
+			</Text>
+			<span style={mode.labelStyle}>Sync Views</span>
 			<Switch
 				size="small"
 				checked={synced}
 				onChange={setSynced}
-				style={switchStyle}
+				style={mode.switchStyle}
 			/>
 		</div>
 	);
@@ -128,20 +126,37 @@ function SyncSection({ synced, setSynced }) {
 
 function TraceWidthSelector({ selectedTraceWidth, setSelectedTraceWidth }) {
 	return (
-		<div style={TRACE_CONTAINER_STYLE}>
-			<span style={TRACE_LABEL_STYLE}>Trace:</span>
+		<div style={TOOLBAR_STYLES.traceContainer}>
+			<span style={TOOLBAR_STYLES.traceLabel}>Trace:</span>
 			<select
 				value={selectedTraceWidth}
 				onChange={(e) => setSelectedTraceWidth(e.target.value)}
-				style={TRACE_SELECT_STYLE}
+				style={TOOLBAR_STYLES.traceSelect}
 			>
 				{DIFF_CONFIG.TRACE_WIDTH_PRESETS.map((p) => (
-					<option key={p.value} value={p.value} style={TRACE_OPTION_STYLE}>
+					<option
+						key={p.value}
+						value={p.value}
+						style={TOOLBAR_STYLES.traceOption}
+					>
 						{p.label}
 					</option>
 				))}
 			</select>
 		</div>
+	);
+}
+
+function ExitFocusButton({ onReset }) {
+	return (
+		<button
+			type="button"
+			onClick={onReset}
+			style={TOOLBAR_STYLES.focusBtn}
+			title="Exit focused modification and restore full view (Esc)"
+		>
+			✕ Exit Focus (Esc)
+		</button>
 	);
 }
 
@@ -152,22 +167,13 @@ function ActionControls({
 	onReset,
 }) {
 	return (
-		<div style={SECTION_STYLE}>
+		<div style={TOOLBAR_STYLES.section}>
 			<TraceWidthSelector
 				selectedTraceWidth={selectedTraceWidth}
 				setSelectedTraceWidth={setSelectedTraceWidth}
 			/>
-			{activeAuditIdx !== null && (
-				<button
-					type="button"
-					onClick={onReset}
-					style={FOCUS_BTN_STYLE}
-					title="Exit focused modification and restore full view (Esc)"
-				>
-					✕ Exit Focus (Esc)
-				</button>
-			)}
-			<button type="button" onClick={onReset} style={RESET_BTN_STYLE}>
+			{activeAuditIdx !== null && <ExitFocusButton onReset={onReset} />}
+			<button type="button" onClick={onReset} style={TOOLBAR_STYLES.resetBtn}>
 				Reset View
 			</button>
 		</div>
@@ -183,7 +189,7 @@ export function SideBySideToolbar({
 	onReset,
 }) {
 	return (
-		<div style={TOOLBAR_CONTAINER_STYLE}>
+		<div style={TOOLBAR_STYLES.container}>
 			<SyncSection synced={synced} setSynced={setSynced} />
 			<ActionControls
 				selectedTraceWidth={selectedTraceWidth}
