@@ -61,22 +61,23 @@ const QUICK_PROMPTS = [
 	},
 ];
 
-const USER_MSG_THEME = {
-	align: "flex-end",
-	bg: "#1f2430",
-	border: "#3b4252",
-	radius: "12px 12px 2px 12px",
-	shadow: "none",
-	author: "You",
-};
-
-const BOT_MSG_THEME = {
-	align: "flex-start",
-	bg: "#161821",
-	border: "#232738",
-	radius: "12px 12px 12px 2px",
-	shadow: "0 2px 8px rgba(0,0,0,0.2)",
-	author: "Banana Copilot",
+const MSG_THEMES = {
+	user: {
+		align: "flex-end",
+		bg: "#1f2430",
+		border: "#3b4252",
+		radius: "12px 12px 2px 12px",
+		shadow: "none",
+		author: "You",
+	},
+	model: {
+		align: "flex-start",
+		bg: "#161821",
+		border: "#232738",
+		radius: "12px 12px 12px 2px",
+		shadow: "0 2px 8px rgba(0,0,0,0.2)",
+		author: "Banana Copilot",
+	},
 };
 
 const DRAWER_STYLES = {
@@ -94,156 +95,142 @@ const DRAWER_STYLES = {
 	},
 };
 
-const BANANA_AVATAR_STYLE = {
-	width: 28,
-	height: 28,
-	borderRadius: "50%",
-	background: "linear-gradient(135deg, #fadb14 0%, #faad14 100%)",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
-	color: "#000",
-	fontWeight: "bold",
-	fontSize: 14,
-	boxShadow: "0 0 10px rgba(250, 219, 20, 0.4)",
-};
-
-const HEADER_TAG_BASE_STYLE = {
-	fontSize: "10px",
-	lineHeight: "16px",
-	padding: "0 5px",
-};
-
-const HEADER_CONTAINER_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	width: "100%",
-};
-
-const CONTEXT_BAR_STYLE = {
-	background: "#161821",
-	border: "1px solid #232738",
-	borderRadius: "6px",
-	padding: "8px 12px",
-	marginBottom: "10px",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	fontSize: "11px",
-	color: "#a6adbb",
-};
-
-const CONTEXT_CONTENT_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	gap: "6px",
-	overflow: "hidden",
-	textOverflow: "ellipsis",
-	whiteSpace: "nowrap",
-};
-
-const BANNER_STYLE = {
-	background: "rgba(22, 119, 255, 0.08)",
-	border: "1px solid rgba(22, 119, 255, 0.25)",
-	borderRadius: "6px",
-	padding: "6px 10px",
-	marginBottom: "8px",
-	fontSize: "11px",
-	color: "#69b1ff",
-	display: "flex",
-	alignItems: "center",
-	gap: "6px",
-};
-
-const MISSING_KEY_ALERT_STYLE = {
-	marginBottom: "10px",
-	background: "#1a1813",
-	borderColor: "#d48806",
-};
-
-const MESSAGES_LIST_STYLE = {
-	flex: 1,
-	overflowY: "auto",
-	paddingRight: "4px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "12px",
-};
-
-const PROMPT_BTN_STYLE = {
-	fontSize: "11px",
-	borderColor: "#232738",
-	color: "#a6adbb",
-	borderRadius: "12px",
-	background: "#161821",
-};
-
-const PROMPTS_SCROLL_STYLE = {
-	padding: "8px 0",
-	display: "flex",
-	gap: "6px",
-	overflowX: "auto",
-	whiteSpace: "nowrap",
-	borderTop: "1px solid #1f2330",
-	scrollbarWidth: "none",
-	msOverflowStyle: "none",
-};
-
-const INPUT_CONTAINER_STYLE = {
-	display: "flex",
-	gap: "8px",
-	alignItems: "flex-end",
-	paddingTop: "6px",
-};
-
-const INPUT_TEXTAREA_STYLE = {
-	background: "#161821",
-	borderColor: "#232738",
-	color: "#fff",
-	borderRadius: "8px",
-	fontSize: "13px",
-};
-
-const SEND_BTN_STYLE = {
-	height: "38px",
-	width: "38px",
-	borderRadius: "8px",
-	background: "#fadb14",
-	borderColor: "#fadb14",
-	color: "#000",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
-};
-
-const AUDIT_TAG_STYLE = {
-	cursor: "pointer",
-	fontWeight: 600,
-	margin: "0 3px",
-	boxShadow: "0 0 8px rgba(250, 219, 20, 0.25)",
-	transition: "all 0.2s",
-};
-
-const AUTHOR_LABEL_STYLE = {
-	fontSize: "10px",
-	color: "#6b6375",
-	marginTop: "3px",
-	padding: "0 4px",
-};
-
-const THINKING_DOT_STYLE = {
-	width: 6,
-	height: 6,
-	borderRadius: "50%",
-	background: "#fadb14",
-};
-
-const THINKING_CONTAINER_STYLE = {
-	marginTop: "6px",
-	display: "flex",
-	alignItems: "center",
-	gap: "4px",
+const UI_STYLES = {
+	avatar: {
+		width: 28,
+		height: 28,
+		borderRadius: "50%",
+		background: "linear-gradient(135deg, #fadb14 0%, #faad14 100%)",
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "center",
+		color: "#000",
+		fontWeight: "bold",
+		fontSize: 14,
+		boxShadow: "0 0 10px rgba(250, 219, 20, 0.4)",
+	},
+	headerTag: {
+		fontSize: "10px",
+		lineHeight: "16px",
+		padding: "0 5px",
+	},
+	headerBox: {
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+		width: "100%",
+	},
+	contextBar: {
+		background: "#161821",
+		border: "1px solid #232738",
+		borderRadius: "6px",
+		padding: "8px 12px",
+		marginBottom: "10px",
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "space-between",
+		fontSize: "11px",
+		color: "#a6adbb",
+	},
+	contextContent: {
+		display: "flex",
+		alignItems: "center",
+		gap: "6px",
+		overflow: "hidden",
+		textOverflow: "ellipsis",
+		whiteSpace: "nowrap",
+	},
+	banner: {
+		background: "rgba(22, 119, 255, 0.08)",
+		border: "1px solid rgba(22, 119, 255, 0.25)",
+		borderRadius: "6px",
+		padding: "6px 10px",
+		marginBottom: "8px",
+		fontSize: "11px",
+		color: "#69b1ff",
+		display: "flex",
+		alignItems: "center",
+		gap: "6px",
+	},
+	missingKey: {
+		marginBottom: "10px",
+		background: "#1a1813",
+		borderColor: "#d48806",
+	},
+	msgList: {
+		flex: 1,
+		overflowY: "auto",
+		paddingRight: "4px",
+		display: "flex",
+		flexDirection: "column",
+		gap: "12px",
+	},
+	promptBtn: {
+		fontSize: "11px",
+		borderColor: "#232738",
+		color: "#a6adbb",
+		borderRadius: "12px",
+		background: "#161821",
+	},
+	promptsScroll: {
+		padding: "8px 0",
+		display: "flex",
+		gap: "6px",
+		overflowX: "auto",
+		whiteSpace: "nowrap",
+		borderTop: "1px solid #1f2330",
+		scrollbarWidth: "none",
+		msOverflowStyle: "none",
+	},
+	inputBox: {
+		display: "flex",
+		gap: "8px",
+		alignItems: "flex-end",
+		paddingTop: "6px",
+	},
+	inputArea: {
+		background: "#161821",
+		borderColor: "#232738",
+		color: "#fff",
+		borderRadius: "8px",
+		fontSize: "13px",
+	},
+	sendBtn: {
+		height: "38px",
+		width: "38px",
+		borderRadius: "8px",
+		background: "#fadb14",
+		borderColor: "#fadb14",
+		color: "#000",
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "center",
+	},
+	auditTag: {
+		cursor: "pointer",
+		fontWeight: 600,
+		margin: "0 3px",
+		boxShadow: "0 0 8px rgba(250, 219, 20, 0.25)",
+		transition: "all 0.2s",
+	},
+	authorLabel: {
+		fontSize: "10px",
+		color: "#6b6375",
+		marginTop: "3px",
+		padding: "0 4px",
+	},
+	thinkingDot: {
+		width: 6,
+		height: 6,
+		borderRadius: "50%",
+		background: "#fadb14",
+	},
+	thinkingBox: {
+		marginTop: "6px",
+		display: "flex",
+		alignItems: "center",
+		gap: "4px",
+	},
 };
 
 const AUDIT_REGEX =
@@ -251,8 +238,8 @@ const AUDIT_REGEX =
 
 function createAuditTagPart(match) {
 	const id = match[1] || match[3];
-	const label = match[2] || match[4] || id;
-	return { type: "audit-tag", start: match.index, id, label };
+	const altLabel = match[2] || match[4];
+	return { type: "audit-tag", start: match.index, id, label: altLabel || id };
 }
 
 function createTextPart(start, value) {
@@ -286,7 +273,7 @@ function MessagePartItem({ part, onSelectModification }) {
 			<Tag
 				color="gold"
 				icon={<AimOutlined />}
-				style={AUDIT_TAG_STYLE}
+				style={UI_STYLES.auditTag}
 				onClick={() => onSelectModification?.(part.id, part.label)}
 				title={`Click to zoom directly to ${part.label} on board`}
 			>
@@ -319,8 +306,8 @@ function MessageBody({ content, onSelectModification }) {
 
 function ThinkingIndicator() {
 	return (
-		<div style={THINKING_CONTAINER_STYLE}>
-			<span className="copilot-dot-pulse" style={THINKING_DOT_STYLE} />
+		<div style={UI_STYLES.thinkingBox}>
+			<span className="copilot-dot-pulse" style={UI_STYLES.thinkingDot} />
 			<Text type="secondary" style={{ fontSize: "11px", color: "#fadb14" }}>
 				Thinking...
 			</Text>
@@ -349,7 +336,7 @@ function MessageBubble({ msg, theme, onSelectModification }) {
 }
 
 function ChatMessageItem({ msg, onSelectModification }) {
-	const theme = msg.role === "user" ? USER_MSG_THEME : BOT_MSG_THEME;
+	const theme = msg.role === "user" ? MSG_THEMES.user : MSG_THEMES.model;
 	return (
 		<div
 			style={{
@@ -365,7 +352,7 @@ function ChatMessageItem({ msg, onSelectModification }) {
 				theme={theme}
 				onSelectModification={onSelectModification}
 			/>
-			<span style={AUTHOR_LABEL_STYLE}>{theme.author}</span>
+			<span style={UI_STYLES.authorLabel}>{theme.author}</span>
 		</div>
 	);
 }
@@ -373,13 +360,13 @@ function ChatMessageItem({ msg, onSelectModification }) {
 function HeaderTags({ activeModel }) {
 	return (
 		<div>
-			<Tag color="cyan" style={{ ...HEADER_TAG_BASE_STYLE, margin: 0 }}>
+			<Tag color="cyan" style={{ ...UI_STYLES.headerTag, margin: 0 }}>
 				💬 Hardware Copilot
 			</Tag>
-			<Tag color="gold" style={{ ...HEADER_TAG_BASE_STYLE, marginLeft: 4 }}>
+			<Tag color="gold" style={{ ...UI_STYLES.headerTag, marginLeft: 4 }}>
 				{activeModel}
 			</Tag>
-			<Tag color="green" style={{ ...HEADER_TAG_BASE_STYLE, marginLeft: 4 }}>
+			<Tag color="green" style={{ ...UI_STYLES.headerTag, marginLeft: 4 }}>
 				Unlimited Free
 			</Tag>
 		</div>
@@ -389,7 +376,7 @@ function HeaderTags({ activeModel }) {
 function HeaderBrand({ activeModel }) {
 	return (
 		<Space align="center" size="small">
-			<div style={BANANA_AVATAR_STYLE}>🍌</div>
+			<div style={UI_STYLES.avatar}>🍌</div>
 			<div>
 				<Text strong style={{ color: "#fff", fontSize: "14px" }}>
 					Banana Hardware Copilot
@@ -401,6 +388,7 @@ function HeaderBrand({ activeModel }) {
 }
 
 function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
+	const settingsColor = hasKey ? "#52c41a" : "#faad14";
 	return (
 		<Space size="small">
 			<Tooltip title="Copilot Settings (API Key & Model)">
@@ -408,7 +396,7 @@ function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
 					type="text"
 					icon={<SettingOutlined />}
 					onClick={onOpenSettings}
-					style={{ color: hasKey ? "#52c41a" : "#faad14" }}
+					style={{ color: settingsColor }}
 				/>
 			</Tooltip>
 			<Tooltip title="Clear chat history">
@@ -429,16 +417,16 @@ function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
 	);
 }
 
-function ChatDrawerHeader(props) {
-	const hasKey = Boolean(props.apiKey || props.serverKeyAvailable);
+function ChatDrawerHeader({ ai, onClose }) {
+	const hasKey = Boolean(ai.apiKey || ai.serverKeyAvailable);
 	return (
-		<div style={HEADER_CONTAINER_STYLE}>
-			<HeaderBrand activeModel={props.activeModel} />
+		<div style={UI_STYLES.headerBox}>
+			<HeaderBrand activeModel={ai.activeModel} />
 			<HeaderActions
 				hasKey={hasKey}
-				onOpenSettings={props.onOpenSettings}
-				onClearHistory={props.onClearHistory}
-				onClose={props.onClose}
+				onOpenSettings={() => ai.setIsSettingsOpen(true)}
+				onClearHistory={ai.handleClearHistory}
+				onClose={onClose}
 			/>
 		</div>
 	);
@@ -462,8 +450,8 @@ function ContextDetails({ isGrounded, fileName, modsCount, diffMode }) {
 
 function ChatContextBar({ isGrounded, fileName, modsCount, diffMode }) {
 	return (
-		<div style={CONTEXT_BAR_STYLE}>
-			<div style={CONTEXT_CONTENT_STYLE}>
+		<div style={UI_STYLES.contextBar}>
+			<div style={UI_STYLES.contextContent}>
 				<CompassOutlined style={{ color: "#fadb14" }} />
 				<ContextDetails
 					isGrounded={isGrounded}
@@ -486,7 +474,7 @@ function ChatContextBar({ isGrounded, fileName, modsCount, diffMode }) {
 
 function HardwareCopilotBanner() {
 	return (
-		<div style={BANNER_STYLE}>
+		<div style={UI_STYLES.banner}>
 			<MessageOutlined style={{ fontSize: "13px", flexShrink: 0 }} />
 			<span>
 				<strong>AI Hardware Copilot</strong>: Grounded in your active PCB diff
@@ -514,14 +502,14 @@ function MissingApiKeyAlert({ onConfigure }) {
 					</div>
 				</div>
 			}
-			style={MISSING_KEY_ALERT_STYLE}
+			style={UI_STYLES.missingKey}
 		/>
 	);
 }
 
 function ChatMessagesList({ messages, onSelectModification, messagesEndRef }) {
 	return (
-		<div style={MESSAGES_LIST_STYLE}>
+		<div style={UI_STYLES.msgList}>
 			{messages.map((msg, idx) => (
 				<ChatMessageItem
 					// biome-ignore lint/suspicious/noArrayIndexKey: chat log is append-only, so the index is a stable identity
@@ -541,36 +529,25 @@ function handlePromptScroll(e) {
 	}
 }
 
-function QuickPromptButton({ qp, isStreaming, onSelectPrompt }) {
-	return (
-		<Button
-			key={qp.label}
-			size="small"
-			type="dashed"
-			icon={qp.icon}
-			disabled={isStreaming}
-			onClick={() => onSelectPrompt(qp.prompt)}
-			style={PROMPT_BTN_STYLE}
-		>
-			{qp.label}
-		</Button>
-	);
-}
-
 function QuickPromptsScroll({ isStreaming, onSelectPrompt }) {
 	return (
 		<div
 			className="copilot-prompts-scroll"
 			onWheel={handlePromptScroll}
-			style={PROMPTS_SCROLL_STYLE}
+			style={UI_STYLES.promptsScroll}
 		>
 			{QUICK_PROMPTS.map((qp) => (
-				<QuickPromptButton
+				<Button
 					key={qp.label}
-					qp={qp}
-					isStreaming={isStreaming}
-					onSelectPrompt={onSelectPrompt}
-				/>
+					size="small"
+					type="dashed"
+					icon={qp.icon}
+					disabled={isStreaming}
+					onClick={() => onSelectPrompt(qp.prompt)}
+					style={UI_STYLES.promptBtn}
+				>
+					{qp.label}
+				</Button>
 			))}
 		</div>
 	);
@@ -583,23 +560,10 @@ function handleTextEnter(e, onSend) {
 	}
 }
 
-function SendChatButton({ isStreaming, disabled, onSend }) {
-	return (
-		<Button
-			type="primary"
-			icon={<SendOutlined />}
-			loading={isStreaming}
-			disabled={disabled}
-			onClick={onSend}
-			style={SEND_BTN_STYLE}
-		/>
-	);
-}
-
 function ChatInputBar(props) {
 	const { inputRef, inputMessage, onChange, onSend, isStreaming } = props;
 	return (
-		<div style={INPUT_CONTAINER_STYLE}>
+		<div style={UI_STYLES.inputBox}>
 			<TextArea
 				ref={inputRef}
 				value={inputMessage}
@@ -608,12 +572,15 @@ function ChatInputBar(props) {
 				placeholder="Ask anything about Banana, PCB diffs, KiCad, or hardware engineering..."
 				autoSize={{ minRows: 1, maxRows: 4 }}
 				disabled={isStreaming}
-				style={INPUT_TEXTAREA_STYLE}
+				style={UI_STYLES.inputArea}
 			/>
-			<SendChatButton
-				isStreaming={isStreaming}
+			<Button
+				type="primary"
+				icon={<SendOutlined />}
+				loading={isStreaming}
 				disabled={!inputMessage.trim()}
-				onSend={onSend}
+				onClick={onSend}
+				style={UI_STYLES.sendBtn}
 			/>
 		</div>
 	);
@@ -636,9 +603,15 @@ function ChatDrawerTop(props) {
 	);
 }
 
-function ChatDrawerControls(props) {
+function ChatDrawerBody(props) {
 	return (
 		<>
+			<ChatDrawerTop {...props} />
+			<ChatMessagesList
+				messages={props.messages}
+				onSelectModification={props.onSelectModification}
+				messagesEndRef={props.messagesEndRef}
+			/>
 			<QuickPromptsScroll
 				isStreaming={props.isStreaming}
 				onSelectPrompt={props.onSelectPrompt}
@@ -650,20 +623,6 @@ function ChatDrawerControls(props) {
 				onSend={props.onSendMessage}
 				isStreaming={props.isStreaming}
 			/>
-		</>
-	);
-}
-
-function ChatDrawerBody(props) {
-	return (
-		<>
-			<ChatDrawerTop {...props} />
-			<ChatMessagesList
-				messages={props.messages}
-				onSelectModification={props.onSelectModification}
-				messagesEndRef={props.messagesEndRef}
-			/>
-			<ChatDrawerControls {...props} />
 		</>
 	);
 }
@@ -711,19 +670,6 @@ function useChatDrawerState({ open, boardContext, ai, onSelectModification }) {
 	};
 }
 
-function CopilotDrawerHeader({ ai, onClose }) {
-	return (
-		<ChatDrawerHeader
-			activeModel={ai.activeModel}
-			apiKey={ai.apiKey}
-			serverKeyAvailable={ai.serverKeyAvailable}
-			onOpenSettings={() => ai.setIsSettingsOpen(true)}
-			onClearHistory={ai.handleClearHistory}
-			onClose={onClose}
-		/>
-	);
-}
-
 function CopilotSettingsDialog({ ai }) {
 	return (
 		<ChatSettingsModal
@@ -740,7 +686,7 @@ function CopilotSettingsDialog({ ai }) {
 function CopilotDrawer({ open, onClose, ai, bodyProps }) {
 	return (
 		<Drawer
-			title={<CopilotDrawerHeader ai={ai} onClose={onClose} />}
+			title={<ChatDrawerHeader ai={ai} onClose={onClose} />}
 			placement="right"
 			size={460}
 			onClose={onClose}
