@@ -8,10 +8,9 @@ function resolveDiffItemLayer(item) {
 }
 
 function resolveDiffItemType(item) {
-	const rawAction =
-		(item.action
-			? item.action.toLowerCase()
-			: item.type || item.diffType || item.rawType || "") || "changed";
+	const action = item.action?.toLowerCase();
+	const typeCandidates = [item.type, item.diffType, item.rawType];
+	const rawAction = action || typeCandidates.find(Boolean) || "changed";
 	if (rawAction.startsWith("add")) return "add";
 	if (rawAction.startsWith("del")) return "delete";
 	return "change";
@@ -29,16 +28,120 @@ function buildFocusPayload(item, layer, diffType, targetIdx = null) {
 	};
 }
 
-function dispatchCanvasAction(
-	diffMode,
-	sideBySideRef,
-	diffCanvasRef,
-	actionName,
-	arg,
-) {
+function dispatchCanvasAction(canvasContext, actionName, arg) {
+	const { diffMode, sideBySideRef, diffCanvasRef } = canvasContext;
 	const target =
 		diffMode === "Side by Side" ? sideBySideRef.current : diffCanvasRef.current;
 	target?.[actionName]?.(arg);
+}
+
+function ensureDiffLayer(item, selectedLayers, setSelectedLayers) {
+	const layerToEnsure = resolveDiffItemLayer(item);
+	const layerWasMissing = Boolean(
+		layerToEnsure && !selectedLayers.includes(layerToEnsure),
+	);
+	if (layerWasMissing) {
+		setSelectedLayers((prev) => [...prev, layerToEnsure]);
+	}
+	return { layerToEnsure, layerWasMissing };
+}
+
+function scheduleFocusTriggers(trigger, layerWasMissing) {
+	trigger();
+	if (layerWasMissing) {
+		setTimeout(trigger, 60);
+		setTimeout(trigger, 200);
+		return;
+	}
+	// Retry once even without layer change — DOM may need a frame to settle
+	setTimeout(trigger, 50);
+}
+
+function executeFocus(item, targetIdx, options) {
+	const { selectedLayers, setSelectedLayers } = options;
+	const { layerToEnsure, layerWasMissing } = ensureDiffLayer(
+		item,
+		selectedLayers,
+		setSelectedLayers,
+	);
+	const focusPayload = buildFocusPayload(
+		item,
+		layerToEnsure,
+		resolveDiffItemType(item),
+		targetIdx,
+	);
+	const trigger = () =>
+		dispatchCanvasAction(options, "focusElement", focusPayload);
+	scheduleFocusTriggers(trigger, layerWasMissing);
+}
+
+function handleDiffSelect(item, customIdx, options) {
+	if (!item) return;
+	const targetIdx = customIdx !== null ? customIdx : item.diffIdx;
+	if (options.activeAuditIdx === targetIdx) {
+		options.resetFocusView();
+		return;
+	}
+	options.setActiveAuditIdx(targetIdx);
+	executeFocus(item, targetIdx, options);
+}
+
+function useCanvasFocus({
+	diffMode,
+	sideBySideRef,
+	diffCanvasRef,
+	setActiveAuditIdx,
+}) {
+	const resetFocusView = useCallback(() => {
+		setActiveAuditIdx(null);
+		dispatchCanvasAction(
+			{ diffMode, sideBySideRef, diffCanvasRef },
+			"resetView",
+		);
+	}, [diffMode, diffCanvasRef, setActiveAuditIdx, sideBySideRef]);
+
+	const setHoveredDiff = useCallback(
+		(diffIdx) => {
+			dispatchCanvasAction(
+				{ diffMode, sideBySideRef, diffCanvasRef },
+				"setHoveredDiff",
+				diffIdx,
+			);
+		},
+		[diffMode, diffCanvasRef, sideBySideRef],
+	);
+
+	return { resetFocusView, setHoveredDiff };
+}
+
+function useSelectDiffItem(ctx) {
+	const { activeAuditIdx, setActiveAuditIdx, resetFocusView } = ctx;
+	const { selectedLayers, setSelectedLayers } = ctx;
+	const { diffMode, sideBySideRef, diffCanvasRef } = ctx;
+
+	return useCallback(
+		(item, customIdx = null) => {
+			const canvas = { diffMode, sideBySideRef, diffCanvasRef };
+			handleDiffSelect(item, customIdx, {
+				activeAuditIdx,
+				setActiveAuditIdx,
+				resetFocusView,
+				selectedLayers,
+				setSelectedLayers,
+				...canvas,
+			});
+		},
+		[
+			activeAuditIdx,
+			diffCanvasRef,
+			diffMode,
+			resetFocusView,
+			selectedLayers,
+			setActiveAuditIdx,
+			setSelectedLayers,
+			sideBySideRef,
+		],
+	);
 }
 
 export function useDiffFocus({
@@ -50,79 +153,19 @@ export function useDiffFocus({
 	selectedLayers,
 	setSelectedLayers,
 }) {
-	const resetFocusView = useCallback(() => {
-		setActiveAuditIdx(null);
-		dispatchCanvasAction(diffMode, sideBySideRef, diffCanvasRef, "resetView");
-	}, [diffMode, diffCanvasRef, setActiveAuditIdx, sideBySideRef]);
-
-	const setHoveredDiff = useCallback(
-		(diffIdx) => {
-			dispatchCanvasAction(
-				diffMode,
-				sideBySideRef,
-				diffCanvasRef,
-				"setHoveredDiff",
-				diffIdx,
-			);
-		},
-		[diffMode, diffCanvasRef, sideBySideRef],
-	);
-
-	const selectDiffItem = useCallback(
-		(item, customIdx = null) => {
-			if (!item) return;
-			const targetIdx = customIdx !== null ? customIdx : item.diffIdx;
-
-			if (activeAuditIdx === targetIdx) {
-				resetFocusView();
-				return;
-			}
-			setActiveAuditIdx(targetIdx);
-
-			const layerToEnsure = resolveDiffItemLayer(item);
-			const layerWasMissing = Boolean(
-				layerToEnsure && !selectedLayers.includes(layerToEnsure),
-			);
-			if (layerWasMissing) {
-				setSelectedLayers((prev) => [...prev, layerToEnsure]);
-			}
-
-			const diffType = resolveDiffItemType(item);
-			const focusPayload = buildFocusPayload(
-				item,
-				layerToEnsure,
-				diffType,
-				targetIdx,
-			);
-
-			const trigger = () =>
-				dispatchCanvasAction(
-					diffMode,
-					sideBySideRef,
-					diffCanvasRef,
-					"focusElement",
-					focusPayload,
-				);
-			trigger();
-			if (layerWasMissing) {
-				setTimeout(trigger, 60);
-				setTimeout(trigger, 200);
-			} else {
-				// Retry once even without layer change — DOM may need a frame to settle
-				setTimeout(trigger, 50);
-			}
-		},
-		[
-			activeAuditIdx,
-			diffMode,
-			diffCanvasRef,
-			resetFocusView,
-			selectedLayers,
-			setActiveAuditIdx,
-			setSelectedLayers,
-			sideBySideRef,
-		],
-	);
+	const canvasRefs = { diffMode, sideBySideRef, diffCanvasRef };
+	const { resetFocusView, setHoveredDiff } = useCanvasFocus({
+		...canvasRefs,
+		setActiveAuditIdx,
+	});
+	const selectDiffItem = useSelectDiffItem({
+		...canvasRefs,
+		activeAuditIdx,
+		setActiveAuditIdx,
+		resetFocusView,
+		selectedLayers,
+		setSelectedLayers,
+	});
 
 	return {
 		resetFocusView,
