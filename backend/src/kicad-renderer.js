@@ -49,10 +49,10 @@ function getSvgFilesFromDir(dirPath) {
 	}
 }
 
-function safeCleanup(outputDir) {
+function safeCleanup(targetPath) {
 	try {
-		if (fs.existsSync(outputDir)) {
-			fs.rmSync(outputDir, { recursive: true, force: true });
+		if (fs.existsSync(targetPath)) {
+			fs.rmSync(targetPath, { recursive: true, force: true });
 		}
 	} catch (err) {
 		if (process.env.DEBUG_RENDER)
@@ -101,6 +101,56 @@ const GLB_EXPORT_FLAGS = [
 	"--include-soldermask",
 ];
 
+function getGlbCachePaths(filePath) {
+	const normalizedFilePath = path.resolve(filePath);
+	const fileHash = crypto
+		.createHash("sha256")
+		.update(fs.readFileSync(normalizedFilePath))
+		.digest("hex")
+		.substring(0, 16);
+	const glbDir = path.resolve(config.tempStorageDir, "cache", "glb");
+	return {
+		normalizedFilePath,
+		fileHash,
+		glbDir,
+		glbPath: path.join(glbDir, `${fileHash}.glb`),
+	};
+}
+
+function promoteGlbFile(tmpPath, glbPath) {
+	try {
+		fs.renameSync(tmpPath, glbPath);
+	} catch (renameErr) {
+		safeCleanup(tmpPath);
+		if (!fs.existsSync(glbPath)) {
+			throw renameErr;
+		}
+	}
+}
+
+function execCli(cliPath, args, options) {
+	return new Promise((resolve) => {
+		execFile(cliPath, args, options, (error, _stdout, stderr) => {
+			resolve({ error, stderr: stderr ? String(stderr) : "" });
+		});
+	});
+}
+
+async function runGlbExport({ args, tmpPath, glbPath, tStart }) {
+	const { error, stderr } = await execCli(config.kicadCliPath, args, {
+		timeout: 180000,
+	});
+	if (error || !fs.existsSync(tmpPath)) {
+		safeCleanup(tmpPath);
+		const detail = error?.message ?? "no output";
+		throw new Error(
+			`KiCad GLB export failed: ${detail}. Stderr: ${stderr.trim()}`,
+		);
+	}
+	promoteGlbFile(tmpPath, glbPath);
+	return { glbPath, durationMs: performance.now() - tStart };
+}
+
 /**
  * Exports a .kicad_pcb as a binary glTF (board body, every copper layer, mask,
  * silkscreen and component 3D models) for the 3D hologram viewer.
@@ -110,14 +160,8 @@ const GLB_EXPORT_FLAGS = [
  * @returns {Promise<{glbPath: string, durationMs: number, cached?: boolean}>}
  */
 export async function exportBoardGlb(filePath) {
-	const normalizedFilePath = path.resolve(filePath);
-	const fileHash = crypto
-		.createHash("sha256")
-		.update(fs.readFileSync(normalizedFilePath))
-		.digest("hex")
-		.substring(0, 16);
-	const glbDir = path.resolve(config.tempStorageDir, "cache", "glb");
-	const glbPath = path.join(glbDir, `${fileHash}.glb`);
+	const { normalizedFilePath, fileHash, glbDir, glbPath } =
+		getGlbCachePaths(filePath);
 
 	if (fs.existsSync(glbPath) && fs.statSync(glbPath).size > 0) {
 		return { glbPath, durationMs: 0.5, cached: true };
@@ -139,34 +183,7 @@ export async function exportBoardGlb(filePath) {
 		tmpPath,
 		normalizedFilePath,
 	];
-	return new Promise((resolve, reject) => {
-		execFile(
-			config.kicadCliPath,
-			args,
-			{ timeout: 180000 },
-			(error, _stdout, stderr) => {
-				if (error || !fs.existsSync(tmpPath)) {
-					try {
-						fs.rmSync(tmpPath, { force: true });
-					} catch (_) {}
-					return reject(
-						new Error(
-							`KiCad GLB export failed: ${error?.message ?? "no output"}. Stderr: ${stderr.trim()}`,
-						),
-					);
-				}
-				try {
-					fs.renameSync(tmpPath, glbPath);
-				} catch (renameErr) {
-					try {
-						fs.rmSync(tmpPath, { force: true });
-					} catch (_) {}
-					if (!fs.existsSync(glbPath)) return reject(renameErr); // another export already won the race otherwise
-				}
-				resolve({ glbPath, durationMs: performance.now() - tStart });
-			},
-		);
-	});
+	return runGlbExport({ args, tmpPath, glbPath, tStart });
 }
 
 /**
