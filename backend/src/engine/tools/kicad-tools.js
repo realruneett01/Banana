@@ -5,35 +5,36 @@ import { newId } from "../ids.js";
 import { validateIssue } from "../issue.js";
 import { createKicadCli } from "../kicad-cli.js";
 
-const SCH_PATH_PATTERN = "^([a-zA-Z]:[\\\\/]|[\\\\/]).+\\.kicad_sch$";
-const PCB_PATH_PATTERN = "^([a-zA-Z]:[\\\\/]|[\\\\/]).+\\.kicad_pcb$";
+function createPathPattern(ext) {
+	return `^([a-zA-Z]:[\\\\/]|[\\\\/]).+\\.${ext}$`;
+}
+
+const SCH_PATH_PATTERN = createPathPattern("kicad_sch");
+const PCB_PATH_PATTERN = createPathPattern("kicad_pcb");
 const UUID_REGEX =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEX32_REGEX = /^[0-9a-f]{32}$/i;
 
-const ERC_INPUT_SCHEMA = {
-	type: "object",
-	required: ["schPath"],
-	additionalProperties: false,
-	properties: {
-		schPath: {
-			type: "string",
-			pattern: SCH_PATH_PATTERN,
+function makeSinglePropSchema(propName, propSchema) {
+	return {
+		type: "object",
+		required: [propName],
+		additionalProperties: false,
+		properties: {
+			[propName]: propSchema,
 		},
-	},
-};
+	};
+}
 
-const DRC_INPUT_SCHEMA = {
-	type: "object",
-	required: ["pcbPath"],
-	additionalProperties: false,
-	properties: {
-		pcbPath: {
-			type: "string",
-			pattern: PCB_PATH_PATTERN,
-		},
-	},
-};
+const ERC_INPUT_SCHEMA = makeSinglePropSchema("schPath", {
+	type: "string",
+	pattern: SCH_PATH_PATTERN,
+});
+
+const DRC_INPUT_SCHEMA = makeSinglePropSchema("pcbPath", {
+	type: "string",
+	pattern: PCB_PATH_PATTERN,
+});
 
 const REPORT_OUTPUT_SCHEMA = {
 	type: "object",
@@ -69,40 +70,48 @@ const EXPORT_NETLIST_INPUT_SCHEMA = {
 	},
 };
 
-const EXPORT_NETLIST_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["netlistPath"],
-	additionalProperties: false,
-	properties: {
-		netlistPath: {
-			type: "string",
-		},
-	},
+const EXPORT_NETLIST_OUTPUT_SCHEMA = makeSinglePropSchema("netlistPath", {
+	type: "string",
+});
+
+const SEVERITY_LEVELS = {
+	warning: "warning",
+	warn: "warning",
+	info: "info",
+	information: "info",
 };
 
 function mapSeverity(kicadSeverity) {
 	const s = String(kicadSeverity || "")
 		.toLowerCase()
 		.trim();
-	if (s === "warning" || s === "warn") {
-		return "warning";
-	}
-	if (s === "info" || s === "information") {
-		return "info";
-	}
-	return "error";
+	return SEVERITY_LEVELS[s] || "error";
 }
+
+const PART_KEYWORDS = ["symbol", "footprint"];
+const TRACE_KEYWORDS = ["track", "via"];
 
 function resolveKind(item) {
 	const text =
 		`${item?.kind ?? ""} ${item?.type ?? ""} ${item?.description ?? ""}`.toLowerCase();
-	if (text.includes("symbol") || text.includes("footprint")) {
+	if (PART_KEYWORDS.some((kw) => text.includes(kw))) {
 		return "part";
 	}
-	if (text.includes("track") || text.includes("via")) {
+	if (TRACE_KEYWORDS.some((kw) => text.includes(kw))) {
 		return "trace";
 	}
 	return "net";
+}
+
+function formatHex32Uuid(val) {
+	const parts = [
+		val.slice(0, 8),
+		val.slice(8, 12),
+		val.slice(12, 16),
+		val.slice(16, 20),
+		val.slice(20),
+	];
+	return parts.join("-").toLowerCase();
 }
 
 function normalizeUuid(raw) {
@@ -114,12 +123,7 @@ function normalizeUuid(raw) {
 		return val.toLowerCase();
 	}
 	if (HEX32_REGEX.test(val)) {
-		const s1 = val.slice(0, 8);
-		const s2 = val.slice(8, 12);
-		const s3 = val.slice(12, 16);
-		const s4 = val.slice(16, 20);
-		const s5 = val.slice(20);
-		return `${s1}-${s2}-${s3}-${s4}-${s5}`.toLowerCase();
+		return formatHex32Uuid(val);
 	}
 	return null;
 }
@@ -137,28 +141,43 @@ function formatNoUuidMessage(base, extra) {
 	return `${base}: ${extra}`;
 }
 
-function extractItemIdsAndMessage(violation) {
-	const items = Array.isArray(violation?.items) ? violation.items : [];
+function getViolationItems(violation) {
+	return Array.isArray(violation?.items) ? violation.items : [];
+}
+
+function getViolationTitle(violation) {
+	return violation?.description || violation?.type || "";
+}
+
+function processViolationItem(item, { validItemIds, missingUuidDescs }) {
+	const rawUuid = normalizeUuid(item?.uuid);
+	if (rawUuid) {
+		validItemIds.push(`${resolveKind(item)}_${rawUuid}`);
+		return;
+	}
+	if (item?.description) {
+		missingUuidDescs.push(item.description);
+	}
+}
+
+function collectItemDetails(items) {
 	const validItemIds = [];
 	const missingUuidDescs = [];
-
 	for (const item of items) {
-		const rawUuid = normalizeUuid(item?.uuid);
-		if (rawUuid) {
-			const kind = resolveKind(item);
-			validItemIds.push(`${kind}_${rawUuid}`);
-		} else if (item?.description) {
-			missingUuidDescs.push(item.description);
-		}
+		processViolationItem(item, { validItemIds, missingUuidDescs });
 	}
+	return { validItemIds, missingUuidDescs };
+}
+
+function extractItemIdsAndMessage(violation) {
+	const items = getViolationItems(violation);
+	const { validItemIds, missingUuidDescs } = collectItemDetails(items);
+	const base = getViolationTitle(violation);
 
 	if (validItemIds.length > 0) {
-		const baseMsg =
-			violation?.description || violation?.type || "KiCad violation";
-		return { itemIds: validItemIds, message: baseMsg };
+		return { itemIds: validItemIds, message: base || "KiCad violation" };
 	}
 
-	const base = violation?.description || violation?.type || "";
 	const extra = missingUuidDescs.filter(Boolean).join("; ");
 	return {
 		itemIds: [newId("part")],
@@ -184,13 +203,7 @@ function convertViolationToIssue(violation, source, commit) {
 	return issue;
 }
 
-function normalizeSummary(summary, issues) {
-	if (
-		typeof summary?.errors === "number" &&
-		typeof summary?.warnings === "number"
-	) {
-		return { errors: summary.errors, warnings: summary.warnings };
-	}
+function countIssueSeverities(issues) {
 	let errors = 0;
 	let warnings = 0;
 	for (const issue of issues) {
@@ -203,29 +216,27 @@ function normalizeSummary(summary, issues) {
 	return { errors, warnings };
 }
 
-async function runErcTool(input, cli, commit) {
-	const outJsonPath = path.join(os.tmpdir(), `kicad-erc-${randomUUID()}.json`);
-	const report = await cli.runErc(input.schPath, outJsonPath);
-	const rawViolations = Array.isArray(report?.violations)
-		? report.violations
-		: [];
-	const issues = rawViolations.map((v) =>
-		convertViolationToIssue(v, "erc", commit),
-	);
-	return {
-		issues,
-		summary: normalizeSummary(report?.summary, issues),
-	};
+function normalizeSummary(summary, issues) {
+	if (
+		typeof summary?.errors === "number" &&
+		typeof summary?.warnings === "number"
+	) {
+		return { errors: summary.errors, warnings: summary.warnings };
+	}
+	return countIssueSeverities(issues);
 }
 
-async function runDrcTool(input, cli, commit) {
-	const outJsonPath = path.join(os.tmpdir(), `kicad-drc-${randomUUID()}.json`);
-	const report = await cli.runDrc(input.pcbPath, outJsonPath);
+async function executeRuleCheck({ runCheck, inputPath, toolName, commit }) {
+	const outJsonPath = path.join(
+		os.tmpdir(),
+		`kicad-${toolName}-${randomUUID()}.json`,
+	);
+	const report = await runCheck(inputPath, outJsonPath);
 	const rawViolations = Array.isArray(report?.violations)
 		? report.violations
 		: [];
 	const issues = rawViolations.map((v) =>
-		convertViolationToIssue(v, "drc", commit),
+		convertViolationToIssue(v, toolName, commit),
 	);
 	return {
 		issues,
@@ -255,25 +266,45 @@ function registerToolEntry(registry, def) {
 	});
 }
 
+const RULE_CHECK_CONFIGS = [
+	{
+		name: "kicad.erc",
+		description: "Runs KiCad electrical rules check on a schematic",
+		inputSchema: ERC_INPUT_SCHEMA,
+		toolName: "erc",
+		getPath: (input) => input.schPath,
+		runCheck: (cli, filePath, outPath) => cli.runErc(filePath, outPath),
+	},
+	{
+		name: "kicad.drc",
+		description: "Runs KiCad design rules check on a PCB layout",
+		inputSchema: DRC_INPUT_SCHEMA,
+		toolName: "drc",
+		getPath: (input) => input.pcbPath,
+		runCheck: (cli, filePath, outPath) => cli.runDrc(filePath, outPath),
+	},
+];
+
 export function registerKicadTools(registry, { cli, commit } = {}) {
 	const activeCli = cli || createKicadCli();
 	const activeCommit = typeof commit === "string" ? commit : "HEAD";
 
-	registerToolEntry(registry, {
-		name: "kicad.erc",
-		description: "Runs KiCad electrical rules check on a schematic",
-		inputSchema: ERC_INPUT_SCHEMA,
-		outputSchema: REPORT_OUTPUT_SCHEMA,
-		handler: (input) => runErcTool(input, activeCli, activeCommit),
-	});
-
-	registerToolEntry(registry, {
-		name: "kicad.drc",
-		description: "Runs KiCad design rules check on a PCB layout",
-		inputSchema: DRC_INPUT_SCHEMA,
-		outputSchema: REPORT_OUTPUT_SCHEMA,
-		handler: (input) => runDrcTool(input, activeCli, activeCommit),
-	});
+	for (const config of RULE_CHECK_CONFIGS) {
+		registerToolEntry(registry, {
+			name: config.name,
+			description: config.description,
+			inputSchema: config.inputSchema,
+			outputSchema: REPORT_OUTPUT_SCHEMA,
+			handler: (input) =>
+				executeRuleCheck({
+					runCheck: (filePath, outPath) =>
+						config.runCheck(activeCli, filePath, outPath),
+					inputPath: config.getPath(input),
+					toolName: config.toolName,
+					commit: activeCommit,
+				}),
+		});
+	}
 
 	registerToolEntry(registry, {
 		name: "kicad.export_netlist",
