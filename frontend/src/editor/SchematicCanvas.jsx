@@ -551,38 +551,77 @@ function RubberbandWire({ wireStart, allPinPos, cursorWorld }) {
 	);
 }
 
-function handleActionKey(e, ctx) {
-	const { doc, dispatchCmd, setWireMode, setWireStart } = ctx;
-	if (e.key === "w" || e.key === "W") {
-		setWireMode(true);
-		setWireStart(null);
-	} else if (e.key === "Escape") {
-		setWireMode(false);
-		setWireStart(null);
-	} else if (e.key === "r" || e.key === "R") {
-		for (const id of doc.selection) {
-			dispatchCmd({ type: "rotatePart", partId: id, deltaDeg: 90 });
-		}
-	} else if (e.key === "f" || e.key === "F") {
-		for (const id of doc.selection) {
-			dispatchCmd({ type: "flipPart", partId: id });
-		}
-	} else if (e.key === "Delete" || e.key === "Backspace") {
-		for (const id of doc.selection) {
-			dispatchCmd({ type: "deletePart", partId: id });
-		}
+function handleWireModeKey(ctx) {
+	ctx.setWireMode(true);
+	ctx.setWireStart(null);
+}
+
+function handleEscapeKey(ctx) {
+	ctx.setWireMode(false);
+	ctx.setWireStart(null);
+}
+
+function handleRotateKey(ctx) {
+	for (const id of ctx.doc.selection) {
+		ctx.dispatchCmd({ type: "rotatePart", partId: id, deltaDeg: 90 });
 	}
 }
 
+function handleFlipKey(ctx) {
+	for (const id of ctx.doc.selection) {
+		ctx.dispatchCmd({ type: "flipPart", partId: id });
+	}
+}
+
+function handleDeleteKey(ctx) {
+	for (const id of ctx.doc.selection) {
+		ctx.dispatchCmd({ type: "deletePart", partId: id });
+	}
+}
+
+const ACTION_KEY_HANDLERS = {
+	w: handleWireModeKey,
+	W: handleWireModeKey,
+	Escape: handleEscapeKey,
+	r: handleRotateKey,
+	R: handleRotateKey,
+	f: handleFlipKey,
+	F: handleFlipKey,
+	Delete: handleDeleteKey,
+	Backspace: handleDeleteKey,
+};
+
+function handleActionKey(e, ctx) {
+	const handler = ACTION_KEY_HANDLERS[e.key];
+	if (handler) handler(ctx);
+}
+
+function isModifierKey(e) {
+	return Boolean(e.ctrlKey || e.metaKey);
+}
+
+function isKey(e, keyName) {
+	return e.key?.toLowerCase() === keyName;
+}
+
+function isUndoShortcut(e) {
+	if (!isModifierKey(e)) return false;
+	return isKey(e, "z") && !e.shiftKey;
+}
+
+function isRedoShortcut(e) {
+	if (!isModifierKey(e)) return false;
+	if (isKey(e, "y")) return true;
+	return isKey(e, "z") && Boolean(e.shiftKey);
+}
+
 function handleKeyDown(e, ctx) {
-	const isMod = e.ctrlKey || e.metaKey;
-	if (isMod && (e.key === "z" || e.key === "Z")) {
+	if (isUndoShortcut(e)) {
 		e.preventDefault();
-		if (e.shiftKey) ctx.handleRedo();
-		else ctx.handleUndo();
+		ctx.handleUndo();
 		return;
 	}
-	if (isMod && (e.key === "y" || e.key === "Y")) {
+	if (isRedoShortcut(e)) {
 		e.preventDefault();
 		ctx.handleRedo();
 		return;
@@ -647,130 +686,300 @@ function updatePartDrag(dragState, worldPt, setDragPos) {
 	setDragPos({ partId: dragState.partId, x, y });
 }
 
-function usePointerInteractions(svgRef, editorState, wireState) {
-	const { vp, isSpaceDown, wireMode, dragPos, setDragPos, allPinPos } =
-		wireState;
-	const { doc, dispatchCmd } = editorState;
-	const panDragRef = useRef(null);
-	const [dragState, setDragState] = useState(null);
-	const [cursorWorld, setCursorWorld] = useState(null);
+function startPanDrag(e, vp, panDragRef) {
+	panDragRef.current = {
+		sx: e.clientX,
+		sy: e.clientY,
+		px: vp.pan.x,
+		py: vp.pan.y,
+	};
+}
 
-	const onPointerDown = useCallback(
-		(e) => {
-			if (!svgRef.current) return;
-			if (e.button === 1 || (e.button === 0 && isSpaceDown)) {
-				panDragRef.current = {
-					sx: e.clientX,
-					sy: e.clientY,
-					px: vp.pan.x,
-					py: vp.pan.y,
-				};
-				return;
-			}
-			if (e.button !== 0) return;
-			const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
-			const hit = schematicHitTest(doc, allPinPos, worldPt);
-			handlePointerDownHit(hit, {
-				wireMode,
-				wireState,
-				dispatchCmd,
-				setDragState,
-				doc,
-				worldPt,
-			});
-		},
-		[doc, dispatchCmd, isSpaceDown, vp, svgRef, wireMode, wireState, allPinPos],
+function updatePanDrag(e, vp, panDrag) {
+	const dx = e.clientX - panDrag.sx;
+	const dy = e.clientY - panDrag.sy;
+	vp.setPan({
+		x: panDrag.px + dx,
+		y: panDrag.py + dy,
+	});
+}
+
+function commitPartDrag(dragState, dragPos, dispatchCmd) {
+	if (dragState?.moved && dragPos) {
+		dispatchCmd({
+			type: "movePart",
+			partId: dragState.partId,
+			x: dragPos.x,
+			y: dragPos.y,
+		});
+	}
+}
+
+function onPointerDownEvent(e, ctx) {
+	const { svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx } = ctx;
+	if (!svgRef.current) return;
+	if (e.button === 1 || (e.button === 0 && isSpaceDown)) {
+		startPanDrag(e, vp, panDragRef);
+		return;
+	}
+	if (e.button !== 0) return;
+	const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
+	const hit = schematicHitTest(doc, allPinPos, worldPt);
+	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt });
+}
+
+function usePointerDown(svgRef, editorState, wireState, dragInit) {
+	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
+	const { doc, dispatchCmd } = editorState;
+	const { panDragRef, setDragState } = dragInit;
+	const hitCtx = useMemo(
+		() => ({ wireMode, wireState, dispatchCmd, setDragState }),
+		[wireMode, wireState, dispatchCmd, setDragState],
 	);
 
-	const onPointerMove = useCallback(
+	return useCallback(
+		(e) => {
+			onPointerDownEvent(e, {
+				svgRef,
+				vp,
+				isSpaceDown,
+				panDragRef,
+				doc,
+				allPinPos,
+				hitCtx,
+			});
+		},
+		[svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx],
+	);
+}
+
+function usePointerMove(svgRef, vp, dragState, moveCtx) {
+	const { panDragRef, setDragPos, setCursorWorld } = moveCtx;
+
+	return useCallback(
 		(e) => {
 			if (!svgRef.current) return;
 			const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
 			setCursorWorld(worldPt);
 			if (panDragRef.current) {
-				const dx = e.clientX - panDragRef.current.sx;
-				const dy = e.clientY - panDragRef.current.sy;
-				vp.setPan({
-					x: panDragRef.current.px + dx,
-					y: panDragRef.current.py + dy,
-				});
+				updatePanDrag(e, vp, panDragRef.current);
 				return;
 			}
 			if (dragState) updatePartDrag(dragState, worldPt, setDragPos);
 		},
-		[dragState, setDragPos, vp, svgRef],
+		[dragState, setDragPos, vp, svgRef, panDragRef, setCursorWorld],
 	);
+}
 
-	const onPointerUp = useCallback(() => {
+function usePointerUp(editorState, wireState, dragState, upCtx) {
+	const { dispatchCmd } = editorState;
+	const { dragPos, setDragPos } = wireState;
+	const { panDragRef, setDragState } = upCtx;
+
+	return useCallback(() => {
 		panDragRef.current = null;
-		if (dragState?.moved && dragPos) {
-			dispatchCmd({
-				type: "movePart",
-				partId: dragState.partId,
-				x: dragPos.x,
-				y: dragPos.y,
-			});
-		}
+		commitPartDrag(dragState, dragPos, dispatchCmd);
 		setDragState(null);
 		setDragPos(null);
-	}, [dragState, dragPos, dispatchCmd, setDragPos]);
+	}, [dragState, dragPos, dispatchCmd, setDragPos, panDragRef, setDragState]);
+}
+
+function usePointerInteractions(svgRef, editorState, wireState) {
+	const panDragRef = useRef(null);
+	const [dragState, setDragState] = useState(null);
+	const [cursorWorld, setCursorWorld] = useState(null);
+
+	const dragInit = useMemo(() => ({ panDragRef, setDragState }), []);
+	const moveCtx = useMemo(
+		() => ({ panDragRef, setDragPos: wireState.setDragPos, setCursorWorld }),
+		[wireState.setDragPos],
+	);
+	const upCtx = useMemo(() => ({ panDragRef, setDragState }), []);
+
+	const onPointerDown = usePointerDown(
+		svgRef,
+		editorState,
+		wireState,
+		dragInit,
+	);
+	const onPointerMove = usePointerMove(
+		svgRef,
+		wireState.vp,
+		dragState,
+		moveCtx,
+	);
+	const onPointerUp = usePointerUp(editorState, wireState, dragState, upCtx);
 
 	return { onPointerDown, onPointerMove, onPointerUp, cursorWorld };
 }
 
-export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
-	const svgRef = useRef(null);
+function useCanvasViewport(svgRef) {
 	const [pan, setPan] = useState({ x: 200, y: 150 });
 	const [zoom, setZoom] = useState(4);
-	const [isSpaceDown, setIsSpaceDown] = useState(false);
+	const vp = useMemo(() => ({ pan, zoom, setPan, setZoom }), [pan, zoom]);
+	useWheelZoom(svgRef, vp);
+	return vp;
+}
+
+function useWireSession() {
 	const [wireMode, setWireMode] = useState(false);
 	const [wireStart, setWireStart] = useState(null);
 	const [dragPos, setDragPos] = useState(null);
+	return {
+		wireMode,
+		setWireMode,
+		wireStart,
+		setWireStart,
+		dragPos,
+		setDragPos,
+	};
+}
 
-	const { doc, dispatchCmd, handleUndo, handleRedo } = useSchematicEditor(
-		editor,
-		onChange,
-	);
-	const symbolCache = useSymbolCache(doc.ir?.parts ?? [], fetchSymbol);
-	const vp = useMemo(() => ({ pan, zoom, setPan, setZoom }), [pan, zoom]);
-	useWheelZoom(svgRef, vp);
-
-	const allPinPos = useMemo(
-		() => buildAllPinMap(doc.ir?.parts ?? [], symbolCache),
-		[doc.ir?.parts, symbolCache],
-	);
-
-	const wireState = useMemo(
+function useWireState(wire, vp, isSpaceDown, allPinPos) {
+	return useMemo(
 		() => ({
-			wireStart,
-			setWireStart,
-			wireMode,
-			setWireMode,
+			wireStart: wire.wireStart,
+			setWireStart: wire.setWireStart,
+			wireMode: wire.wireMode,
+			setWireMode: wire.setWireMode,
 			vp,
 			isSpaceDown,
-			dragPos,
-			setDragPos,
+			dragPos: wire.dragPos,
+			setDragPos: wire.setDragPos,
 			allPinPos,
 		}),
-		[wireStart, wireMode, vp, isSpaceDown, dragPos, allPinPos],
+		[
+			wire.wireStart,
+			wire.wireMode,
+			wire.dragPos,
+			wire.setWireMode,
+			wire.setWireStart,
+			wire.setDragPos,
+			vp,
+			isSpaceDown,
+			allPinPos,
+		],
 	);
+}
 
-	const editorState = useMemo(() => ({ doc, dispatchCmd }), [doc, dispatchCmd]);
-	const { onPointerDown, onPointerMove, onPointerUp, cursorWorld } =
-		usePointerInteractions(svgRef, editorState, wireState);
-
-	const keyCtx = useMemo(
+function useKeyContext(ed, wire) {
+	return useMemo(
 		() => ({
-			doc,
-			dispatchCmd,
-			handleUndo,
-			handleRedo,
-			setWireMode,
-			setWireStart,
+			doc: ed.doc,
+			dispatchCmd: ed.dispatchCmd,
+			handleUndo: ed.handleUndo,
+			handleRedo: ed.handleRedo,
+			setWireMode: wire.setWireMode,
+			setWireStart: wire.setWireStart,
 		}),
-		[doc, dispatchCmd, handleUndo, handleRedo],
+		[
+			ed.doc,
+			ed.dispatchCmd,
+			ed.handleUndo,
+			ed.handleRedo,
+			wire.setWireMode,
+			wire.setWireStart,
+		],
 	);
+}
 
+function useEditorModel(editor, onChange, fetchSymbol) {
+	const ed = useSchematicEditor(editor, onChange);
+	const parts = ed.doc.ir?.parts ?? [];
+	const symbolCache = useSymbolCache(parts, fetchSymbol);
+	const allPinPos = useMemo(
+		() => buildAllPinMap(parts, symbolCache),
+		[parts, symbolCache],
+	);
+	return { ed, symbolCache, allPinPos };
+}
+
+function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
+	const svgRef = useRef(null);
+	const [isSpaceDown, setIsSpaceDown] = useState(false);
+	const vp = useCanvasViewport(svgRef);
+	const wire = useWireSession();
+	const model = useEditorModel(editor, onChange, fetchSymbol);
+	const { ed, symbolCache, allPinPos } = model;
+	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
+	const editorState = useMemo(
+		() => ({ doc: ed.doc, dispatchCmd: ed.dispatchCmd }),
+		[ed.doc, ed.dispatchCmd],
+	);
+	const ptr = usePointerInteractions(svgRef, editorState, wireState);
+	const keyCtx = useKeyContext(ed, wire);
+	return {
+		svgRef,
+		vp,
+		wire,
+		doc: ed.doc,
+		symbolCache,
+		allPinPos,
+		ptr,
+		keyCtx,
+		setIsSpaceDown,
+	};
+}
+
+function handleCanvasKeyDown(e, setIsSpaceDown, keyCtx) {
+	if (e.code === "Space") setIsSpaceDown(true);
+	handleKeyDown(e, keyCtx);
+}
+
+function handleCanvasKeyUp(e, setIsSpaceDown) {
+	if (e.code === "Space") setIsSpaceDown(false);
+}
+
+function SchematicNetsLayer({ nets, allPinPos, selection }) {
+	return (nets ?? []).map((net) => (
+		<WireSvg
+			key={net.id}
+			net={net}
+			allPinPos={allPinPos}
+			isSelected={selection?.includes(net.id)}
+		/>
+	));
+}
+
+function SchematicPartsLayer({ parts, selection, wire, symbolCache }) {
+	return (parts ?? []).map((part) => (
+		<PartSvg
+			key={part.id}
+			part={part}
+			isSelected={selection?.includes(part.id)}
+			dragPos={wire.dragPos?.partId === part.id ? wire.dragPos : null}
+			wireStart={wire.wireStart}
+			symbol={part.symbol ? symbolCache[part.symbol] : null}
+		/>
+	));
+}
+
+function SchematicSvgScene({ s }) {
+	return (
+		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
+			<SchematicGrid />
+			<SchematicNetsLayer
+				nets={s.doc.ir?.nets}
+				allPinPos={s.allPinPos}
+				selection={s.doc.selection}
+			/>
+			<SchematicPartsLayer
+				parts={s.doc.ir?.parts}
+				selection={s.doc.selection}
+				wire={s.wire}
+				symbolCache={s.symbolCache}
+			/>
+			<RubberbandWire
+				wireStart={s.wire.wireStart}
+				allPinPos={s.allPinPos}
+				cursorWorld={s.ptr.cursorWorld}
+			/>
+		</g>
+	);
+}
+
+export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
+	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
 		<div
@@ -779,50 +988,20 @@ export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
 			role="region"
 			aria-label="Schematic editor"
 			style={CANVAS_CONTAINER_STYLE}
-			onKeyDown={(e) => {
-				if (e.code === "Space") setIsSpaceDown(true);
-				handleKeyDown(e, keyCtx);
-			}}
-			onKeyUp={(e) => {
-				if (e.code === "Space") setIsSpaceDown(false);
-			}}
-			onPointerDown={onPointerDown}
-			onPointerMove={onPointerMove}
-			onPointerUp={onPointerUp}
+			onKeyDown={(e) => handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx)}
+			onKeyUp={(e) => handleCanvasKeyUp(e, s.setIsSpaceDown)}
+			onPointerDown={s.ptr.onPointerDown}
+			onPointerMove={s.ptr.onPointerMove}
+			onPointerUp={s.ptr.onPointerUp}
 		>
 			<svg
-				ref={svgRef}
+				ref={s.svgRef}
 				width="100%"
 				height="100%"
 				style={{ display: "block", userSelect: "none" }}
 			>
 				<title>Schematic Canvas</title>
-				<g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
-					<SchematicGrid />
-					{(doc.ir?.nets ?? []).map((net) => (
-						<WireSvg
-							key={net.id}
-							net={net}
-							allPinPos={allPinPos}
-							isSelected={doc.selection?.includes(net.id)}
-						/>
-					))}
-					{(doc.ir?.parts ?? []).map((part) => (
-						<PartSvg
-							key={part.id}
-							part={part}
-							isSelected={doc.selection?.includes(part.id)}
-							dragPos={dragPos?.partId === part.id ? dragPos : null}
-							wireStart={wireStart}
-							symbol={part.symbol ? symbolCache[part.symbol] : null}
-						/>
-					))}
-					<RubberbandWire
-						wireStart={wireStart}
-						allPinPos={allPinPos}
-						cursorWorld={cursorWorld}
-					/>
-				</g>
+				<SchematicSvgScene s={s} />
 			</svg>
 		</div>
 	);
