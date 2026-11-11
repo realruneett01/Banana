@@ -27,8 +27,9 @@ function getStore(req) {
 function saveRunSafe(store, run, issues) {
 	try {
 		store.saveRun(run, issues || []);
-	} catch (_err) {
+	} catch (err) {
 		// Store errors must not break simulation response
+		console.warn("Failed to persist simulation run:", err?.message);
 	}
 }
 
@@ -39,6 +40,14 @@ function isPlainObject(val) {
 	return !Array.isArray(val);
 }
 
+function isValidCommitHex(val) {
+	return typeof val === "string" && COMMIT_HEX_REGEX.test(val);
+}
+
+function isValidSimKind(val) {
+	return typeof val === "string" && SIM_KINDS.includes(val);
+}
+
 function isValidFilterParam(val, validator) {
 	if (val === undefined || val === "") {
 		return true;
@@ -46,41 +55,41 @@ function isValidFilterParam(val, validator) {
 	return typeof val === "string" && validator(val);
 }
 
+function findFirstError(rules) {
+	const failed = rules.find(([isInvalid]) => isInvalid);
+	return failed ? failed[1] : null;
+}
+
 function validateSimRunParams(body) {
 	const { kind, env, commit, inputs } = body || {};
-	if (typeof kind !== "string" || !SIM_KINDS.includes(kind)) {
-		return "Invalid simulation kind";
-	}
-	if (typeof commit !== "string" || !COMMIT_HEX_REGEX.test(commit)) {
-		return "Invalid commit: must be a 7-40 char hex string";
-	}
-	if (!isPlainObject(env) || !isPlainObject(inputs)) {
-		return "env and inputs must be objects";
-	}
-	return null;
+	const hasValidObjects = isPlainObject(env) && isPlainObject(inputs);
+	return findFirstError([
+		[!isValidSimKind(kind), "Invalid simulation kind"],
+		[
+			!isValidCommitHex(commit),
+			"Invalid commit: must be a 7-40 char hex string",
+		],
+		[!hasValidObjects, "env and inputs must be objects"],
+	]);
 }
 
 function validateRunsQuery(query) {
 	const { commit, envId, kind } = query || {};
-	if (!isValidFilterParam(commit, (v) => COMMIT_HEX_REGEX.test(v))) {
-		return "Invalid commit parameter";
-	}
-	if (!isValidFilterParam(envId, (v) => isId(v, "env"))) {
-		return "Invalid envId parameter";
-	}
-	if (!isValidFilterParam(kind, (v) => SIM_KINDS.includes(v))) {
-		return "Invalid kind parameter";
-	}
-	return null;
+	return findFirstError([
+		[!isValidFilterParam(commit, isValidCommitHex), "Invalid commit parameter"],
+		[
+			!isValidFilterParam(envId, (v) => isId(v, "env")),
+			"Invalid envId parameter",
+		],
+		[!isValidFilterParam(kind, isValidSimKind), "Invalid kind parameter"],
+	]);
 }
 
 function extractRunFilters(query) {
 	const { commit, envId, kind } = query || {};
-	const filters = {};
-	if (commit) filters.commit = commit;
-	if (envId) filters.envId = envId;
-	if (kind) filters.kind = kind;
-	return filters;
+	return Object.fromEntries(
+		Object.entries({ commit, envId, kind }).filter(([, val]) => Boolean(val)),
+	);
 }
 
 function validateCompareBody(body) {
@@ -88,29 +97,38 @@ function validateCompareBody(body) {
 		return "Request body must be an object";
 	}
 	const { before, after, envId, kind } = body;
-	if (typeof before !== "string" || !COMMIT_HEX_REGEX.test(before)) {
-		return "Invalid before commit";
-	}
-	if (typeof after !== "string" || !COMMIT_HEX_REGEX.test(after)) {
-		return "Invalid after commit";
-	}
-	if (!isValidFilterParam(envId, (v) => isId(v, "env"))) {
-		return "Invalid envId";
-	}
-	if (!isValidFilterParam(kind, (v) => SIM_KINDS.includes(v))) {
-		return "Invalid kind";
-	}
-	return null;
+	return findFirstError([
+		[!isValidCommitHex(before), "Invalid before commit"],
+		[!isValidCommitHex(after), "Invalid after commit"],
+		[!isValidFilterParam(envId, (v) => isId(v, "env")), "Invalid envId"],
+		[!isValidFilterParam(kind, isValidSimKind), "Invalid kind"],
+	]);
 }
 
 function validatePatchIssue(id, body) {
-	if (!isId(id, "issue")) {
-		return "Invalid issue id";
-	}
-	if (!isPlainObject(body) || !VALID_ISSUE_STATUSES.has(body.status)) {
-		return "Invalid status: must be open, fixed, or wontfix";
-	}
-	return null;
+	const hasValidStatus =
+		isPlainObject(body) && VALID_ISSUE_STATUSES.has(body.status);
+	return findFirstError([
+		[!isId(id, "issue"), "Invalid issue id"],
+		[!hasValidStatus, "Invalid status: must be open, fixed, or wontfix"],
+	]);
+}
+
+function sendBadRequest(res, error) {
+	return res.status(400).json({ error });
+}
+
+function sendInternalError(res, message, err) {
+	// Broad catch to guarantee route never leaks stack traces
+	console.error(message, err?.message);
+	return res.status(500).json({ error: message });
+}
+
+function formatRunResult(data) {
+	return {
+		run: data.run,
+		issues: data.issues,
+	};
 }
 
 function handleSimKinds(_req, res) {
@@ -120,7 +138,7 @@ function handleSimKinds(_req, res) {
 async function handleSimRun(req, res) {
 	const err = validateSimRunParams(req.body);
 	if (err) {
-		return res.status(400).json({ error: err });
+		return sendBadRequest(res, err);
 	}
 
 	try {
@@ -133,36 +151,33 @@ async function handleSimRun(req, res) {
 				run: result.run,
 			});
 		}
-		return res.status(200).json({
-			run: result.run,
-			issues: result.issues,
-		});
-	} catch (_err) {
+		return res.status(200).json(formatRunResult(result));
+	} catch (err) {
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Simulation execution failed" });
+		return sendInternalError(res, "Simulation execution failed", err);
 	}
 }
 
 function handleListSimRuns(req, res) {
 	const err = validateRunsQuery(req.query);
 	if (err) {
-		return res.status(400).json({ error: err });
+		return sendBadRequest(res, err);
 	}
 
 	try {
 		const filters = extractRunFilters(req.query);
 		const runs = getStore(req).listRuns(filters);
 		return res.status(200).json({ runs });
-	} catch (_err) {
+	} catch (err) {
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Failed to list simulation runs" });
+		return sendInternalError(res, "Failed to list simulation runs", err);
 	}
 }
 
 function handleGetSimRun(req, res) {
 	const { id } = req.params;
 	if (!isId(id, "sim")) {
-		return res.status(400).json({ error: "Invalid simulation run id" });
+		return sendBadRequest(res, "Invalid simulation run id");
 	}
 
 	try {
@@ -170,20 +185,17 @@ function handleGetSimRun(req, res) {
 		if (!data) {
 			return res.status(404).json({ error: "Run not found" });
 		}
-		return res.status(200).json({
-			run: data.run,
-			issues: data.issues,
-		});
-	} catch (_err) {
+		return res.status(200).json(formatRunResult(data));
+	} catch (err) {
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Failed to get simulation run" });
+		return sendInternalError(res, "Failed to get simulation run", err);
 	}
 }
 
 function handleCompareSimRuns(req, res) {
 	const err = validateCompareBody(req.body);
 	if (err) {
-		return res.status(400).json({ error: err });
+		return sendBadRequest(res, err);
 	}
 
 	try {
@@ -195,14 +207,14 @@ function handleCompareSimRuns(req, res) {
 			return res.status(404).json({ error: err.message });
 		}
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Failed to compare simulation runs" });
+		return sendInternalError(res, "Failed to compare simulation runs", err);
 	}
 }
 
 function handlePatchIssue(req, res) {
 	const err = validatePatchIssue(req.params.id, req.body);
 	if (err) {
-		return res.status(400).json({ error: err });
+		return sendBadRequest(res, err);
 	}
 
 	try {
@@ -214,9 +226,9 @@ function handlePatchIssue(req, res) {
 			return res.status(404).json({ error: "Issue not found" });
 		}
 		return res.status(200).json({ ok: true });
-	} catch (_err) {
+	} catch (err) {
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Failed to update issue status" });
+		return sendInternalError(res, "Failed to update issue status", err);
 	}
 }
 
@@ -234,18 +246,24 @@ function handleErcRun(req, res) {
 		const commitRef = typeof commit === "string" ? commit : "";
 		const issues = runErc(ir, { commit: commitRef });
 		return res.status(200).json({ issues });
-	} catch (_err) {
+	} catch (err) {
 		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "ERC execution failed" });
+		return sendInternalError(res, "ERC execution failed", err);
 	}
 }
 
-router.get(["/sim/kinds", "/api/sim/kinds"], handleSimKinds);
-router.get(["/sim/runs", "/api/sim/runs"], handleListSimRuns);
-router.get(["/sim/runs/:id", "/api/sim/runs/:id"], handleGetSimRun);
-router.post(["/sim/run", "/api/sim/run"], handleSimRun);
-router.post(["/sim/compare", "/api/sim/compare"], handleCompareSimRuns);
-router.patch(["/issues/:id", "/api/issues/:id"], handlePatchIssue);
-router.post(["/erc/run", "/api/erc/run"], handleErcRun);
+const ROUTE_DEFS = [
+	["get", "/sim/kinds", handleSimKinds],
+	["get", "/sim/runs", handleListSimRuns],
+	["get", "/sim/runs/:id", handleGetSimRun],
+	["post", "/sim/run", handleSimRun],
+	["post", "/sim/compare", handleCompareSimRuns],
+	["patch", "/issues/:id", handlePatchIssue],
+	["post", "/erc/run", handleErcRun],
+];
+
+for (const [method, routePath, handler] of ROUTE_DEFS) {
+	router[method]([routePath, `/api${routePath}`], handler);
+}
 
 export default router;
