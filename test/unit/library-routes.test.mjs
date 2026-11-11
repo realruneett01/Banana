@@ -58,178 +58,183 @@ function createFakeLibrary(overrides = {}) {
 }
 
 function bootServer(app) {
-	const server = http.createServer(app);
 	return new Promise((resolve) => {
-		server.listen(0, "127.0.0.1", () => {
-			resolve({ server, port: server.address().port });
+		const srv = http.createServer(app).listen(0, "127.0.0.1", () => {
+			resolve({ server: srv, port: srv.address().port });
 		});
 	});
 }
 
-const shutdownServer = (server) =>
-	new Promise((resolve) => {
-		if (!server) {
-			resolve();
-			return;
-		}
+function shutdownServer(server) {
+	return new Promise((resolve) => {
+		if (!server) return resolve();
 		server.close(resolve);
 	});
+}
 
 async function requestGet(port, path) {
-	const response = await fetch(`http://127.0.0.1:${port}${path}`);
-	const json = await response.json().catch(() => ({}));
+	const res = await fetch(`http://127.0.0.1:${port}${path}`);
+	const body = await res.json().catch(() => ({}));
 	return {
-		status: response.status,
-		json,
-		cacheControl: response.headers.get("cache-control"),
+		status: res.status,
+		json: body,
+		cacheControl: res.headers.get("cache-control"),
 	};
 }
 
+async function requestWithAvailability(port, fakeLib, available, path) {
+	fakeLib.setAvailable(available);
+	return requestGet(port, path);
+}
+
+const queryAvailable = (port, fakeLib, path) =>
+	requestWithAvailability(port, fakeLib, true, path);
+
+const queryUnavailable = (port, fakeLib, path) =>
+	requestWithAvailability(port, fakeLib, false, path);
+
+function assertSuccess(res) {
+	assert.equal(res.status, 200);
+}
+
+function assertCacheHeader(res) {
+	assertSuccess(res);
+	assert.equal(res.cacheControl, "public, max-age=3600");
+}
+
+function assertErrorResponse(res, expectedStatus) {
+	assert.equal(res.status, expectedStatus);
+	assert.ok(typeof res.json.error === "string");
+}
+
+function assertSearchMatch(res, key, expectedId) {
+	assertSuccess(res);
+	assert.ok(Array.isArray(res.json[key]));
+	assert.equal(res.json[key][0].libId, expectedId);
+}
+
+function assertGetMatch(res, key, expectedId) {
+	assertSuccess(res);
+	assert.equal(res.json[key]?.libId, expectedId);
+}
+
+function assertUnavailable(res) {
+	assert.equal(res.status, 503);
+	assert.equal(
+		res.json.error,
+		"KiCad libraries are not installed on this server",
+	);
+}
+
+function assertDualCase(res, tc) {
+	assertSuccess(res);
+	if (tc.isArray) {
+		assert.ok(Array.isArray(res.json[tc.key]));
+		return;
+	}
+	if (tc.id) {
+		assert.equal(res.json[tc.key]?.libId, tc.id);
+		return;
+	}
+	assert.equal(res.json[tc.key], tc.expected);
+}
+
+const toNamedCases = (rows) => rows.map(([name, path]) => ({ name, path }));
+
 const SEARCH_CASES = [
-	{
-		name: "GET /api/library/symbols with q",
-		path: "/api/library/symbols?q=res",
-		key: "symbols",
-		expectedId: "Device:R",
-	},
-	{
-		name: "GET /api/library/symbols with q and limit",
-		path: "/api/library/symbols?q=res&limit=10",
-		key: "symbols",
-		expectedId: "Device:R",
-	},
-	{
-		name: "GET /api/library/footprints with q",
-		path: "/api/library/footprints?q=0805",
-		key: "footprints",
-		expectedId: "Resistor_SMD:R_0805",
-	},
-	{
-		name: "GET /api/library/footprints with q and limit",
-		path: "/api/library/footprints?q=0805&limit=25",
-		key: "footprints",
-		expectedId: "Resistor_SMD:R_0805",
-	},
-];
+	[
+		"GET /api/library/symbols with q",
+		"/api/library/symbols?q=res",
+		"symbols",
+		"Device:R",
+	],
+	[
+		"GET /api/library/symbols with q and limit",
+		"/api/library/symbols?q=res&limit=10",
+		"symbols",
+		"Device:R",
+	],
+	[
+		"GET /api/library/footprints with q",
+		"/api/library/footprints?q=0805",
+		"footprints",
+		"Resistor_SMD:R_0805",
+	],
+	[
+		"GET /api/library/footprints with q and limit",
+		"/api/library/footprints?q=0805&limit=25",
+		"footprints",
+		"Resistor_SMD:R_0805",
+	],
+].map(([name, path, key, expectedId]) => ({ name, path, key, expectedId }));
 
 const GET_CASES = [
-	{
-		name: "GET /api/library/symbols/:libId",
-		path: "/api/library/symbols/Device:R",
-		key: "symbol",
-		expectedId: "Device:R",
-	},
-	{
-		name: "GET /api/library/footprints/:libId",
-		path: "/api/library/footprints/Resistor_SMD:R_0805",
-		key: "footprint",
-		expectedId: "Resistor_SMD:R_0805",
-	},
-];
+	[
+		"GET /api/library/symbols/:libId",
+		"/api/library/symbols/Device:R",
+		"symbol",
+		"Device:R",
+	],
+	[
+		"GET /api/library/footprints/:libId",
+		"/api/library/footprints/Resistor_SMD:R_0805",
+		"footprint",
+		"Resistor_SMD:R_0805",
+	],
+].map(([name, path, key, expectedId]) => ({ name, path, key, expectedId }));
 
-const NOT_FOUND_CASES = [
-	{
-		name: "GET missing symbol returns 404",
-		path: "/api/library/symbols/Device:NotFound",
-	},
-	{
-		name: "GET missing footprint returns 404",
-		path: "/api/library/footprints/Package_SO:NotFound",
-	},
-];
+const NOT_FOUND_CASES = toNamedCases([
+	["GET missing symbol returns 404", "/api/library/symbols/Device:NotFound"],
+	[
+		"GET missing footprint returns 404",
+		"/api/library/footprints/Package_SO:NotFound",
+	],
+]);
 
-const VALIDATION_CASES = [
-	{
-		name: "symbols missing q",
-		path: "/api/library/symbols",
-	},
-	{
-		name: "symbols empty q",
-		path: "/api/library/symbols?q=",
-	},
-	{
-		name: "symbols whitespace q",
-		path: "/api/library/symbols?q=%20%20",
-	},
-	{
-		name: "symbols q too long",
-		path: `/api/library/symbols?q=${"a".repeat(101)}`,
-	},
-	{
-		name: "symbols invalid limit non-numeric",
-		path: "/api/library/symbols?q=res&limit=abc",
-	},
-	{
-		name: "symbols invalid limit zero",
-		path: "/api/library/symbols?q=res&limit=0",
-	},
-	{
-		name: "symbols invalid limit negative",
-		path: "/api/library/symbols?q=res&limit=-5",
-	},
-	{
-		name: "symbols invalid limit above 100",
-		path: "/api/library/symbols?q=res&limit=101",
-	},
-	{
-		name: "symbols invalid limit float",
-		path: "/api/library/symbols?q=res&limit=1.5",
-	},
-	{
-		name: "footprints missing q",
-		path: "/api/library/footprints",
-	},
-	{
-		name: "symbol invalid libId missing colon",
-		path: "/api/library/symbols/InvalidLibId",
-	},
-	{
-		name: "footprint invalid libId missing colon",
-		path: "/api/library/footprints/InvalidLibId",
-	},
-];
+const VALIDATION_CASES = toNamedCases([
+	["symbols missing q", "/api/library/symbols"],
+	["symbols empty q", "/api/library/symbols?q="],
+	["symbols whitespace q", "/api/library/symbols?q=%20%20"],
+	["symbols q too long", `/api/library/symbols?q=${"a".repeat(101)}`],
+	["symbols invalid limit non-numeric", "/api/library/symbols?q=res&limit=abc"],
+	["symbols invalid limit zero", "/api/library/symbols?q=res&limit=0"],
+	["symbols invalid limit negative", "/api/library/symbols?q=res&limit=-5"],
+	["symbols invalid limit above 100", "/api/library/symbols?q=res&limit=101"],
+	["symbols invalid limit float", "/api/library/symbols?q=res&limit=1.5"],
+	["footprints missing q", "/api/library/footprints"],
+	["symbol invalid libId missing colon", "/api/library/symbols/InvalidLibId"],
+	[
+		"footprint invalid libId missing colon",
+		"/api/library/footprints/InvalidLibId",
+	],
+]);
 
-const UNAVAILABLE_CASES = [
-	{
-		name: "symbols search when unavailable",
-		path: "/api/library/symbols?q=res",
-	},
-	{
-		name: "symbol get when unavailable",
-		path: "/api/library/symbols/Device:R",
-	},
-	{
-		name: "footprints search when unavailable",
-		path: "/api/library/footprints?q=0805",
-	},
-	{
-		name: "footprint get when unavailable",
-		path: "/api/library/footprints/Resistor_SMD:R_0805",
-	},
-];
+const UNAVAILABLE_CASES = toNamedCases([
+	["symbols search when unavailable", "/api/library/symbols?q=res"],
+	["symbol get when unavailable", "/api/library/symbols/Device:R"],
+	["footprints search when unavailable", "/api/library/footprints?q=0805"],
+	[
+		"footprint get when unavailable",
+		"/api/library/footprints/Resistor_SMD:R_0805",
+	],
+]);
 
-const CACHE_HEADER_CASES = [
-	{
-		name: "status cache header",
-		path: "/api/library/status",
-	},
-	{
-		name: "symbols search cache header",
-		path: "/api/library/symbols?q=res",
-	},
-	{
-		name: "symbol get cache header",
-		path: "/api/library/symbols/Device:R",
-	},
-	{
-		name: "footprints search cache header",
-		path: "/api/library/footprints?q=0805",
-	},
-	{
-		name: "footprint get cache header",
-		path: "/api/library/footprints/Resistor_SMD:R_0805",
-	},
-];
+const CACHE_HEADER_CASES = toNamedCases([
+	["status cache header", "/api/library/status"],
+	["symbols search cache header", "/api/library/symbols?q=res"],
+	["symbol get cache header", "/api/library/symbols/Device:R"],
+	["footprints search cache header", "/api/library/footprints?q=0805"],
+	["footprint get cache header", "/api/library/footprints/Resistor_SMD:R_0805"],
+]);
+
+const DUAL_CASES = [
+	["/library/status", "available", { expected: true }],
+	["/api/library/status", "available", { expected: true }],
+	["/library/symbols?q=res", "symbols", { isArray: true }],
+	["/api/library/symbols?q=res", "symbols", { isArray: true }],
+	["/library/symbols/Device:R", "symbol", { id: "Device:R" }],
+	["/api/library/symbols/Device:R", "symbol", { id: "Device:R" }],
+].map(([path, key, extra]) => ({ path, key, ...extra }));
 
 describe("library-routes", () => {
 	let server;
@@ -253,21 +258,23 @@ describe("library-routes", () => {
 
 	describe("GET /library/status", () => {
 		test("returns available true when library is available", async () => {
-			fakeLibrary.setAvailable(true);
-			const { status, json, cacheControl } = await requestGet(
+			const res = await queryAvailable(
 				port,
+				fakeLibrary,
 				"/api/library/status",
 			);
-			assert.equal(status, 200);
-			assert.equal(json.available, true);
-			assert.equal(cacheControl, "public, max-age=3600");
+			assertCacheHeader(res);
+			assert.equal(res.json.available, true);
 		});
 
 		test("returns available false when library is unavailable", async () => {
-			fakeLibrary.setAvailable(false);
-			const { status, json } = await requestGet(port, "/api/library/status");
-			assert.equal(status, 200);
-			assert.equal(json.available, false);
+			const res = await queryUnavailable(
+				port,
+				fakeLibrary,
+				"/api/library/status",
+			);
+			assertSuccess(res);
+			assert.equal(res.json.available, false);
 			fakeLibrary.setAvailable(true);
 		});
 	});
@@ -275,11 +282,8 @@ describe("library-routes", () => {
 	describe("search endpoints", () => {
 		for (const tc of SEARCH_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(true);
-				const { status, json } = await requestGet(port, tc.path);
-				assert.equal(status, 200);
-				assert.ok(Array.isArray(json[tc.key]));
-				assert.equal(json[tc.key][0].libId, tc.expectedId);
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertSearchMatch(res, tc.key, tc.expectedId);
 			});
 		}
 	});
@@ -287,10 +291,8 @@ describe("library-routes", () => {
 	describe("get endpoints", () => {
 		for (const tc of GET_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(true);
-				const { status, json } = await requestGet(port, tc.path);
-				assert.equal(status, 200);
-				assert.equal(json[tc.key]?.libId, tc.expectedId);
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertGetMatch(res, tc.key, tc.expectedId);
 			});
 		}
 	});
@@ -298,10 +300,8 @@ describe("library-routes", () => {
 	describe("404 not found", () => {
 		for (const tc of NOT_FOUND_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(true);
-				const { status, json } = await requestGet(port, tc.path);
-				assert.equal(status, 404);
-				assert.ok(typeof json.error === "string");
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertErrorResponse(res, 404);
 			});
 		}
 	});
@@ -309,10 +309,8 @@ describe("library-routes", () => {
 	describe("400 validation", () => {
 		for (const tc of VALIDATION_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(true);
-				const { status, json } = await requestGet(port, tc.path);
-				assert.equal(status, 400);
-				assert.ok(typeof json.error === "string");
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertErrorResponse(res, 400);
 			});
 		}
 	});
@@ -320,13 +318,8 @@ describe("library-routes", () => {
 	describe("503 service unavailable", () => {
 		for (const tc of UNAVAILABLE_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(false);
-				const { status, json } = await requestGet(port, tc.path);
-				assert.equal(status, 503);
-				assert.equal(
-					json.error,
-					"KiCad libraries are not installed on this server",
-				);
+				const res = await queryUnavailable(port, fakeLibrary, tc.path);
+				assertUnavailable(res);
 			});
 		}
 	});
@@ -334,10 +327,8 @@ describe("library-routes", () => {
 	describe("cache headers", () => {
 		for (const tc of CACHE_HEADER_CASES) {
 			test(tc.name, async () => {
-				fakeLibrary.setAvailable(true);
-				const { status, cacheControl } = await requestGet(port, tc.path);
-				assert.equal(status, 200);
-				assert.equal(cacheControl, "public, max-age=3600");
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertCacheHeader(res);
 			});
 		}
 	});
@@ -359,26 +350,10 @@ describe("library-routes", () => {
 			await shutdownServer(directServer);
 		});
 
-		const DUAL_CASES = [
-			{ path: "/library/status", key: "available", expected: true },
-			{ path: "/api/library/status", key: "available", expected: true },
-			{ path: "/library/symbols?q=res", key: "symbols", isArray: true },
-			{ path: "/api/library/symbols?q=res", key: "symbols", isArray: true },
-			{ path: "/library/symbols/Device:R", key: "symbol", id: "Device:R" },
-			{ path: "/api/library/symbols/Device:R", key: "symbol", id: "Device:R" },
-		];
-
 		for (const tc of DUAL_CASES) {
 			test(`direct router handles ${tc.path}`, async () => {
-				const { status, json } = await requestGet(directPort, tc.path);
-				assert.equal(status, 200);
-				if (tc.isArray) {
-					assert.ok(Array.isArray(json[tc.key]));
-				} else if (tc.id) {
-					assert.equal(json[tc.key]?.libId, tc.id);
-				} else {
-					assert.equal(json[tc.key], tc.expected);
-				}
+				const res = await requestGet(directPort, tc.path);
+				assertDualCase(res, tc);
 			});
 		}
 	});
