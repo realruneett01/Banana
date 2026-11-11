@@ -206,7 +206,12 @@ function DesignDrawers({ loop, commit }) {
 				destroyOnHidden={false}
 				className="bn-drawer"
 			>
-				<AgentDesignPanel api={loop.api} onOpenSimulation={handleSimulate} />
+				<AgentDesignPanel
+					api={loop.api}
+					onOpenSimulation={handleSimulate}
+					currentIr={loop.ir}
+					onAcceptIr={loop.setIr}
+				/>
 			</Drawer>
 			<SimulationDrawer
 				open={loop.simOpen}

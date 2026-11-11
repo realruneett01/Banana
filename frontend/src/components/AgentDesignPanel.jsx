@@ -1,8 +1,9 @@
 import { Alert, Button, Input, Tag, Timeline, Typography } from "antd";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../config.js";
 import { createSimApi } from "../simApi.js";
 import BoardPreview from "./BoardPreview.jsx";
+import IrDiffReview from "./IrDiffReview.jsx";
 import IssuesPanel from "./IssuesPanel.jsx";
 import { useDesignAgent } from "./useDesignAgent.js";
 
@@ -397,30 +398,108 @@ function IssuesSection({ issues }) {
 	);
 }
 
-export default function AgentDesignPanel({ api, onOpenSimulation }) {
+function hasNoDesign(ir) {
+	return ir === null || ir === undefined;
+}
+
+function shouldShowReview(agentIr, currentIr, reviewedIr) {
+	if (!agentIr) return false;
+	if (!currentIr || typeof currentIr !== "object") return false;
+	if (currentIr === agentIr) return false;
+	return reviewedIr !== agentIr;
+}
+
+function useIrReview({ agentIr, currentIr, onAcceptIr }) {
+	const [reviewedIr, setReviewedIr] = useState(null);
+	const [autoAcceptedIr, setAutoAcceptedIr] = useState(null);
+
+	useEffect(() => {
+		if (!agentIr || !hasNoDesign(currentIr)) return;
+		if (autoAcceptedIr === agentIr) return;
+		setAutoAcceptedIr(agentIr);
+		onAcceptIr?.(agentIr);
+	}, [agentIr, currentIr, autoAcceptedIr, onAcceptIr]);
+
+	const handleAccept = (ir) => {
+		setReviewedIr(ir);
+		onAcceptIr?.(ir);
+	};
+	const handleReject = () => setReviewedIr(agentIr);
+
+	const showReview = shouldShowReview(agentIr, currentIr, reviewedIr);
+	return { showReview, handleAccept, handleReject };
+}
+
+function AgentOutputs({ agent, currentIr, review, onOpenSimulation }) {
+	return (
+		<>
+			<ErrorAlert error={agent.error} />
+			<ApprovalSection agent={agent} />
+			<AgentResponse messages={agent.messages} />
+			<AgentTimeline events={agent.events} />
+			{review.showReview && (
+				<IrDiffReview
+					before={currentIr}
+					after={agent.ir}
+					onAccept={review.handleAccept}
+					onReject={review.handleReject}
+				/>
+			)}
+			<SimulateAction ir={agent.ir} onOpenSimulation={onOpenSimulation} />
+			<BoardPreviewSection ir={agent.ir} />
+			<IssuesSection issues={agent.issues} />
+		</>
+	);
+}
+
+function useAgentPanelState({ api, currentIr, onAcceptIr }) {
 	const [text, setText] = useState("");
 	const effectiveApi = useMemo(
 		() => api ?? createSimApi({ baseUrl: API_BASE_URL }),
 		[api],
 	);
 	const agent = useDesignAgent({ api: effectiveApi });
+	const review = useIrReview({
+		agentIr: agent.ir,
+		currentIr,
+		onAcceptIr,
+	});
+	return { text, setText, agent, review };
+}
+
+function PanelPrompt({ text, setText, agent }) {
+	return (
+		<PromptSection
+			text={text}
+			onChange={setText}
+			onSend={() => agent.send(text)}
+			onCancel={agent.cancel}
+			status={agent.status}
+		/>
+	);
+}
+
+export default function AgentDesignPanel({
+	api,
+	onOpenSimulation,
+	currentIr,
+	onAcceptIr,
+}) {
+	const { text, setText, agent, review } = useAgentPanelState({
+		api,
+		currentIr,
+		onAcceptIr,
+	});
 
 	return (
 		<section style={PANEL_STYLE} aria-label="AI Design Panel">
-			<PromptSection
-				text={text}
-				onChange={setText}
-				onSend={() => agent.send(text)}
-				onCancel={agent.cancel}
-				status={agent.status}
+			<PanelPrompt text={text} setText={setText} agent={agent} />
+			<AgentOutputs
+				agent={agent}
+				currentIr={currentIr}
+				review={review}
+				onOpenSimulation={onOpenSimulation}
 			/>
-			<ErrorAlert error={agent.error} />
-			<ApprovalSection agent={agent} />
-			<AgentResponse messages={agent.messages} />
-			<AgentTimeline events={agent.events} />
-			<SimulateAction ir={agent.ir} onOpenSimulation={onOpenSimulation} />
-			<BoardPreviewSection ir={agent.ir} />
-			<IssuesSection issues={agent.issues} />
 		</section>
 	);
 }
