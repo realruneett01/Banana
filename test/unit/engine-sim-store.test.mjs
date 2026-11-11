@@ -45,75 +45,38 @@ function makeIssue(overrides = {}) {
 function setupListFixture(store) {
 	const env1 = newId("env");
 	const env2 = newId("env");
-	const run1 = makeRun({
-		startedAt: "2026-01-01T10:00:00.000Z",
-		commit: "1111111",
-		envId: env1,
-		kind: "thermal",
+	const specs = [
+		["2026-01-01T10:00:00.000Z", "1111111", env1, "thermal"],
+		["2026-01-01T12:00:00.000Z", "2222222", env1, "thermal"],
+		["2026-01-01T14:00:00.000Z", "2222222", env2, "ir-drop"],
+	];
+	const [run1, run2, run3] = specs.map(([startedAt, commit, envId, kind]) => {
+		const run = makeRun({ startedAt, commit, envId, kind });
+		store.saveRun(run, []);
+		return run;
 	});
-	const run2 = makeRun({
-		startedAt: "2026-01-01T12:00:00.000Z",
-		commit: "2222222",
-		envId: env1,
-		kind: "thermal",
-	});
-	const run3 = makeRun({
-		startedAt: "2026-01-01T14:00:00.000Z",
-		commit: "2222222",
-		envId: env2,
-		kind: "ir-drop",
-	});
-	store.saveRun(run1, []);
-	store.saveRun(run2, []);
-	store.saveRun(run3, []);
 	return { run1, run2, run3, env1 };
 }
 
 function setupCompareFixture(store) {
 	const envId = newId("env");
-	const partA = newId("part");
-	const partB = newId("part");
-	const partC = newId("part");
+	const [partA, partB, partC] = [newId("part"), newId("part"), newId("part")];
 	const before = "1111111";
 	const after = "2222222";
 
-	const issueA = makeIssue({
-		source: "sim",
-		metric: "temp",
-		itemIds: [partA],
-		commit: before,
-	});
-	const issueB = makeIssue({
-		source: "sim",
-		metric: "drop",
-		itemIds: [partB],
-		commit: before,
-	});
-	const issueB2 = makeIssue({
-		source: "sim",
-		metric: "drop",
-		itemIds: [partB],
-		commit: after,
-	});
-	const issueC = makeIssue({
-		source: "sim",
-		metric: "current",
-		itemIds: [partC],
-		commit: after,
-	});
+	const [issueA, issueB, issueB2, issueC] = [
+		["temp", partA, before],
+		["drop", partB, before],
+		["drop", partB, after],
+		["current", partC, after],
+	].map(([metric, itemId, commit]) =>
+		makeIssue({ metric, itemIds: [itemId], commit }),
+	);
 
-	const runBefore = makeRun({
-		commit: before,
-		envId,
-		kind: "thermal",
-		startedAt: "2026-01-01T10:00:00.000Z",
-	});
-	const runAfter = makeRun({
-		commit: after,
-		envId,
-		kind: "thermal",
-		startedAt: "2026-01-01T11:00:00.000Z",
-	});
+	const [runBefore, runAfter] = [
+		{ commit: before, startedAt: "2026-01-01T10:00:00.000Z" },
+		{ commit: after, startedAt: "2026-01-01T11:00:00.000Z" },
+	].map((opts) => makeRun({ ...opts, envId, kind: "thermal" }));
 
 	store.saveRun(runBefore, [issueA, issueB]);
 	store.saveRun(runAfter, [issueB2, issueC]);
@@ -124,34 +87,29 @@ describe("engine-sim-store", () => {
 	test("save and get round-trip", () => {
 		const store = createSimStore();
 		const run = makeRun();
-		const issue1 = makeIssue({ simRunId: run.id, commit: run.commit });
-		const issue2 = makeIssue({ simRunId: run.id, commit: run.commit });
+		const issues = [1, 2].map(() =>
+			makeIssue({ simRunId: run.id, commit: run.commit }),
+		);
 
-		store.saveRun(run, [issue1, issue2]);
+		store.saveRun(run, issues);
 		const found = store.getRun(run.id);
 
 		assert.ok(found);
 		assert.deepEqual(found.run, run);
-		assert.deepEqual(found.issues, [issue1, issue2]);
+		assert.deepEqual(found.issues, issues);
 		assert.equal(store.getRun("sim_nonexistent"), null);
 		store.close();
 	});
 
 	test("invalid run throws", () => {
 		const store = createSimStore();
-		const invalidRun = { id: "not-a-valid-id" };
-		const validIssue = makeIssue();
-
-		assert.throws(
-			() => store.saveRun(invalidRun, [validIssue]),
-			/Validation failed/,
-		);
-
-		const validRun = makeRun();
-		assert.throws(
-			() => store.saveRun(validRun, [{ id: "bad_issue" }]),
-			/Validation failed/,
-		);
+		const cases = [
+			[{ id: "not-a-valid-id" }, [makeIssue()]],
+			[makeRun(), [{ id: "bad_issue" }]],
+		];
+		for (const [run, issues] of cases) {
+			assert.throws(() => store.saveRun(run, issues), /Validation failed/);
+		}
 		store.close();
 	});
 
@@ -165,13 +123,12 @@ describe("engine-sim-store", () => {
 		assert.equal(store.getRun(run.id).issues.length, 1);
 
 		const updatedRun = { ...run, status: "done" };
-		const issue2 = makeIssue({ simRunId: run.id });
-		const issue3 = makeIssue({ simRunId: run.id });
-		store.saveRun(updatedRun, [issue2, issue3]);
+		const nextIssues = [1, 2].map(() => makeIssue({ simRunId: run.id }));
+		store.saveRun(updatedRun, nextIssues);
 
 		const res = store.getRun(run.id);
 		assert.equal(res.run.status, "done");
-		assert.deepEqual(res.issues, [issue2, issue3]);
+		assert.deepEqual(res.issues, nextIssues);
 		store.close();
 	});
 
@@ -179,45 +136,29 @@ describe("engine-sim-store", () => {
 		const store = createSimStore();
 		const { run1, run2, run3, env1 } = setupListFixture(store);
 
-		const allRuns = store.listRuns();
-		assert.deepEqual(
-			allRuns.map((r) => r.id),
-			[run3.id, run2.id, run1.id],
-		);
-
-		const commitRuns = store.listRuns({ commit: "2222222" });
-		assert.deepEqual(
-			commitRuns.map((r) => r.id),
-			[run3.id, run2.id],
-		);
-
-		const envRuns = store.listRuns({ envId: env1 });
-		assert.deepEqual(
-			envRuns.map((r) => r.id),
-			[run2.id, run1.id],
-		);
-
-		const comboRuns = store.listRuns({ commit: "2222222", kind: "thermal" });
-		assert.deepEqual(
-			comboRuns.map((r) => r.id),
-			[run2.id],
-		);
+		const cases = [
+			{ filter: undefined, expected: [run3.id, run2.id, run1.id] },
+			{ filter: { commit: "2222222" }, expected: [run3.id, run2.id] },
+			{ filter: { envId: env1 }, expected: [run2.id, run1.id] },
+			{ filter: { commit: "2222222", kind: "thermal" }, expected: [run2.id] },
+		];
+		for (const { filter, expected } of cases) {
+			const runs = store.listRuns(filter);
+			assert.deepEqual(
+				runs.map((r) => r.id),
+				expected,
+			);
+		}
 		store.close();
 	});
 
 	test("latestRun", () => {
 		const store = createSimStore();
 		const envId = newId("env");
-		const run1 = makeRun({
-			startedAt: "2026-01-01T08:00:00.000Z",
-			envId,
-			kind: "thermal",
-		});
-		const run2 = makeRun({
-			startedAt: "2026-01-01T09:00:00.000Z",
-			envId,
-			kind: "thermal",
-		});
+		const [run1, run2] = [
+			"2026-01-01T08:00:00.000Z",
+			"2026-01-01T09:00:00.000Z",
+		].map((startedAt) => makeRun({ startedAt, envId, kind: "thermal" }));
 		const issue = makeIssue({ simRunId: run2.id });
 
 		store.saveRun(run1, []);
@@ -243,12 +184,15 @@ describe("engine-sim-store", () => {
 			kind: "thermal",
 		});
 
-		assert.equal(diff.fixed.length, 1);
-		assert.equal(diff.fixed[0].id, issueA.id);
-		assert.equal(diff.stillOpen.length, 1);
-		assert.equal(diff.stillOpen[0].id, issueB2.id);
-		assert.equal(diff.new.length, 1);
-		assert.equal(diff.new[0].id, issueC.id);
+		const cases = [
+			[diff.fixed, issueA.id],
+			[diff.stillOpen, issueB2.id],
+			[diff.new, issueC.id],
+		];
+		for (const [list, id] of cases) {
+			assert.equal(list.length, 1);
+			assert.equal(list[0].id, id);
+		}
 		store.close();
 	});
 
@@ -258,27 +202,22 @@ describe("engine-sim-store", () => {
 		const run = makeRun({ commit: "1111111", envId, kind: "thermal" });
 		store.saveRun(run, []);
 
-		assert.throws(
-			() =>
-				store.compareCommits({
-					before: "missing_commit",
-					after: "1111111",
-					envId,
-					kind: "thermal",
-				}),
-			/no run for missing_commit/,
-		);
-
-		assert.throws(
-			() =>
-				store.compareCommits({
-					before: "1111111",
-					after: "missing_commit",
-					envId,
-					kind: "thermal",
-				}),
-			/no run for missing_commit/,
-		);
+		const commitPairs = [
+			{ before: "missing_commit", after: "1111111" },
+			{ before: "1111111", after: "missing_commit" },
+		];
+		for (const { before, after } of commitPairs) {
+			assert.throws(
+				() =>
+					store.compareCommits({
+						before,
+						after,
+						envId,
+						kind: "thermal",
+					}),
+				/no run for missing_commit/,
+			);
+		}
 		store.close();
 	});
 
