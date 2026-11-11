@@ -14,6 +14,22 @@ import {
 	resolveSemanticIdentity,
 } from "../../backend/src/svg-semantic-resolver.js";
 
+function makePcbMeta(footprints = [], pads = [], segments = []) {
+	return { footprints, pads, segments };
+}
+
+function assertFindsNull(fn, cases) {
+	for (const [center, items] of cases) {
+		assert.equal(fn(center, items), null);
+	}
+}
+
+function checkCopperPad({ pad, fpChanges, expected }) {
+	const footprints = [{ ref: "R1", value: "10k" }];
+	const res = resolveCopperPadIdentity(pad, footprints, fpChanges, "F.Cu");
+	assert.deepEqual(res, expected);
+}
+
 function makeAuditFixtures() {
 	const targetMap = new Map([
 		[
@@ -33,11 +49,9 @@ function makeAuditFixtures() {
 			{ diffIdx: 2, diffClass: "diff-deleted", refDes: "C1" },
 		],
 	]);
-	const pcbMetadata = {
-		footprints: [{ ref: "C1", value: "100nF", layer: "F.Cu" }],
-		pads: [],
-		segments: [],
-	};
+	const pcbMetadata = makePcbMeta([
+		{ ref: "C1", value: "100nF", layer: "F.Cu" },
+	]);
 	return { targetMap, baseMap, pcbMetadata };
 }
 
@@ -75,23 +89,33 @@ describe("svg-semantic-resolver unit tests", () => {
 				{ x: 10.8, y: 10, refDes: "R1", pin: "2" },
 				{ x: 15, y: 15, refDes: "C1", pin: "1" },
 			];
-			const nearest = findClosestPad({ x: 10.2, y: 10 }, pads);
-			assert.equal(nearest.pin, "1");
-
-			const custom = findClosestPad({ x: 14, y: 14 }, pads, 2.0);
-			assert.equal(custom.refDes, "C1");
+			const cases = [
+				{
+					target: { x: 10.2, y: 10 },
+					threshold: undefined,
+					key: "pin",
+					expected: "1",
+				},
+				{
+					target: { x: 14, y: 14 },
+					threshold: 2.0,
+					key: "refDes",
+					expected: "C1",
+				},
+			];
+			for (const { target, threshold, key, expected } of cases) {
+				const match = findClosestPad(target, pads, threshold);
+				assert.equal(match[key], expected);
+			}
 		});
 
 		test("returns null for empty, null, or out-of-range inputs", () => {
-			const cases = [
-				{ center: null, pads: [{ x: 1, y: 1 }] },
-				{ center: { x: 0, y: 0 }, pads: null },
-				{ center: { x: 0, y: 0 }, pads: [] },
-				{ center: { x: 0, y: 0 }, pads: [{ x: 5, y: 5 }] },
-			];
-			for (const { center, pads } of cases) {
-				assert.equal(findClosestPad(center, pads), null);
-			}
+			assertFindsNull(findClosestPad, [
+				[null, [{ x: 1, y: 1 }]],
+				[{ x: 0, y: 0 }, null],
+				[{ x: 0, y: 0 }, []],
+				[{ x: 0, y: 0 }, [{ x: 5, y: 5 }]],
+			]);
 		});
 	});
 
@@ -101,8 +125,13 @@ describe("svg-semantic-resolver unit tests", () => {
 				{ start: { x: 0, y: 0 }, end: { x: 10, y: 0 }, net: "+3V3" },
 				{ start: { x: 20, y: 0 }, end: { x: 20, y: 10 }, netName: "GND" },
 			];
-			assert.equal(findClosestSegmentNet({ x: 5, y: 0.5 }, segments), "+3V3");
-			assert.equal(findClosestSegmentNet({ x: 20, y: 9.5 }, segments), "GND");
+			const cases = [
+				[{ x: 5, y: 0.5 }, "+3V3"],
+				[{ x: 20, y: 9.5 }, "GND"],
+			];
+			for (const [target, expected] of cases) {
+				assert.equal(findClosestSegmentNet(target, segments), expected);
+			}
 		});
 
 		test("returns null for empty inputs, invalid nets, or distant segments", () => {
@@ -116,16 +145,13 @@ describe("svg-semantic-resolver unit tests", () => {
 				end: { x: 1, y: 0 },
 				net: "unconnected",
 			};
-			const cases = [
-				{ center: null, segments: [validSeg] },
-				{ center: { x: 0, y: 0 }, segments: [] },
-				{ center: { x: 0, y: 0 }, segments: [unconnSeg] },
-				{ center: { x: 0, y: 0 }, segments: [{ net: "VCC" }] },
-				{ center: { x: 50, y: 50 }, segments: [validSeg] },
-			];
-			for (const { center, segments } of cases) {
-				assert.equal(findClosestSegmentNet(center, segments), null);
-			}
+			assertFindsNull(findClosestSegmentNet, [
+				[null, [validSeg]],
+				[{ x: 0, y: 0 }, []],
+				[{ x: 0, y: 0 }, [unconnSeg]],
+				[{ x: 0, y: 0 }, [{ net: "VCC" }]],
+				[{ x: 50, y: 50 }, [validSeg]],
+			]);
 		});
 	});
 
@@ -135,65 +161,68 @@ describe("svg-semantic-resolver unit tests", () => {
 				{ x: 50, y: 50, ref: "U1", value: "STM32" },
 				{ x: 55, y: 50, ref: "R2", value: "1k" },
 			];
-			const nearest = findClosestFootprint({ x: 51, y: 50 }, footprints);
-			assert.equal(nearest.ref, "U1");
-
-			const custom = findClosestFootprint({ x: 60, y: 50 }, footprints, 12.0);
-			assert.equal(custom.ref, "R2");
+			const cases = [
+				{ target: { x: 51, y: 50 }, threshold: undefined, expectedRef: "U1" },
+				{ target: { x: 60, y: 50 }, threshold: 12.0, expectedRef: "R2" },
+			];
+			for (const { target, threshold, expectedRef } of cases) {
+				const match = findClosestFootprint(target, footprints, threshold);
+				assert.equal(match.ref, expectedRef);
+			}
 		});
 
 		test("returns null for empty list, null center, or out-of-range footprint", () => {
-			const cases = [
-				{ center: null, footprints: [{ x: 0, y: 0 }] },
-				{ center: { x: 0, y: 0 }, footprints: null },
-				{ center: { x: 0, y: 0 }, footprints: [] },
-				{ center: { x: 0, y: 0 }, footprints: [{ x: 20, y: 20 }] },
-			];
-			for (const { center, footprints } of cases) {
-				assert.equal(findClosestFootprint(center, footprints), null);
-			}
+			assertFindsNull(findClosestFootprint, [
+				[null, [{ x: 0, y: 0 }]],
+				[{ x: 0, y: 0 }, null],
+				[{ x: 0, y: 0 }, []],
+				[{ x: 0, y: 0 }, [{ x: 20, y: 20 }]],
+			]);
 		});
 	});
 
 	describe("resolveCopperPadIdentity", () => {
 		test("resolves component identity when footprint changes exist", () => {
-			const footprints = [{ ref: "R1", value: "10k" }];
-			const pad = { refDes: "R1", pin: "1", netName: "NET_A" };
-			const fpChanges = new Set(["R1"]);
-
-			const res = resolveCopperPadIdentity(pad, footprints, fpChanges, "F.Cu");
-			assert.deepEqual(res, {
-				name: "R1 (10k)",
-				refDes: "R1",
-				pin: "1",
-				net: "NET_A",
-				type: "COMPONENT",
-				layer: "F.Cu",
-				connection: "Pin 1 • NET_A",
+			checkCopperPad({
+				pad: { refDes: "R1", pin: "1", netName: "NET_A" },
+				fpChanges: new Set(["R1"]),
+				expected: {
+					name: "R1 (10k)",
+					refDes: "R1",
+					pin: "1",
+					net: "NET_A",
+					type: "COMPONENT",
+					layer: "F.Cu",
+					connection: "Pin 1 • NET_A",
+				},
 			});
 		});
 
 		test("resolves trace identity when footprint is unchanged", () => {
-			const footprints = [{ ref: "R1", value: "10k" }];
-			const pad = { refDes: "R1", pin: "2", netName: "GND" };
-			const fpChanges = new Set(["C1"]);
-
-			const res = resolveCopperPadIdentity(pad, footprints, fpChanges, "F.Cu");
-			assert.deepEqual(res, {
-				name: "GND",
-				refDes: "R1",
-				type: "TRACE",
-				layer: "F.Cu",
-				connection: "Pad 2 of R1",
+			checkCopperPad({
+				pad: { refDes: "R1", pin: "2", netName: "GND" },
+				fpChanges: new Set(["C1"]),
+				expected: {
+					name: "GND",
+					refDes: "R1",
+					type: "TRACE",
+					layer: "F.Cu",
+					connection: "Pad 2 of R1",
+				},
 			});
 		});
 
 		test("falls back to default labels for missing pin and unconnected net", () => {
 			const pad = { refDes: "TP1", netName: "unconnected" };
 			const res = resolveCopperPadIdentity(pad, [], null, "B.Cu");
-			assert.equal(res.name, "TP1");
-			assert.equal(res.connection, "Pad");
-			assert.equal(res.type, "COMPONENT");
+			const checks = [
+				[res.name, "TP1"],
+				[res.connection, "Pad"],
+				[res.type, "COMPONENT"],
+			];
+			for (const [actual, expected] of checks) {
+				assert.equal(actual, expected);
+			}
 		});
 	});
 
@@ -217,23 +246,28 @@ describe("svg-semantic-resolver unit tests", () => {
 			const segs = [
 				{ start: { x: 0, y: 0 }, end: { x: 10, y: 0 }, net: "+5V" },
 			];
-			const fromSeg = resolveCopperTraceIdentity({
-				diffItem: { netName: "OLD" },
-				center: { x: 5, y: 0.5 },
-				closestPad: null,
-				segments: segs,
-				defaultLayer: "F.Cu",
-			});
-			assert.equal(fromSeg.name, "+5V");
-
-			const fromItem = resolveCopperTraceIdentity({
-				diffItem: { net: "SIG1" },
-				center: { x: 50, y: 50 },
-				closestPad: null,
-				segments: segs,
-				defaultLayer: "F.Cu",
-			});
-			assert.equal(fromItem.name, "SIG1");
+			const cases = [
+				{
+					diffItem: { netName: "OLD" },
+					center: { x: 5, y: 0.5 },
+					expected: "+5V",
+				},
+				{
+					diffItem: { net: "SIG1" },
+					center: { x: 50, y: 50 },
+					expected: "SIG1",
+				},
+			];
+			for (const { diffItem, center, expected } of cases) {
+				const res = resolveCopperTraceIdentity({
+					diffItem,
+					center,
+					closestPad: null,
+					segments: segs,
+					defaultLayer: "F.Cu",
+				});
+				assert.equal(res.name, expected);
+			}
 		});
 	});
 
@@ -245,32 +279,32 @@ describe("svg-semantic-resolver unit tests", () => {
 				segments: [],
 				footprintChanges: new Set(["D1"]),
 			};
-			const traceRes = resolveCopperIdentity({
-				diffItem: { isClosedPath: false },
-				center: { x: 10, y: 10 },
-				isChainOrOpenTrace: true,
-				pcbMetadata,
-				defaultLayer: "F.Cu",
-			});
-			assert.equal(traceRes.type, "TRACE");
-
-			const padRes = resolveCopperIdentity({
-				diffItem: {},
-				center: { x: 10, y: 10 },
-				isChainOrOpenTrace: false,
-				pcbMetadata,
-				defaultLayer: "F.Cu",
-			});
-			assert.equal(padRes.type, "COMPONENT");
+			const cases = [
+				{
+					diffItem: { isClosedPath: false },
+					isOpen: true,
+					expectedType: "TRACE",
+				},
+				{ diffItem: {}, isOpen: false, expectedType: "COMPONENT" },
+			];
+			for (const { diffItem, isOpen, expectedType } of cases) {
+				const res = resolveCopperIdentity({
+					diffItem,
+					center: { x: 10, y: 10 },
+					isChainOrOpenTrace: isOpen,
+					pcbMetadata,
+					defaultLayer: "F.Cu",
+				});
+				assert.equal(res.type, expectedType);
+			}
 		});
 
 		test("returns null when no pad is nearby for closed shapes", () => {
-			const pcbMetadata = { footprints: [], pads: [], segments: [] };
 			const res = resolveCopperIdentity({
 				diffItem: {},
 				center: { x: 99, y: 99 },
 				isChainOrOpenTrace: false,
-				pcbMetadata,
+				pcbMetadata: makePcbMeta(),
 				defaultLayer: "F.Cu",
 			});
 			assert.equal(res, null);
@@ -305,25 +339,22 @@ describe("svg-semantic-resolver unit tests", () => {
 
 		test("returns null for missing center, empty list, or distant components", () => {
 			const footprints = [{ x: 5, y: 5, ref: "R1" }];
-			assert.equal(resolveNonCopperIdentity(null, footprints, "F.SilkS"), null);
-			assert.equal(
-				resolveNonCopperIdentity({ x: 0, y: 0 }, [], "F.SilkS"),
-				null,
-			);
-			assert.equal(
-				resolveNonCopperIdentity({ x: 50, y: 50 }, footprints, "F.SilkS"),
-				null,
-			);
+			const cases = [
+				[null, footprints],
+				[{ x: 0, y: 0 }, []],
+				[{ x: 50, y: 50 }, footprints],
+			];
+			for (const [center, fps] of cases) {
+				assert.equal(resolveNonCopperIdentity(center, fps, "F.SilkS"), null);
+			}
 		});
 	});
 
 	describe("resolveSemanticIdentity", () => {
 		test("resolves component from footprint refDes in metadata", () => {
-			const pcbMetadata = {
-				footprints: [{ ref: "U3", value: "OpAmp", layer: "F.Cu" }],
-				pads: [],
-				segments: [],
-			};
+			const pcbMetadata = makePcbMeta([
+				{ ref: "U3", value: "OpAmp", layer: "F.Cu" },
+			]);
 			const res = resolveSemanticIdentity(
 				{ refDes: "U3", layer: "board-F_Cu.svg" },
 				pcbMetadata,
@@ -334,19 +365,24 @@ describe("svg-semantic-resolver unit tests", () => {
 		});
 
 		test("falls back to layer graphics or traces when metadata is missing", () => {
-			const resNoMeta = resolveSemanticIdentity(
-				{ refDes: "R9", layer: "board-F_Cu.svg" },
-				null,
-				true,
-			);
-			assert.equal(resNoMeta.type, "TRACE");
-
-			const resGraphic = resolveSemanticIdentity(
-				{ name: "Logo_KiCad", layer: "Edge_Cuts.svg" },
-				{ footprints: [], pads: [], segments: [] },
-				false,
-			);
-			assert.equal(resGraphic.type, "GRAPHIC");
+			const cases = [
+				{
+					item: { refDes: "R9", layer: "board-F_Cu.svg" },
+					meta: null,
+					isCu: true,
+					expectedType: "TRACE",
+				},
+				{
+					item: { name: "Logo_KiCad", layer: "Edge_Cuts.svg" },
+					meta: makePcbMeta(),
+					isCu: false,
+					expectedType: "GRAPHIC",
+				},
+			];
+			for (const { item, meta, isCu, expectedType } of cases) {
+				const res = resolveSemanticIdentity(item, meta, isCu);
+				assert.equal(res.type, expectedType);
+			}
 		});
 	});
 
@@ -360,19 +396,20 @@ describe("svg-semantic-resolver unit tests", () => {
 				"board-F_Cu.svg",
 			);
 			assert.equal(logs.length, 2);
-			assert.equal(logs[0].action, "ADDED");
-			assert.equal(logs[0].title, "added data trace");
-			assert.equal(logs[1].action, "DELETED");
-			assert.equal(logs[1].name, "C1 (100nF)");
+			const checks = [
+				[logs[0]?.action, "ADDED"],
+				[logs[0]?.title, "added data trace"],
+				[logs[1]?.action, "DELETED"],
+				[logs[1]?.name, "C1 (100nF)"],
+			];
+			for (const [actual, expected] of checks) {
+				assert.equal(actual, expected);
+			}
 		});
 
 		test("skips unchanged items, worksheet frames, and duplicate diff indices", () => {
 			const { targetMap, baseMap } = makeFilterMaps();
-			const pcbMetadata = {
-				footprints: [{ ref: "R1", layer: "F.Cu" }],
-				pads: [],
-				segments: [],
-			};
+			const pcbMetadata = makePcbMeta([{ ref: "R1", layer: "F.Cu" }]);
 			const logs = generatePreciseAuditLog(
 				targetMap,
 				baseMap,
