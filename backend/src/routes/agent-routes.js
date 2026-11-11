@@ -2,9 +2,11 @@ import express from "express";
 import { createAgent } from "../engine/agent.js";
 import { createModelAdapter } from "../engine/model-adapter.js";
 import { createRegistry } from "../engine/tool-registry.js";
+import { registerCommitTools } from "../engine/tools/commit-tools.js";
 import { registerDesignTools } from "../engine/tools/design-tools.js";
 import { registerDiffTools } from "../engine/tools/diff-tools.js";
 import { registerKicadTools } from "../engine/tools/kicad-tools.js";
+import { registerRouteTools } from "../engine/tools/route-tools.js";
 
 function isPlainObject(val) {
 	if (!val || typeof val !== "object") {
@@ -53,17 +55,19 @@ function validateAgentRunBody(body) {
 	return null;
 }
 
-function buildHostedRegistry() {
+export function buildHostedRegistry() {
 	const registry = createRegistry();
 	registerDesignTools(registry);
 	return registry;
 }
 
-function buildLocalRegistry() {
+export function buildLocalRegistry(deps = {}) {
 	const registry = createRegistry();
 	registerDiffTools(registry);
 	registerKicadTools(registry);
 	registerDesignTools(registry);
+	registerRouteTools(registry, deps?.route);
+	registerCommitTools(registry, deps?.commit ?? deps);
 	return registry;
 }
 

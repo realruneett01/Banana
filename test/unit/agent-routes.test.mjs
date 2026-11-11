@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, describe, test } from "node:test";
 import { createApp } from "../../backend/src/app.js";
-import { createAgentRouter } from "../../backend/src/routes/agent-routes.js";
+import {
+	buildHostedRegistry,
+	buildLocalRegistry,
+	createAgentRouter,
+} from "../../backend/src/routes/agent-routes.js";
 
 function listen(server) {
 	return new Promise((resolve) => {
@@ -83,6 +87,27 @@ function createDiffCallingModel() {
 				text: "Diff completed.",
 			};
 		},
+	};
+}
+
+function createCommitCallingModel() {
+	return {
+		generate: async () => ({
+			text: "Committing design...",
+			toolCalls: [
+				{
+					name: "design.commit",
+					input: {
+						repoPath: "C:/fake/repo",
+						baseName: "MyBoard",
+						ir: makeValidCircuitIR(),
+						boardW: 100,
+						boardH: 80,
+						message: "Initial design",
+					},
+				},
+			],
+		}),
 	};
 }
 
@@ -259,5 +284,82 @@ describe("agent-routes", () => {
 		assert.ok(toolResult);
 		assert.equal(toolResult.ok, false);
 		assert.notEqual(toolResult.error, "unknown tool: diff.compare_files");
+	});
+
+	test("hosted registry has no design.commit, ir.route, diff.*, or kicad.* tools", () => {
+		const registry = buildHostedRegistry();
+		const toolNames = registry.list().map((t) => t.name);
+		assert.equal(toolNames.includes("design.commit"), false);
+		assert.equal(toolNames.includes("ir.route"), false);
+		assert.equal(
+			toolNames.some((n) => n.startsWith("diff.")),
+			false,
+		);
+		assert.equal(
+			toolNames.some((n) => n.startsWith("kicad.")),
+			false,
+		);
+		assert.ok(toolNames.includes("ir.validate"));
+	});
+
+	test("local mode lists design.commit and ir.route", async () => {
+		app.locals.allowLocalRepos = true;
+		let receivedTools = [];
+		app.locals.agentModelFactory = () => ({
+			generate: async ({ tools }) => {
+				receivedTools = tools || [];
+				return { text: "done" };
+			},
+		});
+		const res = await postJson(port, "/api/agent/run", {
+			message: "list tools",
+		});
+		delete app.locals.allowLocalRepos;
+		assert.equal(res.status, 200);
+		const names = receivedTools.map((t) => t.name);
+		assert.ok(names.includes("design.commit"));
+		assert.ok(names.includes("ir.route"));
+	});
+
+	test("design.commit without approved returns pendingApproval through agent", async () => {
+		app.locals.allowLocalRepos = true;
+		app.locals.agentModelFactory = () => createCommitCallingModel();
+		const res = await postJson(port, "/api/agent/run", {
+			message: "commit design",
+		});
+		delete app.locals.allowLocalRepos;
+		assert.equal(res.status, 200);
+		assert.ok(res.json.pendingApproval);
+		assert.equal(res.json.pendingApproval.name, "design.commit");
+		assert.equal(res.json.pendingApproval.input?.baseName, "MyBoard");
+	});
+
+	test("design.commit with approved:true reaches the tool", async () => {
+		app.locals.allowLocalRepos = true;
+		app.locals.agentModelFactory = () => createCommitCallingModel();
+		const res = await postJson(port, "/api/agent/run", {
+			message: "commit design",
+			approved: true,
+		});
+		delete app.locals.allowLocalRepos;
+		assert.equal(res.status, 200);
+		assert.equal(res.json.pendingApproval, undefined);
+		const toolResult = res.json.events.find(
+			(e) => e.type === "tool_result" && e.name === "design.commit",
+		);
+		assert.ok(toolResult);
+		assert.equal(toolResult.ok, false);
+		assert.notEqual(toolResult.error, "approval required");
+	});
+
+	test("buildLocalRegistry registers commit and route tools with deps", async () => {
+		const fakeExec = async () => ({ stdout: "abc1234\n" });
+		const fakeFs = { mkdir: async () => {}, writeFile: async () => {} };
+		const registry = buildLocalRegistry({
+			commit: { execFileFn: fakeExec, fsImpl: fakeFs },
+		});
+		const names = registry.list().map((t) => t.name);
+		assert.ok(names.includes("design.commit"));
+		assert.ok(names.includes("ir.route"));
 	});
 });
