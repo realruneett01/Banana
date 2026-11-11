@@ -10,7 +10,9 @@ const VALID_SCH_TARGET = "/abs/path/project/schematic_target.kicad_sch";
 const VALID_WIN_BASE = "C:/projects/board_base.kicad_pcb";
 const VALID_WIN_TARGET = "C:\\projects\\board_target.kicad_pcb";
 
-function setupRegistryWithFake(fakeRunDiff) {
+function setupRegistryWithFake(
+	fakeRunDiff = async () => ({ modifications: [] }),
+) {
 	const registry = createRegistry();
 	registerDiffTools(registry, { runDiff: fakeRunDiff });
 	return registry;
@@ -26,10 +28,7 @@ describe("module contract", () => {
 
 describe("tool registration and schema", () => {
 	test("registers read-only tool diff.compare_files", () => {
-		const registry = createRegistry();
-		registerDiffTools(registry, {
-			runDiff: async () => ({ modifications: [] }),
-		});
+		const registry = setupRegistryWithFake();
 		const tools = registry.list();
 		assert.equal(tools.length, 1);
 		const tool = tools[0];
@@ -40,10 +39,7 @@ describe("tool registration and schema", () => {
 	});
 
 	test("input schema requires basePath and targetPath", () => {
-		const registry = createRegistry();
-		registerDiffTools(registry, {
-			runDiff: async () => ({ modifications: [] }),
-		});
+		const registry = setupRegistryWithFake();
 		const [tool] = registry.list();
 		assert.equal(tool.inputSchema.type, "object");
 		assert.deepEqual(tool.inputSchema.required, ["basePath", "targetPath"]);
@@ -61,87 +57,78 @@ describe("tool registration and schema", () => {
 });
 
 describe("call execution with fake runDiff", () => {
-	test("executes PCB diff and infers isPcb=true from .kicad_pcb", async () => {
-		let capturedArgs = null;
-		const fakeResult = {
-			modifications: [{ type: "add", id: "mod_1" }],
-			pcbMetadata: { padCount: 42 },
-			telemetry: { tDiff: 15.2 },
-		};
-		const registry = setupRegistryWithFake(async (args) => {
-			capturedArgs = args;
-			return fakeResult;
+	const FAKE_PCB_RESULT = {
+		modifications: [{ type: "add", id: "mod_1" }],
+		pcbMetadata: { padCount: 42 },
+		telemetry: { tDiff: 15.2 },
+	};
+	const EMPTY_DIFF_RESULT = { modifications: [] };
+	const NULL_METADATA_RESULT = { modifications: [], pcbMetadata: null };
+
+	const CALL_CASES = [
+		{
+			name: "executes PCB diff and infers isPcb=true from .kicad_pcb",
+			input: { basePath: VALID_PCB_BASE, targetPath: VALID_PCB_TARGET },
+			result: FAKE_PCB_RESULT,
+			expectedOutput: FAKE_PCB_RESULT,
+			expectedCapturedArgs: {
+				basePath: VALID_PCB_BASE,
+				targetPath: VALID_PCB_TARGET,
+				isPcb: true,
+			},
+		},
+		{
+			name: "executes schematic diff and infers isPcb=false from .kicad_sch",
+			input: { basePath: VALID_SCH_BASE, targetPath: VALID_SCH_TARGET },
+			result: EMPTY_DIFF_RESULT,
+			expectedOutput: EMPTY_DIFF_RESULT,
+			expectedIsPcb: false,
+		},
+		{
+			name: "respects explicit isPcb override",
+			input: {
+				basePath: VALID_PCB_BASE,
+				targetPath: VALID_PCB_TARGET,
+				isPcb: false,
+			},
+			result: EMPTY_DIFF_RESULT,
+			expectedIsPcb: false,
+		},
+		{
+			name: "accepts Windows absolute paths with drive letters and backslashes",
+			input: { basePath: VALID_WIN_BASE, targetPath: VALID_WIN_TARGET },
+			result: EMPTY_DIFF_RESULT,
+		},
+		{
+			name: "accepts output with null pcbMetadata",
+			input: { basePath: VALID_SCH_BASE, targetPath: VALID_SCH_TARGET },
+			result: NULL_METADATA_RESULT,
+			expectedOutput: NULL_METADATA_RESULT,
+		},
+	];
+
+	for (const tc of CALL_CASES) {
+		test(tc.name, async () => {
+			let capturedArgs = null;
+			const registry = setupRegistryWithFake(async (args) => {
+				capturedArgs = args;
+				return tc.result;
+			});
+
+			const res = await registry.call("diff.compare_files", tc.input);
+
+			assert.equal(res.ok, true);
+			if (tc.expectedOutput) {
+				assert.deepEqual(res.output, tc.expectedOutput);
+			}
+			if (tc.expectedCapturedArgs) {
+				assert.deepEqual(capturedArgs, tc.expectedCapturedArgs);
+			}
+			if (tc.expectedIsPcb !== undefined) {
+				assert.equal(capturedArgs.isPcb, tc.expectedIsPcb);
+			}
 		});
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-		});
-
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.output, fakeResult);
-		assert.deepEqual(capturedArgs, {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-			isPcb: true,
-		});
-	});
-
-	test("executes schematic diff and infers isPcb=false from .kicad_sch", async () => {
-		let capturedArgs = null;
-		const registry = setupRegistryWithFake(async (args) => {
-			capturedArgs = args;
-			return { modifications: [] };
-		});
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_SCH_BASE,
-			targetPath: VALID_SCH_TARGET,
-		});
-
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.output, { modifications: [] });
-		assert.equal(capturedArgs.isPcb, false);
-	});
-
-	test("respects explicit isPcb override", async () => {
-		let capturedArgs = null;
-		const registry = setupRegistryWithFake(async (args) => {
-			capturedArgs = args;
-			return { modifications: [] };
-		});
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-			isPcb: false,
-		});
-
-		assert.equal(res.ok, true);
-		assert.equal(capturedArgs.isPcb, false);
-	});
-
-	test("accepts Windows absolute paths with drive letters and backslashes", async () => {
-		const registry = setupRegistryWithFake(async () => ({ modifications: [] }));
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_WIN_BASE,
-			targetPath: VALID_WIN_TARGET,
-		});
-		assert.equal(res.ok, true);
-	});
-
-	test("accepts output with null pcbMetadata", async () => {
-		const registry = setupRegistryWithFake(async () => ({
-			modifications: [],
-			pcbMetadata: null,
-		}));
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_SCH_BASE,
-			targetPath: VALID_SCH_TARGET,
-		});
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.output, { modifications: [], pcbMetadata: null });
-	});
+	}
 });
 
 describe("input validation rejects invalid paths and shapes", () => {
@@ -215,9 +202,7 @@ describe("input validation rejects invalid paths and shapes", () => {
 	const GARBAGE_INPUTS = [null, undefined, 42, "not-an-object", true, []];
 	for (const garbage of GARBAGE_INPUTS) {
 		test(`handles garbage input without throwing: ${String(garbage)}`, async () => {
-			const registry = setupRegistryWithFake(async () => ({
-				modifications: [],
-			}));
+			const registry = setupRegistryWithFake();
 			assert.doesNotThrow(async () => {
 				const res = await registry.call("diff.compare_files", garbage);
 				assert.equal(res.ok, false);
@@ -227,45 +212,44 @@ describe("input validation rejects invalid paths and shapes", () => {
 });
 
 describe("error handling", () => {
-	test("returns ok:false on async runDiff rejection", async () => {
-		const registry = setupRegistryWithFake(async () => {
-			throw new Error("KiCad CLI diff crashed");
+	const ERROR_CASES = [
+		{
+			name: "returns ok:false on async runDiff rejection",
+			runDiff: async () => {
+				throw new Error("KiCad CLI diff crashed");
+			},
+			expectedError: "KiCad CLI diff crashed",
+		},
+		{
+			name: "returns ok:false on synchronous runDiff throw",
+			runDiff: () => {
+				throw new Error("Synchronous diff setup error");
+			},
+			expectedError: "Synchronous diff setup error",
+		},
+		{
+			name: "returns ok:false when runDiff output violates outputSchema",
+			runDiff: async () => ({
+				invalidField: "no-modifications",
+			}),
+			expectedPattern: /\$\.modifications: missing/,
+		},
+	];
+
+	for (const tc of ERROR_CASES) {
+		test(tc.name, async () => {
+			const registry = setupRegistryWithFake(tc.runDiff);
+			const res = await registry.call("diff.compare_files", {
+				basePath: VALID_PCB_BASE,
+				targetPath: VALID_PCB_TARGET,
+			});
+
+			assert.equal(res.ok, false);
+			if (tc.expectedPattern) {
+				assert.match(res.error, tc.expectedPattern);
+			} else {
+				assert.equal(res.error, tc.expectedError);
+			}
 		});
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-		});
-
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "KiCad CLI diff crashed");
-	});
-
-	test("returns ok:false on synchronous runDiff throw", async () => {
-		const registry = setupRegistryWithFake(() => {
-			throw new Error("Synchronous diff setup error");
-		});
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-		});
-
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "Synchronous diff setup error");
-	});
-
-	test("returns ok:false when runDiff output violates outputSchema", async () => {
-		const registry = setupRegistryWithFake(async () => ({
-			invalidField: "no-modifications",
-		}));
-
-		const res = await registry.call("diff.compare_files", {
-			basePath: VALID_PCB_BASE,
-			targetPath: VALID_PCB_TARGET,
-		});
-
-		assert.equal(res.ok, false);
-		assert.match(res.error, /\$\.modifications: missing/);
-	});
+	}
 });
