@@ -31,25 +31,25 @@ function assertAllEqual(items, fn, expected) {
 }
 
 function assertKindFilterCases(id, kind) {
-	assert.equal(isId(id, undefined), true);
-	assert.equal(isId(id, kind), true);
-	assert.equal(isId(id, "other"), false);
-}
-
-function forEachAllowedKind(assertFn) {
-	for (const kind of ALLOWED_KINDS) {
-		assertFn(kind, newId(kind));
+	const expectations = [
+		[undefined, true],
+		[kind, true],
+		["other", false],
+	];
+	for (const [filter, expected] of expectations) {
+		assert.equal(isId(id, filter), expected);
 	}
 }
 
 describe("newId", () => {
 	test("generates valid id for every allowed kind", () => {
-		forEachAllowedKind((kind, id) => {
+		for (const kind of ALLOWED_KINDS) {
+			const id = newId(kind);
 			assert.equal(typeof id, "string");
 			assert.equal(id.startsWith(`${kind}_`), true);
 			assert.equal(isId(id, kind), true);
 			assert.equal(kindOf(id), kind);
-		});
+		}
 	});
 
 	test("generates distinct ids on subsequent calls", () => {
@@ -62,28 +62,40 @@ describe("newId", () => {
 });
 
 describe("isId", () => {
-	test("validates id with and without matching kind filter", () => {
-		forEachAllowedKind((kind, id) => {
-			assertKindFilterCases(id, kind);
-		});
-	});
+	const CASES = [
+		[
+			"validates id with and without matching kind filter",
+			() => {
+				for (const kind of ALLOWED_KINDS) {
+					assertKindFilterCases(newId(kind), kind);
+				}
+			},
+		],
+		[
+			"rejects mismatched kinds across allowed kinds",
+			() => {
+				const partId = newId("part");
+				assertAllEqual(["net", "pin"], (kind) => isId(partId, kind), false);
+			},
+		],
+		[
+			"returns false for malformed id inputs",
+			() => {
+				assertAllEqual(MALFORMED_VALUES, isId, false);
+			},
+		],
+	];
 
-	test("rejects mismatched kinds across allowed kinds", () => {
-		const partId = newId("part");
-		assert.equal(isId(partId, "net"), false);
-		assert.equal(isId(partId, "pin"), false);
-	});
-
-	test("returns false for malformed id inputs", () => {
-		assertAllEqual(MALFORMED_VALUES, isId, false);
-	});
+	for (const [name, run] of CASES) {
+		test(name, run);
+	}
 });
 
 describe("kindOf", () => {
 	test("extracts correct kind for every allowed kind", () => {
-		forEachAllowedKind((kind, id) => {
-			assert.equal(kindOf(id), kind);
-		});
+		for (const kind of ALLOWED_KINDS) {
+			assert.equal(kindOf(newId(kind)), kind);
+		}
 	});
 
 	test("returns null for malformed and invalid id inputs", () => {
