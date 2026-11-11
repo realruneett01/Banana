@@ -224,9 +224,298 @@ function createGeminiAdapter({
 	};
 }
 
+const CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+
+function encodeToolName(name) {
+	return typeof name === "string" ? name.replaceAll(".", "__") : "";
+}
+
+function decodeToolName(name) {
+	return typeof name === "string" ? name.replaceAll("__", ".") : "";
+}
+
+function mapClaudeTool(tool) {
+	const schema = tool.inputSchema || tool.parameters || { type: "object" };
+	return {
+		name: encodeToolName(tool.name),
+		description: tool.description || "",
+		input_schema: schema,
+	};
+}
+
+function mapClaudeTools(tools) {
+	if (!Array.isArray(tools) || tools.length === 0) {
+		return undefined;
+	}
+	return tools.map(mapClaudeTool);
+}
+
+function formatToolContent(content) {
+	if (typeof content === "string") {
+		return content;
+	}
+	return JSON.stringify(content ?? null);
+}
+
+function isToolError(msg) {
+	if (typeof msg.is_error === "boolean") {
+		return msg.is_error;
+	}
+	if (typeof msg.isError === "boolean") {
+		return msg.isError;
+	}
+	if (msg.ok === false) {
+		return true;
+	}
+	const content = msg.content;
+	const hasErr =
+		content && typeof content === "object" && content.error !== undefined;
+	return Boolean(hasErr && msg.ok !== true);
+}
+
+function findMatchingCallId(assistantCalls, name, usedIds) {
+	if (name) {
+		const byName = assistantCalls.find(
+			(c) => c.name === name && !usedIds.has(c.id),
+		);
+		if (byName?.id) {
+			return byName.id;
+		}
+	}
+	const firstUnused = assistantCalls.find((c) => !usedIds.has(c.id));
+	return firstUnused?.id;
+}
+
+function resolveToolUseId(toolMsg, assistantCalls, index, usedIds) {
+	const directId = toolMsg.tool_use_id || toolMsg.toolCallId || toolMsg.id;
+	if (directId) {
+		usedIds.add(directId);
+		return directId;
+	}
+	const name = toolMsg.toolName || toolMsg.name;
+	const matchedId = findMatchingCallId(assistantCalls, name, usedIds);
+	if (matchedId) {
+		usedIds.add(matchedId);
+		return matchedId;
+	}
+	const fallbackId = assistantCalls[index]?.id || name || `tool_${index + 1}`;
+	usedIds.add(fallbackId);
+	return fallbackId;
+}
+
+function mapClaudeToolResult(toolMsg, toolUseId) {
+	const block = {
+		type: "tool_result",
+		tool_use_id: toolUseId,
+		content: formatToolContent(toolMsg.content),
+	};
+	if (isToolError(toolMsg)) {
+		block.is_error = true;
+	}
+	return block;
+}
+
+function collectToolGroup(messages, startIndex, assistantCalls) {
+	const blocks = [];
+	const usedIds = new Set();
+	let idx = startIndex;
+	let toolIdx = 0;
+	while (idx < messages.length && isToolRole(messages[idx].role)) {
+		const toolMsg = messages[idx];
+		const id = resolveToolUseId(toolMsg, assistantCalls, toolIdx, usedIds);
+		blocks.push(mapClaudeToolResult(toolMsg, id));
+		toolIdx++;
+		idx++;
+	}
+	return { blocks, nextIndex: idx };
+}
+
+function mapClaudeAssistantMessage(msg) {
+	if (Array.isArray(msg.content) && !msg.toolCalls) {
+		return { role: "assistant", content: msg.content };
+	}
+	const hasCalls = Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0;
+	if (!hasCalls) {
+		return { role: "assistant", content: msg.content || msg.text || "" };
+	}
+	const blocks = [];
+	if (msg.content) {
+		blocks.push({ type: "text", text: msg.content });
+	}
+	for (const call of msg.toolCalls) {
+		blocks.push({
+			type: "tool_use",
+			id: call.id || `call_${call.name}`,
+			name: encodeToolName(call.name),
+			input: call.input || {},
+		});
+	}
+	return { role: "assistant", content: blocks };
+}
+
+function mapClaudeUserContent(content) {
+	return Array.isArray(content) ? content : content || "";
+}
+
+function mapClaudeMessages(messages) {
+	if (!Array.isArray(messages) || messages.length === 0) {
+		return [];
+	}
+	const result = [];
+	let lastAssistantCalls = [];
+	let i = 0;
+	while (i < messages.length) {
+		const msg = messages[i];
+		if (isModelRole(msg.role)) {
+			result.push(mapClaudeAssistantMessage(msg));
+			lastAssistantCalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+			i++;
+		} else if (isToolRole(msg.role)) {
+			const { blocks, nextIndex } = collectToolGroup(
+				messages,
+				i,
+				lastAssistantCalls,
+			);
+			result.push({ role: "user", content: blocks });
+			i = nextIndex;
+		} else {
+			result.push({ role: "user", content: mapClaudeUserContent(msg.content) });
+			i++;
+		}
+	}
+	return result;
+}
+
+function buildClaudeRequestBody({ model, maxTokens, system, messages, tools }) {
+	const body = {
+		model,
+		max_tokens: maxTokens,
+		messages: mapClaudeMessages(messages),
+	};
+	if (system) {
+		body.system = system;
+	}
+	const mappedTools = mapClaudeTools(tools);
+	if (mappedTools) {
+		body.tools = mappedTools;
+	}
+	return body;
+}
+
+function parseClaudeBlocks(blocks) {
+	const textParts = [];
+	const toolCalls = [];
+	for (const block of blocks) {
+		if (block.type === "text" && block.text) {
+			textParts.push(block.text);
+		}
+		if (block.type === "tool_use") {
+			toolCalls.push({
+				id: block.id,
+				name: decodeToolName(block.name),
+				input: block.input || {},
+			});
+		}
+	}
+	return { text: textParts.join(""), toolCalls };
+}
+
+function parseClaudeResponse(data) {
+	const blocks = Array.isArray(data?.content) ? data.content : [];
+	const parsed = parseClaudeBlocks(blocks);
+	const promptTokens = data?.usage?.input_tokens ?? 0;
+	const completionTokens = data?.usage?.output_tokens ?? 0;
+	const usage = {
+		promptTokens,
+		completionTokens,
+		totalTokens: promptTokens + completionTokens,
+	};
+	return {
+		text: parsed.text,
+		toolCalls: parsed.toolCalls,
+		usage,
+	};
+}
+
+function checkClaudeApiError(data) {
+	if (data?.type === "error" && data.error) {
+		const errType = data.error.type || "api_error";
+		const message = data.error.message || String(data.error);
+		const err = new Error(`Claude API error (${errType}): ${message}`);
+		err.status = data.status || 400;
+		throw err;
+	}
+	if (data?.error) {
+		const message = data.error.message || String(data.error);
+		const err = new Error(`Claude API error: ${message}`);
+		err.status = data.status || 400;
+		throw err;
+	}
+}
+
+function checkClaudeResponseStatus(data) {
+	if (!data) {
+		return;
+	}
+	checkClaudeApiError(data);
+	checkHttpStatus(data.status, data.statusText);
+}
+
+function getClaudeApiKey() {
+	const key = process.env.ANTHROPIC_API_KEY;
+	if (!key || key.trim() === "") {
+		throw new Error("ANTHROPIC_API_KEY environment variable is required");
+	}
+	return key.trim();
+}
+
+async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
+	const apiKey = getClaudeApiKey();
+	const url = CLAUDE_API_URL;
+	const body = buildClaudeRequestBody({
+		model: params.model || model,
+		maxTokens: params.maxTokens || maxTokens,
+		system: params.system,
+		messages: params.messages,
+		tools: params.tools,
+	});
+	const headers = {
+		"content-type": "application/json",
+		"x-api-key": apiKey,
+		"anthropic-version": ANTHROPIC_VERSION,
+	};
+	try {
+		const data = await transport(url, body, headers, params.signal);
+		checkClaudeResponseStatus(data);
+		return parseClaudeResponse(data);
+	} catch (err) {
+		throw sanitizeError(err, apiKey);
+	}
+}
+
+export function createClaudeAdapter({
+	transport = defaultTransport,
+	model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
+	maxTokens = 4096,
+} = {}) {
+	const resolvedModel =
+		model || process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
+	return {
+		provider: "claude",
+		generate: (params) =>
+			executeClaudeGenerate({
+				transport,
+				model: resolvedModel,
+				maxTokens,
+				params: params || {},
+			}),
+	};
+}
+
 const PROVIDERS = {
 	gemini: createGeminiAdapter,
-	claude: null,
+	claude: createClaudeAdapter,
 };
 
 export function createModelAdapter({

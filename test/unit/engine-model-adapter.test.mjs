@@ -68,7 +68,7 @@ describe("module contract", () => {
 });
 
 describe("provider lookup table and validation", () => {
-	const UNSUPPORTED = ["claude", "openai", "bedrock", "unknown", ""];
+	const UNSUPPORTED = ["foo", "openai", "bedrock", "unknown", ""];
 	for (const prov of UNSUPPORTED) {
 		test(`rejects unsupported provider: '${prov}'`, () => {
 			assert.throws(
@@ -84,6 +84,11 @@ describe("provider lookup table and validation", () => {
 	test("accepts explicitly supported provider 'gemini'", () => {
 		const adapter = createModelAdapter({ provider: "gemini" });
 		assert.equal(adapter.provider, "gemini");
+	});
+
+	test("accepts explicitly supported provider 'claude'", () => {
+		const adapter = createModelAdapter({ provider: "claude" });
+		assert.equal(adapter.provider, "claude");
 	});
 });
 
