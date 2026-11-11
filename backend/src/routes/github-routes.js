@@ -72,34 +72,54 @@ export const stateStore = createStateStore();
 
 const router = express.Router();
 
+function resolveProtocol(req, trustProxy) {
+	if (trustProxy) {
+		const forwarded = req?.headers?.["x-forwarded-proto"];
+		if (forwarded) return forwarded;
+	}
+	return req?.protocol || "http";
+}
+
+function getRawHost(req) {
+	if (typeof req?.get === "function") {
+		return req.get("host");
+	}
+	return req?.headers?.host;
+}
+
+function resolveHost(req, trustProxy) {
+	if (trustProxy) {
+		const forwarded = req?.headers?.["x-forwarded-host"];
+		if (forwarded) return forwarded;
+	}
+	return getRawHost(req) || "localhost";
+}
+
 export function getDynamicOrigin(req) {
-	if (process.env.FRONTEND_URL) {
-		return process.env.FRONTEND_URL.trim().replace(/\/+$/, "");
+	const frontendUrl = process.env.FRONTEND_URL;
+	if (frontendUrl) {
+		return frontendUrl.trim().replace(/\/+$/, "");
 	}
 	const trustProxy = process.env.TRUST_PROXY === "1";
-	const forwardedProto = trustProxy
-		? req?.headers?.["x-forwarded-proto"]
-		: null;
-	const protocol = forwardedProto || req?.protocol || "http";
-	const forwardedHost = trustProxy ? req?.headers?.["x-forwarded-host"] : null;
-	const rawHost =
-		typeof req?.get === "function" ? req.get("host") : req?.headers?.host;
-	const host = forwardedHost || rawHost || "localhost";
+	const protocol = resolveProtocol(req, trustProxy);
+	const host = resolveHost(req, trustProxy);
 	return `${protocol}://${host}`;
+}
+
+function getCallbackUrl(req) {
+	const customUrl = process.env.GITHUB_CALLBACK_URL;
+	if (customUrl && !customUrl.includes("localhost")) {
+		return customUrl;
+	}
+	return `${getDynamicOrigin(req)}/api/auth/github/callback`;
 }
 
 // 1. Get OAuth login URL
 router.get("/auth/github/url", (req, res) => {
 	try {
-		const dynamicOrigin = getDynamicOrigin(req);
-		const dynamicCallback =
-			process.env.GITHUB_CALLBACK_URL &&
-			!process.env.GITHUB_CALLBACK_URL.includes("localhost")
-				? process.env.GITHUB_CALLBACK_URL
-				: `${dynamicOrigin}/api/auth/github/callback`;
-
+		const callbackUrl = getCallbackUrl(req);
 		const state = stateStore.generate();
-		const url = getOAuthAuthorizeUrl(state, dynamicCallback);
+		const url = getOAuthAuthorizeUrl(state, callbackUrl);
 		res.json({ url, configured: true });
 	} catch (err) {
 		res.json({ configured: false, error: err.message });
@@ -136,35 +156,40 @@ function extractToken(req) {
 	);
 }
 
+function requireToken(req, res, next) {
+	const token = extractToken(req);
+	if (!token) {
+		return res.status(401).json({ error: "GitHub token required" });
+	}
+	req.token = token;
+	next();
+}
+
 /**
  * Registers a token-guarded GitHub read route: 401 without a token,
  * { [key]: data } on success, 500 { error, details } on failure.
  */
 function githubReadRoute(path, { key, errorMessage, fetch }) {
-	router.get(path, async (req, res) => {
-		const token = extractToken(req);
-		if (!token) return res.status(401).json({ error: "GitHub token required" });
+	router.get(path, requireToken, async (req, res) => {
 		try {
-			res.json({ [key]: await fetch(token, req) });
+			res.json({ [key]: await fetch(req.token, req) });
 		} catch (err) {
 			res.status(500).json({ error: errorMessage, details: err.message });
 		}
 	});
 }
 
-// 3. Verify Token & Get User
-router.get("/auth/github/verify", async (req, res) => {
-	const token = extractToken(req);
-	if (!token) {
-		return res.status(401).json({ error: "GitHub token required" });
-	}
+async function handleVerify(req, res) {
 	try {
-		const user = await verifyTokenAndGetUser(token);
+		const user = await verifyTokenAndGetUser(req.token);
 		res.json({ authenticated: true, user });
 	} catch (err) {
 		res.status(401).json({ authenticated: false, error: err.message });
 	}
-});
+}
+
+// 3. Verify Token & Get User
+router.get("/auth/github/verify", requireToken, handleVerify);
 
 // 4. List User Repositories
 githubReadRoute("/github/repos", {
