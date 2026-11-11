@@ -7,6 +7,11 @@ import {
 	snapToGrid,
 	wireForNet,
 } from "./schematicGeometry.js";
+import {
+	symbolPinPositions,
+	symbolToSvgPrimitives,
+	transformPrimitives,
+} from "./symbolRender.js";
 
 const CANVAS_CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -97,6 +102,101 @@ function screenToWorld(clientX, clientY, svgEl, vp) {
 	};
 }
 
+function distToSeg(pt, p1, p2) {
+	const dx = p2[0] - p1[0];
+	const dy = p2[1] - p1[1];
+	const lenSq = dx * dx + dy * dy;
+	if (lenSq === 0) return Math.hypot(pt.x - p1[0], pt.y - p1[1]);
+	const t = Math.max(
+		0,
+		Math.min(1, ((pt.x - p1[0]) * dx + (pt.y - p1[1]) * dy) / lenSq),
+	);
+	return Math.hypot(pt.x - (p1[0] + t * dx), pt.y - (p1[1] + t * dy));
+}
+
+function isPointNearPolyline(pt, poly, wireTol) {
+	for (let i = 0; i < poly.length - 1; i++) {
+		if (distToSeg(pt, poly[i], poly[i + 1]) <= wireTol) return true;
+	}
+	return false;
+}
+
+function testPinHitWithMap(allPinPos, pt, pinRadius = 2.0) {
+	for (const [key, pos] of allPinPos.entries()) {
+		if (Math.hypot(pt.x - pos[0], pt.y - pos[1]) <= pinRadius) {
+			const colon = key.indexOf(":");
+			const id = key.slice(0, colon);
+			const pin = key.slice(colon + 1);
+			return { kind: "pin", id, pin };
+		}
+	}
+	return null;
+}
+
+function testWireHitWithMap(nets, allPinPos, pt, wireTol = 1.27) {
+	for (const net of nets) {
+		const polylines = wireForNet(net, allPinPos);
+		for (const poly of polylines) {
+			if (isPointNearPolyline(pt, poly, wireTol)) {
+				return { kind: "wire", id: net.id };
+			}
+		}
+	}
+	return null;
+}
+
+function schematicHitTest(doc, allPinPos, pt) {
+	const pinHit = testPinHitWithMap(allPinPos, pt);
+	if (pinHit) return pinHit;
+	const wireHit = testWireHitWithMap(doc.ir?.nets ?? [], allPinPos, pt);
+	if (wireHit) return wireHit;
+	return hitTest(doc, [pt.x, pt.y]);
+}
+
+function useSymbolCache(parts, fetchSymbol) {
+	const [symbols, setSymbols] = useState({});
+	const fetchedRef = useRef(new Set());
+
+	useEffect(() => {
+		if (typeof fetchSymbol !== "function") return;
+		for (const part of parts) {
+			const libId = part.symbol;
+			if (libId && !fetchedRef.current.has(libId)) {
+				fetchedRef.current.add(libId);
+				fetchSymbol(libId)
+					.then((sym) => {
+						if (sym) {
+							setSymbols((prev) => ({ ...prev, [libId]: sym }));
+						}
+					})
+					.catch(() => {});
+			}
+		}
+	}, [parts, fetchSymbol]);
+
+	return symbols;
+}
+
+function collectPartPinPos(part, sym) {
+	if (sym) {
+		const res = symbolPinPositions(sym, part.placement);
+		return Object.entries(res);
+	}
+	const positions = pinPositions(part, part.pins);
+	return Array.from(positions.entries());
+}
+
+function buildAllPinMap(parts, symbolCache) {
+	const map = new Map();
+	for (const part of parts) {
+		const sym = part.symbol ? symbolCache[part.symbol] : null;
+		for (const [pin, pos] of collectPartPinPos(part, sym)) {
+			map.set(`${part.id}:${pin}`, pos);
+		}
+	}
+	return map;
+}
+
 function SchematicGrid() {
 	return (
 		<>
@@ -145,16 +245,182 @@ function PinSvg({ pin, pos, isWireStart }) {
 	);
 }
 
-function PartSvg({ part, isSelected, dragPos, wireStart }) {
-	const activePart = dragPos
-		? { ...part, placement: { ...part.placement, x: dragPos.x, y: dragPos.y } }
-		: part;
+function SymbolPrimitive({ prim, style }) {
+	const { stroke, strokeWidth } = style;
+	if (prim.type === "rect") {
+		return (
+			<rect
+				x={prim.x}
+				y={prim.y}
+				width={prim.width}
+				height={prim.height}
+				fill={style.fill}
+				stroke={stroke}
+				strokeWidth={strokeWidth}
+			/>
+		);
+	}
+	if (prim.type === "polyline") {
+		const pts = prim.points.map((p) => `${p[0]},${p[1]}`).join(" ");
+		return (
+			<polyline
+				points={pts}
+				fill="none"
+				stroke={stroke}
+				strokeWidth={strokeWidth}
+			/>
+		);
+	}
+	if (prim.type === "circle") {
+		return (
+			<circle
+				cx={prim.cx}
+				cy={prim.cy}
+				r={prim.r}
+				fill="none"
+				stroke={stroke}
+				strokeWidth={strokeWidth}
+			/>
+		);
+	}
+	if (prim.type === "arc") {
+		return (
+			<path d={prim.d} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
+		);
+	}
+	if (prim.type === "text") {
+		return (
+			<text
+				x={prim.x}
+				y={prim.y}
+				fill="#94a3b8"
+				fontSize={1.2}
+				textAnchor="middle"
+			>
+				{prim.text}
+			</text>
+		);
+	}
+	return null;
+}
+
+function SymbolPin({ pin, activePart, wireStart, strokeWidth }) {
+	const isStart =
+		wireStart?.partId === activePart.id && wireStart?.pin === pin.number;
+	const hasName = pin.name && pin.name !== "~";
+	return (
+		<g key={pin.number}>
+			<line
+				x1={pin.x}
+				y1={pin.y}
+				x2={pin.x2}
+				y2={pin.y2}
+				stroke="#94a3b8"
+				strokeWidth={strokeWidth}
+			/>
+			<circle
+				cx={pin.x}
+				cy={pin.y}
+				r={0.65}
+				fill={isStart ? "#fadb14" : "#38bdf8"}
+				stroke="#0d0f18"
+				strokeWidth={0.2}
+			/>
+			<text
+				x={pin.numberPos[0]}
+				y={pin.numberPos[1]}
+				fill="#94a3b8"
+				fontSize={1.0}
+				textAnchor="middle"
+			>
+				{pin.number}
+			</text>
+			{hasName && (
+				<text
+					x={pin.namePos[0]}
+					y={pin.namePos[1]}
+					fill="#38bdf8"
+					fontSize={1.0}
+					textAnchor="middle"
+				>
+					{pin.name}
+				</text>
+			)}
+		</g>
+	);
+}
+
+function getPrimKey(prim, idx) {
+	if (prim.type === "pin") return `pin-${prim.number || idx}`;
+	if (prim.type === "rect") return `rect-${prim.x}-${prim.y}-${prim.width}`;
+	if (prim.type === "circle") return `circle-${prim.cx}-${prim.cy}`;
+	if (prim.type === "arc") return `arc-${prim.d}`;
+	if (prim.type === "polyline") {
+		return `poly-${prim.points?.[0]?.[0]}-${prim.points?.[0]?.[1]}-${idx}`;
+	}
+	return `prim-${prim.type}-${idx}`;
+}
+
+function SymbolPartSvg({ activePart, isSelected, wireStart, symbol }) {
+	const placement = {
+		x: activePart.placement?.x ?? 0,
+		y: activePart.placement?.y ?? 0,
+		rot: activePart.placement?.rot ?? 0,
+		side: activePart.placement?.side ?? "F",
+	};
+	const prims = transformPrimitives(symbolToSvgPrimitives(symbol), placement);
+	const stroke = isSelected ? "#fadb14" : "#f87171";
+	const fill = isSelected ? "rgba(250, 219, 20, 0.15)" : "none";
+	const style = { stroke, fill, strokeWidth: 0.254 };
+	const px = placement.x;
+	const py = placement.y;
+
+	return (
+		<g className="schematic-part">
+			{prims.map((prim, i) => {
+				const k = getPrimKey(prim, i);
+				return prim.type === "pin" ? (
+					<SymbolPin
+						key={k}
+						pin={prim}
+						activePart={activePart}
+						wireStart={wireStart}
+						strokeWidth={0.254}
+					/>
+				) : (
+					<SymbolPrimitive key={k} prim={prim} style={style} />
+				);
+			})}
+			<text
+				x={px}
+				y={py - 2.54}
+				fill="#f1f5f9"
+				fontSize={1.8}
+				fontWeight="bold"
+				textAnchor="middle"
+			>
+				{activePart.ref}
+			</text>
+			<text
+				x={px}
+				y={py + 3.81}
+				fill="#94a3b8"
+				fontSize={1.3}
+				textAnchor="middle"
+			>
+				{activePart.value ?? ""}
+			</text>
+		</g>
+	);
+}
+
+function BoxPartSvg({ activePart, isSelected, wireStart }) {
 	const box = partBox(activePart);
 	const pins = pinPositions(activePart);
 	const stroke = isSelected ? "#fadb14" : "#38bdf8";
 	const fill = isSelected ? "rgba(250, 219, 20, 0.15)" : "#161b2e";
 	const rot = box.rot ? `rotate(${box.rot} ${box.cx} ${box.cy})` : undefined;
-	const pinList = Array.isArray(part.pins) ? part.pins : ["1", "2"];
+	const pinList = Array.isArray(activePart.pins) ? activePart.pins : ["1", "2"];
 
 	return (
 		<g className="schematic-part" transform={rot}>
@@ -202,6 +468,29 @@ function PartSvg({ part, isSelected, dragPos, wireStart }) {
 				);
 			})}
 		</g>
+	);
+}
+
+function PartSvg({ part, isSelected, dragPos, wireStart, symbol }) {
+	const activePart = dragPos
+		? { ...part, placement: { ...part.placement, x: dragPos.x, y: dragPos.y } }
+		: part;
+	if (symbol) {
+		return (
+			<SymbolPartSvg
+				activePart={activePart}
+				isSelected={isSelected}
+				wireStart={wireStart}
+				symbol={symbol}
+			/>
+		);
+	}
+	return (
+		<BoxPartSvg
+			activePart={activePart}
+			isSelected={isSelected}
+			wireStart={wireStart}
+		/>
 	);
 }
 
@@ -359,7 +648,8 @@ function updatePartDrag(dragState, worldPt, setDragPos) {
 }
 
 function usePointerInteractions(svgRef, editorState, wireState) {
-	const { vp, isSpaceDown, wireMode, dragPos, setDragPos } = wireState;
+	const { vp, isSpaceDown, wireMode, dragPos, setDragPos, allPinPos } =
+		wireState;
 	const { doc, dispatchCmd } = editorState;
 	const panDragRef = useRef(null);
 	const [dragState, setDragState] = useState(null);
@@ -379,7 +669,7 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 			}
 			if (e.button !== 0) return;
 			const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
-			const hit = hitTest(doc, [worldPt.x, worldPt.y]);
+			const hit = schematicHitTest(doc, allPinPos, worldPt);
 			handlePointerDownHit(hit, {
 				wireMode,
 				wireState,
@@ -389,7 +679,7 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 				worldPt,
 			});
 		},
-		[doc, dispatchCmd, isSpaceDown, vp, svgRef, wireMode, wireState],
+		[doc, dispatchCmd, isSpaceDown, vp, svgRef, wireMode, wireState, allPinPos],
 	);
 
 	const onPointerMove = useCallback(
@@ -428,7 +718,7 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 	return { onPointerDown, onPointerMove, onPointerUp, cursorWorld };
 }
 
-export default function SchematicCanvas({ editor, onChange }) {
+export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
 	const svgRef = useRef(null);
 	const [pan, setPan] = useState({ x: 200, y: 150 });
 	const [zoom, setZoom] = useState(4);
@@ -441,8 +731,14 @@ export default function SchematicCanvas({ editor, onChange }) {
 		editor,
 		onChange,
 	);
+	const symbolCache = useSymbolCache(doc.ir?.parts ?? [], fetchSymbol);
 	const vp = useMemo(() => ({ pan, zoom, setPan, setZoom }), [pan, zoom]);
 	useWheelZoom(svgRef, vp);
+
+	const allPinPos = useMemo(
+		() => buildAllPinMap(doc.ir?.parts ?? [], symbolCache),
+		[doc.ir?.parts, symbolCache],
+	);
 
 	const wireState = useMemo(
 		() => ({
@@ -454,24 +750,14 @@ export default function SchematicCanvas({ editor, onChange }) {
 			isSpaceDown,
 			dragPos,
 			setDragPos,
+			allPinPos,
 		}),
-		[wireStart, wireMode, vp, isSpaceDown, dragPos],
+		[wireStart, wireMode, vp, isSpaceDown, dragPos, allPinPos],
 	);
 
 	const editorState = useMemo(() => ({ doc, dispatchCmd }), [doc, dispatchCmd]);
 	const { onPointerDown, onPointerMove, onPointerUp, cursorWorld } =
 		usePointerInteractions(svgRef, editorState, wireState);
-
-	const allPinPos = useMemo(() => {
-		const map = new Map();
-		for (const part of doc.ir?.parts ?? []) {
-			const positions = pinPositions(part, part.pins);
-			for (const [pin, pos] of positions.entries()) {
-				map.set(`${part.id}:${pin}`, pos);
-			}
-		}
-		return map;
-	}, [doc.ir?.parts]);
 
 	const keyCtx = useMemo(
 		() => ({
@@ -528,6 +814,7 @@ export default function SchematicCanvas({ editor, onChange }) {
 							isSelected={doc.selection?.includes(part.id)}
 							dragPos={dragPos?.partId === part.id ? dragPos : null}
 							wireStart={wireStart}
+							symbol={part.symbol ? symbolCache[part.symbol] : null}
 						/>
 					))}
 					<RubberbandWire
