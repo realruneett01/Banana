@@ -15,8 +15,11 @@ const UUID_PART = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d";
 const UUID_TRACE = "b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e";
 const UUID_NET = "c3d4e5f6-a7b8-9c0d-1e2f-3a4b5c6d7e8f";
 
+const mkItem = (description, uuid) =>
+	uuid ? { uuid, description } : { description };
+
 const makeReport = (rows, errors, warnings) => ({
-	violations: rows.map(([type, severity, description, items]) => ({
+	violations: rows.map(([type, severity, description, items = []]) => ({
 		type,
 		severity,
 		description,
@@ -31,25 +34,25 @@ const CANNED_ERC_REPORT = makeReport(
 			"pin_not_connected",
 			"error",
 			"Pin not connected",
-			[{ uuid: UUID_PART, description: "Symbol U1 pin 1" }],
+			[mkItem("Symbol U1 pin 1", UUID_PART)],
 		],
 		[
 			"lib_symbol_mismatch",
 			"warning",
 			"Symbol does not match library",
-			[{ uuid: UUID_PART, description: "Symbol R1" }],
+			[mkItem("Symbol R1", UUID_PART)],
 		],
 		[
 			"info_annotation",
 			"info",
 			"Informational note",
-			[{ uuid: UUID_NET, description: "Net /RESET" }],
+			[mkItem("Net /RESET", UUID_NET)],
 		],
 		[
 			"global_label_missing",
 			"unknown_level",
 			"Global label missing connection",
-			[{ description: "Unconnected label VCC" }],
+			[mkItem("Unconnected label VCC")],
 		],
 	],
 	1,
@@ -63,15 +66,15 @@ const CANNED_DRC_REPORT = makeReport(
 			"error",
 			"Clearance violation",
 			[
-				{ uuid: UUID_PART, description: "Footprint C1 pad 1" },
-				{ uuid: UUID_TRACE, description: "Track on F.Cu" },
+				mkItem("Footprint C1 pad 1", UUID_PART),
+				mkItem("Track on F.Cu", UUID_TRACE),
 			],
 		],
 		[
 			"hole_near_hole",
 			"warning",
 			"Via too close to via",
-			[{ uuid: UUID_TRACE, description: "Via at (12.5, 30.0)" }],
+			[mkItem("Via at (12.5, 30.0)", UUID_TRACE)],
 		],
 		["empty_violation", "warning", "Edge clearance warning without items", []],
 	],
@@ -79,17 +82,19 @@ const CANNED_DRC_REPORT = makeReport(
 	2,
 );
 
+const recordCall = async (calls, args, error, defaultVal) => {
+	calls.push(args);
+	if (error) throw error;
+	return defaultVal;
+};
+
+const makeRunner = (calls, key, err, report) => (filePath, outJsonPath) =>
+	recordCall(calls, { [key]: filePath, outJsonPath }, err, report);
+
 function createFakeCli(overrides = {}) {
 	const runErcCalls = [];
 	const runDrcCalls = [];
 	const exportNetlistCalls = [];
-	const recordCall = async (calls, args, error, defaultVal) => {
-		calls.push(args);
-		if (error) throw error;
-		return defaultVal;
-	};
-	const makeRunner = (bucket, key, err, rep) => (filePath, outJsonPath) =>
-		recordCall(bucket, { [key]: filePath, outJsonPath }, err, rep);
 
 	return {
 		runErcCalls,
@@ -153,8 +158,9 @@ function assertValidIssues(issues, expectedSource) {
 	}
 }
 
-function assertToolExecution(opts) {
-	const { res, call, expectedPath, summary, source } = opts;
+async function executeAndAssertValidRun(tool, input, summary) {
+	const { cli, res } = await executeTool(tool, input);
+	const call = cli.runErcCalls[0] || cli.runDrcCalls[0];
 	assert.deepEqual(
 		{
 			ok: res.ok,
@@ -164,12 +170,13 @@ function assertToolExecution(opts) {
 		},
 		{
 			ok: true,
-			targetPath: expectedPath,
+			targetPath: input.schPath || input.pcbPath,
 			tmpDir: os.tmpdir(),
 			summary,
 		},
 	);
-	assertValidIssues(res.output.issues, source);
+	assertValidIssues(res.output.issues, tool.slice(6));
+	return res;
 }
 
 function assertErcMappedIssues(res) {
@@ -205,6 +212,11 @@ function assertDrcMappedIssues(issues) {
 			thirdIsPart: true,
 		},
 	);
+}
+
+async function runNetlistTool(params) {
+	const { cli, res } = await executeTool("kicad.export_netlist", params);
+	return { call: cli.exportNetlistCalls[0], res };
 }
 
 describe("module contract", () => {
@@ -246,14 +258,11 @@ describe("tool registration and schema", () => {
 
 describe("kicad.erc tool execution", () => {
 	test("runs ERC and converts violations to valid Issues", async () => {
-		const { cli, res } = await executeTool("kicad.erc", { schPath: VALID_SCH });
-		assertToolExecution({
-			res,
-			call: cli.runErcCalls[0],
-			expectedPath: VALID_SCH,
-			summary: { errors: 1, warnings: 1 },
-			source: "erc",
-		});
+		await executeAndAssertValidRun(
+			"kicad.erc",
+			{ schPath: VALID_SCH },
+			{ errors: 1, warnings: 1 },
+		);
 	});
 
 	test("maps severity and item prefixes for ERC violations", async () => {
@@ -264,14 +273,11 @@ describe("kicad.erc tool execution", () => {
 
 describe("kicad.drc tool execution", () => {
 	test("runs DRC and converts violations with footprint/track/via prefixes", async () => {
-		const { cli, res } = await executeTool("kicad.drc", { pcbPath: VALID_PCB });
-		assertToolExecution({
-			res,
-			call: cli.runDrcCalls[0],
-			expectedPath: VALID_PCB,
-			summary: { errors: 1, warnings: 2 },
-			source: "drc",
-		});
+		const res = await executeAndAssertValidRun(
+			"kicad.drc",
+			{ pcbPath: VALID_PCB },
+			{ errors: 1, warnings: 2 },
+		);
 		assertDrcMappedIssues(res.output.issues);
 	});
 
@@ -288,14 +294,14 @@ describe("kicad.drc tool execution", () => {
 
 describe("kicad.export_netlist tool execution", () => {
 	test("exports netlist with default format kicadsexpr", async () => {
-		const { cli, res } = await executeTool("kicad.export_netlist", {
+		const { call, res } = await runNetlistTool({
 			schPath: VALID_SCH,
 		});
 		assert.deepEqual(
 			{
 				ok: res.ok,
-				format: cli.exportNetlistCalls[0].format,
-				schPath: cli.exportNetlistCalls[0].schPath,
+				format: call.format,
+				schPath: call.schPath,
 				tmpDir: path.dirname(res.output.netlistPath),
 			},
 			{
@@ -308,14 +314,14 @@ describe("kicad.export_netlist tool execution", () => {
 	});
 
 	test("exports netlist with custom format parameter", async () => {
-		const { cli, res } = await executeTool("kicad.export_netlist", {
+		const { call, res } = await runNetlistTool({
 			schPath: VALID_SCH,
 			format: "spice",
 		});
 		assert.deepEqual(
 			{
 				ok: res.ok,
-				format: cli.exportNetlistCalls[0].format,
+				format: call.format,
 				hasCirExtension: /\.cir$/.test(res.output.netlistPath),
 			},
 			{
@@ -328,58 +334,68 @@ describe("kicad.export_netlist tool execution", () => {
 });
 
 describe("input path validation via registry", () => {
-	const buildFileRejections = (opts) => [
-		[`missing ${opts.key}`, {}],
-		["relative path", { [opts.key]: `board.${opts.ext}` }],
-		["wrong extension", { [opts.key]: `/abs/board.${opts.wrongExt}` }],
+	const buildFileCases = ([
+		tool,
+		callKey,
+		key,
+		ext,
+		wrong,
+		suffix,
+		badVal,
+		validPath,
+		extraK,
+		extraV,
+	]) =>
 		[
-			"suffix extension",
-			{ [opts.key]: `/abs/board.${opts.ext}.${opts.suffix}` },
+			[`missing ${key}`, {}],
+			["relative path", { [key]: `board.${ext}` }],
+			["wrong extension", { [key]: `/abs/board.${wrong}` }],
+			["suffix extension", { [key]: `/abs/board.${ext}.${suffix}` }],
+			[`non-string ${key}`, { [key]: badVal }],
+			["extra property", { [key]: validPath, [extraK]: extraV }],
+		].map(([label, input]) => ({ tool, callKey, label, input }));
+
+	const FILE_TOOL_SPECS = [
+		[
+			"kicad.erc",
+			"runErcCalls",
+			"schPath",
+			"kicad_sch",
+			"kicad_pcb",
+			"bak",
+			999,
+			VALID_SCH,
+			"extra",
+			true,
 		],
-		[`non-string ${opts.key}`, { [opts.key]: opts.badVal }],
 		[
-			"extra property",
-			{ [opts.key]: opts.validPath, [opts.extraKey]: opts.extraVal },
+			"kicad.drc",
+			"runDrcCalls",
+			"pcbPath",
+			"kicad_pcb",
+			"kicad_sch",
+			"tmp",
+			false,
+			VALID_PCB,
+			"foo",
+			"bar",
 		],
 	];
 
-	const makeRejections = (tool, callKey, cases) =>
-		cases.map(([label, input]) => ({ tool, callKey, label, input }));
+	const NETLIST_REJECTIONS = [
+		["missing schPath", {}],
+		["relative path", { schPath: "test.kicad_sch" }],
+		["non-string format", { schPath: VALID_SCH, format: 123 }],
+	].map(([label, input]) => ({
+		tool: "kicad.export_netlist",
+		callKey: "exportNetlistCalls",
+		label,
+		input,
+	}));
 
 	const REJECT_CASES = [
-		...makeRejections(
-			"kicad.erc",
-			"runErcCalls",
-			buildFileRejections({
-				key: "schPath",
-				ext: "kicad_sch",
-				wrongExt: "kicad_pcb",
-				suffix: "bak",
-				badVal: 999,
-				validPath: VALID_SCH,
-				extraKey: "extra",
-				extraVal: true,
-			}),
-		),
-		...makeRejections(
-			"kicad.drc",
-			"runDrcCalls",
-			buildFileRejections({
-				key: "pcbPath",
-				ext: "kicad_pcb",
-				wrongExt: "kicad_sch",
-				suffix: "tmp",
-				badVal: false,
-				validPath: VALID_PCB,
-				extraKey: "foo",
-				extraVal: "bar",
-			}),
-		),
-		...makeRejections("kicad.export_netlist", "exportNetlistCalls", [
-			["missing schPath", {}],
-			["relative path", { schPath: "test.kicad_sch" }],
-			["non-string format", { schPath: VALID_SCH, format: 123 }],
-		]),
+		...FILE_TOOL_SPECS.flatMap(buildFileCases),
+		...NETLIST_REJECTIONS,
 	];
 
 	for (const { tool, callKey, label, input } of REJECT_CASES) {
