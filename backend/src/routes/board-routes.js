@@ -9,10 +9,6 @@ import { exportBoardGlb } from "../kicad-renderer.js";
 
 const router = express.Router();
 
-function hasRepositoryTarget({ repoPath, owner, repo }) {
-	return Boolean(repoPath || (owner && repo));
-}
-
 const VALID_REF_PATTERNS = [
 	/^[0-9a-fA-F]{4,40}$/,
 	/^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/,
@@ -46,99 +42,99 @@ function isValidFilePath(filePath) {
 	return ALLOWED_BOARD_EXTENSIONS.some((ext) => filePath.endsWith(ext));
 }
 
-function isLocalBoardRequest(boardReq) {
-	return Boolean(boardReq.repoPath || !(boardReq.owner && boardReq.repo));
+function isRemoteTarget(boardReq) {
+	return Boolean(boardReq.owner && boardReq.repo);
 }
 
 const LOCAL_REPOS_DISABLED_MESSAGE =
 	"Local repositories are disabled on this server";
 
-function isServerLocalRepoBlocked(req, boardReq) {
-	const isLocal = isLocalBoardRequest(boardReq);
-	const isAllowed = req.app?.locals?.allowLocalRepos === true;
-	return isLocal && !isAllowed;
+function isLocalRepoRequest(boardReq) {
+	return Boolean(boardReq.repoPath) || !isRemoteTarget(boardReq);
 }
 
-function checkBoardRepoAllowed(req, boardReq, res) {
-	if (isServerLocalRepoBlocked(req, boardReq)) {
+function enforceLocalRepoPolicy(req, boardReq, res) {
+	const isLocal = isLocalRepoRequest(boardReq);
+	const permitsLocal = req.app?.locals?.allowLocalRepos === true;
+	if (isLocal && !permitsLocal) {
 		res.status(403).json({ error: LOCAL_REPOS_DISABLED_MESSAGE });
 		return false;
 	}
 	return true;
 }
 
-const PAD_REQUEST_VALIDATORS = [
+const VALIDATION_RULES = [
 	{
-		isSatisfied: ({ commit, targetFile }) => Boolean(commit && targetFile),
-		errorMessage:
-			"Missing required fields: commit, (relativeFilePath OR filePath)",
+		check: (req) => Boolean(req.commit && req.targetFile),
+		message: "Missing required fields: commit, (relativeFilePath OR filePath)",
 	},
 	{
-		isSatisfied: hasRepositoryTarget,
-		errorMessage: "Missing required fields: repoPath OR (owner and repo)",
+		check: (req) => Boolean(req.repoPath || isRemoteTarget(req)),
+		message: "Missing required fields: repoPath OR (owner and repo)",
 	},
 	{
-		isSatisfied: ({ commit }) => isValidCommitRef(commit),
-		errorMessage: "Invalid commit ref",
+		check: (req) => isValidCommitRef(req.commit),
+		message: "Invalid commit ref",
 	},
 	{
-		isSatisfied: ({ targetFile }) => isValidFilePath(targetFile),
-		errorMessage: "Invalid target file path",
+		check: (req) => isValidFilePath(req.targetFile),
+		message: "Invalid target file path",
 	},
 ];
 
-function validatePadRequest(boardReq) {
-	for (const validator of PAD_REQUEST_VALIDATORS) {
-		if (!validator.isSatisfied(boardReq)) {
-			return validator.errorMessage;
+function findValidationError(boardReq) {
+	const failedRule = VALIDATION_RULES.find((rule) => !rule.check(boardReq));
+	return failedRule ? failedRule.message : null;
+}
+
+function extractAuthToken(req) {
+	const headerToken = req.headers?.authorization?.replace(/^Bearer\s+/i, "");
+	return headerToken || req.body?.token;
+}
+
+function extractBoardRequest(req) {
+	const body = req.body || {};
+	return {
+		repoPath: body.repoPath,
+		commit: body.commit,
+		targetFile: body.relativeFilePath || body.filePath,
+		owner: body.owner,
+		repo: body.repo,
+		token: extractAuthToken(req),
+	};
+}
+
+function makeTempLocation(prefix, targetFile) {
+	const id = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+	const fileName = path.basename(targetFile);
+	const dir = path.join(config.tempStorageDir, id);
+	const filePath = path.join(dir, fileName);
+	return { id, fileName, dir, filePath };
+}
+
+async function fetchBoardSource(boardReq, temp) {
+	if (isRemoteTarget(boardReq)) {
+		if (!boardReq.token) {
+			const authErr = new Error("GitHub token required for remote pads");
+			authErr.statusCode = 401;
+			throw authErr;
 		}
-	}
-	return null;
-}
-
-async function downloadRemoteBoard({
-	token,
-	owner,
-	repo,
-	targetFile,
-	commit,
-	tempFilePath,
-}) {
-	if (!token) {
-		const err = new Error("GitHub token required for remote pads");
-		err.statusCode = 401;
-		throw err;
-	}
-	await downloadRepoFile(token, owner, repo, targetFile, commit, tempFilePath);
-}
-
-async function retrieveBoardFile({
-	owner,
-	repo,
-	token,
-	repoPath,
-	commit,
-	targetFile,
-	tempFilePath,
-	uniqueId,
-	fileBasename,
-}) {
-	if (owner && repo) {
-		await downloadRemoteBoard({
-			token,
-			owner,
-			repo,
-			targetFile,
-			commit,
-			tempFilePath,
-		});
+		await downloadRepoFile(
+			boardReq.token,
+			boardReq.owner,
+			boardReq.repo,
+			boardReq.targetFile,
+			boardReq.commit,
+			temp.filePath,
+		);
 		return;
 	}
+	const relTarget = path.join(temp.id, temp.fileName);
 	await extractFileFromCommit(
-		repoPath,
-		commit,
-		targetFile,
-		path.join(uniqueId, fileBasename),
+		boardReq.repoPath,
+		boardReq.commit,
+		boardReq.targetFile,
+		relTarget,
 	);
 }
 
@@ -175,32 +171,6 @@ function cleanupTempDir(dirPath) {
 	}
 }
 
-function extractAuthToken(req) {
-	const headerToken = req.headers?.authorization?.replace(/^Bearer\s+/i, "");
-	return headerToken || req.body?.token;
-}
-
-function extractBoardRequest(req) {
-	const { repoPath, commit, relativeFilePath, owner, repo, filePath } =
-		req.body;
-	return {
-		repoPath,
-		commit,
-		targetFile: relativeFilePath || filePath,
-		owner,
-		repo,
-		token: extractAuthToken(req),
-	};
-}
-
-function createTempContext(prefix, targetFile) {
-	const uniqueId = `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-	const fileBasename = path.basename(targetFile);
-	const tempDir = path.join(config.tempStorageDir, uniqueId);
-	const tempFilePath = path.join(tempDir, fileBasename);
-	return { uniqueId, fileBasename, tempDir, tempFilePath };
-}
-
 function sendErrorResponse(res, error, fallbackError) {
 	const status = error.statusCode || 500;
 	res.status(status).json({
@@ -229,31 +199,25 @@ async function handleGlbExport(tempFilePath, res) {
 	res.type("model/gltf-binary").sendFile(glbPath);
 }
 
-async function processBoardRequest({
-	req,
-	res,
-	prefix,
-	fallbackError,
-	handler,
-}) {
+async function executeBoardAction(req, res, endpoint) {
 	const boardReq = extractBoardRequest(req);
-	if (!checkBoardRepoAllowed(req, boardReq, res)) {
+	if (!enforceLocalRepoPolicy(req, boardReq, res)) {
 		return;
 	}
 
-	const validationError = validatePadRequest(boardReq);
-	if (validationError) {
-		return res.status(400).json({ error: validationError });
+	const validationMsg = findValidationError(boardReq);
+	if (validationMsg) {
+		return res.status(400).json({ error: validationMsg });
 	}
 
-	const temp = createTempContext(prefix, boardReq.targetFile);
+	const temp = makeTempLocation(endpoint.prefix, boardReq.targetFile);
 	try {
-		await retrieveBoardFile({ ...boardReq, ...temp });
-		await handler(temp.tempFilePath, res);
+		await fetchBoardSource(boardReq, temp);
+		await endpoint.handler(temp.filePath, res);
 	} catch (error) {
-		sendErrorResponse(res, error, fallbackError);
+		sendErrorResponse(res, error, endpoint.fallbackError);
 	} finally {
-		cleanupTempDir(temp.tempDir);
+		cleanupTempDir(temp.dir);
 	}
 }
 
@@ -285,13 +249,7 @@ const BOARD_ENDPOINT_REGISTRATIONS = [
 
 for (const registration of BOARD_ENDPOINT_REGISTRATIONS) {
 	router.post(registration.endpointPath, (req, res) =>
-		processBoardRequest({
-			req,
-			res,
-			prefix: registration.prefix,
-			fallbackError: registration.fallbackError,
-			handler: registration.handler,
-		}),
+		executeBoardAction(req, res, registration),
 	);
 }
 
