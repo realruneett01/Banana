@@ -5,6 +5,8 @@ import express from "express";
 import boardRouter from "../../backend/src/routes/board-routes.js";
 import diffRouter from "../../backend/src/routes/diff-routes.js";
 
+const BOARD_ROUTES = ["/board/pads", "/board/glb"];
+
 function createServer(allowLocalRepos) {
 	const app = express();
 	app.locals.allowLocalRepos = allowLocalRepos;
@@ -37,6 +39,50 @@ async function postJson(port, routePath, body) {
 	return { status: response.status, json };
 }
 
+function makeDiffBody(baseCommit, targetCommit, relativeFilePath) {
+	return {
+		repoPath: "/path/to/repo",
+		baseCommit,
+		targetCommit,
+		relativeFilePath,
+	};
+}
+
+function makeBoardBody(commit, relativeFilePath) {
+	return {
+		repoPath: "/path/to/repo",
+		commit,
+		relativeFilePath,
+	};
+}
+
+function diffTarget(nameBuilder, bodyBuilder) {
+	return {
+		name: nameBuilder,
+		route: "/diff/process",
+		body: bodyBuilder,
+	};
+}
+
+function boardTargets(nameBuilder, bodyBuilder) {
+	return BOARD_ROUTES.map((route) => ({
+		name: (val) => nameBuilder(route, val),
+		route,
+		body: (val) => bodyBuilder(route, val),
+	}));
+}
+
+function testMatrix(getPort, values, targets, expectedStatus) {
+	for (const value of values) {
+		for (const { name, route, body } of targets) {
+			test(name(value), async () => {
+				const { status } = await postJson(getPort(), route, body(value));
+				assert.equal(status, expectedStatus);
+			});
+		}
+	}
+}
+
 describe("local repository guards and input validation", () => {
 	let disabledServer;
 	let disabledPort;
@@ -60,31 +106,13 @@ describe("local repository guards and input validation", () => {
 			{
 				name: "POST /diff/process returns 403 when local repos disabled",
 				route: "/diff/process",
-				body: {
-					repoPath: "/path/to/repo",
-					baseCommit: "a1b2c3d4",
-					targetCommit: "e5f6a7b8",
-					relativeFilePath: "board.kicad_pcb",
-				},
+				body: makeDiffBody("a1b2c3d4", "e5f6a7b8", "board.kicad_pcb"),
 			},
-			{
-				name: "POST /board/pads returns 403 when local repos disabled",
-				route: "/board/pads",
-				body: {
-					repoPath: "/path/to/repo",
-					commit: "a1b2c3d4",
-					relativeFilePath: "board.kicad_pcb",
-				},
-			},
-			{
-				name: "POST /board/glb returns 403 when local repos disabled",
-				route: "/board/glb",
-				body: {
-					repoPath: "/path/to/repo",
-					commit: "a1b2c3d4",
-					relativeFilePath: "board.kicad_pcb",
-				},
-			},
+			...BOARD_ROUTES.map((route) => ({
+				name: `POST ${route} returns 403 when local repos disabled`,
+				route,
+				body: makeBoardBody("a1b2c3d4", "board.kicad_pcb"),
+			})),
 		];
 
 		for (const { name, route, body } of cases) {
@@ -99,102 +127,65 @@ describe("local repository guards and input validation", () => {
 		}
 	});
 
-	describe("bad commit refs return 400", () => {
-		const invalidRefs = [
-			"-main",
-			"--upload-pack=exploit",
-			"main..HEAD",
-			"feature/test..dev",
-			"main;rm -rf /",
-			"ref with spaces",
-			`ref_${"x".repeat(200)}`,
-		];
+	const badInputSuites = [
+		{
+			description: "bad commit refs return 400",
+			values: [
+				"-main",
+				"--upload-pack=exploit",
+				"main..HEAD",
+				"feature/test..dev",
+				"main;rm -rf /",
+				"ref with spaces",
+				`ref_${"x".repeat(200)}`,
+			],
+			targets: [
+				diffTarget(
+					(ref) => `rejects invalid ref "${ref}" on /diff/process baseCommit`,
+					(ref) => makeDiffBody(ref, "a1b2c3d4", "board.kicad_pcb"),
+				),
+				diffTarget(
+					(ref) => `rejects invalid ref "${ref}" on /diff/process targetCommit`,
+					(ref) => makeDiffBody("a1b2c3d4", ref, "board.kicad_pcb"),
+				),
+				...boardTargets(
+					(route, ref) => `rejects invalid ref "${ref}" on ${route} commit`,
+					(_route, ref) => makeBoardBody(ref, "board.kicad_pcb"),
+				),
+			],
+		},
+		{
+			description: "bad targetFile and relativeFilePath return 400",
+			values: [
+				"/etc/passwd.kicad_pcb",
+				"C:/board.kicad_pcb",
+				"C:\\board.kicad_pcb",
+				"\\server\\share\\board.kicad_pcb",
+				"../board.kicad_pcb",
+				"hardware/../../board.kicad_pcb",
+				"hardware\\..\\board.kicad_pcb",
+				"board.txt",
+				"board.kicad_pcb.exe",
+				"board.json",
+			],
+			targets: [
+				diffTarget(
+					(badPath) => `rejects invalid path "${badPath}" on /diff/process`,
+					(badPath) => makeDiffBody("a1b2c3d4", "e5f6a7b8", badPath),
+				),
+				...boardTargets(
+					(route, badPath) => `rejects invalid path "${badPath}" on ${route}`,
+					(_route, badPath) => makeBoardBody("a1b2c3d4", badPath),
+				),
+			],
+		},
+	];
 
-		for (const ref of invalidRefs) {
-			test(`rejects invalid ref "${ref}" on /diff/process baseCommit`, async () => {
-				const { status } = await postJson(enabledPort, "/diff/process", {
-					repoPath: "/path/to/repo",
-					baseCommit: ref,
-					targetCommit: "a1b2c3d4",
-					relativeFilePath: "board.kicad_pcb",
-				});
-				assert.equal(status, 400);
-			});
-
-			test(`rejects invalid ref "${ref}" on /diff/process targetCommit`, async () => {
-				const { status } = await postJson(enabledPort, "/diff/process", {
-					repoPath: "/path/to/repo",
-					baseCommit: "a1b2c3d4",
-					targetCommit: ref,
-					relativeFilePath: "board.kicad_pcb",
-				});
-				assert.equal(status, 400);
-			});
-
-			test(`rejects invalid ref "${ref}" on /board/pads commit`, async () => {
-				const { status } = await postJson(enabledPort, "/board/pads", {
-					repoPath: "/path/to/repo",
-					commit: ref,
-					relativeFilePath: "board.kicad_pcb",
-				});
-				assert.equal(status, 400);
-			});
-
-			test(`rejects invalid ref "${ref}" on /board/glb commit`, async () => {
-				const { status } = await postJson(enabledPort, "/board/glb", {
-					repoPath: "/path/to/repo",
-					commit: ref,
-					relativeFilePath: "board.kicad_pcb",
-				});
-				assert.equal(status, 400);
-			});
-		}
-	});
-
-	describe("bad targetFile and relativeFilePath return 400", () => {
-		const invalidPaths = [
-			"/etc/passwd.kicad_pcb",
-			"C:/board.kicad_pcb",
-			"C:\\board.kicad_pcb",
-			"\\server\\share\\board.kicad_pcb",
-			"../board.kicad_pcb",
-			"hardware/../../board.kicad_pcb",
-			"hardware\\..\\board.kicad_pcb",
-			"board.txt",
-			"board.kicad_pcb.exe",
-			"board.json",
-		];
-
-		for (const badPath of invalidPaths) {
-			test(`rejects invalid path "${badPath}" on /diff/process`, async () => {
-				const { status } = await postJson(enabledPort, "/diff/process", {
-					repoPath: "/path/to/repo",
-					baseCommit: "a1b2c3d4",
-					targetCommit: "e5f6a7b8",
-					relativeFilePath: badPath,
-				});
-				assert.equal(status, 400);
-			});
-
-			test(`rejects invalid path "${badPath}" on /board/pads`, async () => {
-				const { status } = await postJson(enabledPort, "/board/pads", {
-					repoPath: "/path/to/repo",
-					commit: "a1b2c3d4",
-					relativeFilePath: badPath,
-				});
-				assert.equal(status, 400);
-			});
-
-			test(`rejects invalid path "${badPath}" on /board/glb`, async () => {
-				const { status } = await postJson(enabledPort, "/board/glb", {
-					repoPath: "/path/to/repo",
-					commit: "a1b2c3d4",
-					relativeFilePath: badPath,
-				});
-				assert.equal(status, 400);
-			});
-		}
-	});
+	for (const { description, values, targets } of badInputSuites) {
+		describe(description, () => {
+			testMatrix(() => enabledPort, values, targets, 400);
+		});
+	}
 
 	describe("valid input passes guards (not 400/403)", () => {
 		const validCases = [
