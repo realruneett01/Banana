@@ -1,4 +1,12 @@
-import { ConfigProvider, Drawer, Grid, Layout, theme } from "antd";
+import {
+	Button,
+	ConfigProvider,
+	Drawer,
+	Empty,
+	Grid,
+	Layout,
+	theme,
+} from "antd";
 import { useEffect } from "react";
 import "./harness.css";
 import ChatbotDrawer from "./ChatbotDrawer";
@@ -7,8 +15,10 @@ import { DiffViewport } from "./components/DiffViewport";
 import { EdgeCollapseTabs } from "./components/EdgeCollapseTabs";
 import GithubConnectModal from "./components/GithubConnectModal";
 import SimulationDrawer from "./components/SimulationDrawer.jsx";
+import SimulationStudio from "./components/sim3d/SimulationStudio.jsx";
 import { WorkspaceAuditSidebar } from "./components/WorkspaceAuditSidebar";
 import { WorkspaceControlSidebar } from "./components/WorkspaceControlSidebar";
+import EditorScreen from "./editor/EditorScreen.jsx";
 import { useDesignLoop } from "./useDesignLoop.js";
 import { useWorkspaceState } from "./useWorkspaceState.js";
 import WorkspaceShell from "./WorkspaceShell";
@@ -81,6 +91,76 @@ function useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed) {
 	}, [compact, setLeftCollapsed, setRightCollapsed]);
 }
 
+function createEmptyIr() {
+	return {
+		schemaVersion: 1,
+		name: "untitled",
+		parts: [],
+		nets: [],
+		constraints: [],
+	};
+}
+
+function EmptyDesignNotice({ onStartEmpty }) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "center",
+				height: "100%",
+				width: "100%",
+			}}
+		>
+			<Empty description="No design yet - use 'Design with AI' first, or start an empty design">
+				<Button type="primary" onClick={onStartEmpty}>
+					Start empty design
+				</Button>
+			</Empty>
+		</div>
+	);
+}
+
+function StudioDrawer({ loop }) {
+	return (
+		<Drawer
+			title="3D Studio"
+			open={loop.studioOpen}
+			onClose={loop.closeStudio}
+			width="100%"
+			destroyOnHidden={false}
+			className="bn-drawer"
+			styles={{ body: { padding: 0, height: "100%" } }}
+		>
+			{loop.ir ? (
+				<SimulationStudio api={loop.api} ir={loop.ir} />
+			) : (
+				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
+			)}
+		</Drawer>
+	);
+}
+
+function EditorDrawer({ loop }) {
+	return (
+		<Drawer
+			title="Editor"
+			open={loop.editorOpen}
+			onClose={loop.closeEditor}
+			width="100%"
+			destroyOnHidden={false}
+			className="bn-drawer"
+			styles={{ body: { padding: 0, height: "100%" } }}
+		>
+			{loop.ir ? (
+				<EditorScreen ir={loop.ir} board={null} onSave={loop.saveFromEditor} />
+			) : (
+				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
+			)}
+		</Drawer>
+	);
+}
+
 function DesignDrawers({ loop, commit }) {
 	const handleSimulate = (ir) => {
 		loop.closeAgent();
@@ -107,6 +187,8 @@ function DesignDrawers({ loop, commit }) {
 				commit={commit}
 				api={loop.api}
 			/>
+			<StudioDrawer loop={loop} />
+			<EditorDrawer loop={loop} />
 		</>
 	);
 }
@@ -124,6 +206,8 @@ function AppLayout({ ws, compact }) {
 				onOpenAudit={() => setRightCollapsed(false)}
 				onOpenAgent={loop.openAgent}
 				onOpenSimulation={() => loop.openSimulation()}
+				onOpenStudio={() => loop.openStudio()}
+				onOpenEditor={() => loop.openEditor()}
 			/>
 			<Layout>
 				<WorkspaceControlSidebar {...ws.sidebarProps} compact={compact} />
@@ -144,8 +228,7 @@ function AppLayout({ ws, compact }) {
 export default function App() {
 	const ws = useWorkspaceState();
 	const screens = Grid.useBreakpoint();
-	// below lg (992px) the side panels become slide-over drawers so the viewport gets the full width
-	const compact = screens.lg === false; // {} on first render: don't collapse desktop panels by mistake
+	const compact = screens.lg === false;
 	const { setLeftCollapsed, setRightCollapsed } = ws.edgeTabsProps;
 
 	useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed);

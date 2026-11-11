@@ -9,6 +9,45 @@ export function isCircuitIr(candidate) {
 	return !Array.isArray(candidate) && Array.isArray(candidate.parts);
 }
 
+function useStudioState(setIr) {
+	const [studioOpen, setStudioOpen] = useState(false);
+	const closeStudio = useCallback(() => setStudioOpen(false), []);
+	const openStudio = useCallback(
+		(nextIr) => {
+			if (isCircuitIr(nextIr)) {
+				setIr(nextIr);
+			}
+			setStudioOpen(true);
+		},
+		[setIr],
+	);
+	return { studioOpen, openStudio, closeStudio };
+}
+
+function useEditorState(setIr) {
+	const [editorOpen, setEditorOpen] = useState(false);
+	const closeEditor = useCallback(() => setEditorOpen(false), []);
+	const openEditor = useCallback(
+		(nextIr) => {
+			if (isCircuitIr(nextIr)) {
+				setIr(nextIr);
+			}
+			setEditorOpen(true);
+		},
+		[setIr],
+	);
+	const saveFromEditor = useCallback(
+		(payload) => {
+			const next = payload?.ir !== undefined ? payload.ir : payload;
+			if (isCircuitIr(next)) {
+				setIr(next);
+			}
+		},
+		[setIr],
+	);
+	return { editorOpen, openEditor, closeEditor, saveFromEditor };
+}
+
 export function useDesignLoop({ baseUrl = API_BASE_URL, api: customApi } = {}) {
 	const [agentOpen, setAgentOpen] = useState(false);
 	const [simOpen, setSimOpen] = useState(false);
@@ -26,6 +65,8 @@ export function useDesignLoop({ baseUrl = API_BASE_URL, api: customApi } = {}) {
 		}
 		setSimOpen(true);
 	}, []);
+	const studio = useStudioState(setIr);
+	const editor = useEditorState(setIr);
 
 	return {
 		api,
@@ -35,6 +76,8 @@ export function useDesignLoop({ baseUrl = API_BASE_URL, api: customApi } = {}) {
 		simOpen,
 		openSimulation,
 		closeSimulation,
+		...studio,
+		...editor,
 		ir,
 		setIr,
 	};
