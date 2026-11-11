@@ -1,6 +1,7 @@
 import {
 	DeleteOutlined,
 	ForkOutlined,
+	PlusOutlined,
 	RedoOutlined,
 	RotateRightOutlined,
 	SaveOutlined,
@@ -9,6 +10,7 @@ import {
 } from "@ant-design/icons";
 import { Button, Space, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useState } from "react";
+import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
@@ -198,6 +200,21 @@ function ModeButtons({ activeTab, dirty, route, save }) {
 	);
 }
 
+function AddPartButton({ onAddPart }) {
+	return (
+		<Tooltip title="Add part (A)">
+			<Button
+				icon={<PlusOutlined />}
+				onClick={onAddPart}
+				size="small"
+				aria-label="Add part (A)"
+			>
+				Add part
+			</Button>
+		</Tooltip>
+	);
+}
+
 function EditorToolbar({ state, actions }) {
 	return (
 		<div
@@ -211,6 +228,7 @@ function EditorToolbar({ state, actions }) {
 				undo={actions.undo}
 				redo={actions.redo}
 			/>
+			<AddPartButton onAddPart={actions.openLibrary} />
 			<EditActionButtons
 				hasSelection={state.hasSelection}
 				rotate={actions.rotate}
@@ -267,12 +285,92 @@ function useSaveShortcut(save) {
 	}, [save]);
 }
 
+function useAddPartShortcut(openLibrary) {
+	useEffect(() => {
+		const onKeyDown = (e) => {
+			if (e.ctrlKey || e.metaKey || e.altKey) return;
+			if (e.key !== "a" && e.key !== "A") return;
+			const tag = e.target?.tagName;
+			if (
+				tag === "INPUT" ||
+				tag === "TEXTAREA" ||
+				e.target?.isContentEditable
+			) {
+				return;
+			}
+			e.preventDefault();
+			openLibrary();
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [openLibrary]);
+}
+
+function getNextRef(parts, rawPrefix) {
+	const prefix = (rawPrefix || "U").replace(/[?#]+$/, "") || "U";
+	const usedNumbers = new Set();
+	const regex = new RegExp(`^${prefix}(\\d+)$`, "i");
+	for (const p of parts ?? []) {
+		const match = p.ref?.match(regex);
+		if (match) {
+			usedNumbers.add(Number(match[1]));
+		}
+	}
+	let nextNum = 1;
+	while (usedNumbers.has(nextNum)) {
+		nextNum++;
+	}
+	return `${prefix}${nextNum}`;
+}
+
+function useCanvasFetchers(api) {
+	const fetchSymbol = useCallback(
+		async (libId) => {
+			if (typeof api?.getSymbol !== "function") return null;
+			const res = await api.getSymbol(libId);
+			return res.ok ? (res.data?.symbol ?? null) : null;
+		},
+		[api],
+	);
+
+	const fetchFootprint = useCallback(
+		async (libId) => {
+			if (typeof api?.getFootprint !== "function") return null;
+			const res = await api.getFootprint(libId);
+			return res.ok ? (res.data?.footprint ?? null) : null;
+		},
+		[api],
+	);
+
+	return { fetchSymbol, fetchFootprint };
+}
+
+function usePlacePartCallback(doc, dispatch) {
+	return useCallback(
+		(item) => {
+			const prefix = item.ref || item.prefix || "U";
+			const nextRef = getNextRef(doc.ir?.parts, prefix);
+			dispatch({
+				type: "addPart",
+				part: {
+					ref: nextRef,
+					value: item.value || "",
+					symbol: item.symbol || "",
+					footprint: item.footprint || "",
+					placement: { x: 0, y: 0, rot: 0, side: "F" },
+				},
+			});
+		},
+		[doc.ir?.parts, dispatch],
+	);
+}
+
 function triggerPcbRoute() {
 	const btn = document.querySelector('[aria-label="Toggle route track (X)"]');
 	if (btn) btn.click();
 }
 
-function CanvasViewport({ activeTab, editor, board, setBoard }) {
+function CanvasViewport({ activeTab, docState, curBoard, fetchers }) {
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
 			<div
@@ -282,7 +380,10 @@ function CanvasViewport({ activeTab, editor, board, setBoard }) {
 					height: "100%",
 				}}
 			>
-				<SchematicCanvas editor={editor} />
+				<SchematicCanvas
+					editor={docState.editor}
+					fetchSymbol={fetchers.fetchSymbol}
+				/>
 			</div>
 			<div
 				style={{
@@ -291,7 +392,12 @@ function CanvasViewport({ activeTab, editor, board, setBoard }) {
 					height: "100%",
 				}}
 			>
-				<PcbCanvas editor={editor} board={board} onBoardChange={setBoard} />
+				<PcbCanvas
+					editor={docState.editor}
+					board={curBoard}
+					onBoardChange={docState.setBoard}
+					fetchFootprint={fetchers.fetchFootprint}
+				/>
 			</div>
 		</div>
 	);
@@ -322,46 +428,59 @@ function buildToolState(docState, activeTab) {
 	};
 }
 
-function EditorBody({ activeTab, docState, curBoard }) {
+function EditorBody({ activeTab, docState, curBoard, fetchers }) {
 	return (
 		<div style={CONTENT_ROW_STYLE}>
 			<CanvasViewport
 				activeTab={activeTab}
-				editor={docState.editor}
-				board={curBoard}
-				setBoard={docState.setBoard}
+				docState={docState}
+				curBoard={curBoard}
+				fetchers={fetchers}
 			/>
 			<PropertiesPanel doc={docState.doc} dispatch={docState.dispatch} />
 		</div>
 	);
 }
 
-function useScreenController({ ir, board, onSave }) {
+function useScreenController({ ir, board, onSave, api }) {
 	const docState = useEditorDocument({ ir, board });
+	const [libraryOpen, setLibraryOpen] = useState(false);
+	const openLibrary = useCallback(() => setLibraryOpen(true), []);
+	const closeLibrary = useCallback(() => setLibraryOpen(false), []);
+	const fetchers = useCanvasFetchers(api);
 	const { doc, board: curBoard, dispatch, undo, redo } = docState;
-	const { rotate, flip, remove, save } = useEditorActions({
+	const editActions = useEditorActions({
 		doc,
 		dispatch,
 		board: curBoard,
 		onSave,
 		markSaved: docState.markSaved,
 	});
-	useSaveShortcut(save);
+	useSaveShortcut(editActions.save);
+	useAddPartShortcut(openLibrary);
+	const onPlace = usePlacePartCallback(doc, dispatch);
+	const actions = {
+		...editActions,
+		undo,
+		redo,
+		route: triggerPcbRoute,
+		openLibrary,
+	};
 	return {
 		docState,
 		curBoard,
-		actions: { undo, redo, rotate, flip, remove, route: triggerPcbRoute, save },
+		fetchers,
+		libraryOpen,
+		closeLibrary,
+		onPlace,
+		actions,
 	};
 }
 
-export default function EditorScreen({ ir, board, onSave }) {
+export default function EditorScreen({ ir, board, onSave, api }) {
 	const [activeTab, setActiveTab] = useState("schematic");
-	const { docState, curBoard, actions } = useScreenController({
-		ir,
-		board,
-		onSave,
-	});
-	const toolState = buildToolState(docState, activeTab);
+	const ctrl = useScreenController({ ir, board, onSave, api });
+	const toolState = buildToolState(ctrl.docState, activeTab);
 
 	return (
 		<main style={ROOT_STYLE} aria-label="Editor screen">
@@ -369,17 +488,24 @@ export default function EditorScreen({ ir, board, onSave }) {
 				activeTab={activeTab}
 				onTabChange={setActiveTab}
 				toolState={toolState}
-				actions={actions}
+				actions={ctrl.actions}
 			/>
 			<EditorBody
 				activeTab={activeTab}
-				docState={docState}
-				curBoard={curBoard}
+				docState={ctrl.docState}
+				curBoard={ctrl.curBoard}
+				fetchers={ctrl.fetchers}
 			/>
 			<StatusBar
-				doc={docState.doc}
+				doc={ctrl.docState.doc}
 				activeTab={activeTab}
-				dirty={docState.dirty}
+				dirty={ctrl.docState.dirty}
+			/>
+			<LibraryBrowser
+				api={api}
+				open={ctrl.libraryOpen}
+				onClose={ctrl.closeLibrary}
+				onPlace={ctrl.onPlace}
 			/>
 		</main>
 	);

@@ -209,6 +209,49 @@ function buildCircuitMethods(send, h) {
 	};
 }
 
+function buildLibrarySearchQuery(q, limit) {
+	const params = new URLSearchParams();
+	if (q !== undefined && q !== null) {
+		params.set("q", String(q));
+	}
+	if (limit !== undefined && limit !== null && limit !== "") {
+		params.set("limit", String(limit));
+	}
+	const qs = params.toString();
+	return qs ? `?${qs}` : "";
+}
+
+function buildLibraryMethods(send, h) {
+	return {
+		libraryStatus: ({ signal } = {}) =>
+			send("/api/library/status", { method: "GET", headers: h }, signal),
+		searchSymbols: (q, { limit, signal } = {}) =>
+			send(
+				`/api/library/symbols${buildLibrarySearchQuery(q, limit)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+		getSymbol: (libId, { signal } = {}) =>
+			send(
+				`/api/library/symbols/${encodeURIComponent(libId)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+		searchFootprints: (q, { limit, signal } = {}) =>
+			send(
+				`/api/library/footprints${buildLibrarySearchQuery(q, limit)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+		getFootprint: (libId, { signal } = {}) =>
+			send(
+				`/api/library/footprints/${encodeURIComponent(libId)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+	};
+}
+
 export function createSimApi({
 	baseUrl = "",
 	fetchImpl = globalThis.fetch,
@@ -223,5 +266,6 @@ export function createSimApi({
 		...buildBaseMethods(send, h),
 		...buildRunMethods(send, h),
 		...buildCircuitMethods(send, h),
+		...buildLibraryMethods(send, h),
 	};
 }
