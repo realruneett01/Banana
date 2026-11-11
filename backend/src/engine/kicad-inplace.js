@@ -92,8 +92,12 @@ function buildItemIndex(ast, kind) {
 	for (const child of ast.slice(1)) {
 		if (!isTargetItem(child, kind)) continue;
 		const ref = extractItemRef(child);
-		if (ref && !map.has(ref)) {
-			map.set(ref, child);
+		if (!ref) continue;
+		const items = map.get(ref);
+		if (items) {
+			items.push(child);
+		} else {
+			map.set(ref, [child]);
 		}
 	}
 	return map;
@@ -113,15 +117,21 @@ function findValueNode(item) {
 	return null;
 }
 
-function applySetValue(item, edit) {
-	const valNode = findValueNode(item);
-	if (!valNode) {
-		return {
-			ok: false,
-			reason: `Value property not found for ref ${edit.ref}`,
-		};
+function applySetValue(items, edit) {
+	const valNodes = [];
+	for (const item of items) {
+		const valNode = findValueNode(item);
+		if (!valNode) {
+			return {
+				ok: false,
+				reason: `Value property not found for ref ${edit.ref}`,
+			};
+		}
+		valNodes.push(valNode);
 	}
-	valNode[2] = edit.value;
+	for (const node of valNodes) {
+		node[2] = edit.value;
+	}
 	return { ok: true };
 }
 
@@ -129,8 +139,14 @@ function findAtNode(item) {
 	return item.find((c) => Array.isArray(c) && c[0]?.sym === "at") ?? null;
 }
 
-function applyMove(item, edit) {
-	const atNode = findAtNode(item);
+function applyMove(items, edit) {
+	if (items.length > 1) {
+		return {
+			ok: false,
+			reason: `Part ${edit.ref} has several units and must be moved in the editor`,
+		};
+	}
+	const atNode = findAtNode(items[0]);
 	if (!atNode) {
 		return {
 			ok: false,
@@ -145,11 +161,11 @@ function applyMove(item, edit) {
 	return { ok: true };
 }
 
-function applyEdit(item, edit) {
+function applyEdit(items, edit) {
 	if (edit.op === "setValue") {
-		return applySetValue(item, edit);
+		return applySetValue(items, edit);
 	}
-	return applyMove(item, edit);
+	return applyMove(items, edit);
 }
 
 function applyEdits(itemMap, edits) {
@@ -162,12 +178,12 @@ function applyEdits(itemMap, edits) {
 			skipped.push({ index: i, reason: err });
 			continue;
 		}
-		const item = itemMap.get(edit.ref);
-		if (!item) {
+		const items = itemMap.get(edit.ref);
+		if (!items) {
 			skipped.push({ index: i, reason: `Unknown reference: ${edit.ref}` });
 			continue;
 		}
-		const res = applyEdit(item, edit);
+		const res = applyEdit(items, edit);
 		if (!res.ok) {
 			skipped.push({ index: i, reason: res.reason });
 			continue;

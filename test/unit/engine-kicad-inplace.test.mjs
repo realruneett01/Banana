@@ -364,3 +364,99 @@ describe("patchKicadText - security and escaping", () => {
 		assert.equal(findPartProperty(r1, "Value"), trickyValue);
 	});
 });
+
+const MULTI_UNIT_SCH = `(kicad_sch
+	(version 20240108)
+	(generator "banana")
+	(symbol (lib_id "Amplifier_Operational:TL072") (at 10 20 0)
+		(property "Reference" "U1")
+		(property "Value" "TL072")
+	)
+	(symbol (lib_id "Amplifier_Operational:TL072") (at 30 40 0)
+		(property "Reference" "U1")
+		(property "Value" "TL072")
+	)
+	(symbol (lib_id "Device:R") (at 50 60 90)
+		(property "Reference" "R1")
+		(property "Value" "10k")
+	)
+)`;
+
+function getAllSchSymbols(ast, ref) {
+	return ast.slice(1).filter((c) => {
+		if (!Array.isArray(c)) return false;
+		if (c[0]?.sym !== "symbol") return false;
+		return findPartProperty(c, "Reference") === ref;
+	});
+}
+
+describe("patchKicadText - multi-unit schematic symbols", () => {
+	const cases = [
+		{
+			name: "setValue on a two-unit schematic symbol updates both units",
+			edit: { op: "setValue", ref: "U1", value: "LM358" },
+			verify: (res) => {
+				assert.equal(res.ok, true);
+				assert.equal(res.applied, 1);
+				assert.equal(res.skipped.length, 0);
+				const ast = parse(res.text);
+				const symbols = getAllSchSymbols(ast, "U1");
+				assert.equal(symbols.length, 2);
+				for (const s of symbols) {
+					assert.equal(findPartProperty(s, "Value"), "LM358");
+				}
+			},
+		},
+		{
+			name: "move on a two-unit symbol is skipped with a reason and changes nothing",
+			edit: { op: "move", ref: "U1", x: 99, y: 88 },
+			verify: (res) => {
+				assert.equal(res.ok, true);
+				assert.equal(res.applied, 0);
+				assert.equal(res.skipped.length, 1);
+				assert.match(
+					res.skipped[0].reason,
+					/has several units and must be moved in the editor/i,
+				);
+				const ast = parse(res.text);
+				const symbols = getAllSchSymbols(ast, "U1");
+				assert.deepEqual(findPartAt(symbols[0]), [{ sym: "at" }, 10, 20, 0]);
+				assert.deepEqual(findPartAt(symbols[1]), [{ sym: "at" }, 30, 40, 0]);
+			},
+		},
+		{
+			name: "single-unit behaviour unchanged for setValue",
+			edit: { op: "setValue", ref: "R1", value: "20k" },
+			verify: (res) => {
+				assert.equal(res.ok, true);
+				assert.equal(res.applied, 1);
+				assert.equal(res.skipped.length, 0);
+				const ast = parse(res.text);
+				const r1 = getSchSymbol(ast, "R1");
+				assert.equal(findPartProperty(r1, "Value"), "20k");
+			},
+		},
+		{
+			name: "single-unit behaviour unchanged for move",
+			edit: { op: "move", ref: "R1", x: 75, y: 85, rot: 180 },
+			verify: (res) => {
+				assert.equal(res.ok, true);
+				assert.equal(res.applied, 1);
+				assert.equal(res.skipped.length, 0);
+				const ast = parse(res.text);
+				const r1 = getSchSymbol(ast, "R1");
+				assert.deepEqual(findPartAt(r1), [{ sym: "at" }, 75, 85, 180]);
+			},
+		},
+	];
+
+	for (const tc of cases) {
+		test(tc.name, () => {
+			const res = patchKicadText(MULTI_UNIT_SCH, {
+				kind: "sch",
+				edits: [tc.edit],
+			});
+			tc.verify(res);
+		});
+	}
+});
