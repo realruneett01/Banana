@@ -38,252 +38,249 @@ function createConstraint(kind, target, overrides = {}) {
 	};
 }
 
-function createCleanIR() {
-	const part1 = createPart({ ref: "R1" });
-	const part2 = createPart({ ref: "R2" });
-	const netVcc = createNet("VCC", [
-		{ partId: part1.id, pin: "1" },
-		{ partId: part2.id, pin: "1" },
-	]);
-	const netGnd = createNet("GND", [
-		{ partId: part1.id, pin: "2" },
-		{ partId: part2.id, pin: "2" },
-	]);
-	const railConstraint = createConstraint("rail", "VCC");
+function createIR({
+	name = "Board",
+	parts = [],
+	nets = [],
+	constraints = [],
+} = {}) {
 	return {
 		schemaVersion: 1,
+		name,
+		parts,
+		nets,
+		constraints,
+	};
+}
+
+function connectPins(name, [partA, pinA], [partB, pinB]) {
+	return createNet(name, [
+		{ partId: partA.id, pin: pinA },
+		{ partId: partB.id, pin: pinB },
+	]);
+}
+
+function createCleanIR() {
+	const [part1, part2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+	return createIR({
 		name: "CleanBoard",
 		parts: [part1, part2],
-		nets: [netVcc, netGnd],
-		constraints: [railConstraint],
-	};
+		nets: [
+			connectPins("VCC", [part1, "1"], [part2, "1"]),
+			connectPins("GND", [part1, "2"], [part2, "2"]),
+		],
+		constraints: [createConstraint("rail", "VCC")],
+	});
 }
 
 function assertValidIssues(issues) {
 	for (const issue of issues) {
-		const res = validateIssue(issue);
-		assert.equal(
-			res.ok,
-			true,
-			`Issue failed validateIssue: ${res.errors.join(", ")}`,
+		const validation = validateIssue(issue);
+		assert.ok(
+			validation.ok,
+			`Issue failed validateIssue: ${validation.errors.join(", ")}`,
 		);
-		assert.equal(issue.source, "erc");
-		assert.equal(issue.status, "open");
+		assert.deepEqual([issue.source, issue.status], ["erc", "open"]);
 	}
 }
 
+function assertIssue(issue, expected) {
+	assert.ok(issue, "expected issue to exist");
+	for (const [key, value] of Object.entries(expected)) {
+		assert.deepEqual(issue[key], value);
+	}
+}
+
+function runAndCheckIssues(ir, expectedCount) {
+	const issues = runErc(ir, { commit: DEFAULT_COMMIT });
+	assert.equal(issues.length, expectedCount);
+	assertValidIssues(issues);
+	return issues;
+}
+
+const CASES = [
+	{
+		name: "clean IR returns zero issues",
+		run() {
+			const ir = createCleanIR();
+			const issues = runErc(ir, { commit: DEFAULT_COMMIT });
+			assert.deepEqual(issues, []);
+		},
+	},
+	{
+		name: "flags net with fewer than 2 pins as error",
+		run() {
+			const part = createPart({ ref: "R1" });
+			const netSingle = createNet("SENSE", [{ partId: part.id, pin: "1" }]);
+			const netEmpty = createNet("UNUSED", []);
+			const ir = createIR({
+				name: "FewPinsBoard",
+				parts: [part],
+				nets: [netSingle, netEmpty],
+			});
+
+			const issues = runAndCheckIssues(ir, 2);
+			const expectedList = [
+				{
+					itemId: netSingle.id,
+					severity: "error",
+					message: "net SENSE has only 1 pin(s)",
+					suggestion: "connect it or delete the net",
+					commit: DEFAULT_COMMIT,
+				},
+				{
+					itemId: netEmpty.id,
+					severity: "error",
+					message: "net UNUSED has only 0 pin(s)",
+					suggestion: "connect it or delete the net",
+				},
+			];
+			for (const { itemId, ...expected } of expectedList) {
+				const issue = issues.find((i) => i.itemIds.includes(itemId));
+				assertIssue(issue, expected);
+			}
+		},
+	},
+	{
+		name: "flags part not connected to any net as warning",
+		run() {
+			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+			const u1 = createPart({ ref: "U1" });
+			const ir = createIR({
+				name: "FloatingPartBoard",
+				parts: [r1, r2, u1],
+				nets: [connectPins("NET1", [r1, "1"], [r2, "1"])],
+			});
+
+			const issues = runAndCheckIssues(ir, 1);
+			assertIssue(issues[0], {
+				severity: "warning",
+				itemIds: [u1.id],
+				message: "U1 is not connected to any net",
+				commit: DEFAULT_COMMIT,
+			});
+		},
+	},
+	{
+		name: "flags same part pin on two different nets as error",
+		run() {
+			const [u1, u2] = [createPart({ ref: "U1" }), createPart({ ref: "U2" })];
+			const netA = connectPins("NET_A", [u1, "4"], [u2, "1"]);
+			const netB = connectPins("NET_B", [u1, "4"], [u2, "2"]);
+			const ir = createIR({
+				name: "ShortBoard",
+				parts: [u1, u2],
+				nets: [netA, netB],
+			});
+
+			const issues = runAndCheckIssues(ir, 1);
+			assertIssue(issues[0], {
+				severity: "error",
+				itemIds: [u1.id, netA.id, netB.id],
+				message: "U1 pin 4 is on nets NET_A and NET_B",
+			});
+		},
+	},
+	{
+		name: "flags power rail net without rail constraint as info",
+		run() {
+			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+			const netVdd = connectPins("VDD", [r1, "1"], [r2, "1"]);
+			const ir = createIR({
+				name: "PowerNoConstraintBoard",
+				parts: [r1, r2],
+				nets: [netVdd],
+			});
+
+			const issues = runAndCheckIssues(ir, 1);
+			assertIssue(issues[0], {
+				severity: "info",
+				itemIds: [netVdd.id],
+				message: "power net VDD has no rail constraint",
+				suggestion: "add a rail constraint so the simulator can check IR drop",
+			});
+		},
+	},
+	{
+		name: "accepts power rail constraint by net name or net id",
+		run() {
+			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+			const net3v3 = connectPins("3V3", [r1, "1"], [r2, "1"]);
+			const net5v = connectPins("5V", [r1, "2"], [r2, "2"]);
+			const ir = createIR({
+				name: "PowerWithConstraintBoard",
+				parts: [r1, r2],
+				nets: [net3v3, net5v],
+				constraints: [
+					createConstraint("rail", "3V3"),
+					createConstraint("rail", net5v.id),
+				],
+			});
+
+			const issues = runErc(ir, { commit: DEFAULT_COMMIT });
+			assert.deepEqual(issues, []);
+		},
+	},
+	{
+		name: "flags part without footprint as error",
+		run() {
+			const [u1, u2] = [
+				createPart({ ref: "U1", footprint: "" }),
+				createPart({ ref: "U2", footprint: undefined }),
+			];
+			const ir = createIR({
+				name: "MissingFootprintBoard",
+				parts: [u1, u2],
+				nets: [connectPins("NET1", [u1, "1"], [u2, "1"])],
+			});
+
+			const issues = runAndCheckIssues(ir, 2);
+			const expectedList = [
+				{ itemId: u1.id, message: "U1 has no footprint" },
+				{ itemId: u2.id, message: "U2 has no footprint" },
+			];
+			for (const { itemId, message } of expectedList) {
+				const issue = issues.find((i) => i.itemIds.includes(itemId));
+				assertIssue(issue, { severity: "error", message });
+			}
+		},
+	},
+	{
+		name: "sorts issues stably: severity (error, warning, info) then message",
+		run() {
+			const partFloating = createPart({ ref: "C1" });
+			const partNoFp = createPart({ ref: "U9", footprint: "" });
+			const netSingle = createNet("A_NET", [{ partId: partNoFp.id, pin: "1" }]);
+			const netPower = createNet("VIN", [
+				{ partId: partNoFp.id, pin: "2" },
+				{ partId: partNoFp.id, pin: "3" },
+			]);
+			const ir = createIR({
+				name: "MultiIssueBoard",
+				parts: [partFloating, partNoFp],
+				nets: [netSingle, netPower],
+			});
+
+			const issues = runAndCheckIssues(ir, 4);
+
+			// Order: error, warning, info
+			// Errors: "U9 has no footprint" vs "net A_NET has only 1 pin(s)"
+			// Alphabetically ("U" < "n"): "U9 has no footprint" comes before "net A_NET has only 1 pin(s)"
+			const expectedSequence = [
+				{ severity: "error", message: "U9 has no footprint" },
+				{ severity: "error", message: "net A_NET has only 1 pin(s)" },
+				{ severity: "warning", message: "C1 is not connected to any net" },
+				{ severity: "info", message: "power net VIN has no rail constraint" },
+			];
+			for (const [i, expected] of expectedSequence.entries()) {
+				assertIssue(issues[i], expected);
+			}
+		},
+	},
+];
+
 describe("engine-erc", () => {
-	test("clean IR returns zero issues", () => {
-		const ir = createCleanIR();
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.deepEqual(issues, []);
-	});
-
-	test("flags net with fewer than 2 pins as error", () => {
-		const part = createPart({ ref: "R1" });
-		const netSingle = createNet("SENSE", [{ partId: part.id, pin: "1" }]);
-		const netEmpty = createNet("UNUSED", []);
-		const ir = {
-			schemaVersion: 1,
-			name: "FewPinsBoard",
-			parts: [part],
-			nets: [netSingle, netEmpty],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 2);
-		assertValidIssues(issues);
-
-		const issueSingle = issues.find((i) => i.itemIds.includes(netSingle.id));
-		assert.ok(issueSingle);
-		assert.equal(issueSingle.severity, "error");
-		assert.equal(issueSingle.message, "net SENSE has only 1 pin(s)");
-		assert.equal(issueSingle.suggestion, "connect it or delete the net");
-		assert.equal(issueSingle.commit, DEFAULT_COMMIT);
-
-		const issueEmpty = issues.find((i) => i.itemIds.includes(netEmpty.id));
-		assert.ok(issueEmpty);
-		assert.equal(issueEmpty.severity, "error");
-		assert.equal(issueEmpty.message, "net UNUSED has only 0 pin(s)");
-		assert.equal(issueEmpty.suggestion, "connect it or delete the net");
-	});
-
-	test("flags part not connected to any net as warning", () => {
-		const partConnected1 = createPart({ ref: "R1" });
-		const partConnected2 = createPart({ ref: "R2" });
-		const partFloating = createPart({ ref: "U1" });
-		const net = createNet("NET1", [
-			{ partId: partConnected1.id, pin: "1" },
-			{ partId: partConnected2.id, pin: "1" },
-		]);
-		const ir = {
-			schemaVersion: 1,
-			name: "FloatingPartBoard",
-			parts: [partConnected1, partConnected2, partFloating],
-			nets: [net],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 1);
-		assertValidIssues(issues);
-
-		const issue = issues[0];
-		assert.equal(issue.severity, "warning");
-		assert.deepEqual(issue.itemIds, [partFloating.id]);
-		assert.equal(issue.message, "U1 is not connected to any net");
-		assert.equal(issue.commit, DEFAULT_COMMIT);
-	});
-
-	test("flags same part pin on two different nets as error", () => {
-		const part1 = createPart({ ref: "U1" });
-		const part2 = createPart({ ref: "U2" });
-		const netA = createNet("NET_A", [
-			{ partId: part1.id, pin: "4" },
-			{ partId: part2.id, pin: "1" },
-		]);
-		const netB = createNet("NET_B", [
-			{ partId: part1.id, pin: "4" },
-			{ partId: part2.id, pin: "2" },
-		]);
-		const ir = {
-			schemaVersion: 1,
-			name: "ShortBoard",
-			parts: [part1, part2],
-			nets: [netA, netB],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 1);
-		assertValidIssues(issues);
-
-		const issue = issues[0];
-		assert.equal(issue.severity, "error");
-		assert.deepEqual(issue.itemIds, [part1.id, netA.id, netB.id]);
-		assert.equal(issue.message, "U1 pin 4 is on nets NET_A and NET_B");
-	});
-
-	test("flags power rail net without rail constraint as info", () => {
-		const part1 = createPart({ ref: "R1" });
-		const part2 = createPart({ ref: "R2" });
-		const netVdd = createNet("VDD", [
-			{ partId: part1.id, pin: "1" },
-			{ partId: part2.id, pin: "1" },
-		]);
-		const ir = {
-			schemaVersion: 1,
-			name: "PowerNoConstraintBoard",
-			parts: [part1, part2],
-			nets: [netVdd],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 1);
-		assertValidIssues(issues);
-
-		const issue = issues[0];
-		assert.equal(issue.severity, "info");
-		assert.deepEqual(issue.itemIds, [netVdd.id]);
-		assert.equal(issue.message, "power net VDD has no rail constraint");
-		assert.equal(
-			issue.suggestion,
-			"add a rail constraint so the simulator can check IR drop",
-		);
-	});
-
-	test("accepts power rail constraint by net name or net id", () => {
-		const part1 = createPart({ ref: "R1" });
-		const part2 = createPart({ ref: "R2" });
-		const net3v3 = createNet("3V3", [
-			{ partId: part1.id, pin: "1" },
-			{ partId: part2.id, pin: "1" },
-		]);
-		const net5v = createNet("5V", [
-			{ partId: part1.id, pin: "2" },
-			{ partId: part2.id, pin: "2" },
-		]);
-		const ir = {
-			schemaVersion: 1,
-			name: "PowerWithConstraintBoard",
-			parts: [part1, part2],
-			nets: [net3v3, net5v],
-			constraints: [
-				createConstraint("rail", "3V3"),
-				createConstraint("rail", net5v.id),
-			],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.deepEqual(issues, []);
-	});
-
-	test("flags part without footprint as error", () => {
-		const partNoFp1 = createPart({ ref: "U1", footprint: "" });
-		const partNoFp2 = createPart({ ref: "U2", footprint: undefined });
-		const net = createNet("NET1", [
-			{ partId: partNoFp1.id, pin: "1" },
-			{ partId: partNoFp2.id, pin: "1" },
-		]);
-		const ir = {
-			schemaVersion: 1,
-			name: "MissingFootprintBoard",
-			parts: [partNoFp1, partNoFp2],
-			nets: [net],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 2);
-		assertValidIssues(issues);
-
-		const issueU1 = issues.find((i) => i.itemIds.includes(partNoFp1.id));
-		assert.ok(issueU1);
-		assert.equal(issueU1.severity, "error");
-		assert.equal(issueU1.message, "U1 has no footprint");
-
-		const issueU2 = issues.find((i) => i.itemIds.includes(partNoFp2.id));
-		assert.ok(issueU2);
-		assert.equal(issueU2.severity, "error");
-		assert.equal(issueU2.message, "U2 has no footprint");
-	});
-
-	test("sorts issues stably: severity (error, warning, info) then message", () => {
-		const partFloating = createPart({ ref: "C1" }); // warning: C1 is not connected to any net
-		const partNoFp = createPart({ ref: "U9", footprint: "" }); // error: U9 has no footprint
-		const netSingle = createNet("A_NET", [{ partId: partNoFp.id, pin: "1" }]); // error: net A_NET has only 1 pin(s)
-		const netPower = createNet("VIN", [
-			{ partId: partNoFp.id, pin: "2" },
-			{ partId: partNoFp.id, pin: "3" },
-		]); // info: power net VIN has no rail constraint
-
-		const ir = {
-			schemaVersion: 1,
-			name: "MultiIssueBoard",
-			parts: [partFloating, partNoFp],
-			nets: [netSingle, netPower],
-			constraints: [],
-		};
-
-		const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-		assert.equal(issues.length, 4);
-		assertValidIssues(issues);
-
-		// Order: error, warning, info
-		// Errors: "U9 has no footprint" vs "net A_NET has only 1 pin(s)"
-		// Alphabetically ("U" < "n"): "U9 has no footprint" comes before "net A_NET has only 1 pin(s)"
-		assert.equal(issues[0].severity, "error");
-		assert.equal(issues[0].message, "U9 has no footprint");
-
-		assert.equal(issues[1].severity, "error");
-		assert.equal(issues[1].message, "net A_NET has only 1 pin(s)");
-
-		assert.equal(issues[2].severity, "warning");
-		assert.equal(issues[2].message, "C1 is not connected to any net");
-
-		assert.equal(issues[3].severity, "info");
-		assert.equal(issues[3].message, "power net VIN has no rail constraint");
-	});
+	for (const { name, run } of CASES) {
+		test(name, run);
+	}
 });
