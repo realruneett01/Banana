@@ -8,6 +8,85 @@ import { useLocalGitRepo } from "./useLocalGitRepo.js";
 import { findCopilotModIndex } from "./utils/auditLogUtils.js";
 import { createPadLabelProps } from "./utils/diffLayerUtils.js";
 
+function pick(source, keys) {
+	const out = {};
+	for (let i = 0; i < keys.length; i++) {
+		const k = keys[i];
+		out[k] = source[k];
+	}
+	return out;
+}
+
+const COLLAPSE_KEYS = [
+	"leftCollapsed",
+	"setLeftCollapsed",
+	"rightCollapsed",
+	"setRightCollapsed",
+];
+
+const REVISION_KEYS = [
+	"repoPath",
+	"baseCommit",
+	"targetCommit",
+	"relativeFilePath",
+];
+
+const LAYER_KEYS = [
+	"diffMode",
+	"setDiffMode",
+	"selectedLayers",
+	"setSelectedLayers",
+	"soloLayer",
+	"setSoloLayer",
+	"layerOpacities",
+	"setLayerOpacities",
+];
+
+const EVOLUTION_KEYS = [
+	"evolutionEnabled",
+	"evolutionData",
+	"evolutionStep",
+	"evolutionPlaying",
+	"evolutionLoading",
+	"evolutionMode",
+	"toggleEvolutionMode",
+	"loadEvolutionStep",
+	"setEvolutionPlaying",
+	"setEvolutionMode",
+];
+
+const LOCAL_REPO_KEYS = [
+	"loadRepoInfo",
+	"repoInfo",
+	"compareBranches",
+	"setCompareBranches",
+	"changedFiles",
+	"setChangedFiles",
+	"fetchChangedFiles",
+];
+
+const VIEWPORT_VIEWER_KEYS = [
+	"diffMode",
+	"leftCollapsed",
+	"setLeftCollapsed",
+	"rightCollapsed",
+	"setRightCollapsed",
+	"selectedLayers",
+	"soloLayer",
+	"layerOpacities",
+	"activeAuditIdx",
+	"setActiveAuditIdx",
+	"sliderValue",
+	"setSliderValue",
+];
+
+const DIFF_LOADER_EVOLUTION_KEYS = [
+	"directDiffDataRef",
+	"setEvolutionEnabled",
+	"setEvolutionPlaying",
+	"checkEvolutionPath",
+];
+
 function findActiveAuditItem(modifications, activeAuditIdx) {
 	if (activeAuditIdx === null) {
 		return null;
@@ -56,57 +135,19 @@ function buildBoardContext(options) {
 }
 
 function extractCollapseProps(viewer) {
-	return {
-		leftCollapsed: viewer.leftCollapsed,
-		setLeftCollapsed: viewer.setLeftCollapsed,
-		rightCollapsed: viewer.rightCollapsed,
-		setRightCollapsed: viewer.setRightCollapsed,
-	};
+	return pick(viewer, COLLAPSE_KEYS);
 }
 
 function extractRevisionPaths(revisions) {
-	return {
-		repoPath: revisions.repoPath,
-		baseCommit: revisions.baseCommit,
-		targetCommit: revisions.targetCommit,
-		relativeFilePath: revisions.relativeFilePath,
-	};
+	return pick(revisions, REVISION_KEYS);
 }
 
 function buildSidebarProps(options) {
-	const {
-		leftCollapsed,
-		setLeftCollapsed,
-		onFolderDrop,
-		gh,
-		localProps,
-		githubProps,
-		layerProps,
-	} = options;
+	const { gh, ...rest } = options;
 	return {
-		leftCollapsed,
-		setLeftCollapsed,
-		onFolderDrop,
+		...rest,
 		sourceMode: gh.sourceMode,
 		onSourceModeChange: gh.handleSourceModeChange,
-		localProps,
-		githubProps,
-		layerProps,
-	};
-}
-
-function buildEvolutionViewportProps(evolution) {
-	return {
-		evolutionEnabled: evolution.evolutionEnabled,
-		evolutionData: evolution.evolutionData,
-		evolutionStep: evolution.evolutionStep,
-		evolutionPlaying: evolution.evolutionPlaying,
-		evolutionLoading: evolution.evolutionLoading,
-		evolutionMode: evolution.evolutionMode,
-		toggleEvolutionMode: evolution.toggleEvolutionMode,
-		loadEvolutionStep: evolution.loadEvolutionStep,
-		setEvolutionPlaying: evolution.setEvolutionPlaying,
-		setEvolutionMode: evolution.setEvolutionMode,
 	};
 }
 
@@ -123,22 +164,14 @@ function buildViewportProps(options) {
 
 	return {
 		diffData: activeDiffData,
-		diffMode: viewer.diffMode,
 		relativeFilePath: revisions.relativeFilePath,
-		...extractCollapseProps(viewer),
-		sideBySideRef,
-		diffCanvasRef,
-		selectedLayers: viewer.selectedLayers,
-		soloLayer: viewer.soloLayer,
-		layerOpacities: viewer.layerOpacities,
 		baseCommit: revisions.baseCommit,
 		targetCommit: revisions.targetCommit,
-		activeAuditIdx: viewer.activeAuditIdx,
-		setActiveAuditIdx: viewer.setActiveAuditIdx,
-		sliderValue: viewer.sliderValue,
-		setSliderValue: viewer.setSliderValue,
-		...buildEvolutionViewportProps(evolution),
+		sideBySideRef,
+		diffCanvasRef,
 		padLabelProps,
+		...pick(viewer, VIEWPORT_VIEWER_KEYS),
+		...pick(evolution, EVOLUTION_KEYS),
 	};
 }
 
@@ -219,14 +252,8 @@ export function useWorkspaceViewerState() {
 function buildLocalProps({ revisions, form, localRepo, diffLoader }) {
 	return {
 		...revisions,
+		...pick(localRepo, LOCAL_REPO_KEYS),
 		form,
-		loadRepoInfo: localRepo.loadRepoInfo,
-		repoInfo: localRepo.repoInfo,
-		compareBranches: localRepo.compareBranches,
-		setCompareBranches: localRepo.setCompareBranches,
-		changedFiles: localRepo.changedFiles,
-		setChangedFiles: localRepo.setChangedFiles,
-		fetchChangedFiles: localRepo.fetchChangedFiles,
 		loading: diffLoader.loading,
 		onFetchDiff: diffLoader.fetchDiff,
 		onFileDropped: localRepo.handleFileDraggedOrDropped,
@@ -247,16 +274,7 @@ function buildGithubProps({ revisions, gh, diffLoader }) {
 }
 
 function extractLayerProps(viewer) {
-	return {
-		diffMode: viewer.diffMode,
-		setDiffMode: viewer.setDiffMode,
-		selectedLayers: viewer.selectedLayers,
-		setSelectedLayers: viewer.setSelectedLayers,
-		soloLayer: viewer.soloLayer,
-		setSoloLayer: viewer.setSoloLayer,
-		layerOpacities: viewer.layerOpacities,
-		setLayerOpacities: viewer.setLayerOpacities,
-	};
+	return pick(viewer, LAYER_KEYS);
 }
 
 function assembleSubsystemProps(ctx) {
@@ -345,10 +363,7 @@ export function useWorkspaceDiffSync({ revisions, gh }) {
 	const diffLoader = useDiffLoader({
 		githubToken: gh.githubToken,
 		setGithubModalOpen: gh.setGithubModalOpen,
-		directDiffDataRef: evolution.directDiffDataRef,
-		setEvolutionEnabled: evolution.setEvolutionEnabled,
-		setEvolutionPlaying: evolution.setEvolutionPlaying,
-		checkEvolutionPath: evolution.checkEvolutionPath,
+		...pick(evolution, DIFF_LOADER_EVOLUTION_KEYS),
 	});
 
 	useEffect(() => {
@@ -361,26 +376,14 @@ export function useWorkspaceDiffSync({ revisions, gh }) {
 }
 
 function useWorkspaceLocalRepo(form, revisions) {
-	return useLocalGitRepo({
-		form,
-		repoPath: revisions.repoPath,
-		setRepoPath: revisions.setRepoPath,
-		relativeFilePath: revisions.relativeFilePath,
-		setRelativeFilePath: revisions.setRelativeFilePath,
-		setBaseCommit: revisions.setBaseCommit,
-		setTargetCommit: revisions.setTargetCommit,
-	});
+	return useLocalGitRepo({ form, ...revisions });
 }
 
 function useWorkspaceFocus(viewer, sideBySideRef, diffCanvasRef) {
 	return useDiffFocus({
-		diffMode: viewer.diffMode,
 		sideBySideRef,
 		diffCanvasRef,
-		activeAuditIdx: viewer.activeAuditIdx,
-		setActiveAuditIdx: viewer.setActiveAuditIdx,
-		selectedLayers: viewer.selectedLayers,
-		setSelectedLayers: viewer.setSelectedLayers,
+		...viewer,
 	});
 }
 
@@ -436,28 +439,47 @@ function assembleWorkspaceState(ctx) {
 	});
 }
 
-export function useWorkspaceState() {
-	const [form] = Form.useForm();
-	const sideBySideRef = useRef(null);
-	const diffCanvasRef = useRef(null);
-	const revisions = useWorkspaceRevisions();
-	const viewer = useWorkspaceViewerState();
-
+function useWorkspaceIntegrations(form, revisions) {
 	const localRepo = useWorkspaceLocalRepo(form, revisions);
 	const gh = useBackendHealthAndGithub({
 		onMountRepoInit: () => localRepo.loadRepoInfo(revisions.repoPath, true),
 	});
+	const diffSync = useWorkspaceDiffSync({ revisions, gh });
+	return { localRepo, gh, ...diffSync };
+}
 
-	const { evolution, diffLoader, activeDiffData } = useWorkspaceDiffSync({
-		revisions,
-		gh,
-	});
+function useWorkspaceInteractions({
+	activeDiffData,
+	viewer,
+	sideBySideRef,
+	diffCanvasRef,
+	revisions,
+	gh,
+}) {
 	const focus = useWorkspaceFocus(viewer, sideBySideRef, diffCanvasRef);
 	const padLabelProps = useWorkspacePadLabelProps(revisions, gh);
 	const handleSelectCopilotMod = useWorkspaceCopilotModSelect(
 		activeDiffData,
 		focus,
 	);
+	return { focus, padLabelProps, handleSelectCopilotMod };
+}
+
+export function useWorkspaceState() {
+	const [form] = Form.useForm();
+	const sideBySideRef = useRef(null);
+	const diffCanvasRef = useRef(null);
+	const revisions = useWorkspaceRevisions();
+	const viewer = useWorkspaceViewerState();
+	const integrations = useWorkspaceIntegrations(form, revisions);
+	const interactions = useWorkspaceInteractions({
+		activeDiffData: integrations.activeDiffData,
+		viewer,
+		sideBySideRef,
+		diffCanvasRef,
+		revisions,
+		gh: integrations.gh,
+	});
 
 	return assembleWorkspaceState({
 		form,
@@ -465,13 +487,7 @@ export function useWorkspaceState() {
 		diffCanvasRef,
 		revisions,
 		viewer,
-		localRepo,
-		gh,
-		diffLoader,
-		evolution,
-		activeDiffData,
-		focus,
-		padLabelProps,
-		handleSelectCopilotMod,
+		...integrations,
+		...interactions,
 	});
 }
