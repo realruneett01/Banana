@@ -17,6 +17,49 @@ const {
 	clearEncryptedToken,
 } = require("../../electron/github-auth.cjs");
 
+function createMockSafeStorage(options = {}) {
+	const { available = true, prefix = "enc:", failOnDecrypt = false } = options;
+	if (!available) {
+		return { isEncryptionAvailable: () => false };
+	}
+	return {
+		isEncryptionAvailable: () => true,
+		encryptString: (str) => Buffer.from(`${prefix}${str}`, "utf8"),
+		decryptString: (buf) => {
+			if (failOnDecrypt) {
+				throw new Error("OS Keychain is temporarily locked");
+			}
+			const str = buf.toString("utf8");
+			if (!str.startsWith(prefix)) {
+				throw new Error("Decryption failed");
+			}
+			return str.replace(new RegExp(`^${prefix}`), "");
+		},
+	};
+}
+
+function saveAndAssertToken(token, mockSafeStorage, filePath) {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	const saved = saveEncryptedToken(token, mockSafeStorage, filePath);
+	assert.deepEqual(
+		{ saved, exists: fs.existsSync(filePath) },
+		{ saved: true, exists: true },
+	);
+	return saved;
+}
+
+function seedLegacyTokenFile(filePath, token) {
+	fs.mkdirSync(path.dirname(filePath), { recursive: true });
+	fs.writeFileSync(filePath, Buffer.from(token).toString("base64"), "utf8");
+}
+
+function assertLoadedTokenAndFileRemoved(loaded, expectedToken, filePath) {
+	assert.deepEqual(
+		{ loaded, exists: fs.existsSync(filePath) },
+		{ loaded: expectedToken, exists: false },
+	);
+}
+
 describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 	describe("Credential Parsers", () => {
 		test("parseGitCredential parses password from git credential stdout", () => {
@@ -33,19 +76,20 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 		});
 
 		test("parseGitCredential returns null when password is missing or empty", () => {
-			assert.equal(
-				parseGitCredential("protocol=https\nhost=github.com\n"),
+			const INVALID_CREDENTIAL_INPUTS = [
+				"protocol=https\nhost=github.com\n",
+				"password=\n",
 				null,
-			);
-			assert.equal(parseGitCredential("password=\n"), null);
-			assert.equal(parseGitCredential(null), null);
-			assert.equal(parseGitCredential(""), null);
+				"",
+			];
+			for (const input of INVALID_CREDENTIAL_INPUTS) {
+				assert.equal(parseGitCredential(input), null);
+			}
 		});
 
 		test("checkGhCliToken returns token when gh CLI is logged in", async () => {
-			const mockExec = (cmd, args, opts, cb) => {
-				assert.equal(cmd, "gh");
-				assert.deepEqual(args, ["auth", "token"]);
+			const mockExec = (cmd, args, _opts, cb) => {
+				assert.deepEqual({ cmd, args }, { cmd: "gh", args: ["auth", "token"] });
 				cb(null, "gho_cli_token_99999\n");
 			};
 
@@ -54,7 +98,7 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 		});
 
 		test("checkGhCliToken returns null when gh is not logged in or missing", async () => {
-			const mockExecError = (cmd, args, opts, cb) => {
+			const mockExecError = (_cmd, _args, _opts, cb) => {
 				cb(new Error("command not found: gh"), "");
 			};
 
@@ -66,12 +110,13 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 			let writtenData = "";
 			let streamEnded = false;
 
-			const mockExec = (cmd, args, opts, cb) => {
-				assert.equal(cmd, "git");
-				assert.deepEqual(args, ["credential", "fill"]);
+			const mockExec = (cmd, args, _opts, cb) => {
+				assert.deepEqual(
+					{ cmd, args },
+					{ cmd: "git", args: ["credential", "fill"] },
+				);
 
-				// Return dummy child process with stdin
-				const child = {
+				return {
 					stdin: {
 						write: (data) => {
 							writtenData += data;
@@ -85,21 +130,27 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 						},
 					},
 				};
-				return child;
 			};
 
 			const token = await checkGitCredentialToken(mockExec);
-			assert.equal(writtenData, "protocol=https\nhost=github.com\n\n");
-			assert.equal(streamEnded, true);
-			assert.equal(token, "gho_git_token_88888");
+			assert.deepEqual(
+				{ writtenData, streamEnded, token },
+				{
+					writtenData: "protocol=https\nhost=github.com\n\n",
+					streamEnded: true,
+					token: "gho_git_token_88888",
+				},
+			);
 		});
 	});
 
 	describe("Token Verification & System Detection", () => {
 		test("verifyTokenWithGithub returns valid:true and user on 200 OK", async () => {
 			const mockFetch = async (url, options) => {
-				assert.equal(url, "https://api.github.com/user");
-				assert.equal(options.headers.Authorization, "Bearer gho_valid");
+				assert.deepEqual(
+					{ url, auth: options.headers.Authorization },
+					{ url: "https://api.github.com/user", auth: "Bearer gho_valid" },
+				);
 				return {
 					ok: true,
 					json: async () => ({
@@ -112,9 +163,10 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 			};
 
 			const res = await verifyTokenWithGithub("gho_valid", mockFetch);
-			assert.equal(res.valid, true);
-			assert.equal(res.user.login, "octocat");
-			assert.equal(res.user.id, 583231);
+			assert.deepEqual(
+				{ valid: res.valid, login: res.user.login, id: res.user.id },
+				{ valid: true, login: "octocat", id: 583231 },
+			);
 		});
 
 		test("verifyTokenWithGithub returns valid:false on 401 Unauthorized", async () => {
@@ -124,8 +176,10 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 			});
 
 			const res = await verifyTokenWithGithub("gho_invalid", mockFetch);
-			assert.equal(res.valid, false);
-			assert.equal(res.user, null);
+			assert.deepEqual(
+				{ valid: res.valid, user: res.user },
+				{ valid: false, user: null },
+			);
 		});
 
 		const DETECTION_CASES = [
@@ -157,10 +211,20 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 						user: { login: c.login, name: c.login, avatarUrl: "", id: 1 },
 					}),
 				});
-				assert.equal(result.detected, true);
-				assert.equal(result.source, c.source);
-				assert.equal(result.token, c.token);
-				assert.equal(result.user.login, c.login);
+				assert.deepEqual(
+					{
+						detected: result.detected,
+						source: result.source,
+						token: result.token,
+						login: result.user.login,
+					},
+					{
+						detected: true,
+						source: c.source,
+						token: c.token,
+						login: c.login,
+					},
+				);
 			});
 		}
 
@@ -179,11 +243,21 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 	describe("Device Flow (RFC 8628)", () => {
 		test("startDeviceFlow calls GitHub device endpoint and returns codes", async () => {
 			const mockFetch = async (url, options) => {
-				assert.equal(url, "https://github.com/login/device/code");
-				assert.equal(options.method, "POST");
 				const body = JSON.parse(options.body);
-				assert.equal(body.client_id, "test_client_id");
-				assert.equal(body.scope, "repo,read:user");
+				assert.deepEqual(
+					{
+						url,
+						method: options.method,
+						clientId: body.client_id,
+						scope: body.scope,
+					},
+					{
+						url: "https://github.com/login/device/code",
+						method: "POST",
+						clientId: "test_client_id",
+						scope: "repo,read:user",
+					},
+				);
 				return {
 					ok: true,
 					json: async () => ({
@@ -197,9 +271,18 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 			};
 
 			const result = await startDeviceFlow("test_client_id", mockFetch);
-			assert.equal(result.device_code, "dev_code_123");
-			assert.equal(result.user_code, "ABCD-1234");
-			assert.equal(result.interval, 5);
+			assert.deepEqual(
+				{
+					device_code: result.device_code,
+					user_code: result.user_code,
+					interval: result.interval,
+				},
+				{
+					device_code: "dev_code_123",
+					user_code: "ABCD-1234",
+					interval: 5,
+				},
+			);
 		});
 
 		const POLL_ERROR_STATES = [
@@ -236,8 +319,13 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 				"test_client",
 				mockFetch,
 			);
-			assert.equal(res.access_token, "gho_granted_access_token_777");
-			assert.equal(res.scope, "repo,read:user");
+			assert.deepEqual(
+				{ access_token: res.access_token, scope: res.scope },
+				{
+					access_token: "gho_granted_access_token_777",
+					scope: "repo,read:user",
+				},
+			);
 		});
 	});
 
@@ -246,42 +334,30 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 		const testTokenPath = path.join(testDir, "test_token.enc");
 
 		test("saves and loads encrypted token with safeStorage mock", () => {
-			fs.mkdirSync(testDir, { recursive: true });
-
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => true,
-				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
-				decryptString: (buf) => buf.toString("utf8").replace(/^enc:/, ""),
-			};
-
-			const saved = saveEncryptedToken(
-				"gho_super_secret",
-				mockSafeStorage,
-				testTokenPath,
-			);
-			assert.equal(saved, true);
-			assert.equal(fs.existsSync(testTokenPath), true);
+			const mockSafeStorage = createMockSafeStorage();
+			saveAndAssertToken("gho_super_secret", mockSafeStorage, testTokenPath);
 
 			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
 			assert.equal(loaded, "gho_super_secret");
 
 			const cleared = clearEncryptedToken(testTokenPath);
-			assert.equal(cleared, true);
-			assert.equal(fs.existsSync(testTokenPath), false);
+			assert.deepEqual(
+				{ cleared, exists: fs.existsSync(testTokenPath) },
+				{ cleared: true, exists: false },
+			);
 		});
 
 		test("falls back gracefully to base64 obfuscation when safeStorage is unavailable", () => {
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => false,
-			};
-
+			const mockSafeStorage = createMockSafeStorage({ available: false });
 			const saved = saveEncryptedToken(
 				"gho_fallback_secret",
 				mockSafeStorage,
 				testTokenPath,
 			);
-			assert.equal(saved, false);
-			assert.equal(fs.existsSync(testTokenPath), false);
+			assert.deepEqual(
+				{ saved, exists: fs.existsSync(testTokenPath) },
+				{ saved: false, exists: false },
+			);
 		});
 
 		test("writes encrypted file with 0o600 mode", {
@@ -290,21 +366,8 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 					? "File mode permissions (0o600) are not supported on win32"
 					: false,
 		}, () => {
-			fs.mkdirSync(testDir, { recursive: true });
-
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => true,
-				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
-				decryptString: (buf) => buf.toString("utf8").replace(/^enc:/, ""),
-			};
-
-			const saved = saveEncryptedToken(
-				"gho_mode_secret",
-				mockSafeStorage,
-				testTokenPath,
-			);
-			assert.equal(saved, true);
-			assert.equal(fs.existsSync(testTokenPath), true);
+			const mockSafeStorage = createMockSafeStorage();
+			saveAndAssertToken("gho_mode_secret", mockSafeStorage, testTokenPath);
 
 			const stats = fs.statSync(testTokenPath);
 			assert.equal(stats.mode & 0o777, 0o600);
@@ -313,20 +376,15 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 		});
 
 		test("loads legacy base64 token once, deletes file, and never writes base64", () => {
-			fs.mkdirSync(testDir, { recursive: true });
-			fs.writeFileSync(
-				testTokenPath,
-				Buffer.from("gho_legacy_secret").toString("base64"),
-				"utf8",
-			);
+			seedLegacyTokenFile(testTokenPath, "gho_legacy_secret");
 
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => false,
-			};
-
+			const mockSafeStorage = createMockSafeStorage({ available: false });
 			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
-			assert.equal(loaded, "gho_legacy_secret");
-			assert.equal(fs.existsSync(testTokenPath), false);
+			assertLoadedTokenAndFileRemoved(
+				loaded,
+				"gho_legacy_secret",
+				testTokenPath,
+			);
 
 			const secondLoad = loadEncryptedToken(mockSafeStorage, testTokenPath);
 			assert.equal(secondLoad, null);
@@ -340,42 +398,23 @@ describe("GitHub Auth Unit Tests (Phase 7 / T7.1)", () => {
 				{ mode: 0o600 },
 			);
 
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => true,
-				decryptString: () => {
-					throw new Error("OS Keychain is temporarily locked");
-				},
-			};
-
+			const mockSafeStorage = createMockSafeStorage({ failOnDecrypt: true });
 			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
-			assert.equal(loaded, null);
-			assert.equal(fs.existsSync(testTokenPath), true);
+			assert.deepEqual(
+				{ loaded, exists: fs.existsSync(testTokenPath) },
+				{ loaded: null, exists: true },
+			);
 
 			clearEncryptedToken(testTokenPath);
 		});
 
 		test("legacy base64 GitHub token -> migrated and file removed", () => {
-			fs.mkdirSync(testDir, { recursive: true });
 			const legacyToken = "gho_12345678901234567890";
-			fs.writeFileSync(
-				testTokenPath,
-				Buffer.from(legacyToken).toString("base64"),
-				"utf8",
-			);
+			seedLegacyTokenFile(testTokenPath, legacyToken);
 
-			const mockSafeStorage = {
-				isEncryptionAvailable: () => true,
-				encryptString: (str) => Buffer.from(`enc:${str}`, "utf8"),
-				decryptString: (buf) => {
-					const str = buf.toString("utf8");
-					if (!str.startsWith("enc:")) throw new Error("Decryption failed");
-					return str.replace(/^enc:/, "");
-				},
-			};
-
+			const mockSafeStorage = createMockSafeStorage();
 			const loaded = loadEncryptedToken(mockSafeStorage, testTokenPath);
-			assert.equal(loaded, legacyToken);
-			assert.equal(fs.existsSync(testTokenPath), false);
+			assertLoadedTokenAndFileRemoved(loaded, legacyToken, testTokenPath);
 		});
 
 		after(() => {
