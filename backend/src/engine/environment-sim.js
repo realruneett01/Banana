@@ -1,58 +1,51 @@
 import { isId } from "./ids.js";
 import { validate } from "./schema-lite.js";
 
-export const ENVIRONMENT_SCHEMA = {
-	type: "object",
-	required: ["id", "name", "ambientC", "humidityPct", "altitudeM"],
-	additionalProperties: false,
-	properties: {
-		id: { type: "string" },
-		name: { type: "string" },
-		ambientC: {
-			type: "object",
-			required: ["min", "max"],
-			additionalProperties: false,
-			properties: {
-				min: { type: "number" },
-				max: { type: "number" },
-			},
-		},
-		humidityPct: {
-			type: "object",
-			required: ["min", "max"],
-			additionalProperties: false,
-			properties: {
-				min: { type: "number" },
-				max: { type: "number" },
-			},
-		},
-		altitudeM: { type: "number" },
-		vibration: {
-			type: "object",
-			required: ["psdG2Hz", "fromHz", "toHz"],
-			additionalProperties: false,
-			properties: {
-				psdG2Hz: { type: "number" },
-				fromHz: { type: "number" },
-				toHz: { type: "number" },
-			},
-		},
-		shockG: { type: "number" },
-		airflowMs: { type: "number" },
-	},
-};
+function makeObjectSchema(required, fieldDefs) {
+	const properties = {};
+	for (const [key, value] of Object.entries(fieldDefs)) {
+		properties[key] = typeof value === "string" ? { type: value } : value;
+	}
+	return {
+		type: "object",
+		required,
+		additionalProperties: false,
+		properties,
+	};
+}
 
-export const SIM_RUN_SCHEMA = {
-	type: "object",
-	required: ["id", "commit", "envId", "kind", "status", "startedAt", "results"],
-	additionalProperties: false,
-	properties: {
-		id: { type: "string" },
+const MIN_MAX_SCHEMA = makeObjectSchema(["min", "max"], {
+	min: "number",
+	max: "number",
+});
+
+export const ENVIRONMENT_SCHEMA = makeObjectSchema(
+	["id", "name", "ambientC", "humidityPct", "altitudeM"],
+	{
+		id: "string",
+		name: "string",
+		ambientC: MIN_MAX_SCHEMA,
+		humidityPct: MIN_MAX_SCHEMA,
+		altitudeM: "number",
+		vibration: makeObjectSchema(["psdG2Hz", "fromHz", "toHz"], {
+			psdG2Hz: "number",
+			fromHz: "number",
+			toHz: "number",
+		}),
+		shockG: "number",
+		airflowMs: "number",
+	},
+);
+
+export const SIM_RUN_SCHEMA = makeObjectSchema(
+	["id", "commit", "envId", "kind", "status", "startedAt", "results"],
+	{
+		id: "string",
 		commit: {
 			type: "string",
 			pattern: "^[0-9a-fA-F]{7,40}$",
 		},
-		envId: { type: "string" },
+		envId: "string",
 		kind: {
 			type: "string",
 			enum: ["trace-current", "ir-drop", "impedance", "spice", "thermal"],
@@ -61,55 +54,60 @@ export const SIM_RUN_SCHEMA = {
 			type: "string",
 			enum: ["queued", "running", "done", "failed"],
 		},
-		startedAt: { type: "string" },
-		finishedAt: { type: "string" },
+		startedAt: "string",
+		finishedAt: "string",
 		results: {
 			type: "array",
-			items: {
-				type: "object",
-				required: ["itemId", "metric", "value", "unit"],
-				additionalProperties: false,
-				properties: {
-					itemId: { type: "string" },
-					metric: { type: "string" },
-					value: { type: "number" },
-					unit: { type: "string" },
-				},
-			},
+			items: makeObjectSchema(["itemId", "metric", "value", "unit"], {
+				itemId: "string",
+				metric: "string",
+				value: "number",
+				unit: "string",
+			}),
 		},
 	},
-};
+);
 
-const ENV_RANGE_CHECKS = [
+const RANGE_RULES = [
 	{ prop: "ambientC", low: "min", high: "max" },
 	{ prop: "humidityPct", low: "min", high: "max" },
 	{ prop: "vibration", low: "fromHz", high: "toHz" },
 ];
 
-function formatPath(base, segment) {
-	if (!base || base === "$") {
-		return base ? `$.${segment}` : segment;
-	}
-	return `${base}.${segment}`;
+const ENV_ID_RULES = [{ prop: "id", kind: "env" }];
+const SIM_ID_RULES = [
+	{ prop: "id", kind: "sim" },
+	{ prop: "envId", kind: "env" },
+];
+
+function subPath(base, prop) {
+	return base ? `${base}.${prop}` : prop;
 }
 
-function checkFieldId(value, fieldPath, kind, errors) {
-	if (typeof value === "string" && !isId(value, kind)) {
-		const article = kind === "env" ? "an" : "a";
-		errors.push(`${fieldPath}: must be ${article} ${kind} id`);
+function checkRecordId(val, fieldPath, kind, errors) {
+	if (typeof val !== "string" || isId(val, kind)) {
+		return;
+	}
+	const article = kind === "env" ? "an" : "a";
+	errors.push(`${fieldPath}: must be ${article} ${kind} id`);
+}
+
+function validateFieldIds(record, path, idRules, errors) {
+	for (const { prop, kind } of idRules) {
+		checkRecordId(record[prop], subPath(path, prop), kind, errors);
 	}
 }
 
-function validateRangeOrder(target, spec, targetPath, errors) {
+function checkSingleRange(target, spec, targetPath, errors) {
 	if (!target || typeof target !== "object") {
 		return;
 	}
-	const lowVal = target[spec.low];
-	const highVal = target[spec.high];
-	if (typeof lowVal !== "number" || typeof highVal !== "number") {
+	const minVal = target[spec.low];
+	const maxVal = target[spec.high];
+	if (typeof minVal !== "number" || typeof maxVal !== "number") {
 		return;
 	}
-	if (lowVal > highVal) {
+	if (minVal > maxVal) {
 		errors.push(`${targetPath}: ${spec.low} must be <= ${spec.high}`);
 	}
 }
@@ -118,10 +116,9 @@ function checkEnvSemantics(env, path, errors) {
 	if (!env || typeof env !== "object") {
 		return;
 	}
-	checkFieldId(env.id, formatPath(path, "id"), "env", errors);
-	for (const check of ENV_RANGE_CHECKS) {
-		const target = env[check.prop];
-		validateRangeOrder(target, check, formatPath(path, check.prop), errors);
+	validateFieldIds(env, path, ENV_ID_RULES, errors);
+	for (const rule of RANGE_RULES) {
+		checkSingleRange(env[rule.prop], rule, subPath(path, rule.prop), errors);
 	}
 }
 
@@ -129,30 +126,26 @@ function checkSimSemantics(run, path, errors) {
 	if (!run || typeof run !== "object") {
 		return;
 	}
-	checkFieldId(run.id, formatPath(path, "id"), "sim", errors);
-	checkFieldId(run.envId, formatPath(path, "envId"), "env", errors);
+	validateFieldIds(run, path, SIM_ID_RULES, errors);
 }
 
-function runValidation(schema, data, path, semanticCheck) {
+function executeValidation(schema, payload, path, applySemantics) {
 	try {
-		const parsed = validate(schema, data, path);
-		const errors = [...parsed.errors];
-		semanticCheck(data, path, errors);
-		return { ok: errors.length === 0, errors };
+		const outcome = validate(schema, payload, path);
+		const issues = outcome.errors.slice();
+		applySemantics(payload, path, issues);
+		return { ok: issues.length === 0, errors: issues };
 	} catch (err) {
 		// Broad catch to guarantee validator never throws on malformed input
-		const detail = err?.message || String(err);
-		return {
-			ok: false,
-			errors: [`${path}: unexpected error: ${detail}`],
-		};
+		const detail = err?.message ?? String(err);
+		return { ok: false, errors: [`${path}: unexpected error: ${detail}`] };
 	}
 }
 
 export function validateEnvironment(env, path = "$") {
-	return runValidation(ENVIRONMENT_SCHEMA, env, path, checkEnvSemantics);
+	return executeValidation(ENVIRONMENT_SCHEMA, env, path, checkEnvSemantics);
 }
 
 export function validateSimRun(run, path = "$") {
-	return runValidation(SIM_RUN_SCHEMA, run, path, checkSimSemantics);
+	return executeValidation(SIM_RUN_SCHEMA, run, path, checkSimSemantics);
 }
