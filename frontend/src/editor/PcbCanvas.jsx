@@ -1,4 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	arcToSvgPath,
+	footprintToPrimitives,
+	padWorldPositions,
+	transformPrimitives,
+} from "./footprintRender.js";
 import {
 	addTrack,
 	constrain45,
@@ -131,20 +137,46 @@ function screenToBoardCoords(e, svgEl) {
 	return [svgPt.x, svgPt.y];
 }
 
-function findSnapEndpoint(board, ir, [x, y], tol = 1.0) {
-	for (const t of board?.tracks ?? []) {
-		if (Math.hypot(x - t.start[0], y - t.start[1]) <= tol) return t.start;
-		if (Math.hypot(x - t.end[0], y - t.end[1]) <= tol) return t.end;
+function findTrackSnap(tracks, pt, tol) {
+	for (const t of tracks ?? []) {
+		if (Math.hypot(pt[0] - t.start[0], pt[1] - t.start[1]) <= tol)
+			return t.start;
+		if (Math.hypot(pt[0] - t.end[0], pt[1] - t.end[1]) <= tol) return t.end;
 	}
-	for (const p of ir?.parts ?? []) {
+	return null;
+}
+
+function findPadSnap(parts, padPositions, pt, tol) {
+	for (const p of parts ?? []) {
+		const pads = padPositions?.[p.id];
+		if (!pads) continue;
+		for (const pos of Object.values(pads)) {
+			if (Math.hypot(pt[0] - pos[0], pt[1] - pos[1]) <= tol) return pos;
+		}
+	}
+	return null;
+}
+
+function findPartCenterSnap(parts, pt, tol) {
+	for (const p of parts ?? []) {
 		if (
 			p.placement &&
-			Math.hypot(x - p.placement.x, y - p.placement.y) <= tol
+			Math.hypot(pt[0] - p.placement.x, pt[1] - p.placement.y) <= tol
 		) {
 			return [p.placement.x, p.placement.y];
 		}
 	}
-	return [x, y];
+	return null;
+}
+
+function findSnapEndpoint(board, ir, pt, padPositions, tol = 1.0) {
+	const trackPt = findTrackSnap(board?.tracks, pt, tol);
+	if (trackPt) return trackPt;
+	const padPt = findPadSnap(ir?.parts, padPositions, pt, tol);
+	if (padPt) return padPt;
+	const partPt = findPartCenterSnap(ir?.parts, pt, tol);
+	if (partPt) return partPt;
+	return pt;
 }
 
 function handleToolKeys(e, key, ctx) {
@@ -339,40 +371,274 @@ function handlePartKey(e, partId, onSelectPart) {
 	}
 }
 
+function resolveGraphicColor(layer) {
+	if (layer === "F.SilkS") return LAYER_COLORS["F.SilkS"];
+	if (layer === "B.SilkS") return LAYER_COLORS["B.SilkS"];
+	return LAYER_COLORS[layer] ?? "#94a3b8";
+}
+
+function FootprintGraphic({ graphic, visibleLayers }) {
+	if (visibleLayers[graphic.layer] === false) return null;
+	const color = resolveGraphicColor(graphic.layer);
+	const width = graphic.width || 0.12;
+	if (graphic.type === "line") {
+		return (
+			<line
+				x1={graphic.start[0]}
+				y1={graphic.start[1]}
+				x2={graphic.end[0]}
+				y2={graphic.end[1]}
+				stroke={color}
+				strokeWidth={width}
+				strokeLinecap="round"
+			/>
+		);
+	}
+	if (graphic.type === "rect") {
+		const x = Math.min(graphic.start[0], graphic.end[0]);
+		const y = Math.min(graphic.start[1], graphic.end[1]);
+		const w = Math.abs(graphic.end[0] - graphic.start[0]);
+		const h = Math.abs(graphic.end[1] - graphic.start[1]);
+		return (
+			<rect
+				x={x}
+				y={y}
+				width={w}
+				height={h}
+				fill="none"
+				stroke={color}
+				strokeWidth={width}
+			/>
+		);
+	}
+	if (graphic.type === "circle") {
+		return (
+			<circle
+				cx={graphic.center[0]}
+				cy={graphic.center[1]}
+				r={graphic.radius}
+				fill="none"
+				stroke={color}
+				strokeWidth={width}
+			/>
+		);
+	}
+	if (graphic.type === "arc") {
+		return (
+			<path
+				d={arcToSvgPath(graphic)}
+				fill="none"
+				stroke={color}
+				strokeWidth={width}
+				strokeLinecap="round"
+			/>
+		);
+	}
+	if (graphic.type === "poly") {
+		const pts = (graphic.pts ?? []).map((p) => `${p[0]},${p[1]}`).join(" ");
+		return (
+			<polygon points={pts} fill="none" stroke={color} strokeWidth={width} />
+		);
+	}
+	return null;
+}
+
+function isPadVisible(pad, isBack, visibleLayers) {
+	const isThru = pad.padType === "thru_hole" || pad.layers.includes("*.Cu");
+	if (isThru) {
+		return visibleLayers["F.Cu"] !== false || visibleLayers["B.Cu"] !== false;
+	}
+	const layer = isBack ? "B.Cu" : "F.Cu";
+	return visibleLayers[layer] !== false;
+}
+
+function PadShapeElement({ pad, color, rot }) {
+	const [cx, cy] = pad.center;
+	const [w, h] = pad.size;
+	if (pad.shape === "circle") {
+		return <circle cx={cx} cy={cy} r={w / 2} fill={color} />;
+	}
+	const rx =
+		pad.shape === "roundrect"
+			? Math.min(w, h) * 0.25
+			: pad.shape === "oval"
+				? Math.min(w, h) / 2
+				: 0;
+	return (
+		<rect
+			x={cx - w / 2}
+			y={cy - h / 2}
+			width={w}
+			height={h}
+			rx={rx}
+			fill={color}
+			transform={rot}
+		/>
+	);
+}
+
+function FootprintPad({ pad, isBack, visibleLayers }) {
+	if (!isPadVisible(pad, isBack, visibleLayers)) return null;
+	const isThru = pad.padType === "thru_hole" || pad.layers.includes("*.Cu");
+	const color = isBack ? LAYER_COLORS["B.Cu"] : LAYER_COLORS["F.Cu"];
+	const [cx, cy] = pad.center;
+	const rot = pad.rot ? `rotate(${pad.rot} ${cx} ${cy})` : undefined;
+	const drillR = isThru
+		? (pad.drill ? pad.drill / 2 : Math.min(pad.size[0], pad.size[1]) * 0.25) ||
+			0.4
+		: 0;
+	const fontSize = Math.min(pad.size[0], pad.size[1]) * 0.35;
+	return (
+		<g>
+			<PadShapeElement pad={pad} color={color} rot={rot} />
+			{isThru && <circle cx={cx} cy={cy} r={drillR} fill="#0d0f18" />}
+			<text
+				x={cx}
+				y={cy}
+				textAnchor="middle"
+				dominantBaseline="central"
+				fill="#ffffff"
+				fontSize={fontSize}
+				style={{ pointerEvents: "none", userSelect: "none" }}
+			>
+				{pad.number}
+			</text>
+		</g>
+	);
+}
+
+function getGraphicKey(g) {
+	if (g.type === "line" || g.type === "rect") {
+		return `${g.type}_${g.layer}_${g.start[0]}_${g.start[1]}_${g.end[0]}_${g.end[1]}`;
+	}
+	if (g.type === "circle") {
+		return `${g.type}_${g.layer}_${g.center[0]}_${g.center[1]}_${g.radius}`;
+	}
+	if (g.type === "arc") {
+		return `${g.type}_${g.layer}_${g.start[0]}_${g.start[1]}_${g.end[0]}_${g.end[1]}`;
+	}
+	if (g.type === "poly") {
+		return `${g.type}_${g.layer}_${g.pts?.[0]?.[0]}_${g.pts?.[0]?.[1]}`;
+	}
+	return `${g.type}_${g.layer}`;
+}
+
+function FootprintShape({ fp, part, rect, isSelected, visibleLayers }) {
+	const prims = useMemo(
+		() => transformPrimitives(footprintToPrimitives(fp), part.placement),
+		[fp, part.placement],
+	);
+	const isBack = rect.side === "B";
+	const rot = rect.rot ? `rotate(${rect.rot} ${rect.x} ${rect.y})` : undefined;
+	const fontSize = Math.max(0.6, Math.min(rect.w, rect.h) * 0.4);
+	return (
+		<g style={{ cursor: "move" }}>
+			{isSelected && (
+				<rect
+					x={rect.x - rect.w / 2}
+					y={rect.y - rect.h / 2}
+					width={rect.w}
+					height={rect.h}
+					fill="rgba(250, 219, 20, 0.15)"
+					stroke="#fadb14"
+					strokeWidth={0.5}
+					strokeDasharray="1,1"
+					rx={0.2}
+					transform={rot}
+				/>
+			)}
+			{prims.graphics.map((g) => (
+				<FootprintGraphic
+					key={getGraphicKey(g)}
+					graphic={g}
+					visibleLayers={visibleLayers}
+				/>
+			))}
+			{prims.pads.map((pad) => (
+				<FootprintPad
+					key={`pad_${pad.number}`}
+					pad={pad}
+					isBack={isBack}
+					visibleLayers={visibleLayers}
+				/>
+			))}
+			<text
+				x={rect.x}
+				y={rect.y}
+				textAnchor="middle"
+				dominantBaseline="central"
+				fill="#f1f5f9"
+				fontSize={fontSize}
+				style={{ pointerEvents: "none", userSelect: "none", fontWeight: 600 }}
+			>
+				{rect.ref}
+			</text>
+		</g>
+	);
+}
+
+function PartItem({
+	part,
+	isSelected,
+	visibleLayers,
+	onSelectPart,
+	onStartDrag,
+	fp,
+}) {
+	const rect = footprintRect(part);
+	if (!rect) return null;
+	const layerKey = rect.side === "B" ? "B.SilkS" : "F.SilkS";
+	if (visibleLayers[layerKey] === false) return null;
+	return (
+		// biome-ignore lint/a11y/useSemanticElements: SVG elements cannot be replaced with HTML button
+		<g
+			role="button"
+			tabIndex={0}
+			aria-label={`Part ${rect.ref}`}
+			onClick={(e) => {
+				e.stopPropagation();
+				onSelectPart(part.id);
+			}}
+			onKeyDown={(e) => handlePartKey(e, part.id, onSelectPart)}
+			onPointerDown={(e) => onStartDrag(e, part)}
+		>
+			{fp ? (
+				<FootprintShape
+					fp={fp}
+					part={part}
+					rect={rect}
+					isSelected={isSelected}
+					visibleLayers={visibleLayers}
+				/>
+			) : (
+				<PartShape rect={rect} isSelected={isSelected} />
+			)}
+		</g>
+	);
+}
+
 function PartsLayer({
 	parts,
 	selectedId,
 	visibleLayers,
 	onSelectPart,
 	onStartDrag,
+	fpCache,
 }) {
 	if (!Array.isArray(parts)) return null;
 	return (
 		<g className="pcb-parts">
-			{parts.map((p) => {
-				const rect = footprintRect(p);
-				if (!rect) return null;
-				const layerKey = rect.side === "B" ? "B.SilkS" : "F.SilkS";
-				if (visibleLayers[layerKey] === false) return null;
-				const isSelected = selectedId === p.id;
-				return (
-					// biome-ignore lint/a11y/useSemanticElements: SVG elements cannot be replaced with HTML button
-					<g
-						key={p.id}
-						role="button"
-						tabIndex={0}
-						aria-label={`Part ${rect.ref}`}
-						onClick={(e) => {
-							e.stopPropagation();
-							onSelectPart(p.id);
-						}}
-						onKeyDown={(e) => handlePartKey(e, p.id, onSelectPart)}
-						onPointerDown={(e) => onStartDrag(e, p)}
-					>
-						<PartShape rect={rect} isSelected={isSelected} />
-					</g>
-				);
-			})}
+			{parts.map((p) => (
+				<PartItem
+					key={p.id}
+					part={p}
+					isSelected={selectedId === p.id}
+					visibleLayers={visibleLayers}
+					onSelectPart={onSelectPart}
+					onStartDrag={onStartDrag}
+					fp={fpCache?.[p.footprint ?? p.props?.footprint]}
+				/>
+			))}
 		</g>
 	);
 }
@@ -577,9 +843,9 @@ function nextRoutePoints(prev, target) {
 	return [...prev, ...constrain45(prev[prev.length - 1], target)];
 }
 
-function resolveRouteTarget(board, ir, raw, hasPoints) {
+function resolveRouteTarget(board, ir, raw, hasPoints, padPositions) {
 	const snapped = snapToGrid(raw, 0.25);
-	if (!hasPoints) return findSnapEndpoint(board, ir, snapped);
+	if (!hasPoints) return findSnapEndpoint(board, ir, snapped, padPositions);
 	return snapped;
 }
 
@@ -592,7 +858,14 @@ function commitRouteTrack(board, activeLayer, points) {
 	});
 }
 
-function useRoutingState({ board, activeLayer, pushBoard, svgRef, ir }) {
+function useRoutingState({
+	board,
+	activeLayer,
+	pushBoard,
+	svgRef,
+	ir,
+	padPositions,
+}) {
 	const [isRouting, setIsRouting] = useState(false);
 	const [points, setPoints] = useState([]);
 
@@ -600,10 +873,16 @@ function useRoutingState({ board, activeLayer, pushBoard, svgRef, ir }) {
 		(e) => {
 			if (!isRouting) return;
 			const raw = screenToBoardCoords(e, svgRef.current);
-			const target = resolveRouteTarget(board, ir, raw, points.length > 0);
+			const target = resolveRouteTarget(
+				board,
+				ir,
+				raw,
+				points.length > 0,
+				padPositions,
+			);
 			setPoints((prev) => nextRoutePoints(prev, target));
 		},
-		[isRouting, points.length, board, ir, svgRef],
+		[isRouting, points.length, board, ir, svgRef, padPositions],
 	);
 
 	const onCanvasDoubleClick = useCallback(
@@ -617,13 +896,17 @@ function useRoutingState({ board, activeLayer, pushBoard, svgRef, ir }) {
 		[isRouting, points, board, activeLayer, pushBoard],
 	);
 
+	const toggleRoute = useCallback(() => {
+		setIsRouting((r) => !r);
+		setPoints([]);
+	}, []);
+
 	return {
 		isRouting,
-		setIsRouting,
 		points,
-		setPoints,
 		onCanvasClick,
 		onCanvasDoubleClick,
+		toggleRoute,
 	};
 }
 
@@ -658,6 +941,98 @@ function useCanvasSelection(editor, board, pushBoard, onChange) {
 	);
 
 	return { selectedTrackIndex, selectedPartId, deleteSelected, onSelectHit };
+}
+
+function shouldFetchFp(fpId, cache, pending) {
+	if (!fpId) return false;
+	return cache[fpId] === undefined && !pending.has(fpId);
+}
+
+function useFootprintCache(parts, fetchFootprint) {
+	const [cache, setCache] = useState({});
+	const pendingRef = useRef(new Set());
+
+	useEffect(() => {
+		if (!fetchFootprint || !Array.isArray(parts)) return;
+		for (const p of parts) {
+			const fpId = p.footprint ?? p.props?.footprint;
+			if (!shouldFetchFp(fpId, cache, pendingRef.current)) continue;
+			pendingRef.current.add(fpId);
+			fetchFootprint(fpId)
+				.then((fp) => {
+					pendingRef.current.delete(fpId);
+					setCache((prev) => ({ ...prev, [fpId]: fp ?? null }));
+				})
+				.catch(() => {
+					pendingRef.current.delete(fpId);
+					setCache((prev) => ({ ...prev, [fpId]: null }));
+				});
+		}
+	}, [parts, fetchFootprint, cache]);
+
+	return cache;
+}
+
+function buildPadPositions(parts, fpCache) {
+	const map = {};
+	for (const p of parts ?? []) {
+		const fpId = p.footprint ?? p.props?.footprint;
+		const fp = fpId ? fpCache[fpId] : null;
+		if (fp && p.placement) {
+			map[p.id] = padWorldPositions(fp, p.placement);
+		}
+	}
+	return map;
+}
+
+function useCanvasLayers() {
+	const [activeLayer, setActiveLayer] = useState("F.Cu");
+	const [visibleLayers, setVisibleLayers] = useState(DEFAULT_VISIBLE);
+	const toggleLayer = useCallback(
+		() => setActiveLayer((l) => (l === "F.Cu" ? "B.Cu" : "F.Cu")),
+		[],
+	);
+	const toggleLayerVis = useCallback(
+		(ly) => setVisibleLayers((v) => ({ ...v, [ly]: v[ly] === false })),
+		[],
+	);
+	return { activeLayer, visibleLayers, toggleLayer, toggleLayerVis };
+}
+
+function usePointerDownHandler(route, sel, ir, board, svgRef) {
+	return useCallback(
+		(e) => {
+			if (route.isRouting) return;
+			const [x, y] = screenToBoardCoords(e, svgRef.current);
+			sel.onSelectHit(hitTest(ir, board, [x, y]));
+		},
+		[route.isRouting, ir, board, sel, svgRef],
+	);
+}
+
+function buildShortcuts(ctx) {
+	return {
+		editor: ctx.editor,
+		selectedPartId: ctx.sel.selectedPartId,
+		toggleLayer: ctx.layers.toggleLayer,
+		toggleRoute: ctx.route.toggleRoute,
+		deleteSelected: ctx.sel.deleteSelected,
+		undoBoard: ctx.history.undoBoard,
+		redoBoard: ctx.history.redoBoard,
+	};
+}
+
+function buildSceneData(ctx) {
+	return {
+		board: ctx.board,
+		ir: ctx.ir,
+		rnLines: ctx.rnLines,
+		selectedPartId: ctx.sel.selectedPartId,
+		selectedTrackIndex: ctx.sel.selectedTrackIndex,
+		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
+		onPointerDown: ctx.onPointerDown,
+		fpCache: ctx.fpCache,
+	};
 }
 
 function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
@@ -696,6 +1071,7 @@ function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
 				visibleLayers={layers.visibleLayers}
 				onSelectPart={sceneData.onSelectPart}
 				onStartDrag={drag.onStartDrag}
+				fpCache={sceneData.fpCache}
 			/>
 			<RoutingPreviewLayer
 				points={route.points}
@@ -705,71 +1081,47 @@ function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
 	);
 }
 
-export default function PcbCanvas({ editor, board, onBoardChange, onChange }) {
+export default function PcbCanvas({
+	editor,
+	board,
+	onBoardChange,
+	onChange,
+	fetchFootprint,
+}) {
 	const svgRef = useRef(null);
-	const [activeLayer, setActiveLayer] = useState("F.Cu");
-	const [visibleLayers, setVisibleLayers] = useState(DEFAULT_VISIBLE);
+	const layers = useCanvasLayers();
 	const ir = editor?.state?.ir;
-	const { pushBoard, undoBoard, redoBoard } = useBoardHistory(
-		board,
-		onBoardChange,
-	);
-	const sel = useCanvasSelection(editor, board, pushBoard, onChange);
+	const fpCache = useFootprintCache(ir?.parts, fetchFootprint);
+	const history = useBoardHistory(board, onBoardChange);
+	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
 	const drag = usePartDrag(editor, svgRef);
+	const padPositions = useMemo(
+		() => buildPadPositions(ir?.parts, fpCache),
+		[ir?.parts, fpCache],
+	);
 	const route = useRoutingState({
 		board,
-		activeLayer,
-		pushBoard,
+		activeLayer: layers.activeLayer,
+		pushBoard: history.pushBoard,
 		svgRef,
 		ir,
+		padPositions,
 	});
-	const rnLines = useMemo(() => ratsnest(ir), [ir]);
+	const rnLines = useMemo(() => ratsnest(ir, padPositions), [ir, padPositions]);
 	const viewBox = useMemo(
 		() => getBoardBounds(board?.outline),
 		[board?.outline],
 	);
-
-	const toggleLayer = useCallback(
-		() => setActiveLayer((l) => (l === "F.Cu" ? "B.Cu" : "F.Cu")),
-		[],
-	);
-	const toggleRoute = useCallback(() => {
-		route.setIsRouting((r) => !r);
-		route.setPoints([]);
-	}, [route]);
-	const toggleLayerVis = useCallback(
-		(ly) => setVisibleLayers((v) => ({ ...v, [ly]: v[ly] === false })),
-		[],
-	);
-
-	const onPointerDown = useCallback(
-		(e) => {
-			if (route.isRouting) return;
-			const [x, y] = screenToBoardCoords(e, svgRef.current);
-			sel.onSelectHit(hitTest(ir, board, [x, y]));
-		},
-		[route.isRouting, ir, board, sel],
-	);
-
-	const shortcuts = {
-		editor,
-		selectedPartId: sel.selectedPartId,
-		toggleLayer,
-		toggleRoute,
-		deleteSelected: sel.deleteSelected,
-		undoBoard,
-		redoBoard,
-	};
-	const sceneData = {
+	const onPointerDown = usePointerDownHandler(route, sel, ir, board, svgRef);
+	const shortcuts = buildShortcuts({ editor, sel, layers, route, history });
+	const sceneData = buildSceneData({
 		board,
 		ir,
 		rnLines,
-		selectedPartId: sel.selectedPartId,
-		selectedTrackIndex: sel.selectedTrackIndex,
-		onSelectPart: (id) => editor.dispatch({ type: "select", ids: [id] }),
+		sel,
 		onPointerDown,
-	};
-	const layers = { activeLayer, visibleLayers };
+		fpCache,
+	});
 
 	return (
 		<div
@@ -781,12 +1133,12 @@ export default function PcbCanvas({ editor, board, onBoardChange, onChange }) {
 			onKeyDown={(e) => handleShortcuts(e, shortcuts)}
 		>
 			<PcbToolbar
-				activeLayer={activeLayer}
+				activeLayer={layers.activeLayer}
 				isRouting={route.isRouting}
-				onToggleLayer={toggleLayer}
-				onToggleRoute={toggleRoute}
-				visibleLayers={visibleLayers}
-				onToggleLayerVis={toggleLayerVis}
+				onToggleLayer={layers.toggleLayer}
+				onToggleRoute={route.toggleRoute}
+				visibleLayers={layers.visibleLayers}
+				onToggleLayerVis={layers.toggleLayerVis}
 			/>
 			<PcbSvgScene
 				svgRef={svgRef}
