@@ -5,6 +5,7 @@ import {
 	padWorldPositions,
 	transformPrimitives,
 } from "./footprintRender.js";
+import { markerGlyphs } from "./markerRender.js";
 import {
 	addTrack,
 	deleteTrack,
@@ -1577,7 +1578,41 @@ function buildSceneData(ctx) {
 	};
 }
 
-function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
+function MarkersOverlay({ markers }) {
+	const glyphs = useMemo(() => markerGlyphs(markers), [markers]);
+	if (glyphs.length === 0) return null;
+	return (
+		<g
+			className="pcb-markers"
+			pointerEvents="none"
+			style={{ pointerEvents: "none" }}
+		>
+			{glyphs.map((g) => (
+				<circle
+					key={g.key}
+					cx={g.x}
+					cy={g.y}
+					r={g.r}
+					fill={g.color}
+					stroke="#ffffff"
+					strokeWidth={0.3}
+				>
+					{g.title ? <title>{g.title}</title> : null}
+				</circle>
+			))}
+		</g>
+	);
+}
+
+function PcbSvgScene({
+	svgRef,
+	viewBox,
+	route,
+	layers,
+	sceneData,
+	drag,
+	markers,
+}) {
 	return (
 		/* biome-ignore lint/a11y/useKeyWithClickEvents: Keyboard handled on parent region */
 		<svg
@@ -1624,6 +1659,7 @@ function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
 				activeLayer={layers.activeLayer}
 				widthMm={route.widthMm}
 			/>
+			<MarkersOverlay markers={markers} />
 		</svg>
 	);
 }
@@ -1634,6 +1670,7 @@ export default function PcbCanvas({
 	onBoardChange,
 	onChange,
 	fetchFootprint,
+	markers = [],
 }) {
 	const svgRef = useRef(null);
 	const layers = useCanvasLayers();
@@ -1705,6 +1742,7 @@ export default function PcbCanvas({
 				layers={layers}
 				sceneData={sceneData}
 				drag={drag}
+				markers={markers}
 			/>
 			<PcbStatusBar
 				isRouting={route.isRouting}
