@@ -6,6 +6,11 @@ import { KICAD_CLI_PATH } from "../config.js";
 const DEFAULT_TIMEOUT_MS = 120000;
 const MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
+const REPORT_COMMANDS = Object.freeze({
+	erc: Object.freeze({ tool: "sch", cmd: "erc", ext: ".kicad_sch" }),
+	drc: Object.freeze({ tool: "pcb", cmd: "drc", ext: ".kicad_pcb" }),
+});
+
 function validateInputPath(filePath, expectedExt) {
 	if (typeof filePath !== "string" || !path.isAbsolute(filePath)) {
 		throw new Error(`Input path must be absolute: ${filePath}`);
@@ -21,6 +26,11 @@ function validateOutputPath(outputPath) {
 	}
 }
 
+function validateFilePaths(inputPath, expectedExt, outputPath) {
+	validateInputPath(inputPath, expectedExt);
+	validateOutputPath(outputPath);
+}
+
 function isViolationExit(err) {
 	if (!err) {
 		return false;
@@ -29,14 +39,19 @@ function isViolationExit(err) {
 	return code === 5;
 }
 
+function asString(val, fallback = "") {
+	return typeof val === "string" ? val : fallback;
+}
+
 function mapReportItem(item) {
 	if (!item || typeof item !== "object") {
 		return { uuid: "", description: "", pos: null };
 	}
+	const hasPosObj = Boolean(item.pos && typeof item.pos === "object");
 	return {
-		uuid: typeof item.uuid === "string" ? item.uuid : "",
-		description: typeof item.description === "string" ? item.description : "",
-		pos: item.pos && typeof item.pos === "object" ? item.pos : null,
+		uuid: asString(item.uuid),
+		description: asString(item.description),
+		pos: hasPosObj ? item.pos : null,
 	};
 }
 
@@ -44,12 +59,11 @@ function mapViolation(v) {
 	if (!v || typeof v !== "object") {
 		return { type: "", severity: "error", description: "", items: [] };
 	}
-	const items = Array.isArray(v.items) ? v.items.map(mapReportItem) : [];
 	return {
-		type: typeof v.type === "string" ? v.type : "",
-		severity: typeof v.severity === "string" ? v.severity : "error",
-		description: typeof v.description === "string" ? v.description : "",
-		items,
+		type: asString(v.type),
+		severity: asString(v.severity, "error"),
+		description: asString(v.description),
+		items: Array.isArray(v.items) ? v.items.map(mapReportItem) : [],
 	};
 }
 
@@ -100,14 +114,18 @@ function invokeExec(exec, cliPath, args, options) {
 	});
 }
 
+function extractFailureError(failure) {
+	if (failure?.err) {
+		return failure.err;
+	}
+	return new Error(failure?.stderr || "Execution failed");
+}
+
 async function executeCommand(exec, cliPath, args, options) {
 	try {
 		return await invokeExec(exec, cliPath, args, options);
 	} catch (failure) {
-		if (failure?.err) {
-			throw failure.err;
-		}
-		throw new Error(failure?.stderr || "Execution failed");
+		throw extractFailureError(failure);
 	}
 }
 
@@ -116,24 +134,23 @@ async function runWithReport({ exec, cliPath, args, options, outJsonPath }) {
 		await invokeExec(exec, cliPath, args, options);
 	} catch (failure) {
 		if (!isViolationExit(failure?.err)) {
-			throw failure?.err || new Error(failure?.stderr || "Execution failed");
+			throw extractFailureError(failure);
 		}
 	}
 	return readAndParseReport(outJsonPath);
 }
 
-async function runErcInternal(ctx, schPath, outJsonPath) {
-	validateInputPath(schPath, ".kicad_sch");
-	validateOutputPath(outJsonPath);
+async function runReportCommand(ctx, inputPath, outJsonPath, config) {
+	validateFilePaths(inputPath, config.ext, outJsonPath);
 	const args = [
-		"sch",
-		"erc",
+		config.tool,
+		config.cmd,
 		"--format",
 		"json",
 		"--severity-all",
 		"--output",
 		outJsonPath,
-		schPath,
+		inputPath,
 	];
 	return runWithReport({
 		exec: ctx.exec,
@@ -144,31 +161,16 @@ async function runErcInternal(ctx, schPath, outJsonPath) {
 	});
 }
 
-async function runDrcInternal(ctx, pcbPath, outJsonPath) {
-	validateInputPath(pcbPath, ".kicad_pcb");
-	validateOutputPath(outJsonPath);
-	const args = [
-		"pcb",
-		"drc",
-		"--format",
-		"json",
-		"--severity-all",
-		"--output",
-		outJsonPath,
-		pcbPath,
-	];
-	return runWithReport({
-		exec: ctx.exec,
-		cliPath: ctx.cliPath,
-		args,
-		options: ctx.execOptions,
-		outJsonPath,
-	});
+function runErcInternal(ctx, schPath, outJsonPath) {
+	return runReportCommand(ctx, schPath, outJsonPath, REPORT_COMMANDS.erc);
+}
+
+function runDrcInternal(ctx, pcbPath, outJsonPath) {
+	return runReportCommand(ctx, pcbPath, outJsonPath, REPORT_COMMANDS.drc);
 }
 
 async function exportNetlistInternal(ctx, schPath, outPath, format) {
-	validateInputPath(schPath, ".kicad_sch");
-	validateOutputPath(outPath);
+	validateFilePaths(schPath, ".kicad_sch", outPath);
 	const args = [
 		"sch",
 		"export",
