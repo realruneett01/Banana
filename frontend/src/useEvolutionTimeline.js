@@ -43,30 +43,40 @@ async function fetchStepDiffApi(
 	return response.json();
 }
 
-function useEvolutionAutoPlay({
-	evolutionPlaying,
-	evolutionEnabled,
-	evolutionData,
-	setEvolutionStep,
-	setEvolutionPlaying,
+function advanceEvolutionStep({
+	totalSteps,
 	loadEvolutionStep,
+	setEvolutionPlaying,
 }) {
+	return (prev) => {
+		if (prev < totalSteps - 1) {
+			const next = prev + 1;
+			loadEvolutionStep(next);
+			return next;
+		}
+		setEvolutionPlaying(false);
+		return prev;
+	};
+}
+
+function useEvolutionAutoPlay(state, loadEvolutionStep) {
+	const {
+		evolutionPlaying,
+		evolutionEnabled,
+		evolutionData,
+		setEvolutionStep,
+		setEvolutionPlaying,
+	} = state;
+
 	useEffect(() => {
 		if (!evolutionPlaying || !evolutionEnabled || !evolutionData) return;
 		const totalSteps = Math.max(0, evolutionData.commits.length - 1);
-
-		const timer = setInterval(() => {
-			setEvolutionStep((prev) => {
-				if (prev < totalSteps - 1) {
-					const next = prev + 1;
-					loadEvolutionStep(next);
-					return next;
-				}
-				setEvolutionPlaying(false);
-				return prev;
-			});
-		}, 2800);
-
+		const advance = advanceEvolutionStep({
+			totalSteps,
+			loadEvolutionStep,
+			setEvolutionPlaying,
+		});
+		const timer = setInterval(() => setEvolutionStep(advance), 2800);
 		return () => clearInterval(timer);
 	}, [
 		evolutionPlaying,
@@ -104,128 +114,120 @@ async function fetchStepWithCache(cacheRef, params) {
 	return data;
 }
 
-function disableEvolutionMode({
-	setEvolutionEnabled,
-	setEvolutionPlaying,
-	directDiffDataRef,
-	setDiffData,
-}) {
-	setEvolutionEnabled(false);
-	setEvolutionPlaying(false);
-	if (directDiffDataRef.current) setDiffData(directDiffDataRef.current);
+async function executeStepDiff(cacheRef, query, commits) {
+	return fetchStepWithCache(cacheRef, {
+		repoPath: query.repoPath,
+		fromCommit: commits.fromCommit,
+		toCommit: commits.toCommit,
+		relativeFilePath: query.relativeFilePath,
+	});
 }
 
-async function enableEvolutionMode(ctx) {
-	const {
-		repoPath,
-		baseCommit,
-		targetCommit,
-		relativeFilePath,
-		diffData,
-		evolutionData,
-		evolutionMode,
-		setEvolutionData,
-		setEvolutionEnabled,
-		setEvolutionStep,
-		directDiffDataRef,
-		loadEvolutionStep,
-	} = ctx;
-
-	let currentEvData = evolutionData;
-	if (!currentEvData?.commits || currentEvData.commits.length < 2) {
-		currentEvData = await fetchEvolutionPathApi(
-			repoPath,
-			baseCommit,
-			targetCommit,
-			relativeFilePath,
-		);
-		if (currentEvData) setEvolutionData(currentEvData);
+function disableEvolutionMode(props, state) {
+	state.setEvolutionEnabled(false);
+	state.setEvolutionPlaying(false);
+	if (state.directDiffDataRef.current) {
+		props.setDiffData(state.directDiffDataRef.current);
 	}
+}
 
+async function ensureEvolutionData(props, state) {
+	if (state.evolutionData?.commits?.length >= 2) return state.evolutionData;
+	const fetched = await fetchEvolutionPathApi(
+		props.repoPath,
+		props.baseCommit,
+		props.targetCommit,
+		props.relativeFilePath,
+	);
+	if (fetched) state.setEvolutionData(fetched);
+	return fetched;
+}
+
+async function activateEvolution(
+	props,
+	state,
+	loadEvolutionStep,
+	currentEvData,
+) {
+	if (!state.directDiffDataRef.current && props.diffData) {
+		state.directDiffDataRef.current = props.diffData;
+	}
+	state.setEvolutionEnabled(true);
+	state.setEvolutionStep(0);
+	await loadEvolutionStep(0, state.evolutionMode, currentEvData);
+}
+
+async function enableEvolutionMode(props, state, loadEvolutionStep) {
+	const currentEvData = await ensureEvolutionData(props, state);
 	if (currentEvData?.commits?.length >= 2) {
-		if (!directDiffDataRef.current && diffData)
-			directDiffDataRef.current = diffData;
-		setEvolutionEnabled(true);
-		setEvolutionStep(0);
-		await loadEvolutionStep(0, evolutionMode, currentEvData);
-	} else {
-		message.info("No intermediate commits found between selected revisions.");
+		await activateEvolution(props, state, loadEvolutionStep, currentEvData);
+		return;
+	}
+	message.info("No intermediate commits found between selected revisions.");
+}
+
+async function performToggleEvolution(enable, props, state, loadEvolutionStep) {
+	const nextState = enable !== undefined ? enable : !state.evolutionEnabled;
+	if (!nextState) {
+		disableEvolutionMode(props, state);
+		return;
+	}
+	await enableEvolutionMode(props, state, loadEvolutionStep);
+}
+
+async function runStepLoad(props, state, setEvolutionLoading, step) {
+	const commits = resolveStepCommits(
+		step.evData || state.evolutionData,
+		step.targetMode || state.evolutionMode,
+		step.stepIndex,
+	);
+	if (!commits) return;
+
+	setEvolutionLoading(true);
+	try {
+		const data = await executeStepDiff(state.evolutionCacheRef, props, commits);
+		props.setDiffData(data);
+		state.setEvolutionStep(step.stepIndex);
+	} catch (e) {
+		message.error(`Failed to load step: ${e.message}`);
+	} finally {
+		setEvolutionLoading(false);
 	}
 }
 
-function useEvolutionStepLoader({
-	evolutionMode,
-	evolutionData,
-	repoPath,
-	relativeFilePath,
-	evolutionCacheRef,
-	setDiffData,
-	setEvolutionStep,
-}) {
+function useEvolutionStepLoader(props, state) {
 	const [evolutionLoading, setEvolutionLoading] = useState(false);
 
 	const loadEvolutionStep = useCallback(
-		async (stepIndex, targetMode = evolutionMode, evData = evolutionData) => {
-			const commits = resolveStepCommits(
-				evData || evolutionData,
-				targetMode,
+		(stepIndex, targetMode, evData) =>
+			runStepLoad(props, state, setEvolutionLoading, {
 				stepIndex,
-			);
-			if (!commits) return;
-
-			setEvolutionLoading(true);
-			try {
-				const data = await fetchStepWithCache(evolutionCacheRef, {
-					repoPath,
-					fromCommit: commits.fromCommit,
-					toCommit: commits.toCommit,
-					relativeFilePath,
-				});
-				setDiffData(data);
-				setEvolutionStep(stepIndex);
-			} catch (e) {
-				message.error(`Failed to load step: ${e.message}`);
-			} finally {
-				setEvolutionLoading(false);
-			}
-		},
-		[
-			evolutionData,
-			evolutionMode,
-			relativeFilePath,
-			repoPath,
-			setDiffData,
-			evolutionCacheRef,
-			setEvolutionStep,
-		],
+				targetMode,
+				evData,
+			}),
+		[props, state],
 	);
 
 	return { evolutionLoading, loadEvolutionStep };
 }
 
-function useEvolutionPathInit({
-	repoPath,
-	baseCommit,
-	targetCommit,
-	relativeFilePath,
-	setEvolutionData,
-	setEvolutionStep,
-}) {
+function useEvolutionPathInit(props, state) {
+	const { repoPath, baseCommit, targetCommit, relativeFilePath } = props;
+	const { setEvolutionData, setEvolutionStep } = state;
+
 	const checkEvolutionPath = useCallback(
 		async (repo, base, target, file) => {
 			const data = await fetchEvolutionPathApi(repo, base, target, file);
-			if (data) {
-				setEvolutionData(data);
-				setEvolutionStep(0);
-			}
+			if (!data) return;
+			setEvolutionData(data);
+			setEvolutionStep(0);
 		},
 		[setEvolutionData, setEvolutionStep],
 	);
 
 	useEffect(() => {
-		if (repoPath && baseCommit && targetCommit) {
-			checkEvolutionPath(repoPath, baseCommit, targetCommit, relativeFilePath);
-		}
+		if (!repoPath || !baseCommit || !targetCommit) return;
+		checkEvolutionPath(repoPath, baseCommit, targetCommit, relativeFilePath);
 	}, [
 		repoPath,
 		baseCommit,
@@ -237,14 +239,14 @@ function useEvolutionPathInit({
 	return { checkEvolutionPath };
 }
 
-export function useEvolutionTimeline({
-	repoPath,
-	baseCommit,
-	targetCommit,
-	relativeFilePath,
-	diffData,
-	setDiffData,
-}) {
+function useEvolutionToggle(props, state, loadEvolutionStep) {
+	return useCallback(
+		(enable) => performToggleEvolution(enable, props, state, loadEvolutionStep),
+		[props, state, loadEvolutionStep],
+	);
+}
+
+function useEvolutionState() {
 	const [evolutionEnabled, setEvolutionEnabled] = useState(false);
 	const [evolutionData, setEvolutionData] = useState(null);
 	const [evolutionStep, setEvolutionStep] = useState(0);
@@ -254,89 +256,67 @@ export function useEvolutionTimeline({
 	const directDiffDataRef = useRef(null);
 	const evolutionCacheRef = useRef({});
 
-	const { checkEvolutionPath } = useEvolutionPathInit({
-		repoPath,
-		baseCommit,
-		targetCommit,
-		relativeFilePath,
-		setEvolutionData,
-		setEvolutionStep,
-	});
-
-	const { evolutionLoading, loadEvolutionStep } = useEvolutionStepLoader({
-		evolutionMode,
-		evolutionData,
-		repoPath,
-		relativeFilePath,
-		evolutionCacheRef,
-		setDiffData,
-		setEvolutionStep,
-	});
-
-	const toggleEvolutionMode = useCallback(
-		async (enable) => {
-			const nextState = enable !== undefined ? enable : !evolutionEnabled;
-			if (!nextState) {
-				disableEvolutionMode({
-					setEvolutionEnabled,
-					setEvolutionPlaying,
-					directDiffDataRef,
-					setDiffData,
-				});
-				return;
-			}
-
-			await enableEvolutionMode({
-				repoPath,
-				baseCommit,
-				targetCommit,
-				relativeFilePath,
-				diffData,
-				evolutionData,
-				evolutionMode,
-				setEvolutionData,
-				setEvolutionEnabled,
-				setEvolutionStep,
-				directDiffDataRef,
-				loadEvolutionStep,
-			});
-		},
-		[
-			baseCommit,
-			diffData,
-			evolutionData,
-			evolutionEnabled,
-			evolutionMode,
-			loadEvolutionStep,
-			relativeFilePath,
-			repoPath,
-			setDiffData,
-			targetCommit,
-		],
-	);
-
-	useEvolutionAutoPlay({
-		evolutionPlaying,
-		evolutionEnabled,
-		evolutionData,
-		setEvolutionStep,
-		setEvolutionPlaying,
-		loadEvolutionStep,
-	});
-
 	return {
 		evolutionEnabled,
 		setEvolutionEnabled,
 		evolutionData,
+		setEvolutionData,
 		evolutionStep,
+		setEvolutionStep,
 		evolutionPlaying,
 		setEvolutionPlaying,
 		evolutionMode,
 		setEvolutionMode,
-		evolutionLoading,
 		directDiffDataRef,
-		checkEvolutionPath,
-		loadEvolutionStep,
-		toggleEvolutionMode,
+		evolutionCacheRef,
 	};
+}
+
+function buildTimelineResult(state, actions) {
+	return {
+		evolutionEnabled: state.evolutionEnabled,
+		setEvolutionEnabled: state.setEvolutionEnabled,
+		evolutionData: state.evolutionData,
+		evolutionStep: state.evolutionStep,
+		evolutionPlaying: state.evolutionPlaying,
+		setEvolutionPlaying: state.setEvolutionPlaying,
+		evolutionMode: state.evolutionMode,
+		setEvolutionMode: state.setEvolutionMode,
+		evolutionLoading: actions.evolutionLoading,
+		directDiffDataRef: state.directDiffDataRef,
+		checkEvolutionPath: actions.checkEvolutionPath,
+		loadEvolutionStep: actions.loadEvolutionStep,
+		toggleEvolutionMode: actions.toggleEvolutionMode,
+	};
+}
+
+export function useEvolutionTimeline({
+	repoPath,
+	baseCommit,
+	targetCommit,
+	relativeFilePath,
+	diffData,
+	setDiffData,
+}) {
+	const props = {
+		repoPath,
+		baseCommit,
+		targetCommit,
+		relativeFilePath,
+		diffData,
+		setDiffData,
+	};
+	const state = useEvolutionState();
+	const pathInit = useEvolutionPathInit(props, state);
+	const loader = useEvolutionStepLoader(props, state);
+	const toggle = useEvolutionToggle(props, state, loader.loadEvolutionStep);
+
+	useEvolutionAutoPlay(state, loader.loadEvolutionStep);
+
+	return buildTimelineResult(state, {
+		evolutionLoading: loader.evolutionLoading,
+		checkEvolutionPath: pathInit.checkEvolutionPath,
+		loadEvolutionStep: loader.loadEvolutionStep,
+		toggleEvolutionMode: toggle,
+	});
 }
