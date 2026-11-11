@@ -36,38 +36,93 @@ function makeEnv(overrides = {}) {
 	};
 }
 
+function simThermal({ parts, envOverrides = {}, commit, simRunId } = {}) {
+	const env = makeEnv(envOverrides);
+	const partList = Array.isArray(parts) ? parts : [parts];
+	const options = { ir: { parts: partList }, env };
+	if (commit !== undefined) {
+		options.commit = commit;
+	}
+	if (simRunId !== undefined) {
+		options.simRunId = simRunId;
+	}
+	return runThermal(options);
+}
+
+function runFactorSuite(fn, cases) {
+	for (const { input, expected } of cases) {
+		test(`computes factor for ${JSON.stringify(input)}`, () => {
+			assert.equal(fn(input), expected);
+		});
+	}
+}
+
+function assertThresholdIssue(issues, expectedSeverity, relationPhrase) {
+	if (expectedSeverity === null) {
+		assert.equal(issues.length, 0);
+		return;
+	}
+	assert.equal(issues.length, 1);
+	assert.equal(issues[0].severity, expectedSeverity);
+	assert.equal(issues[0].message.includes(relationPhrase), true);
+}
+
+function assertEmptyRun(output) {
+	assert.deepEqual(
+		{ resultsCount: output.results.length, issuesCount: output.issues.length },
+		{ resultsCount: 0, issuesCount: 0 },
+	);
+}
+
+function verifyThermalIssue(issue, expectedMeta) {
+	const check = validateIssue(issue);
+	assert.equal(
+		check.ok,
+		true,
+		`validateIssue failed: ${check.errors.join(", ")}`,
+	);
+	assert.deepEqual(
+		{
+			commit: issue.commit,
+			metric: issue.metric,
+			simRunId: issue.simRunId,
+			source: issue.source,
+			status: issue.status,
+			suggestion: issue.suggestion,
+			unit: issue.unit,
+		},
+		{
+			commit: expectedMeta.commit,
+			metric: "tj",
+			simRunId: expectedMeta.simRunId,
+			source: "sim",
+			status: "open",
+			suggestion: "reduce power, add copper or a heatsink, or increase airflow",
+			unit: "C",
+		},
+	);
+}
+
 describe("airflowFactor", () => {
-	const CASES = [
+	runFactorSuite(airflowFactor, [
 		{ input: { airflowMs: 0 }, expected: 1 },
 		{ input: { airflowMs: 4 }, expected: 0.5 },
 		{ input: { airflowMs: 12 }, expected: 0.25 },
 		{ input: { airflowMs: -5 }, expected: 1 },
 		{ input: 4, expected: 0.5 },
 		{ input: undefined, expected: 1 },
-	];
-
-	for (const { input, expected } of CASES) {
-		test(`computes factor for ${JSON.stringify(input)}`, () => {
-			assert.equal(airflowFactor(input), expected);
-		});
-	}
+	]);
 });
 
 describe("altitudeFactor", () => {
-	const CASES = [
+	runFactorSuite(altitudeFactor, [
 		{ input: { altitudeM: 0 }, expected: 1 },
 		{ input: { altitudeM: 1000 }, expected: 1.1 },
 		{ input: { altitudeM: 3000 }, expected: 1.3 },
 		{ input: { altitudeM: -500 }, expected: 1 },
 		{ input: 2000, expected: 1.2 },
 		{ input: undefined, expected: 1 },
-	];
-
-	for (const { input, expected } of CASES) {
-		test(`computes factor for ${JSON.stringify(input)}`, () => {
-			assert.equal(altitudeFactor(input), expected);
-		});
-	}
+	]);
 });
 
 describe("runThermal: hand-computed Tj", () => {
@@ -76,15 +131,14 @@ describe("runThermal: hand-computed Tj", () => {
 			ref: "U1",
 			props: { powerW: 1.5, thetaJA: 40, tjMaxC: 125 },
 		});
-		const env = makeEnv({
+		const envOverrides = {
 			ambientC: { min: -10, max: 25 },
 			airflowMs: 0,
 			altitudeM: 0,
-		});
-
-		const { results, issues } = runThermal({
-			ir: { parts: [part] },
-			env,
+		};
+		const { results, issues } = simThermal({
+			parts: part,
+			envOverrides,
 			commit: "c111111",
 			simRunId: newId("sim"),
 		});
@@ -101,31 +155,40 @@ describe("runThermal: hand-computed Tj", () => {
 });
 
 describe("runThermal: environmental influences", () => {
-	test("airflow lowers Tj", () => {
-		const part = makePart({ props: { powerW: 2.0, thetaJA: 50 } });
-		const stillEnv = makeEnv({ ambientC: { min: 0, max: 30 }, airflowMs: 0 });
-		const windEnv = makeEnv({ ambientC: { min: 0, max: 30 }, airflowMs: 3 });
+	const ENV_CASES = [
+		{
+			title: "airflow lowers Tj",
+			powerW: 2.0,
+			firstEnv: { ambientC: { min: 0, max: 30 }, airflowMs: 0 },
+			secondEnv: { ambientC: { min: 0, max: 30 }, airflowMs: 3 },
+			expectedFirst: 130,
+			expectedSecond: 87.1,
+			isDecreasing: true,
+		},
+		{
+			title: "altitude raises Tj",
+			powerW: 1.0,
+			firstEnv: { ambientC: { min: 0, max: 25 }, altitudeM: 0 },
+			secondEnv: { ambientC: { min: 0, max: 25 }, altitudeM: 2000 },
+			expectedFirst: 75,
+			expectedSecond: 85,
+			isDecreasing: false,
+		},
+	];
 
-		const stillRes = runThermal({ ir: { parts: [part] }, env: stillEnv });
-		const windRes = runThermal({ ir: { parts: [part] }, env: windEnv });
+	for (const tc of ENV_CASES) {
+		test(tc.title, () => {
+			const part = makePart({ props: { powerW: tc.powerW, thetaJA: 50 } });
+			const res1 = simThermal({ parts: part, envOverrides: tc.firstEnv });
+			const res2 = simThermal({ parts: part, envOverrides: tc.secondEnv });
+			const val1 = res1.results[0].value;
+			const val2 = res2.results[0].value;
 
-		assert.equal(stillRes.results[0].value, 130);
-		assert.equal(windRes.results[0].value, 87.1);
-		assert.equal(windRes.results[0].value < stillRes.results[0].value, true);
-	});
-
-	test("altitude raises Tj", () => {
-		const part = makePart({ props: { powerW: 1.0, thetaJA: 50 } });
-		const seaEnv = makeEnv({ ambientC: { min: 0, max: 25 }, altitudeM: 0 });
-		const mntEnv = makeEnv({ ambientC: { min: 0, max: 25 }, altitudeM: 2000 });
-
-		const seaRes = runThermal({ ir: { parts: [part] }, env: seaEnv });
-		const mntRes = runThermal({ ir: { parts: [part] }, env: mntEnv });
-
-		assert.equal(seaRes.results[0].value, 75);
-		assert.equal(mntRes.results[0].value, 85);
-		assert.equal(mntRes.results[0].value > seaRes.results[0].value, true);
-	});
+			assert.equal(val1, tc.expectedFirst);
+			assert.equal(val2, tc.expectedSecond);
+			assert.equal(tc.isDecreasing ? val2 < val1 : val2 > val1, true);
+		});
+	}
 });
 
 describe("runThermal: warning vs error thresholds", () => {
@@ -169,22 +232,14 @@ describe("runThermal: warning vs error thresholds", () => {
 	for (const tc of THRESHOLD_CASES) {
 		test(`evaluates ${tc.desc}`, () => {
 			const part = makePart({ props: tc.props });
-			const env = makeEnv();
-			const { results, issues } = runThermal({
-				ir: { parts: [part] },
-				env,
+			const { results, issues } = simThermal({
+				parts: part,
 				commit: "a1b2c3d",
 				simRunId: newId("sim"),
 			});
 
 			assert.equal(results[0].value, tc.expectedTj);
-			if (tc.expectedSeverity === null) {
-				assert.equal(issues.length, 0);
-				return;
-			}
-			assert.equal(issues.length, 1);
-			assert.equal(issues[0].severity, tc.expectedSeverity);
-			assert.equal(issues[0].message.includes(tc.relationPhrase), true);
+			assertThresholdIssue(issues, tc.expectedSeverity, tc.relationPhrase);
 		});
 	}
 });
@@ -202,13 +257,8 @@ describe("runThermal: skipped parts", () => {
 	for (const { desc, props } of SKIPPED_PROPS) {
 		test(`skips part with ${desc}`, () => {
 			const part = makePart({ props });
-			const env = makeEnv();
-			const { results, issues } = runThermal({
-				ir: { parts: [part] },
-				env,
-			});
-			assert.equal(results.length, 0);
-			assert.equal(issues.length, 0);
+			const outcome = simThermal({ parts: part });
+			assertEmptyRun(outcome);
 		});
 	}
 });
@@ -223,35 +273,16 @@ describe("runThermal: validateIssue contract", () => {
 			ref: "U2",
 			props: { powerW: 2.2, thetaJA: 50 },
 		});
-		const env = makeEnv();
-		const commit = "c1a2b3d4e5f6";
-		const simRunId = newId("sim");
+		const meta = { commit: "c1a2b3d4e5f6", simRunId: newId("sim") };
 
-		const { issues } = runThermal({
-			ir: { parts: [warningPart, errorPart] },
-			env,
-			commit,
-			simRunId,
+		const { issues } = simThermal({
+			parts: [warningPart, errorPart],
+			...meta,
 		});
 
 		assert.equal(issues.length, 2);
 		for (const issue of issues) {
-			const res = validateIssue(issue);
-			assert.equal(
-				res.ok,
-				true,
-				`validateIssue failed: ${res.errors.join(", ")}`,
-			);
-			assert.equal(issue.source, "sim");
-			assert.equal(issue.metric, "tj");
-			assert.equal(issue.unit, "C");
-			assert.equal(issue.status, "open");
-			assert.equal(issue.commit, commit);
-			assert.equal(issue.simRunId, simRunId);
-			assert.equal(
-				issue.suggestion,
-				"reduce power, add copper or a heatsink, or increase airflow",
-			);
+			verifyThermalIssue(issue, meta);
 		}
 	});
 });
