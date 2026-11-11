@@ -10,25 +10,25 @@ import {
 } from "../../backend/src/engine/freerouting.js";
 import { parse } from "../../backend/src/engine/sexpr.js";
 
+const PART_1_ID = "part_11111111-1111-1111-1111-111111111111";
+const PART_2_ID = "part_22222222-2222-2222-2222-222222222222";
+
+function makeSmdPads(xOffset, size) {
+	return [
+		{ number: "1", at: [-xOffset, 0], size },
+		{ number: "2", at: [xOffset, 0], size },
+	];
+}
+
 const SAMPLE_FOOTPRINTS = {
-	"Resistor SMD:R 0805": {
-		pads: [
-			{ number: "1", at: [-1.0, 0], size: [1.2, 1.4] },
-			{ number: "2", at: [1.0, 0], size: [1.2, 1.4] },
-		],
-	},
-	"Capacitor_SMD:C_0603": {
-		pads: [
-			{ number: "1", at: [-0.75, 0], size: [0.8, 0.9] },
-			{ number: "2", at: [0.75, 0], size: [0.8, 0.9] },
-		],
-	},
+	"Resistor SMD:R 0805": { pads: makeSmdPads(1.0, [1.2, 1.4]) },
+	"Capacitor_SMD:C_0603": { pads: makeSmdPads(0.75, [0.8, 0.9]) },
 };
 
 function createSampleParts() {
 	return [
 		{
-			id: "part_11111111-1111-1111-1111-111111111111",
+			id: PART_1_ID,
 			ref: "R1",
 			value: "10k",
 			symbol: "Device:R",
@@ -37,7 +37,7 @@ function createSampleParts() {
 			placement: { x: 20, y: 15, rot: 90, side: "F" },
 		},
 		{
-			id: "part_22222222-2222-2222-2222-222222222222",
+			id: PART_2_ID,
 			ref: "C1",
 			value: "100n",
 			symbol: "Device:C",
@@ -48,31 +48,21 @@ function createSampleParts() {
 	];
 }
 
+function makePin(partId, pin) {
+	return { partId, pin };
+}
+
 function createSampleNets() {
 	return [
 		{
 			id: "net_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
 			name: "Net-(R1-Pad1)",
-			pins: [
-				{
-					partId: "part_11111111-1111-1111-1111-111111111111",
-					pin: "1",
-				},
-				{
-					partId: "part_22222222-2222-2222-2222-222222222222",
-					pin: "2",
-				},
-			],
+			pins: [makePin(PART_1_ID, "1"), makePin(PART_2_ID, "2")],
 		},
 		{
 			id: "net_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
 			name: "+3V3",
-			pins: [
-				{
-					partId: "part_11111111-1111-1111-1111-111111111111",
-					pin: "2",
-				},
-			],
+			pins: [makePin(PART_1_ID, "2")],
 		},
 	];
 }
@@ -113,107 +103,162 @@ const SAMPLE_SES_TEXT = `(session test_board
 	)
 )`;
 
-function findSexprNode(node, tag) {
-	if (!Array.isArray(node)) return null;
-	if (node[0]?.sym === tag || node[0] === tag) return node;
-	for (const child of node) {
-		const found = findSexprNode(child, tag);
-		if (found) return found;
-	}
-	return null;
+const QUOTED_SES_TEXT = `(session test_board
+	(routes
+		(network_out
+			(net "Net-(R1-Pad1)"
+				(wire (path F.Cu 250 10000 20000 30000 20000) (type route))
+				(via "Via[T]Pad_600x600_um" 30000 20000)
+			)
+			(net "Motor Drive Net"
+				(wire (path B.Cu 200 40000 50000 40000 60000) (type route))
+			)
+		)
+	)
+)`;
+
+const SAMPLE_COMPONENT_NAMES = ["Resistor SMD:R 0805", "Capacitor_SMD:C_0603"];
+
+const EXPECTED_PADSTACK_NAMES = [
+	"Rect[T]Pad_1200x1400_um",
+	"Rect[T]Pad_800x900_um",
+];
+
+const EXPECTED_NET_NAMES = ["Net-(R1-Pad1)", "+3V3"];
+
+const EXPECTED_BOUNDARY_PATH = [
+	{ sym: "path" },
+	{ sym: "pcb" },
+	0,
+	0,
+	0,
+	100000,
+	0,
+	100000,
+	80000,
+	0,
+	80000,
+	0,
+	0,
+];
+
+const EXPECTED_RULE = [
+	{ sym: "rule" },
+	[{ sym: "width" }, 300],
+	[{ sym: "clearance" }, 250],
+];
+
+const EXPECTED_PLACES = [
+	[{ sym: "place" }, "R1", 20000, 15000, { sym: "front" }, 90],
+	[{ sym: "place" }, "C1", 35000, 25000, { sym: "back" }, 0],
+];
+
+const EXPECTED_FIXTURE_RESULT = {
+	wires: [
+		{
+			net: "GND",
+			layer: "F.Cu",
+			widthMm: 0.25,
+			points: [
+				[10, 20],
+				[30, 20],
+			],
+		},
+		{
+			net: "+3V3",
+			layer: "B.Cu",
+			widthMm: 0.2,
+			points: [
+				[40, 50],
+				[40, 60],
+				[50, 60],
+			],
+		},
+	],
+	vias: [{ net: "GND", x: 30, y: 20 }],
+};
+
+function nodeMatchesTag(firstItem, tag) {
+	return firstItem?.sym === tag || firstItem === tag;
+}
+
+function hasTag(node, tag) {
+	if (!Array.isArray(node)) return false;
+	return nodeMatchesTag(node[0], tag);
 }
 
 function findAllSexprNodes(node, tag, acc = []) {
 	if (!Array.isArray(node)) return acc;
-	if (node[0]?.sym === tag || node[0] === tag) acc.push(node);
+	if (hasTag(node, tag)) acc.push(node);
 	for (const child of node) {
 		findAllSexprNodes(child, tag, acc);
 	}
 	return acc;
 }
 
+function findSexprNode(node, tag) {
+	return findAllSexprNodes(node, tag)[0] ?? null;
+}
+
+function requireSexprNode(node, tag) {
+	const found = findSexprNode(node, tag);
+	assert.ok(found);
+	return found;
+}
+
+function assertNamedNodes(nodes, expectedNames) {
+	assert.equal(nodes.length, expectedNames.length);
+	for (const name of expectedNames) {
+		assert.ok(nodes.some((node) => node[1] === name));
+	}
+}
+
+function assertWireAndViaCounts(result, wireCount, viaCount) {
+	assert.equal(result.wires.length, wireCount);
+	assert.equal(result.vias.length, viaCount);
+}
+
 function assertBoundaryAndRules(ast) {
-	const hostCad = findSexprNode(ast, "host_cad");
-	assert.ok(hostCad);
+	const hostCad = requireSexprNode(ast, "host_cad");
 	assert.equal(hostCad[1], "banana");
 
-	const boundary = findSexprNode(ast, "boundary");
-	assert.ok(boundary);
-	assert.deepEqual(boundary[1], [
-		{ sym: "path" },
-		{ sym: "pcb" },
-		0,
-		0,
-		0,
-		100000,
-		0,
-		100000,
-		80000,
-		0,
-		80000,
-		0,
-		0,
-	]);
+	const boundary = requireSexprNode(ast, "boundary");
+	assert.deepEqual(boundary[1], EXPECTED_BOUNDARY_PATH);
 
-	const rule = findSexprNode(ast, "rule");
-	assert.ok(rule);
-	assert.deepEqual(rule[1], [{ sym: "width" }, 300]);
-	assert.deepEqual(rule[2], [{ sym: "clearance" }, 250]);
+	const rule = requireSexprNode(ast, "rule");
+	assert.deepEqual(rule, EXPECTED_RULE);
 }
 
 function assertPlacement(ast) {
-	const placement = findSexprNode(ast, "placement");
-	assert.ok(placement);
+	const placement = requireSexprNode(ast, "placement");
 	const components = findAllSexprNodes(placement, "component");
-	assert.equal(components.length, 2);
-	assert.ok(components.some((c) => c[1] === "Resistor SMD:R 0805"));
-	assert.ok(components.some((c) => c[1] === "Capacitor_SMD:C_0603"));
+	assertNamedNodes(components, SAMPLE_COMPONENT_NAMES);
+
 	const places = findAllSexprNodes(placement, "place");
-	assert.equal(places.length, 2);
-	assert.deepEqual(places[0], [
-		{ sym: "place" },
-		"R1",
-		20000,
-		15000,
-		{ sym: "front" },
-		90,
-	]);
-	assert.deepEqual(places[1], [
-		{ sym: "place" },
-		"C1",
-		35000,
-		25000,
-		{ sym: "back" },
-		0,
-	]);
+	assert.deepEqual(places, EXPECTED_PLACES);
 }
 
 function assertLibrary(ast) {
-	const library = findSexprNode(ast, "library");
-	assert.ok(library);
+	const library = requireSexprNode(ast, "library");
 	const images = findAllSexprNodes(library, "image");
-	assert.equal(images.length, 2);
-	assert.ok(images.some((img) => img[1] === "Resistor SMD:R 0805"));
-	assert.ok(images.some((img) => img[1] === "Capacitor_SMD:C_0603"));
+	assertNamedNodes(images, SAMPLE_COMPONENT_NAMES);
 
 	const padstacks = findAllSexprNodes(library, "padstack");
-	assert.equal(padstacks.length, 2);
-	assert.ok(padstacks.some((p) => p[1] === "Rect[T]Pad_1200x1400_um"));
-	assert.ok(padstacks.some((p) => p[1] === "Rect[T]Pad_800x900_um"));
+	assertNamedNodes(padstacks, EXPECTED_PADSTACK_NAMES);
 }
 
 function assertNets(ast) {
-	const network = findSexprNode(ast, "network");
-	assert.ok(network);
+	const network = requireSexprNode(ast, "network");
 	const nets = findAllSexprNodes(network, "net");
-	assert.equal(nets.length, 2);
-	assert.equal(nets[0][1], "Net-(R1-Pad1)");
-	assert.equal(nets[1][1], "+3V3");
+	assert.deepEqual(
+		nets.map((n) => n[1]),
+		EXPECTED_NET_NAMES,
+	);
 
-	const gndPins = findSexprNode(nets[0], "pins");
+	const gndPins = requireSexprNode(nets[0], "pins");
 	assert.deepEqual(gndPins.slice(1), ["R1-1", "C1-2"]);
 
-	const vccPins = findSexprNode(nets[1], "pins");
+	const vccPins = requireSexprNode(nets[1], "pins");
 	assert.deepEqual(vccPins.slice(1), ["R1-2"]);
 }
 
@@ -240,6 +285,33 @@ function verifyExecCall(call, { javaPath, jarPath, tmpDir }) {
 	assert.deepEqual(call.options, { timeout: 150000 });
 }
 
+async function withTempDir(prefix, fn) {
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	try {
+		return await fn(tmpDir);
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
+
+const WORK_DIR_REJECT_CASES = [
+	{
+		name: "route rejects relative workDir",
+		getWorkDir: () => "relative/path",
+		expectedError: /workDir must be an absolute path/,
+	},
+	{
+		name: "route rejects workDir with .. segments",
+		getWorkDir: () => `${os.tmpdir()}${path.sep}..${path.sep}b`,
+		expectedError: /workDir must not contain '\.\.' segments/,
+	},
+	{
+		name: "route rejects non-existent workDir",
+		getWorkDir: () => path.join(os.tmpdir(), `non-existent-${Date.now()}`),
+		expectedError: /workDir does not exist/,
+	},
+];
+
 describe("irToDsn", () => {
 	test("generates valid DSN S-expression with all sections, um units and quoted names", () => {
 		const ir = createSampleIr();
@@ -263,60 +335,24 @@ describe("irToDsn", () => {
 describe("parseSes", () => {
 	test("parses fixture SES text with wires and vias converting um to mm", () => {
 		const result = parseSes(SAMPLE_SES_TEXT);
-		assert.deepEqual(result, {
-			wires: [
-				{
-					net: "GND",
-					layer: "F.Cu",
-					widthMm: 0.25,
-					points: [
-						[10, 20],
-						[30, 20],
-					],
-				},
-				{
-					net: "+3V3",
-					layer: "B.Cu",
-					widthMm: 0.2,
-					points: [
-						[40, 50],
-						[40, 60],
-						[50, 60],
-					],
-				},
-			],
-			vias: [{ net: "GND", x: 30, y: 20 }],
-		});
+		assert.deepEqual(result, EXPECTED_FIXTURE_RESULT);
 	});
 
 	test("handles quoted net names and names with spaces and parens", () => {
-		const quotedSes = `(session test_board
-			(routes
-				(network_out
-					(net "Net-(R1-Pad1)"
-						(wire (path F.Cu 250 10000 20000 30000 20000) (type route))
-						(via "Via[T]Pad_600x600_um" 30000 20000)
-					)
-					(net "Motor Drive Net"
-						(wire (path B.Cu 200 40000 50000 40000 60000) (type route))
-					)
-				)
-			)
-		)`;
-		const result = parseSes(quotedSes);
-		assert.equal(result.wires.length, 2);
-		assert.equal(result.wires[0].net, "Net-(R1-Pad1)");
-		assert.equal(result.wires[1].net, "Motor Drive Net");
-		assert.equal(result.vias.length, 1);
+		const result = parseSes(QUOTED_SES_TEXT);
+		assertWireAndViaCounts(result, 2, 1);
+		assert.deepEqual(
+			result.wires.map((w) => w.net),
+			["Net-(R1-Pad1)", "Motor Drive Net"],
+		);
 		assert.equal(result.vias[0].net, "Net-(R1-Pad1)");
 	});
 
 	test("ignores unknown nodes without crashing and handles empty input", () => {
-		assert.deepEqual(parseSes(""), { wires: [], vias: [] });
-		assert.deepEqual(parseSes("(unknown (node 123) (other (deep)))"), {
-			wires: [],
-			vias: [],
-		});
+		const emptyResult = { wires: [], vias: [] };
+		for (const input of ["", "(unknown (node 123) (other (deep)))"]) {
+			assert.deepEqual(parseSes(input), emptyResult);
+		}
 	});
 });
 
@@ -330,44 +366,26 @@ describe("createFreerouting", () => {
 		assert.equal(routerWithJar.available(), true);
 	});
 
-	test("route rejects relative workDir", async () => {
-		const router = createFreerouting({ jarPath: "/opt/freerouting.jar" });
-		await assert.rejects(
-			() => router.route({ dsnText: "(pcb test)", workDir: "relative/path" }),
-			/workDir must be an absolute path/,
-		);
-	});
-
-	test("route rejects workDir with .. segments", async () => {
-		const router = createFreerouting({ jarPath: "/opt/freerouting.jar" });
-		const invalidPath = `${os.tmpdir()}${path.sep}..${path.sep}b`;
-		await assert.rejects(
-			() => router.route({ dsnText: "(pcb test)", workDir: invalidPath }),
-			/workDir must not contain '\.\.' segments/,
-		);
-	});
-
-	test("route rejects non-existent workDir", async () => {
-		const router = createFreerouting({ jarPath: "/opt/freerouting.jar" });
-		const nonExistent = path.join(os.tmpdir(), `non-existent-${Date.now()}`);
-		await assert.rejects(
-			() => router.route({ dsnText: "(pcb test)", workDir: nonExistent }),
-			/workDir does not exist/,
-		);
-	});
+	for (const { name, getWorkDir, expectedError } of WORK_DIR_REJECT_CASES) {
+		test(name, async () => {
+			const router = createFreerouting({ jarPath: "/opt/freerouting.jar" });
+			await assert.rejects(
+				() => router.route({ dsnText: "(pcb test)", workDir: getWorkDir() }),
+				expectedError,
+			);
+		});
+	}
 
 	test("route writes in.dsn, calls execFileFn with exact arguments, and parses out.ses", async () => {
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "freerouting-test-"));
 		const calls = [];
 		const jarPath = "C:\\tools\\freerouting.jar";
 		const javaPath = "C:\\tools\\java.exe";
-		const fakeExec = makeFakeExec(tmpDir, calls);
 
-		try {
+		await withTempDir("freerouting-test-", async (tmpDir) => {
 			const router = createFreerouting({
 				jarPath,
 				javaPath,
-				execFileFn: fakeExec,
+				execFileFn: makeFakeExec(tmpDir, calls),
 				timeoutMs: 150000,
 			});
 			const result = await router.route({
@@ -380,20 +398,16 @@ describe("createFreerouting", () => {
 			);
 			assert.equal(calls.length, 1);
 			verifyExecCall(calls[0], { javaPath, jarPath, tmpDir });
-			assert.equal(result.wires.length, 2);
-			assert.equal(result.vias.length, 1);
-		} finally {
-			fs.rmSync(tmpDir, { recursive: true, force: true });
-		}
+			assertWireAndViaCounts(result, 2, 1);
+		});
 	});
 
 	test("route surfaces exec failure without logging file contents", async () => {
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "freerouting-fail-"));
 		const fakeFailingExec = (_file, _args, _options, callback) => {
 			callback(new Error("Java process crashed with exit code 1"), "", "Crash");
 		};
 
-		try {
+		await withTempDir("freerouting-fail-", async (tmpDir) => {
 			const router = createFreerouting({
 				jarPath: "/opt/freerouting.jar",
 				execFileFn: fakeFailingExec,
@@ -410,8 +424,6 @@ describe("createFreerouting", () => {
 					return true;
 				},
 			);
-		} finally {
-			fs.rmSync(tmpDir, { recursive: true, force: true });
-		}
+		});
 	});
 });
