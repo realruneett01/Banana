@@ -100,6 +100,54 @@ const SUCCESS_CASES = [
 		},
 		responseData: { text: "done", steps: [] },
 	},
+	{
+		name: "listRuns",
+		call: (api) =>
+			api.listRuns({
+				commit: "a1b2c3d",
+				envId: "env-prod",
+				kind: "thermal",
+			}),
+		expectedUrl: "/api/sim/runs?commit=a1b2c3d&envId=env-prod&kind=thermal",
+		expectedMethod: "GET",
+		expectedBody: undefined,
+		responseData: { runs: [{ id: "run-1", commit: "a1b2c3d" }] },
+	},
+	{
+		name: "getRun",
+		call: (api) => api.getRun("run-42"),
+		expectedUrl: "/api/sim/runs/run-42",
+		expectedMethod: "GET",
+		expectedBody: undefined,
+		responseData: { run: { id: "run-42" }, issues: [] },
+	},
+	{
+		name: "compareCommits",
+		call: (api) =>
+			api.compareCommits({
+				before: "c1",
+				after: "c2",
+				envId: "env-1",
+				kind: "ir-drop",
+			}),
+		expectedUrl: "/api/sim/compare",
+		expectedMethod: "POST",
+		expectedBody: {
+			before: "c1",
+			after: "c2",
+			envId: "env-1",
+			kind: "ir-drop",
+		},
+		responseData: { fixed: [], stillOpen: [], new: [] },
+	},
+	{
+		name: "setIssueStatus",
+		call: (api) => api.setIssueStatus("issue-99", "fixed"),
+		expectedUrl: "/api/issues/issue-99",
+		expectedMethod: "PATCH",
+		expectedBody: { status: "fixed" },
+		responseData: { ok: true },
+	},
 ];
 
 const METHOD_CALLERS = [
@@ -116,6 +164,54 @@ const METHOD_CALLERS = [
 	{
 		name: "runAgent",
 		invoke: (api, opt) => api.runAgent({ message: "hi" }, opt),
+	},
+	{
+		name: "listRuns",
+		invoke: (api, opt) => api.listRuns({ commit: "c0" }, opt),
+	},
+	{
+		name: "getRun",
+		invoke: (api, opt) => api.getRun("r0", opt),
+	},
+	{
+		name: "compareCommits",
+		invoke: (api, opt) =>
+			api.compareCommits({ before: "c0", after: "c1" }, opt),
+	},
+	{
+		name: "setIssueStatus",
+		invoke: (api, opt) => api.setIssueStatus("i0", "fixed", opt),
+	},
+];
+
+const ENCODING_CASES = [
+	{
+		name: "listRuns encodes query parameters and omits unprovided filters",
+		call: (api) =>
+			api.listRuns({
+				commit: "feat/branch 1",
+				kind: "ir&drop",
+			}),
+		expectedUrl: "/api/sim/runs?commit=feat%2Fbranch+1&kind=ir%26drop",
+		expectedMethod: "GET",
+	},
+	{
+		name: "listRuns with no filters uses clean endpoint without query string",
+		call: (api) => api.listRuns(),
+		expectedUrl: "/api/sim/runs",
+		expectedMethod: "GET",
+	},
+	{
+		name: "getRun encodes id using encodeURIComponent",
+		call: (api) => api.getRun("sim/test#1"),
+		expectedUrl: "/api/sim/runs/sim%2Ftest%231",
+		expectedMethod: "GET",
+	},
+	{
+		name: "setIssueStatus encodes id and uses PATCH method",
+		call: (api) => api.setIssueStatus("issue/special?key=1", "wontfix"),
+		expectedUrl: "/api/issues/issue%2Fspecial%3Fkey%3D1",
+		expectedMethod: "PATCH",
 	},
 ];
 
@@ -135,6 +231,19 @@ describe("createSimApi success cases", () => {
 			if (tc.expectedBody !== undefined) {
 				assert.deepEqual(JSON.parse(fakeFetch.calls[0].body), tc.expectedBody);
 			}
+		});
+	}
+});
+
+describe("createSimApi encoding and method verification", () => {
+	for (const tc of ENCODING_CASES) {
+		test(tc.name, async () => {
+			const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
+			const api = createSimApi({ fetchImpl: fakeFetch });
+			await tc.call(api);
+			assert.equal(fakeFetch.calls.length, 1);
+			assert.equal(fakeFetch.calls[0].url, tc.expectedUrl);
+			assert.equal(fakeFetch.calls[0].method, tc.expectedMethod);
 		});
 	}
 });

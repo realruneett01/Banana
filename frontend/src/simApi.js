@@ -128,16 +128,29 @@ function postOptions(headers, body) {
 	};
 }
 
-export function createSimApi({
-	baseUrl = "",
-	fetchImpl = globalThis.fetch,
-	headers = {},
-} = {}) {
-	const base = cleanBaseUrl(baseUrl);
-	const h = { "Content-Type": "application/json", ...headers };
-	const send = (p, opt, sig) =>
-		executeRequest(fetchImpl, `${base}${p}`, opt, sig);
+function patchOptions(headers, body) {
+	return {
+		method: "PATCH",
+		headers,
+		body: JSON.stringify(body),
+	};
+}
 
+function buildRunsQuery(filters) {
+	if (!filters || typeof filters !== "object") {
+		return "";
+	}
+	const params = new URLSearchParams();
+	for (const [key, val] of Object.entries(filters)) {
+		if (val !== undefined && val !== null && val !== "") {
+			params.set(key, String(val));
+		}
+	}
+	const qs = params.toString();
+	return qs ? `?${qs}` : "";
+}
+
+function buildBaseMethods(send, h) {
 	return {
 		getKinds: ({ signal } = {}) =>
 			send("/api/sim/kinds", { method: "GET", headers: h }, signal),
@@ -151,5 +164,50 @@ export function createSimApi({
 			send("/api/erc/run", postOptions(h, { ir, commit }), signal),
 		runAgent: (params = {}, { signal } = {}) =>
 			send("/api/agent/run", postOptions(h, buildAgentPayload(params)), signal),
+	};
+}
+
+function buildRunMethods(send, h) {
+	return {
+		listRuns: (filters = {}, { signal } = {}) =>
+			send(
+				`/api/sim/runs${buildRunsQuery(filters)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+		getRun: (id, { signal } = {}) =>
+			send(
+				`/api/sim/runs/${encodeURIComponent(id)}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+		compareCommits: ({ before, after, envId, kind } = {}, { signal } = {}) =>
+			send(
+				"/api/sim/compare",
+				postOptions(h, { before, after, envId, kind }),
+				signal,
+			),
+		setIssueStatus: (id, status, { signal } = {}) =>
+			send(
+				`/api/issues/${encodeURIComponent(id)}`,
+				patchOptions(h, { status }),
+				signal,
+			),
+	};
+}
+
+export function createSimApi({
+	baseUrl = "",
+	fetchImpl = globalThis.fetch,
+	headers = {},
+} = {}) {
+	const base = cleanBaseUrl(baseUrl);
+	const h = { "Content-Type": "application/json", ...headers };
+	const send = (p, opt, sig) =>
+		executeRequest(fetchImpl, `${base}${p}`, opt, sig);
+
+	return {
+		...buildBaseMethods(send, h),
+		...buildRunMethods(send, h),
 	};
 }
