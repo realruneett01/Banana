@@ -10,6 +10,22 @@ import githubRouter, {
 	stateStore,
 } from "../../backend/src/routes/github-routes.js";
 
+async function assertInvalidOAuthState(res) {
+	assert.equal(res.status, 400);
+	assert.equal(await res.text(), "Invalid OAuth state");
+}
+
+function assertRedirectFragment(res, key, expectedValue) {
+	assert.equal(res.status, 302);
+	const location = res.headers.get("location");
+	if (expectedValue) {
+		assert.equal(location, expectedValue);
+	} else {
+		assert.ok(location.startsWith(`https://banana.app/#${key}=`));
+	}
+	assert.doesNotMatch(location, new RegExp(`/\\?${key}=`));
+}
+
 describe("OAuth State & Origin Hardening", () => {
 	describe("getOAuthAuthorizeUrl state validation", () => {
 		const originalClientId = config.githubClientId;
@@ -79,10 +95,15 @@ describe("OAuth State & Origin Hardening", () => {
 
 			store.set("state-4");
 			assert.equal(store.size, 3);
-			assert.equal(store.consume("state-1"), false, "oldest evicted");
-			assert.equal(store.consume("state-2"), true, "newer preserved");
-			assert.equal(store.consume("state-3"), true, "newer preserved");
-			assert.equal(store.consume("state-4"), true, "newest preserved");
+			const evictionCases = [
+				["state-1", false, "oldest evicted"],
+				["state-2", true, "newer preserved"],
+				["state-3", true, "newer preserved"],
+				["state-4", true, "newest preserved"],
+			];
+			for (const [key, expected, desc] of evictionCases) {
+				assert.equal(store.consume(key), expected, desc);
+			}
 		});
 	});
 
@@ -93,39 +114,42 @@ describe("OAuth State & Origin Hardening", () => {
 			process.env = { ...originalEnv };
 		});
 
-		it("ignores X-Forwarded headers when TRUST_PROXY is unset or not 1", () => {
-			delete process.env.TRUST_PROXY;
-			delete process.env.FRONTEND_URL;
-			const req = {
-				protocol: "http",
-				headers: {
-					host: "banana.internal:3000",
-					"x-forwarded-host": "attacker.evil.com",
-					"x-forwarded-proto": "https",
-				},
-				get: (h) =>
-					h.toLowerCase() === "host" ? "banana.internal:3000" : null,
-			};
-			const origin = getDynamicOrigin(req);
-			assert.equal(origin, "http://banana.internal:3000");
-		});
-
-		it("respects X-Forwarded headers when TRUST_PROXY === '1'", () => {
-			process.env.TRUST_PROXY = "1";
-			delete process.env.FRONTEND_URL;
-			const req = {
-				protocol: "http",
-				headers: {
-					host: "banana.internal:3000",
-					"x-forwarded-host": "banana.onrender.com",
-					"x-forwarded-proto": "https",
-				},
-				get: (h) =>
-					h.toLowerCase() === "host" ? "banana.internal:3000" : null,
-			};
-			const origin = getDynamicOrigin(req);
-			assert.equal(origin, "https://banana.onrender.com");
-		});
+		const proxyCases = [
+			{
+				name: "ignores X-Forwarded headers when TRUST_PROXY is unset or not 1",
+				trustProxy: undefined,
+				forwardedHost: "attacker.evil.com",
+				expected: "http://banana.internal:3000",
+			},
+			{
+				name: "respects X-Forwarded headers when TRUST_PROXY === '1'",
+				trustProxy: "1",
+				forwardedHost: "banana.onrender.com",
+				expected: "https://banana.onrender.com",
+			},
+		];
+		for (const tc of proxyCases) {
+			it(tc.name, () => {
+				if (tc.trustProxy !== undefined) {
+					process.env.TRUST_PROXY = tc.trustProxy;
+				} else {
+					delete process.env.TRUST_PROXY;
+				}
+				delete process.env.FRONTEND_URL;
+				const req = {
+					protocol: "http",
+					headers: {
+						host: "banana.internal:3000",
+						"x-forwarded-host": tc.forwardedHost,
+						"x-forwarded-proto": "https",
+					},
+					get: (h) =>
+						h.toLowerCase() === "host" ? "banana.internal:3000" : null,
+				};
+				const origin = getDynamicOrigin(req);
+				assert.equal(origin, tc.expected);
+			});
+		}
 
 		const frontendCases = [
 			{ url: "http://localhost:5173", expected: "http://localhost:5173" },
@@ -195,33 +219,28 @@ describe("OAuth State & Origin Hardening", () => {
 		});
 
 		const rejectionCases = [
-			{ name: "missing state", query: "code=testcode", status: 400 },
+			{ name: "missing state", query: "code=testcode" },
 			{
 				name: "unknown state",
 				query: "code=testcode&state=unknown_hex_val",
-				status: 400,
+			},
+			{
+				name: "expired state",
+				query: "code=testcode&state=expired_state_12345",
+				setup: () => {
+					stateStore.set("expired_state_12345", Date.now() - 11 * 60 * 1000);
+				},
 			},
 		];
 		for (const tc of rejectionCases) {
 			it(`GET /api/auth/github/callback rejects ${tc.name}`, async () => {
+				tc.setup?.();
 				const res = await fetch(
 					`${baseUrl}/api/auth/github/callback?${tc.query}`,
 				);
-				assert.equal(res.status, tc.status);
-				const body = await res.text();
-				assert.equal(body, "Invalid OAuth state");
+				await assertInvalidOAuthState(res);
 			});
 		}
-
-		it("GET /api/auth/github/callback rejects expired state", async () => {
-			const expiredState = "expired_state_12345";
-			stateStore.set(expiredState, Date.now() - 11 * 60 * 1000);
-			const res = await fetch(
-				`${baseUrl}/api/auth/github/callback?code=testcode&state=${expiredState}`,
-			);
-			assert.equal(res.status, 400);
-			assert.equal(await res.text(), "Invalid OAuth state");
-		});
 
 		it("GET /api/auth/github/callback accepts state once and rejects reuse", async () => {
 			const validState = stateStore.generate();
@@ -241,8 +260,7 @@ describe("OAuth State & Origin Hardening", () => {
 				`${baseUrl}/api/auth/github/callback?code=c1&state=${validState}`,
 				{ redirect: "manual" },
 			);
-			assert.equal(res2.status, 400);
-			assert.equal(await res2.text(), "Invalid OAuth state");
+			await assertInvalidOAuthState(res2);
 		});
 
 		it("redirects with URL fragment #github_error= on exchange failure", async () => {
@@ -254,10 +272,7 @@ describe("OAuth State & Origin Hardening", () => {
 				`${baseUrl}/api/auth/github/callback?code=bad_code&state=${validState}`,
 				{ redirect: "manual" },
 			);
-			assert.equal(res.status, 302);
-			const location = res.headers.get("location");
-			assert.ok(location.startsWith("https://banana.app/#github_error="));
-			assert.doesNotMatch(location, /\/\?github_error=/);
+			assertRedirectFragment(res, "github_error");
 		});
 
 		it("redirects with URL fragment #github_token= on exchange success", async () => {
@@ -285,13 +300,11 @@ describe("OAuth State & Origin Hardening", () => {
 					`${baseUrl}/api/auth/github/callback?code=valid_code&state=${validState}`,
 					{ redirect: "manual" },
 				);
-				assert.equal(res.status, 302);
-				const location = res.headers.get("location");
-				assert.equal(
-					location,
+				assertRedirectFragment(
+					res,
+					"github_token",
 					"https://banana.app/#github_token=gho_super_secret_token",
 				);
-				assert.doesNotMatch(location, /\/\?github_token=/);
 			} finally {
 				globalThis.fetch = originalFetch;
 			}
