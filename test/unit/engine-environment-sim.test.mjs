@@ -38,7 +38,7 @@ function makeValidSimRun() {
 	};
 }
 
-const WEIRD_INPUTS = [
+const PRIMITIVE_INPUTS = [
 	null,
 	undefined,
 	123,
@@ -46,11 +46,9 @@ const WEIRD_INPUTS = [
 	true,
 	false,
 	Number.NaN,
-	{},
-	[],
-	() => {},
-	Symbol("sym"),
 ];
+const NON_PRIMITIVE_INPUTS = [{}, [], () => {}, Symbol("sym")];
+const RESILIENCE_INPUTS = [...PRIMITIVE_INPUTS, ...NON_PRIMITIVE_INPUTS];
 
 function withoutKey(obj, key) {
 	const copy = { ...obj };
@@ -84,71 +82,101 @@ function assertResilient(validate, input) {
 	});
 }
 
-function runGarbageInputCases(validate) {
-	for (const input of WEIRD_INPUTS) {
-		test(`never throws on: ${String(input)}`, () => {
-			assertResilient(validate, input);
-		});
-	}
+function assertSchemaRootType(schema) {
+	assert.deepEqual(
+		{
+			type: schema.type,
+			additionalProperties: schema.additionalProperties,
+		},
+		{ type: "object", additionalProperties: false },
+	);
 }
 
-const ENV_INVALID_CASES = [
-	...["id", "name", "ambientC", "humidityPct", "altitudeM"].map((prop) => [
+function createMissingPropCases(factory, props) {
+	return props.map((prop) => [
 		`rejects missing ${prop}`,
-		() => withoutKey(makeValidEnv(), prop),
+		() => withoutKey(factory(), prop),
 		`$.${prop}`,
-	]),
+	]);
+}
+
+function createMutationCases(factory, mutations) {
+	return mutations.map(([reason, patch, path]) => [
+		`rejects ${reason}`,
+		() => {
+			const diff = typeof patch === "function" ? patch() : patch;
+			return { ...factory(), ...diff };
+		},
+		path,
+	]);
+}
+
+function createFieldCases(factory, prefix, field, values) {
+	return values.map((val) => [
+		`${prefix} ${val}`,
+		() => ({ ...factory(), [field]: val }),
+	]);
+}
+
+const ENV_VALID_CASES = [
+	["accepts minimal valid environment", () => makeValidEnv()],
 	[
-		"rejects invalid id kind (part_* instead of env_*)",
-		() => ({ ...makeValidEnv(), id: newId("part") }),
+		"accepts complete valid environment with optional fields",
+		() => ({
+			...makeValidEnv(),
+			vibration: { psdG2Hz: 0.04, fromHz: 20, toHz: 2000 },
+			shockG: 40,
+			airflowMs: 2.5,
+		}),
+	],
+	[
+		"accepts boundary when min equals max",
+		() => ({
+			...makeValidEnv(),
+			ambientC: { min: 25, max: 25 },
+			humidityPct: { min: 50, max: 50 },
+			vibration: { psdG2Hz: 0.01, fromHz: 100, toHz: 100 },
+		}),
+	],
+];
+
+const ENV_MUTATIONS = [
+	[
+		"invalid id kind (part_* instead of env_*)",
+		() => ({ id: newId("part") }),
 		"$.id",
 	],
+	["malformed id string", { id: "invalid-id" }, "$.id"],
+	["wrong name type", { name: 42 }, "$.name"],
+	["ambientC min > max", { ambientC: { min: 40, max: 20 } }, "$.ambientC"],
+	["ambientC missing max", { ambientC: { min: 20 } }, "$.ambientC.max"],
 	[
-		"rejects malformed id string",
-		() => ({ ...makeValidEnv(), id: "invalid-id" }),
-		"$.id",
-	],
-	[
-		"rejects wrong name type",
-		() => ({ ...makeValidEnv(), name: 42 }),
-		"$.name",
-	],
-	[
-		"rejects ambientC min > max",
-		() => ({ ...makeValidEnv(), ambientC: { min: 40, max: 20 } }),
-		"$.ambientC",
-	],
-	[
-		"rejects ambientC missing max",
-		() => ({ ...makeValidEnv(), ambientC: { min: 20 } }),
-		"$.ambientC.max",
-	],
-	[
-		"rejects humidityPct min > max",
-		() => ({ ...makeValidEnv(), humidityPct: { min: 80, max: 40 } }),
+		"humidityPct min > max",
+		{ humidityPct: { min: 80, max: 40 } },
 		"$.humidityPct",
 	],
 	[
-		"rejects vibration fromHz > toHz",
-		() => ({
-			...makeValidEnv(),
-			vibration: { psdG2Hz: 0.04, fromHz: 2000, toHz: 20 },
-		}),
+		"vibration fromHz > toHz",
+		{ vibration: { psdG2Hz: 0.04, fromHz: 2000, toHz: 20 } },
 		"$.vibration",
 	],
 	[
-		"rejects vibration missing toHz",
-		() => ({
-			...makeValidEnv(),
-			vibration: { psdG2Hz: 0.04, fromHz: 20 },
-		}),
+		"vibration missing toHz",
+		{ vibration: { psdG2Hz: 0.04, fromHz: 20 } },
 		"$.vibration.toHz",
 	],
-	[
-		"rejects unexpected extra property",
-		() => ({ ...makeValidEnv(), extraField: "not-allowed" }),
-		"$.extraField",
-	],
+	["unexpected extra property", { extraField: "not-allowed" }, "$.extraField"],
+];
+
+const ENV_INVALID_CASES = [
+	...createMissingPropCases(makeValidEnv, [
+		"id",
+		"name",
+		"ambientC",
+		"humidityPct",
+		"altitudeM",
+	]),
+	...createMutationCases(makeValidEnv, ENV_MUTATIONS),
 ];
 
 const SIM_VALID_KINDS = [
@@ -174,84 +202,98 @@ const SIM_VALID_CASES = [
 		"accepts run with empty results array",
 		() => ({ ...makeValidSimRun(), status: "queued", results: [] }),
 	],
-	...SIM_VALID_KINDS.map((kind) => [
-		`accepts kind ${kind}`,
-		() => ({ ...makeValidSimRun(), kind }),
-	]),
-	...SIM_VALID_STATUSES.map((status) => [
-		`accepts status ${status}`,
-		() => ({ ...makeValidSimRun(), status }),
-	]),
+	...createFieldCases(makeValidSimRun, "accepts kind", "kind", SIM_VALID_KINDS),
+	...createFieldCases(
+		makeValidSimRun,
+		"accepts status",
+		"status",
+		SIM_VALID_STATUSES,
+	),
 ];
 
-const SIM_INVALID_CASES = [
-	...["id", "commit", "envId", "startedAt", "results"].map((prop) => [
-		`rejects missing ${prop}`,
-		() => withoutKey(makeValidSimRun(), prop),
-		`$.${prop}`,
-	]),
+const SIM_MUTATIONS = [
 	[
-		"rejects invalid id kind (env_* instead of sim_*)",
-		() => ({ ...makeValidSimRun(), id: newId("env") }),
+		"invalid id kind (env_* instead of sim_*)",
+		() => ({ id: newId("env") }),
 		"$.id",
 	],
+	["malformed id string", { id: "bad-id" }, "$.id"],
+	["commit too short (< 7 hex)", { commit: "123456" }, "$.commit"],
 	[
-		"rejects malformed id string",
-		() => ({ ...makeValidSimRun(), id: "bad-id" }),
-		"$.id",
-	],
-	[
-		"rejects commit too short (< 7 hex)",
-		() => ({ ...makeValidSimRun(), commit: "123456" }),
+		"commit too long (> 40 hex)",
+		() => ({ commit: "a".repeat(41) }),
 		"$.commit",
 	],
+	["commit non-hex character", { commit: "123456g" }, "$.commit"],
 	[
-		"rejects commit too long (> 40 hex)",
-		() => ({ ...makeValidSimRun(), commit: "a".repeat(41) }),
-		"$.commit",
-	],
-	[
-		"rejects commit non-hex character",
-		() => ({ ...makeValidSimRun(), commit: "123456g" }),
-		"$.commit",
-	],
-	[
-		"rejects invalid envId kind (sim_* instead of env_*)",
-		() => ({ ...makeValidSimRun(), envId: newId("sim") }),
+		"invalid envId kind (sim_* instead of env_*)",
+		() => ({ envId: newId("sim") }),
 		"$.envId",
 	],
+	["invalid kind enum", { kind: "magic-sim" }, "$.kind"],
+	["invalid status enum", { status: "paused" }, "$.status"],
 	[
-		"rejects invalid kind enum",
-		() => ({ ...makeValidSimRun(), kind: "magic-sim" }),
-		"$.kind",
-	],
-	[
-		"rejects invalid status enum",
-		() => ({ ...makeValidSimRun(), status: "paused" }),
-		"$.status",
-	],
-	[
-		"rejects result missing unit",
-		() => ({
-			...makeValidSimRun(),
-			results: [{ itemId: "part_1", metric: "temp", value: 50 }],
-		}),
+		"result missing unit",
+		{ results: [{ itemId: "part_1", metric: "temp", value: 50 }] },
 		"$.results[0].unit",
 	],
 	[
-		"rejects result non-number value",
-		() => ({
-			...makeValidSimRun(),
+		"result non-number value",
+		{
 			results: [{ itemId: "part_1", metric: "temp", value: "high", unit: "C" }],
-		}),
+		},
 		"$.results[0].value",
 	],
-	[
-		"rejects unexpected extra property",
-		() => ({ ...makeValidSimRun(), extraProp: 123 }),
-		"$.extraProp",
-	],
+	["unexpected extra property", { extraProp: 123 }, "$.extraProp"],
 ];
+
+const SIM_INVALID_CASES = [
+	...createMissingPropCases(makeValidSimRun, [
+		"id",
+		"commit",
+		"envId",
+		"startedAt",
+		"results",
+	]),
+	...createMutationCases(makeValidSimRun, SIM_MUTATIONS),
+];
+
+function runValidTests(validator, cases) {
+	for (const [name, createPayload] of cases) {
+		test(name, () => assertValid(validator(createPayload())));
+	}
+}
+
+function runInvalidTests(validator, cases) {
+	for (const [name, createPayload, path] of cases) {
+		test(name, () => assertInvalid(validator(createPayload()), path));
+	}
+}
+
+function runResilienceTests(validator) {
+	for (const input of RESILIENCE_INPUTS) {
+		test(`never throws on: ${String(input)}`, () => {
+			assertResilient(validator, input);
+		});
+	}
+}
+
+function registerValidationSuites({
+	title,
+	validator,
+	validCases,
+	invalidCases,
+}) {
+	describe(`${title}: valid cases`, () => {
+		runValidTests(validator, validCases);
+	});
+	describe(`${title}: invalid rule cases`, () => {
+		runInvalidTests(validator, invalidCases);
+	});
+	describe(`${title}: garbage input resilience`, () => {
+		runResilienceTests(validator);
+	});
+}
 
 describe("module contract", () => {
 	test("exports match the contract exactly", async () => {
@@ -266,79 +308,21 @@ describe("module contract", () => {
 	});
 
 	test("exported schemas define expected root types", () => {
-		for (const schema of [ENVIRONMENT_SCHEMA, SIM_RUN_SCHEMA]) {
-			assert.deepEqual(
-				{
-					type: schema.type,
-					additionalProperties: schema.additionalProperties,
-				},
-				{ type: "object", additionalProperties: false },
-			);
-		}
+		assertSchemaRootType(ENVIRONMENT_SCHEMA);
+		assertSchemaRootType(SIM_RUN_SCHEMA);
 	});
 });
 
-describe("validateEnvironment: valid cases", () => {
-	const CASES = [
-		["accepts minimal valid environment", () => makeValidEnv()],
-		[
-			"accepts complete valid environment with optional fields",
-			() => ({
-				...makeValidEnv(),
-				vibration: { psdG2Hz: 0.04, fromHz: 20, toHz: 2000 },
-				shockG: 40,
-				airflowMs: 2.5,
-			}),
-		],
-		[
-			"accepts boundary when min equals max",
-			() => ({
-				...makeValidEnv(),
-				ambientC: { min: 25, max: 25 },
-				humidityPct: { min: 50, max: 50 },
-				vibration: { psdG2Hz: 0.01, fromHz: 100, toHz: 100 },
-			}),
-		],
-	];
-
-	for (const [name, createPayload] of CASES) {
-		test(name, () => {
-			assertValid(validateEnvironment(createPayload()));
-		});
-	}
+registerValidationSuites({
+	title: "validateEnvironment",
+	validator: validateEnvironment,
+	validCases: ENV_VALID_CASES,
+	invalidCases: ENV_INVALID_CASES,
 });
 
-describe("validateEnvironment: invalid rule cases", () => {
-	const CASES = ENV_INVALID_CASES;
-	for (const [name, createPayload, path] of CASES) {
-		test(name, () => {
-			assertInvalid(validateEnvironment(createPayload()), path);
-		});
-	}
-});
-
-describe("validateEnvironment: garbage input resilience", () => {
-	runGarbageInputCases(validateEnvironment);
-});
-
-describe("validateSimRun: valid cases", () => {
-	const CASES = SIM_VALID_CASES;
-	for (const [name, createPayload] of CASES) {
-		test(name, () => {
-			assertValid(validateSimRun(createPayload()));
-		});
-	}
-});
-
-describe("validateSimRun: invalid rule cases", () => {
-	const CASES = SIM_INVALID_CASES;
-	for (const [name, createPayload, path] of CASES) {
-		test(name, () => {
-			assertInvalid(validateSimRun(createPayload()), path);
-		});
-	}
-});
-
-describe("validateSimRun: garbage input resilience", () => {
-	runGarbageInputCases(validateSimRun);
+registerValidationSuites({
+	title: "validateSimRun",
+	validator: validateSimRun,
+	validCases: SIM_VALID_CASES,
+	invalidCases: SIM_INVALID_CASES,
 });
