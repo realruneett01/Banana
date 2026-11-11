@@ -52,6 +52,39 @@ function dispatch(limiter, req) {
 	return { res, nextCalled };
 }
 
+function createTestLimiter(overrides = {}) {
+	return createRateLimiter({
+		windowMs: 60000,
+		max: 1,
+		now: () => 1000,
+		...overrides,
+	});
+}
+
+function assertHeaders(res, headers) {
+	for (const [key, value] of Object.entries(headers)) {
+		assert.equal(res.getHeader(key), String(value));
+	}
+}
+
+function assertAllowed(step, remaining) {
+	assert.equal(step.nextCalled, true);
+	if (remaining !== undefined) {
+		assert.equal(step.res.getHeader("ratelimit-remaining"), String(remaining));
+	}
+}
+
+function assertBlocked(step, headers) {
+	assert.equal(step.nextCalled, false);
+	assert.equal(step.res.getStatusCode(), 429);
+	if (headers) {
+		assert.deepEqual(step.res.getBody(), {
+			error: "Too many requests, retry later",
+		});
+		assertHeaders(step.res, headers);
+	}
+}
+
 describe("rate limiter", () => {
 	test("defaultKey resolves client IP with fallbacks", () => {
 		const cases = [
@@ -69,95 +102,56 @@ describe("rate limiter", () => {
 	});
 
 	test("allows up to max requests with rate limit headers", () => {
-		const nowMs = 1000;
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 2,
-			now: () => nowMs,
-		});
+		const limiter = createTestLimiter({ max: 2 });
 		const req = createMockReq({ ip: "1.2.3.4" });
 
 		const step1 = dispatch(limiter, req);
-		assert.equal(step1.nextCalled, true);
-		assert.equal(step1.res.getHeader("ratelimit-limit"), "2");
-		assert.equal(step1.res.getHeader("ratelimit-remaining"), "1");
-		assert.equal(step1.res.getHeader("ratelimit-reset"), "60");
+		assertAllowed(step1, "1");
+		assertHeaders(step1.res, {
+			"ratelimit-limit": "2",
+			"ratelimit-reset": "60",
+		});
 
-		const step2 = dispatch(limiter, req);
-		assert.equal(step2.nextCalled, true);
-		assert.equal(step2.res.getHeader("ratelimit-remaining"), "0");
+		assertAllowed(dispatch(limiter, req), "0");
 	});
 
 	test("blocks max+1 with 429 and headers", () => {
-		const nowMs = 1000;
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 1,
-			now: () => nowMs,
-		});
+		const limiter = createTestLimiter();
 		const req = createMockReq({ ip: "1.2.3.4" });
 
 		dispatch(limiter, req);
-		const blocked = dispatch(limiter, req);
-
-		assert.equal(blocked.nextCalled, false);
-		assert.equal(blocked.res.getStatusCode(), 429);
-		assert.deepEqual(blocked.res.getBody(), {
-			error: "Too many requests, retry later",
+		assertBlocked(dispatch(limiter, req), {
+			"retry-after": "60",
+			"ratelimit-limit": "1",
+			"ratelimit-remaining": "0",
+			"ratelimit-reset": "60",
 		});
-		assert.equal(blocked.res.getHeader("retry-after"), "60");
-		assert.equal(blocked.res.getHeader("ratelimit-limit"), "1");
-		assert.equal(blocked.res.getHeader("ratelimit-remaining"), "0");
-		assert.equal(blocked.res.getHeader("ratelimit-reset"), "60");
 	});
 
 	test("resets after the window", () => {
-		let nowMs = 1000;
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 1,
-			now: () => nowMs,
-		});
+		let now = 1000;
+		const limiter = createTestLimiter({ now: () => now });
 		const req = createMockReq({ ip: "1.2.3.4" });
 
 		dispatch(limiter, req);
-		const blocked = dispatch(limiter, req);
-		assert.equal(blocked.nextCalled, false);
+		assert.equal(dispatch(limiter, req).nextCalled, false);
 
-		nowMs += 60001;
-		const resetCall = dispatch(limiter, req);
-		assert.equal(resetCall.nextCalled, true);
-		assert.equal(resetCall.res.getHeader("ratelimit-remaining"), "0");
+		now += 60001;
+		assertAllowed(dispatch(limiter, req), "0");
 	});
 
 	test("separate keys are independent", () => {
-		const nowMs = 1000;
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 1,
-			now: () => nowMs,
-		});
+		const limiter = createTestLimiter();
 		const reqA = createMockReq({ ip: "10.0.0.1" });
 		const reqB = createMockReq({ ip: "10.0.0.2" });
 
 		dispatch(limiter, reqA);
-		const callB = dispatch(limiter, reqB);
-		assert.equal(callB.nextCalled, true);
-		assert.equal(callB.res.getHeader("ratelimit-remaining"), "0");
-
-		const blockedA = dispatch(limiter, reqA);
-		assert.equal(blockedA.nextCalled, false);
-		assert.equal(blockedA.res.getStatusCode(), 429);
+		assertAllowed(dispatch(limiter, reqB), "0");
+		assertBlocked(dispatch(limiter, reqA));
 	});
 
 	test("maxKeys eviction keeps the Map bounded", () => {
-		const nowMs = 1000;
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 1,
-			maxKeys: 2,
-			now: () => nowMs,
-		});
+		const limiter = createTestLimiter({ maxKeys: 2 });
 		const reqA = createMockReq({ ip: "key-a" });
 		const reqB = createMockReq({ ip: "key-b" });
 		const reqC = createMockReq({ ip: "key-c" });
@@ -169,8 +163,7 @@ describe("rate limiter", () => {
 		dispatch(limiter, reqC);
 		assert.equal(limiter.store.size, 2);
 
-		const reqAAfterEviction = dispatch(limiter, reqA);
-		assert.equal(reqAAfterEviction.nextCalled, true);
+		assertAllowed(dispatch(limiter, reqA));
 	});
 
 	test("skipWhenLocal bypasses for desktop and enforces otherwise", () => {
@@ -179,36 +172,20 @@ describe("rate limiter", () => {
 			{ allowLocalRepos: false, shouldPass: false },
 		];
 		for (const c of cases) {
-			const limiter = createRateLimiter({
-				windowMs: 60000,
-				max: 1,
-				now: () => 1000,
-			});
+			const limiter = createTestLimiter();
 			const wrapped = skipWhenLocal(limiter);
 			const req = createMockReq({
 				ip: "1.1.1.1",
 				allowLocalRepos: c.allowLocalRepos,
 			});
 			dispatch(wrapped, req);
-			const second = dispatch(wrapped, req);
-			assert.equal(second.nextCalled, c.shouldPass);
+			assert.equal(dispatch(wrapped, req).nextCalled, c.shouldPass);
 		}
 	});
 
 	test("unknown ip falls back to shared unknown bucket", () => {
-		const limiter = createRateLimiter({
-			windowMs: 60000,
-			max: 1,
-			now: () => 1000,
-		});
-		const req1 = createMockReq();
-		const req2 = createMockReq();
-
-		const first = dispatch(limiter, req1);
-		assert.equal(first.nextCalled, true);
-
-		const second = dispatch(limiter, req2);
-		assert.equal(second.nextCalled, false);
-		assert.equal(second.res.getStatusCode(), 429);
+		const limiter = createTestLimiter();
+		assertAllowed(dispatch(limiter, createMockReq()));
+		assertBlocked(dispatch(limiter, createMockReq()));
 	});
 });
