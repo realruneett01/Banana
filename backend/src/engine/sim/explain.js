@@ -4,6 +4,12 @@ import { FAULT_INFO } from "./fault-inject.js";
 const DEFAULT_RESISTOR_W = 0.25;
 const DEFAULT_LED_MAX_A = 0.03;
 const DEFAULT_BATTERY_MAH = 2000;
+const LED_COLORS = /^(red|green|blue|yellow|white)/;
+
+const EMPTY_RESULT = {
+	summary: "No simulation data available to explain.",
+	cards: [],
+};
 
 export function formatSigFigs(val, n = 2) {
 	if (!Number.isFinite(val) || val === 0) {
@@ -14,84 +20,84 @@ export function formatSigFigs(val, n = 2) {
 	return `${val < 0 ? "-" : ""}${formatted}`;
 }
 
+function formatMetric(val, zeroStr, milliUnit, baseUnit) {
+	if (!Number.isFinite(val) || val === 0) {
+		return zeroStr;
+	}
+	if (Math.abs(val) < 1) {
+		return `${formatSigFigs(val * 1000)} ${milliUnit}`;
+	}
+	return `${formatSigFigs(val)} ${baseUnit}`;
+}
+
 export function formatCurrent(amps) {
-	if (!Number.isFinite(amps) || amps === 0) {
-		return "0 mA";
-	}
-	const abs = Math.abs(amps);
-	if (abs < 1) {
-		return `${formatSigFigs(amps * 1000)} mA`;
-	}
-	return `${formatSigFigs(amps)} A`;
+	return formatMetric(amps, "0 mA", "mA", "A");
 }
 
 export function formatVoltage(volts) {
-	if (!Number.isFinite(volts) || volts === 0) {
-		return "0 V";
-	}
-	const abs = Math.abs(volts);
-	if (abs < 1) {
-		return `${formatSigFigs(volts * 1000)} mV`;
-	}
-	return `${formatSigFigs(volts)} V`;
+	return formatMetric(volts, "0 V", "mV", "V");
 }
 
 export function formatPower(watts) {
-	if (!Number.isFinite(watts) || watts === 0) {
-		return "0 W";
-	}
-	const abs = Math.abs(watts);
-	if (abs < 1) {
-		return `${formatSigFigs(watts * 1000)} mW`;
-	}
-	return `${formatSigFigs(watts)} W`;
+	return formatMetric(watts, "0 W", "mW", "W");
+}
+
+function getPartMeta(part) {
+	if (!part) return null;
+	return {
+		ref: String(part.ref ?? "").toUpperCase(),
+		sym: String(part.symbol ?? "").toLowerCase(),
+	};
+}
+
+function isDiodeLed(val) {
+	return val.includes("led") || LED_COLORS.test(val);
 }
 
 export function isLedPart(part) {
-	if (!part) return false;
-	const ref = String(part.ref || "").toUpperCase();
-	const sym = String(part.symbol || "").toLowerCase();
-	const val = String(part.value || "").toLowerCase();
-	if (sym.includes("led") || ref.startsWith("LED")) {
+	const meta = getPartMeta(part);
+	if (!meta) return false;
+	if (meta.sym.includes("led") || meta.ref.startsWith("LED")) {
 		return true;
 	}
-	if (ref.startsWith("D")) {
-		return val.includes("led") || /^(red|green|blue|yellow|white)/.test(val);
-	}
-	return false;
+	const val = String(part.value ?? "").toLowerCase();
+	return meta.ref.startsWith("D") && isDiodeLed(val);
 }
 
 export function isResistorPart(part) {
-	if (!part) return false;
-	const ref = String(part.ref || "").toUpperCase();
-	const sym = String(part.symbol || "").toLowerCase();
-	return ref.startsWith("R") || sym.includes("resistor") || sym.includes(":r");
+	const meta = getPartMeta(part);
+	if (!meta) return false;
+	return (
+		meta.ref.startsWith("R") ||
+		meta.sym.includes("resistor") ||
+		meta.sym.includes(":r")
+	);
 }
 
 export function isBatteryPart(part) {
-	if (!part) return false;
-	const ref = String(part.ref || "").toUpperCase();
-	const sym = String(part.symbol || "").toLowerCase();
+	const meta = getPartMeta(part);
+	if (!meta) return false;
 	return (
-		ref.startsWith("BT") || ref.startsWith("BAT") || sym.includes("battery")
+		meta.ref.startsWith("BT") ||
+		meta.ref.startsWith("BAT") ||
+		meta.sym.includes("battery")
 	);
 }
 
 export function isSourcePart(part) {
-	if (!part) return false;
 	if (isBatteryPart(part)) return true;
-	const ref = String(part.ref || "").toUpperCase();
-	const sym = String(part.symbol || "").toLowerCase();
-	return ref.startsWith("V") || sym.includes("source");
+	const meta = getPartMeta(part);
+	if (!meta) return false;
+	return meta.ref.startsWith("V") || meta.sym.includes("source");
 }
 
 export function isGroundNet(net) {
 	if (!net) return false;
-	const name = String(net.name || "").toUpperCase();
-	const id = String(net.id || "").toUpperCase();
-	if (name === "GND" || name.startsWith("GND") || name === "GROUND") {
+	const name = String(net.name ?? "").toUpperCase();
+	if (name.startsWith("GND") || name === "GROUND") {
 		return true;
 	}
+	const id = String(net.id ?? "").toUpperCase();
 	return id === "0" || name === "0";
 }
 
@@ -131,16 +137,20 @@ function formatLedBody(ref, current, maxCurrent) {
 	};
 }
 
+function createPartCard(partId, body) {
+	return {
+		id: `card-${partId}`,
+		...body,
+		partIds: [partId],
+		netIds: [],
+	};
+}
+
 function buildLedCard(part, current, rating) {
 	const maxCurrent = rating?.maxCurrentA ?? DEFAULT_LED_MAX_A;
 	const ref = part.ref || part.id;
 	const body = formatLedBody(ref, current, maxCurrent);
-	return {
-		id: `card-${part.id}`,
-		...body,
-		partIds: [part.id],
-		netIds: [],
-	};
+	return createPartCard(part.id, body);
 }
 
 function formatResistorBody(ref, data) {
@@ -177,12 +187,7 @@ function buildResistorCard(part, current, power, rating) {
 		maxFmt: formatPower(maxPower),
 		ratio,
 	});
-	return {
-		id: `card-${part.id}`,
-		...body,
-		partIds: [part.id],
-		netIds: [],
-	};
+	return createPartCard(part.id, body);
 }
 
 function formatBatteryLife(currMa) {
@@ -198,14 +203,11 @@ function buildSourceCard(part, current) {
 	const isBat = isBatteryPart(part);
 	const currFmt = formatCurrent(current);
 	const detail = isBat ? formatBatteryLife(current * 1000) : "to the circuit.";
-	return {
-		id: `card-${part.id}`,
+	return createPartCard(part.id, {
 		level: "info",
 		title: `${ref} ${isBat ? "Battery" : "Power Source"}`,
 		text: `Supplies ${currFmt} of current (how much electricity flows) ${detail}`,
-		partIds: [part.id],
-		netIds: [],
-	};
+	});
 }
 
 function buildUnpoweredNetCard(net) {
@@ -223,49 +225,84 @@ function buildUnpoweredNetCard(net) {
 	};
 }
 
-function findStoppedAndOverloaded(parts, currents, ratings, powers) {
+function checkLedFault(cur, rating) {
+	const maxCur = rating?.maxCurrentA ?? DEFAULT_LED_MAX_A;
+	if (cur > maxCur) return "overloaded";
+	if (cur < 0.001) return "stopped";
+	return null;
+}
+
+function checkResistorFault(part, cur, powers, rating) {
+	const pow = computeResistorPower(part, cur, powers);
+	const maxPow = rating?.maxPowerW ?? DEFAULT_RESISTOR_W;
+	if (pow > maxPow) return "overloaded";
+	if (cur < 1e-4) return "stopped";
+	return null;
+}
+
+function inspectPartFault(part, currents, ratings, powers) {
+	const cur = Math.abs(currents?.[part.id] ?? 0);
+	const rating = ratings?.[part.id];
+	if (isLedPart(part)) {
+		return checkLedFault(cur, rating);
+	}
+	if (isResistorPart(part)) {
+		return checkResistorFault(part, cur, powers, rating);
+	}
+	return null;
+}
+
+function findStoppedAndOverloaded(sim) {
 	const stopped = [];
 	const overloaded = [];
-	for (const p of parts) {
-		const cur = Math.abs(currents?.[p.id] ?? 0);
-		if (isLedPart(p)) {
-			const maxCur = ratings?.[p.id]?.maxCurrentA ?? DEFAULT_LED_MAX_A;
-			if (cur > maxCur) overloaded.push(p);
-			else if (cur < 0.001) stopped.push(p);
-		} else if (isResistorPart(p)) {
-			const pow = computeResistorPower(p, cur, powers);
-			const maxPow = ratings?.[p.id]?.maxPowerW ?? DEFAULT_RESISTOR_W;
-			if (pow > maxPow) overloaded.push(p);
-			else if (cur < 1e-4) stopped.push(p);
-		}
+	for (const p of sim.parts) {
+		const status = inspectPartFault(p, sim.currents, sim.ratings, sim.powers);
+		if (status === "overloaded") overloaded.push(p);
+		else if (status === "stopped") stopped.push(p);
 	}
 	return { stopped, overloaded };
 }
 
-function buildFaultCard(fault, stopped, overloaded) {
-	const info = FAULT_INFO[fault?.kind];
-	const baseText =
-		info?.plainEnglish ??
-		`A circuit fault (${fault?.kind || "unknown"}) was injected.`;
+function joinPartNames(parts) {
+	return parts.map((p) => p.ref || p.id).join(", ");
+}
+
+function resolveFaultBaseText(fault, info) {
+	if (info?.plainEnglish) {
+		return info.plainEnglish;
+	}
+	const kind = fault?.kind ?? "unknown";
+	return `A circuit fault (${kind}) was injected.`;
+}
+
+function describeFaultChanges(stopped, overloaded) {
 	const changes = [];
 	if (stopped.length > 0) {
-		const stoppedNames = stopped.map((p) => p.ref || p.id).join(", ");
-		changes.push(`${stoppedNames} stopped (off with 0 mA)`);
+		changes.push(`${joinPartNames(stopped)} stopped (off with 0 mA)`);
 	}
 	if (overloaded.length > 0) {
-		const overloadedNames = overloaded.map((p) => p.ref || p.id).join(", ");
-		changes.push(`${overloadedNames} got overloaded`);
+		changes.push(`${joinPartNames(overloaded)} got overloaded`);
 	}
-	const changeMsg =
-		changes.length > 0 ? ` What changed: ${changes.join("; ")}.` : "";
+	if (changes.length === 0) {
+		return "";
+	}
+	return ` What changed: ${changes.join("; ")}.`;
+}
+
+function buildFaultCard(fault, stopped, overloaded) {
+	const info = FAULT_INFO[fault?.kind];
+	const baseText = resolveFaultBaseText(fault, info);
+	const changeMsg = describeFaultChanges(stopped, overloaded);
 	const level = overloaded.length > 0 ? "danger" : "warning";
+	const title = info?.label ? `Fault: ${info.label}` : "Fault Injected";
+	const faultKind = fault?.kind ?? "general";
 	const partIds = [...stopped, ...overloaded].map((p) => p.id);
 	const netIds = [fault?.netId, fault?.netA, fault?.netB].filter(Boolean);
 
 	return {
-		id: `card-fault-${fault?.kind || "general"}`,
+		id: `card-fault-${faultKind}`,
 		level,
-		title: info?.label ? `Fault: ${info.label}` : "Fault Injected",
+		title,
 		text: `${baseText}${changeMsg}`,
 		partIds: [...new Set(partIds)],
 		netIds: [...new Set(netIds)],
@@ -284,32 +321,53 @@ function findUnpoweredNets(nets, voltages) {
 	return unpowered;
 }
 
-function appendPartCards(cards, ctx) {
-	const { parts, currents, powers, ratings } = ctx;
-	for (const part of parts) {
-		const cur = Math.abs(currents?.[part.id] ?? 0);
-		const rating = ratings?.[part.id];
-		if (isLedPart(part)) {
-			cards.push(buildLedCard(part, cur, rating));
-		} else if (isResistorPart(part) && (cur > 1e-6 || powers?.[part.id])) {
-			const pow = computeResistorPower(part, cur, powers);
-			cards.push(buildResistorCard(part, cur, pow, rating));
-		} else if (isSourcePart(part) && cur > 1e-6) {
-			cards.push(buildSourceCard(part, cur));
+function createResistorCardIfActive(part, cur, sim) {
+	const hasCurrentOrPower = cur > 1e-6 || Boolean(sim.powers?.[part.id]);
+	if (!hasCurrentOrPower) return null;
+	const pow = computeResistorPower(part, cur, sim.powers);
+	return buildResistorCard(part, cur, pow, sim.ratings?.[part.id]);
+}
+
+function tryCreatePartCard(part, sim) {
+	const cur = Math.abs(sim.currents?.[part.id] ?? 0);
+	if (isLedPart(part)) {
+		return buildLedCard(part, cur, sim.ratings?.[part.id]);
+	}
+	if (isResistorPart(part)) {
+		return createResistorCardIfActive(part, cur, sim);
+	}
+	if (isSourcePart(part) && cur > 1e-6) {
+		return buildSourceCard(part, cur);
+	}
+	return null;
+}
+
+function appendPartCards(cards, sim) {
+	for (const part of sim.parts) {
+		const card = tryCreatePartCard(part, sim);
+		if (card) {
+			cards.push(card);
 		}
 	}
 }
 
 function summaryFromFault(stopped, overloaded) {
 	if (stopped.length > 0) {
-		const names = stopped.map((p) => p.ref || p.id).join(", ");
+		const names = joinPartNames(stopped);
 		return `Something is wrong: ${names} stopped receiving current due to a circuit fault.`;
 	}
 	if (overloaded.length > 0) {
-		const names = overloaded.map((p) => p.ref || p.id).join(", ");
+		const names = joinPartNames(overloaded);
 		return `Something is wrong: ${names} is overloaded due to a circuit fault.`;
 	}
 	return "Something is wrong: a circuit fault was detected.";
+}
+
+function formatLedSummary(ledCard, ledCurrent) {
+	if (ledCard.level === "info") {
+		return `Your circuit works: the LED gets ${formatCurrent(ledCurrent)}.`;
+	}
+	return `Something is wrong: the LED is not receiving enough current to light up (only ${formatCurrent(ledCurrent)}).`;
 }
 
 function buildSummary(ctx) {
@@ -333,29 +391,22 @@ function buildSummary(ctx) {
 		return `Something is wrong: wire ${netNames} has no power.`;
 	}
 	if (ledCard) {
-		return ledCard.level === "info"
-			? `Your circuit works: the LED gets ${formatCurrent(ledCurrent)}.`
-			: `Something is wrong: the LED is not receiving enough current to light up (only ${formatCurrent(ledCurrent)}).`;
+		return formatLedSummary(ledCard, ledCurrent);
 	}
 	return "Your circuit works: all parts are operating safely within their limits.";
 }
 
+function extractMapEntries(obj, mapFn) {
+	if (!obj || typeof obj !== "object") return [];
+	return Object.keys(obj).map(mapFn);
+}
+
 function extractPartsFromCurrents(currents) {
-	if (!currents || typeof currents !== "object") return [];
-	return Object.keys(currents).map((id) => ({
-		id,
-		ref: id,
-		value: "",
-	}));
+	return extractMapEntries(currents, (id) => ({ id, ref: id, value: "" }));
 }
 
 function extractNetsFromVoltages(voltages) {
-	if (!voltages || typeof voltages !== "object") return [];
-	return Object.keys(voltages).map((id) => ({
-		id,
-		name: id,
-		pins: [],
-	}));
+	return extractMapEntries(voltages, (id) => ({ id, name: id, pins: [] }));
 }
 
 function resolvePartsAndNets(ir, currents, voltages) {
@@ -368,77 +419,75 @@ function resolvePartsAndNets(ir, currents, voltages) {
 	return { parts, nets };
 }
 
-function collectCards(ctx) {
-	const {
-		parts,
-		nets,
-		currents,
-		powers,
-		ratings,
-		fault,
-		voltages,
-		stopped,
-		overloaded,
-	} = ctx;
+function collectCards(sim, faultState) {
 	const cards = [];
-	if (fault) {
-		cards.push(buildFaultCard(fault, stopped, overloaded));
+	if (sim.fault) {
+		cards.push(
+			buildFaultCard(sim.fault, faultState.stopped, faultState.overloaded),
+		);
 	}
-	appendPartCards(cards, { parts, currents, powers, ratings });
-	const unpoweredNets = findUnpoweredNets(nets, voltages);
+	appendPartCards(cards, sim);
+	const unpoweredNets = findUnpoweredNets(sim.nets, sim.voltages);
 	for (const net of unpoweredNets) {
 		cards.push(buildUnpoweredNetCard(net));
 	}
 	return { cards, unpoweredNets };
 }
 
-export function explainCircuitResult(options = {}) {
-	if (!options || typeof options !== "object") {
-		return { summary: "No simulation data available to explain.", cards: [] };
-	}
-	const {
-		ir,
-		nodeVoltages = {},
-		partCurrents = {},
-		partPowers = {},
-		fault,
-		ratings = {},
-	} = options;
-	const { parts, nets } = resolvePartsAndNets(ir, partCurrents, nodeVoltages);
-	if (
-		parts.length === 0 &&
-		Object.keys(nodeVoltages || {}).length === 0 &&
-		!fault
-	) {
-		return { summary: "No simulation data available to explain.", cards: [] };
-	}
-	const { stopped, overloaded } = findStoppedAndOverloaded(
-		parts,
-		partCurrents,
-		ratings,
-		partPowers,
-	);
-	const { cards, unpoweredNets } = collectCards({
+function isEmptyCircuit(parts, voltages, fault) {
+	if (fault) return false;
+	if (parts.length > 0) return false;
+	const voltageCount = voltages ? Object.keys(voltages).length : 0;
+	return voltageCount === 0;
+}
+
+function parseSimulationInputs(options) {
+	const ir = options.ir;
+	const voltages = options.nodeVoltages ?? {};
+	const currents = options.partCurrents ?? {};
+	const { parts, nets } = resolvePartsAndNets(ir, currents, voltages);
+	return {
 		parts,
 		nets,
-		currents: partCurrents,
-		powers: partPowers,
-		ratings,
-		fault,
-		voltages: nodeVoltages,
-		stopped,
-		overloaded,
-	});
+		voltages,
+		currents,
+		powers: options.partPowers ?? {},
+		ratings: options.ratings ?? {},
+		fault: options.fault,
+	};
+}
+
+function findLedContext(parts, currents, cards) {
 	const ledPart = parts.find((p) => isLedPart(p));
-	const ledCurrent = ledPart ? Math.abs(partCurrents?.[ledPart.id] ?? 0) : 0;
-	const ledCard = cards.find((c) => ledPart && c.id === `card-${ledPart.id}`);
+	if (!ledPart) {
+		return { ledCurrent: 0, ledCard: undefined };
+	}
+	const ledCurrent = Math.abs(currents?.[ledPart.id] ?? 0);
+	const ledCard = cards.find((c) => c.id === `card-${ledPart.id}`);
+	return { ledCurrent, ledCard };
+}
+
+export function explainCircuitResult(options = {}) {
+	if (!options || typeof options !== "object") {
+		return { ...EMPTY_RESULT };
+	}
+	const sim = parseSimulationInputs(options);
+	if (isEmptyCircuit(sim.parts, sim.voltages, sim.fault)) {
+		return { ...EMPTY_RESULT };
+	}
+	const faultState = findStoppedAndOverloaded(sim);
+	const { cards, unpoweredNets } = collectCards(sim, faultState);
+	const { ledCurrent, ledCard } = findLedContext(
+		sim.parts,
+		sim.currents,
+		cards,
+	);
 	const dangerCard = cards.find((c) => c.level === "danger");
 	const summary = buildSummary({
-		fault,
+		...sim,
+		...faultState,
 		ledCard,
 		dangerCard,
-		stopped,
-		overloaded,
 		unpoweredNets,
 		ledCurrent,
 	});
