@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { diffIssues } from "./issueDelta.js";
 
 function pickFirstKind(list) {
 	if (!Array.isArray(list) || list.length === 0) return "";
@@ -29,10 +30,12 @@ function nextSignal(ref) {
 	return controller.signal;
 }
 
-function handleSimResult(res, setters) {
+function handleSimResult(res, setters, isAuto) {
 	if (res.ok) {
+		const nextIssues = res.data?.issues ?? [];
+		setters.applySimResult?.(nextIssues, isAuto);
 		setters.setRun(res.data?.run ?? null);
-		setters.setIssues(res.data?.issues ?? []);
+		setters.setIssues(nextIssues);
 		setters.setStatus("done");
 		return;
 	}
@@ -113,7 +116,15 @@ function useSimState() {
 	};
 }
 
-async function startSim({ api, ir, commit, s, abortRef, setters }) {
+async function startSim({
+	api,
+	ir,
+	commit,
+	s,
+	abortRef,
+	setters,
+	isAuto = false,
+}) {
 	s.setStatus("running");
 	s.setError(null);
 	const signal = nextSignal(abortRef);
@@ -122,7 +133,7 @@ async function startSim({ api, ir, commit, s, abortRef, setters }) {
 		{ signal },
 	);
 	if (signal.aborted || !res) return;
-	handleSimResult(res, setters);
+	handleSimResult(res, setters, isAuto);
 }
 
 async function startErc({ api, ir, commit, s, abortRef, setters }) {
@@ -134,36 +145,57 @@ async function startErc({ api, ir, commit, s, abortRef, setters }) {
 	handleErcResult(res, setters);
 }
 
-export function useSimulation({ api, ir, commit }) {
-	const s = useSimState();
-	const abortRef = useRef(null);
-	const setters = useMemo(
-		() => ({
-			setRun: s.setRun,
-			setIssues: s.setIssues,
-			setStatus: s.setStatus,
-			setError: s.setError,
-		}),
-		[s.setRun, s.setIssues, s.setStatus, s.setError],
-	);
+function useAutoSim({
+	api,
+	ir,
+	commit,
+	s,
+	abortRef,
+	setters,
+	setDelta,
+	prevIr,
+	hasResult,
+}) {
+	useEffect(() => {
+		if (prevIr.current === ir) return;
+		if (!hasResult.current) {
+			prevIr.current = ir;
+			return;
+		}
+		if (!canRunSim(s.status, commit, s.env, s.kind)) return;
+		prevIr.current = ir;
+		setDelta(null);
+		startSim({ api, ir, commit, s, abortRef, setters, isAuto: true });
+	}, [api, ir, commit, s, abortRef, setters, setDelta, prevIr, hasResult]);
+}
 
-	useKindsLoader(api, s.setKinds, s.setKind);
-	useEffect(() => () => stopController(abortRef), []);
-
+function useSimActions({
+	api,
+	ir,
+	commit,
+	s,
+	abortRef,
+	setters,
+	setDelta,
+	prevIr,
+}) {
 	const cancel = useCallback(() => {
 		stopController(abortRef);
 		s.setStatus("idle");
-	}, [s.setStatus]);
+	}, [s.setStatus, abortRef]);
 
 	const runSelected = useCallback(() => {
 		if (!canRunSim(s.status, commit, s.env, s.kind)) return;
-		startSim({ api, ir, commit, s, abortRef, setters });
-	}, [api, ir, commit, s, setters]);
+		prevIr.current = ir;
+		setDelta(null);
+		startSim({ api, ir, commit, s, abortRef, setters, isAuto: false });
+	}, [api, ir, commit, s, abortRef, setters, setDelta, prevIr]);
 
 	const runErc = useCallback(() => {
 		if (!canRunErc(s.status, commit)) return;
+		setDelta(null);
 		startErc({ api, ir, commit, s, abortRef, setters });
-	}, [api, ir, commit, s, setters]);
+	}, [api, ir, commit, s, abortRef, setters, setDelta]);
 
 	const setIssueStatus = useCallback(
 		(id, nextStatus) => {
@@ -171,6 +203,58 @@ export function useSimulation({ api, ir, commit }) {
 		},
 		[s.setIssues],
 	);
+
+	return { cancel, runSelected, runErc, setIssueStatus };
+}
+
+export function useSimulation({ api, ir, commit }) {
+	const s = useSimState();
+	const abortRef = useRef(null);
+	const prevIr = useRef(ir);
+	const prevIssues = useRef(null);
+	const hasResult = useRef(false);
+	const [delta, setDelta] = useState(null);
+
+	const applySimResult = useCallback((nextIssues, isAuto) => {
+		hasResult.current = true;
+		setDelta(isAuto ? diffIssues(prevIssues.current ?? [], nextIssues) : null);
+		prevIssues.current = nextIssues;
+	}, []);
+
+	const setters = useMemo(
+		() => ({
+			setRun: s.setRun,
+			setIssues: s.setIssues,
+			setStatus: s.setStatus,
+			setError: s.setError,
+			applySimResult,
+		}),
+		[s.setRun, s.setIssues, s.setStatus, s.setError, applySimResult],
+	);
+
+	useKindsLoader(api, s.setKinds, s.setKind);
+	useEffect(() => () => stopController(abortRef), []);
+	useAutoSim({
+		api,
+		ir,
+		commit,
+		s,
+		abortRef,
+		setters,
+		setDelta,
+		prevIr,
+		hasResult,
+	});
+	const actions = useSimActions({
+		api,
+		ir,
+		commit,
+		s,
+		abortRef,
+		setters,
+		setDelta,
+		prevIr,
+	});
 
 	return {
 		kinds: s.kinds,
@@ -182,9 +266,7 @@ export function useSimulation({ api, ir, commit }) {
 		run: s.run,
 		status: s.status,
 		error: s.error,
-		runSelected,
-		runErc,
-		cancel,
-		setIssueStatus,
+		delta,
+		...actions,
 	};
 }
