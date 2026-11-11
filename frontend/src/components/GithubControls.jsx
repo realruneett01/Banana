@@ -36,6 +36,23 @@ const BANANA_BUTTON_STYLE = Object.freeze({
 	border: "none",
 });
 
+const FLEX_ROW_BETWEEN = Object.freeze({
+	display: "flex",
+	alignItems: "center",
+	justifyContent: "space-between",
+});
+
+const DARK_SURFACE = Object.freeze({
+	background: "#0f1015",
+	borderColor: "#232738",
+});
+
+const makeFlexCenter = (isInline = false) => ({
+	display: isInline ? "inline-flex" : "flex",
+	alignItems: "center",
+	justifyContent: "center",
+});
+
 const STYLES = Object.freeze({
 	cardPrompt: {
 		background: "linear-gradient(180deg, #161821 0%, #0f1015 100%)",
@@ -45,13 +62,11 @@ const STYLES = Object.freeze({
 		padding: "16px 8px",
 	},
 	githubIconCircle: {
+		...makeFlexCenter(true),
 		width: 48,
 		height: 48,
 		borderRadius: "50%",
 		background: "#24292e",
-		display: "inline-flex",
-		alignItems: "center",
-		justifyContent: "center",
 		marginBottom: "12px",
 		border: "2px solid #fadb14",
 	},
@@ -62,14 +77,12 @@ const STYLES = Object.freeze({
 		marginBottom: "16px",
 	},
 	accountBadge: {
-		background: "#0f1015",
+		...FLEX_ROW_BETWEEN,
+		...DARK_SURFACE,
 		border: "1px solid #232738",
 		borderRadius: "6px",
 		padding: "8px 12px",
 		marginBottom: "14px",
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "space-between",
 	},
 	avatarImg: {
 		width: 22,
@@ -82,16 +95,10 @@ const STYLES = Object.freeze({
 		fontSize: "11px",
 		padding: 0,
 	},
-	rowBetween: {
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "space-between",
-	},
+	rowBetween: FLEX_ROW_BETWEEN,
 	labelRow: {
-		display: "flex",
-		justifyContent: "space-between",
+		...FLEX_ROW_BETWEEN,
 		width: "100%",
-		alignItems: "center",
 	},
 	labelTitle: {
 		color: "#e2e8f0",
@@ -99,13 +106,11 @@ const STYLES = Object.freeze({
 		fontWeight: 600,
 	},
 	inputDark: {
-		background: "#0f1015",
-		borderColor: "#232738",
+		...DARK_SURFACE,
 		color: "#fff",
 	},
 	alertInfo: {
-		background: "#0f1015",
-		borderColor: "#232738",
+		...DARK_SURFACE,
 		fontSize: "11px",
 	},
 	miniTag: {
@@ -151,11 +156,10 @@ function isValidRepoPart(part) {
 	return part !== "." && part !== "..";
 }
 
-function isPathTraversalOrAbsolute(path) {
-	if (path.startsWith("/") || /^[a-zA-Z]:/.test(path)) return true;
-	if (path.includes("\\") || path.split("/").includes("..")) return true;
-	return false;
-}
+const isAbsolutePrefix = (p) => p.startsWith("/") || /^[a-zA-Z]:/.test(p);
+const hasEscapeSegment = (p) => p.includes("\\") || p.split("/").includes("..");
+const isPathTraversalOrAbsolute = (p) =>
+	isAbsolutePrefix(p) || hasEscapeSegment(p);
 
 function hasHardwareExtension(path) {
 	return path.endsWith(".kicad_pcb") || path.endsWith(".kicad_sch");
@@ -180,37 +184,29 @@ function isValidCommitOrBranch(val) {
 	return isValidBranchName(trimmed);
 }
 
-const COMMIT_INPUT_RULES = Object.freeze([
-	{ required: true, message: "Please select a revision" },
-	{
-		validator(_, value) {
-			if (!value || isValidCommitOrBranch(value)) {
-				return Promise.resolve();
-			}
-			return Promise.reject(
-				new Error(
-					"Must be a commit hash (7-40 hex) or branch name without .. or leading -",
-				),
-			);
+const makeValidationRule = (reqMsg, isValid, errMsg) =>
+	Object.freeze([
+		{ required: true, message: reqMsg },
+		{
+			validator(_, value) {
+				return !value || isValid(value)
+					? Promise.resolve()
+					: Promise.reject(new Error(errMsg));
+			},
 		},
-	},
-]);
+	]);
 
-const HARDWARE_FILE_RULES = Object.freeze([
-	{ required: true, message: "Please select a hardware design file" },
-	{
-		validator(_, value) {
-			if (!value || isValidHardwareFilePath(value)) {
-				return Promise.resolve();
-			}
-			return Promise.reject(
-				new Error(
-					"File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
-				),
-			);
-		},
-	},
-]);
+const COMMIT_INPUT_RULES = makeValidationRule(
+	"Please select a revision",
+	isValidCommitOrBranch,
+	"Must be a commit hash (7-40 hex) or branch name without .. or leading -",
+);
+
+const HARDWARE_FILE_RULES = makeValidationRule(
+	"Please select a hardware design file",
+	isValidHardwareFilePath,
+	"File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
+);
 
 function GithubPromptCard({ onOpenAuthModal }) {
 	return (
@@ -266,18 +262,28 @@ function GithubAccountBadge({ githubUser, onOpenAuthModal }) {
 	);
 }
 
-function RepoOptionItem({ repo }) {
-	const tagColor = repo.isPrivate ? "warning" : "default";
-	const tagIcon = repo.isPrivate ? <LockOutlined /> : <GlobalOutlined />;
-	const tagText = repo.isPrivate ? "Private" : "Public";
-
+function TaggedOptionRow({
+	label,
+	extraLabel,
+	tagColor,
+	tagIcon,
+	tagText,
+	mono,
+}) {
+	const textStyle = mono
+		? { fontFamily: "monospace", fontSize: "11px" }
+		: { fontWeight: 500 };
 	return (
 		<div style={STYLES.rowBetween}>
-			<span style={{ fontWeight: 500 }}>
-				{repo.name}
-				<span style={{ color: "#6b7280", fontSize: "11px", marginLeft: "4px" }}>
-					({repo.owner})
-				</span>
+			<span style={textStyle}>
+				{label}
+				{extraLabel && (
+					<span
+						style={{ color: "#6b7280", fontSize: "11px", marginLeft: "4px" }}
+					>
+						{extraLabel}
+					</span>
+				)}
 			</span>
 			<Tag color={tagColor} icon={tagIcon} style={STYLES.miniTag}>
 				{tagText}
@@ -286,9 +292,25 @@ function RepoOptionItem({ repo }) {
 	);
 }
 
-function RepoSelectorLabel(props) {
-	const { loadingRepos, onRefreshRepos, manualRepoMode, setManualRepoMode } =
-		props;
+function RepoOptionItem({ repo }) {
+	return (
+		<TaggedOptionRow
+			label={repo.name}
+			extraLabel={`(${repo.owner})`}
+			tagColor={repo.isPrivate ? "warning" : "default"}
+			tagIcon={repo.isPrivate ? <LockOutlined /> : <GlobalOutlined />}
+			tagText={repo.isPrivate ? "Private" : "Public"}
+		/>
+	);
+}
+
+function RepoSelectorLabel({
+	loadingRepos,
+	onRefreshRepos,
+	manualRepoMode,
+	setManualRepoMode,
+}) {
+	const toggleText = manualRepoMode ? "Select from list" : "Custom repo";
 	return (
 		<div style={STYLES.labelRow}>
 			<span style={STYLES.labelTitle}>Remote Repository</span>
@@ -310,7 +332,7 @@ function RepoSelectorLabel(props) {
 					onClick={() => setManualRepoMode(!manualRepoMode)}
 					style={STYLES.yellowLink}
 				>
-					{manualRepoMode ? "Select from list" : "Custom repo"}
+					{toggleText}
 				</Button>
 			</Space>
 		</div>
@@ -339,6 +361,24 @@ function ManualRepoInputControl(props) {
 	);
 }
 
+function FullWidthSearchSelect(props) {
+	const { placeholder, loading, value, onChange, filterOption, children } =
+		props;
+	return (
+		<Select
+			showSearch
+			placeholder={placeholder}
+			loading={loading}
+			value={value}
+			onChange={onChange}
+			filterOption={filterOption}
+			style={{ width: "100%" }}
+		>
+			{children}
+		</Select>
+	);
+}
+
 function RepoSelectDropdown(props) {
 	const { repos, selectedRepo, onSelectRepo, loadingRepos } = props;
 	const selectedValue = selectedRepo
@@ -351,48 +391,45 @@ function RepoSelectDropdown(props) {
 	};
 
 	return (
-		<Select
-			showSearch
+		<FullWidthSearchSelect
 			placeholder="Search repositories..."
 			loading={loadingRepos}
 			value={selectedValue}
 			onChange={handleChange}
 			filterOption={(input, option) => matchesFilter(option?.value, input)}
-			style={{ width: "100%" }}
 		>
-			{repos.map((r) => (
-				<Select.Option
-					key={r.id || `${r.owner}/${r.name}`}
-					value={`${r.owner}/${r.name}`}
-				>
-					<RepoOptionItem repo={r} />
-				</Select.Option>
-			))}
-		</Select>
+			{repos.map((r) => {
+				const full = `${r.owner}/${r.name}`;
+				return (
+					<Select.Option key={r.id || full} value={full}>
+						<RepoOptionItem repo={r} />
+					</Select.Option>
+				);
+			})}
+		</FullWidthSearchSelect>
 	);
 }
 
+function RepoSelectorInputPicker(props) {
+	if (props.manualRepoMode) {
+		return (
+			<ManualRepoInputControl
+				value={props.manualRepoInput}
+				onChange={props.setManualRepoInput}
+				onSubmit={props.onManualRepoSubmit}
+			/>
+		);
+	}
+	return <RepoSelectDropdown {...props} />;
+}
+
 function RepoSelector(props) {
-	const {
-		manualRepoMode,
-		manualRepoInput,
-		setManualRepoInput,
-		onManualRepoSubmit,
-	} = props;
 	return (
 		<Form.Item
 			label={<RepoSelectorLabel {...props} />}
 			style={{ marginBottom: "12px" }}
 		>
-			{manualRepoMode ? (
-				<ManualRepoInputControl
-					value={manualRepoInput}
-					onChange={setManualRepoInput}
-					onSubmit={onManualRepoSubmit}
-				/>
-			) : (
-				<RepoSelectDropdown {...props} />
-			)}
+			<RepoSelectorInputPicker {...props} />
 		</Form.Item>
 	);
 }
@@ -450,14 +487,12 @@ function PullRequestOptionItem({ pr }) {
 function PullRequestSelectDropdown(props) {
 	const { pulls, loading, selectedNumber, onSelect } = props;
 	return (
-		<Select
-			showSearch
+		<FullWidthSearchSelect
 			placeholder="Select Pull Request..."
 			loading={loading}
 			value={selectedNumber}
 			onChange={onSelect}
 			filterOption={(input, option) => matchesFilter(option?.label, input)}
-			style={{ width: "100%" }}
 		>
 			{pulls.map((pr) => (
 				<Select.Option
@@ -468,7 +503,7 @@ function PullRequestSelectDropdown(props) {
 					<PullRequestOptionItem pr={pr} />
 				</Select.Option>
 			))}
-		</Select>
+		</FullWidthSearchSelect>
 	);
 }
 
@@ -495,11 +530,21 @@ function PullRequestSelector(props) {
 	);
 }
 
-function BranchSelectField(props) {
-	const { label, placeholder, value, loading, branches, onChange, keyPrefix } =
-		props;
+function SelectFormField(props) {
+	const {
+		label,
+		name,
+		rules,
+		marginBottom = "8px",
+		placeholder,
+		value,
+		loading,
+		onChange,
+		options,
+	} = props;
+
 	return (
-		<Form.Item label={label} style={{ marginBottom: "8px" }}>
+		<Form.Item label={label} name={name} rules={rules} style={{ marginBottom }}>
 			<Select
 				showSearch
 				placeholder={placeholder}
@@ -507,13 +552,33 @@ function BranchSelectField(props) {
 				loading={loading}
 				onChange={onChange}
 			>
-				{branches.map((b) => (
-					<Select.Option key={`${keyPrefix}-${b.name}`} value={b.name}>
-						{b.name}
+				{options.map((opt) => (
+					<Select.Option key={opt.key} value={opt.value}>
+						{opt.label}
 					</Select.Option>
 				))}
 			</Select>
 		</Form.Item>
+	);
+}
+
+function BranchSelectField(props) {
+	const { label, placeholder, value, loading, branches, onChange, keyPrefix } =
+		props;
+	const options = branches.map((b) => ({
+		key: `${keyPrefix}-${b.name}`,
+		value: b.name,
+		label: b.name,
+	}));
+	return (
+		<SelectFormField
+			label={label}
+			placeholder={placeholder}
+			value={value}
+			loading={loading}
+			onChange={onChange}
+			options={options}
+		/>
 	);
 }
 
@@ -530,51 +595,54 @@ function CommitSelectFormItem(props) {
 		name,
 		rules,
 	} = props;
-
+	const options = commits.map((c) => ({
+		key: `${keyPrefix}-${c.hash}`,
+		value: c.hash,
+		label: `${c.shortHash} - ${c.message} (${c.author})`,
+	}));
 	return (
-		<Form.Item label={label} name={name} rules={rules} style={{ marginBottom }}>
-			<Select
-				showSearch
-				placeholder={placeholder}
-				value={value}
-				loading={loading}
-				onChange={onChange}
-			>
-				{commits.map((c) => (
-					<Select.Option key={`${keyPrefix}-${c.hash}`} value={c.hash}>
-						{c.shortHash} - {c.message} ({c.author})
-					</Select.Option>
-				))}
-			</Select>
-		</Form.Item>
+		<SelectFormField
+			label={label}
+			name={name}
+			rules={rules}
+			marginBottom={marginBottom}
+			placeholder={placeholder}
+			value={value}
+			loading={loading}
+			onChange={onChange}
+			options={options}
+		/>
 	);
 }
 
 function BranchPairSelectRow(props) {
 	const { branches, loading, baseBranch, onBase, targetBranch, onTarget } =
 		props;
+	const pairs = [
+		{ label: "Base Branch", val: baseBranch, onChange: onBase, prefix: "base" },
+		{
+			label: "Target Branch",
+			val: targetBranch,
+			onChange: onTarget,
+			prefix: "tgt",
+		},
+	];
 	return (
 		<div
 			style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}
 		>
-			<BranchSelectField
-				label="Base Branch"
-				placeholder="Base Branch"
-				value={baseBranch}
-				loading={loading}
-				branches={branches}
-				onChange={onBase}
-				keyPrefix="base"
-			/>
-			<BranchSelectField
-				label="Target Branch"
-				placeholder="Target Branch"
-				value={targetBranch}
-				loading={loading}
-				branches={branches}
-				onChange={onTarget}
-				keyPrefix="tgt"
-			/>
+			{pairs.map((p) => (
+				<BranchSelectField
+					key={p.prefix}
+					label={p.label}
+					placeholder={p.label}
+					value={p.val}
+					loading={loading}
+					branches={branches}
+					onChange={p.onChange}
+					keyPrefix={p.prefix}
+				/>
+			))}
 		</div>
 	);
 }
@@ -589,45 +657,50 @@ function CommitPairSelectSection(props) {
 		onBase,
 		onTarget,
 	} = props;
+	const configs = [
+		{
+			label: "Base Commit",
+			name: "baseCommit",
+			value: baseCommit,
+			commits: baseCommits,
+			keyPrefix: "base",
+			onChange: onBase,
+			marginBottom: "8px",
+		},
+		{
+			label: "Target Commit",
+			name: "targetCommit",
+			value: targetCommit,
+			commits: targetCommits,
+			keyPrefix: "tgt",
+			onChange: onTarget,
+			marginBottom: "12px",
+		},
+	];
 	return (
 		<>
-			<CommitSelectFormItem
-				label="Base Commit"
-				name="baseCommit"
-				rules={COMMIT_INPUT_RULES}
-				placeholder="Select base commit..."
-				value={baseCommit}
-				loading={loading}
-				commits={baseCommits}
-				keyPrefix="base"
-				onChange={onBase}
-			/>
-			<CommitSelectFormItem
-				label="Target Commit"
-				name="targetCommit"
-				rules={COMMIT_INPUT_RULES}
-				placeholder="Select target commit..."
-				value={targetCommit}
-				loading={loading}
-				commits={targetCommits}
-				keyPrefix="tgt"
-				marginBottom="12px"
-				onChange={onTarget}
-			/>
+			{configs.map((cfg) => (
+				<CommitSelectFormItem
+					key={cfg.keyPrefix}
+					rules={COMMIT_INPUT_RULES}
+					placeholder={`Select ${cfg.label.toLowerCase()}...`}
+					loading={loading}
+					{...cfg}
+				/>
+			))}
 		</>
 	);
 }
 
+const makeCommitSetter = (setCommit, form, fieldName) => (val) => {
+	setCommit(val);
+	form.setFieldValue(fieldName, val);
+};
+
 function BranchCommitSelector(props) {
 	const { setBaseCommit, setTargetCommit, form } = props;
-	const onBase = (val) => {
-		setBaseCommit(val);
-		form.setFieldValue("baseCommit", val);
-	};
-	const onTarget = (val) => {
-		setTargetCommit(val);
-		form.setFieldValue("targetCommit", val);
-	};
+	const onBase = makeCommitSetter(setBaseCommit, form, "baseCommit");
+	const onTarget = makeCommitSetter(setTargetCommit, form, "targetCommit");
 
 	return (
 		<>
@@ -665,33 +738,29 @@ function HardwareFileLabel({ loadingFiles }) {
 
 function HardwareFileOption({ file }) {
 	return (
-		<div style={STYLES.rowBetween}>
-			<span style={{ fontFamily: "monospace", fontSize: "11px" }}>
-				{file.path}
-			</span>
-			<Tag color={file.isPcb ? "gold" : "blue"} style={STYLES.miniTag}>
-				{file.isPcb ? "PCB" : "SCH"}
-			</Tag>
-		</div>
+		<TaggedOptionRow
+			label={file.path}
+			mono
+			tagColor={file.isPcb ? "gold" : "blue"}
+			tagText={file.isPcb ? "PCB" : "SCH"}
+		/>
 	);
 }
 
 function HardwareFileSelectDropdown(props) {
 	const { files, value, onChange } = props;
 	return (
-		<Select
-			showSearch
+		<FullWidthSearchSelect
 			placeholder="Select hardware design file..."
 			value={value}
 			onChange={onChange}
-			style={{ width: "100%" }}
 		>
 			{files.map((f) => (
 				<Select.Option key={f.path} value={f.path}>
 					<HardwareFileOption file={f} />
 				</Select.Option>
 			))}
-		</Select>
+		</FullWidthSearchSelect>
 	);
 }
 
@@ -703,6 +772,19 @@ function HardwareFileInputControl(props) {
 			value={value}
 			onChange={(e) => onChange(e.target.value)}
 			style={STYLES.inputDark}
+		/>
+	);
+}
+
+function HardwareFileInputPicker({ files, value, onChange }) {
+	if (files.length === 0) {
+		return <HardwareFileInputControl value={value} onChange={onChange} />;
+	}
+	return (
+		<HardwareFileSelectDropdown
+			files={files}
+			value={value}
+			onChange={onChange}
 		/>
 	);
 }
@@ -727,18 +809,11 @@ function HardwareFileSelector(props) {
 			rules={HARDWARE_FILE_RULES}
 			style={{ marginBottom: "16px" }}
 		>
-			{hardwareFiles.length === 0 ? (
-				<HardwareFileInputControl
-					value={relativeFilePath}
-					onChange={handleFileChange}
-				/>
-			) : (
-				<HardwareFileSelectDropdown
-					files={hardwareFiles}
-					value={relativeFilePath}
-					onChange={handleFileChange}
-				/>
-			)}
+			<HardwareFileInputPicker
+				files={hardwareFiles}
+				value={relativeFilePath}
+				onChange={handleFileChange}
+			/>
 		</Form.Item>
 	);
 }
@@ -749,13 +824,7 @@ function CommitTimelineItemContent({ commit }) {
 		: "";
 	return (
 		<div style={{ fontSize: "11px", color: "#a6adbb" }}>
-			<div
-				style={{
-					display: "flex",
-					justifyContent: "space-between",
-					marginBottom: "2px",
-				}}
-			>
+			<div style={STYLES.rowBetween}>
 				<Text strong style={{ color: "#f5f5f5", fontSize: "11px" }}>
 					{commit.shortHash}
 				</Text>
@@ -829,54 +898,53 @@ function FetchDiffSubmitButton({ loading }) {
 	);
 }
 
+const SUBMISSION_VALIDATORS = Object.freeze([
+	{
+		test: (opts) => !opts.selectedRepo,
+		msg: "Please select a repository",
+	},
+	{
+		test: (opts) => !opts.baseCommit || !opts.targetCommit,
+		msg: "Please select base and target revisions",
+	},
+	{
+		test: (opts) =>
+			!isValidCommitOrBranch(opts.baseCommit) ||
+			!isValidCommitOrBranch(opts.targetCommit),
+		msg: "Must be a commit hash (7-40 hex) or branch name without .. or leading -",
+	},
+	{
+		test: (opts) => !opts.relativeFilePath,
+		msg: "Please select a hardware design file",
+	},
+	{
+		test: (opts) => !isValidHardwareFilePath(opts.relativeFilePath),
+		msg: "File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
+	},
+]);
+
 function validateGithubSubmission(options) {
-	const { selectedRepo, baseCommit, targetCommit, relativeFilePath } = options;
-	if (!selectedRepo) {
-		message.error("Please select a repository");
-		return false;
-	}
-	if (!baseCommit || !targetCommit) {
-		message.error("Please select base and target revisions");
-		return false;
-	}
-	if (
-		!isValidCommitOrBranch(baseCommit) ||
-		!isValidCommitOrBranch(targetCommit)
-	) {
-		message.error(
-			"Must be a commit hash (7-40 hex) or branch name without .. or leading -",
-		);
-		return false;
-	}
-	if (!relativeFilePath) {
-		message.error("Please select a hardware design file");
-		return false;
-	}
-	if (!isValidHardwareFilePath(relativeFilePath)) {
-		message.error(
-			"File path must be relative (.kicad_pcb or .kicad_sch) without backslashes or ..",
-		);
+	const failure = SUBMISSION_VALIDATORS.find((rule) => rule.test(options));
+	if (failure) {
+		message.error(failure.msg);
 		return false;
 	}
 	return true;
 }
 
+const areRepoPartsValid = (parts) =>
+	parts.length === 2 && parts.every(isValidRepoPart);
+
 function parseManualRepoString(input) {
 	const trimmed = (input ?? "").trim();
 	const parts = trimmed.split("/");
-	if (parts.length !== 2) {
+	if (!areRepoPartsValid(parts)) {
 		message.error(
 			"Format must be owner/repository (e.g. OLIMEX/OLIMEXINO-328)",
 		);
 		return null;
 	}
 	const [owner, name] = parts;
-	if (!isValidRepoPart(owner) || !isValidRepoPart(name)) {
-		message.error(
-			"Format must be owner/repository (e.g. OLIMEX/OLIMEXINO-328)",
-		);
-		return null;
-	}
 	return {
 		id: trimmed,
 		name,
@@ -900,8 +968,13 @@ const buildRepoProps = (controlsProps, formState) => ({
 	onManualRepoSubmit: formState.handleManualRepoSubmit,
 });
 
-function GithubDiffForm(props) {
-	const { controlsProps, formState, handleSubmit } = props;
+const getFormInitialValues = (props) => ({
+	baseCommit: props.baseCommit,
+	targetCommit: props.targetCommit,
+	relativeFilePath: props.relativeFilePath,
+});
+
+function GithubDiffForm({ controlsProps, formState, handleSubmit }) {
 	const { form, compareMode, setCompareMode, syncState } = formState;
 
 	return (
@@ -909,11 +982,7 @@ function GithubDiffForm(props) {
 			form={form}
 			layout="vertical"
 			onFinish={handleSubmit}
-			initialValues={{
-				baseCommit: controlsProps.baseCommit,
-				targetCommit: controlsProps.targetCommit,
-				relativeFilePath: controlsProps.relativeFilePath,
-			}}
+			initialValues={getFormInitialValues(controlsProps)}
 		>
 			<RepoSelector {...buildRepoProps(controlsProps, formState)} />
 			<CompareModeToggle
