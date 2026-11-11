@@ -6,6 +6,13 @@ import { irToKicadPcb } from "../../backend/src/engine/kicad-pcb-writer.js";
 
 const F_CU_LAYERS = ["F.Cu", "F.Paste", "F.Mask"];
 
+const RECT_100_80_OUTLINE = [
+	[0, 0],
+	[100, 0],
+	[100, 80],
+	[0, 80],
+];
+
 const SAMPLE_FOOTPRINTS = {
 	"Resistor_SMD:R_0805": {
 		pads: [-1, 1].map((x, idx) => ({
@@ -17,35 +24,15 @@ const SAMPLE_FOOTPRINTS = {
 			layers: F_CU_LAYERS,
 		})),
 	},
-	"Package_TO_SOT_THT:TO-92": [
-		{
-			number: "1",
-			type: "thru_hole",
-			shape: "circle",
-			at: [-1.27, 0],
-			size: [1.5, 1.5],
-			drill: 0.8,
-			layers: ["*.Cu", "*.Mask"],
-		},
-		{
-			number: "2",
-			type: "thru_hole",
-			shape: "circle",
-			at: [0, 0],
-			size: [1.5, 1.5],
-			drill: 0.8,
-			layers: ["*.Cu", "*.Mask"],
-		},
-		{
-			number: "3",
-			type: "thru_hole",
-			shape: "circle",
-			at: [1.27, 0],
-			size: [1.5, 1.5],
-			drill: 0.8,
-			layers: ["*.Cu", "*.Mask"],
-		},
-	],
+	"Package_TO_SOT_THT:TO-92": [-1.27, 0, 1.27].map((x, idx) => ({
+		number: String(idx + 1),
+		type: "thru_hole",
+		shape: "circle",
+		at: [x, 0],
+		size: [1.5, 1.5],
+		drill: 0.8,
+		layers: ["*.Cu", "*.Mask"],
+	})),
 };
 
 const ROUND_TRIP_IR = {
@@ -100,67 +87,151 @@ const ROUND_TRIP_IR = {
 	constraints: [],
 };
 
+const INVALID_INPUTS = [
+	["null", null],
+	["undefined", undefined],
+	["number", 42],
+	["object", {}],
+	["empty string", ""],
+	["whitespace only", "   \n\t  "],
+	["unbalanced sexpr", "(kicad_pcb (version 20241229)"],
+	["wrong root symbol", "(not_kicad_pcb (version 1))"],
+	[
+		"duplicate reference in parts",
+		'(kicad_pcb (version 20241229) (footprint "R_0805" (property "Reference" "R1") (property "Value" "10k")) (footprint "R_0805" (property "Reference" "R1") (property "Value" "20k")))',
+	],
+];
+
 function makeIdCounter() {
-	let count = 0;
-	return (kind) => {
-		count++;
-		const hex = String(count).padStart(12, "0");
-		return `${kind}_00000000-0000-0000-0000-${hex}`;
-	};
+	let seq = 0;
+	return (prefix) =>
+		`${prefix}_00000000-0000-0000-0000-${String(++seq).padStart(12, "0")}`;
 }
 
-function normalizeNetMembership(ir) {
-	const partIdToRef = new Map(ir.parts.map((p) => [p.id, p.ref]));
-	return ir.nets
-		.map((net) => {
-			const pinKeys = net.pins
-				.map((p) => `${partIdToRef.get(p.partId)}.${p.pin}`)
-				.sort();
-			return { name: net.name, pins: pinKeys };
-		})
-		.sort((a, b) => a.name.localeCompare(b.name));
+function assertInvalid(input) {
+	const res = kicadPcbToIr(input);
+	assert.strictEqual(res?.ok, false);
+	assert.strictEqual(Array.isArray(res?.errors) && res.errors.length > 0, true);
 }
 
-function assertPartsMatch(importedParts, originalParts) {
-	assert.equal(importedParts.length, originalParts.length);
-	for (const orig of originalParts) {
-		const match = importedParts.find((p) => p.ref === orig.ref);
-		assert.ok(match, `Part ${orig.ref} must exist`);
-		assert.equal(match.value, orig.value);
-		assert.equal(match.footprint, orig.footprint);
-		assert.deepEqual(match.placement, orig.placement);
+function assertParsedSinglePart(res, expected) {
+	assert.deepEqual(
+		{
+			ok: res.ok,
+			partsCount: res.ir.parts.length,
+			part: {
+				ref: res.ir.parts[0].ref,
+				value: res.ir.parts[0].value,
+				footprint: res.ir.parts[0].footprint,
+				placement: res.ir.parts[0].placement,
+				...(expected.props ? { props: res.ir.parts[0].props } : {}),
+			},
+		},
+		{
+			ok: true,
+			partsCount: 1,
+			part: expected,
+		},
+	);
+	return res.ir.parts[0];
+}
+
+function assertCopperGeometry(res, gndNetId, vccNetId) {
+	assert.deepEqual(
+		{
+			ok: res.ok,
+			tracks: res.board.tracks,
+			vias: res.board.vias,
+			zones: res.board.zones,
+		},
+		{
+			ok: true,
+			tracks: [
+				{
+					netId: gndNetId,
+					layer: "F.Cu",
+					start: [10, 20],
+					end: [30, 40],
+					widthMm: 0.25,
+				},
+			],
+			vias: [
+				{
+					netId: gndNetId,
+					at: [30, 40],
+					drillMm: 0.4,
+					sizeMm: 0.8,
+				},
+			],
+			zones: [
+				{
+					netId: vccNetId,
+					layer: "B.Cu",
+					polygon: [
+						[0, 0],
+						[50, 0],
+						[50, 50],
+						[0, 50],
+					],
+				},
+			],
+		},
+	);
+}
+
+function assertOutlineResult(res, expectedOutline) {
+	assert.deepEqual(
+		{ ok: res.ok, outline: res.board.outline },
+		{ ok: true, outline: expectedOutline },
+	);
+}
+
+function assertPartsMatch(actualParts, expectedParts) {
+	assert.strictEqual(actualParts.length, expectedParts.length);
+	const actualByRef = new Map(actualParts.map((p) => [p.ref, p]));
+	for (const expected of expectedParts) {
+		const match = actualByRef.get(expected.ref);
+		assert.ok(match, `Part ${expected.ref} must exist`);
+		assert.deepEqual(
+			{
+				value: match.value,
+				footprint: match.footprint,
+				placement: match.placement,
+			},
+			{
+				value: expected.value,
+				footprint: expected.footprint,
+				placement: expected.placement,
+			},
+		);
 	}
 }
 
-function assertNetsMatch(importedIr, originalIr) {
-	const origNets = normalizeNetMembership(originalIr);
-	const impNets = normalizeNetMembership(importedIr);
-	assert.deepEqual(impNets, origNets);
+function assertNetsMatch(actualIr, expectedIr) {
+	const buildNetMap = (ir) => {
+		const refMap = new Map(ir.parts.map((p) => [p.id, p.ref]));
+		return Object.fromEntries(
+			ir.nets.map((n) => [
+				n.name,
+				n.pins.map((p) => `${refMap.get(p.partId)}.${p.pin}`).sort(),
+			]),
+		);
+	};
+	assert.deepEqual(buildNetMap(actualIr), buildNetMap(expectedIr));
+}
+
+function assertRoundTripSuccess(imported, expectedIR, expectedOutline) {
+	assert.strictEqual(imported.ok, true);
+	assert.strictEqual(validateCircuitIR(imported.ir).ok, true);
+	assertPartsMatch(imported.ir.parts, expectedIR.parts);
+	assertNetsMatch(imported.ir, expectedIR);
+	assert.deepEqual(imported.board.outline, expectedOutline);
 }
 
 describe("kicadPcbToIr garbage and invalid input", () => {
-	const GARBAGE_CASES = [
-		{ name: "null", input: null },
-		{ name: "undefined", input: undefined },
-		{ name: "number", input: 42 },
-		{ name: "object", input: {} },
-		{ name: "empty string", input: "" },
-		{ name: "whitespace only", input: "   \n\t  " },
-		{ name: "unbalanced sexpr", input: "(kicad_pcb (version 20241229)" },
-		{ name: "wrong root symbol", input: "(not_kicad_pcb (version 1))" },
-		{
-			name: "duplicate reference in parts",
-			input:
-				'(kicad_pcb (version 20241229) (footprint "R_0805" (property "Reference" "R1") (property "Value" "10k")) (footprint "R_0805" (property "Reference" "R1") (property "Value" "20k")))',
-		},
-	];
-
-	for (const { name, input } of GARBAGE_CASES) {
+	for (const [name, input] of INVALID_INPUTS) {
 		test(`returns { ok: false } without throwing for ${name}`, () => {
-			const res = kicadPcbToIr(input);
-			assert.equal(res.ok, false);
-			assert.ok(Array.isArray(res.errors));
-			assert.ok(res.errors.length > 0);
+			assertInvalid(input);
 		});
 	}
 });
@@ -182,17 +253,17 @@ describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 			)
 		)`;
 		const res = kicadPcbToIr(text, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts.length, 1);
-		const p = res.ir.parts[0];
-		assert.equal(p.ref, "R1");
-		assert.equal(p.value, "10k");
-		assert.equal(p.footprint, "Resistor_SMD:R_0805");
-		assert.deepEqual(p.placement, { x: 50, y: 30, rot: 90, side: "F" });
-		assert.deepEqual(p.props, { Tolerance: "1%" });
-		assert.equal(res.ir.nets.length, 1);
-		assert.equal(res.ir.nets[0].name, "GND");
-		assert.deepEqual(res.ir.nets[0].pins, [{ partId: p.id, pin: "1" }]);
+		const p = assertParsedSinglePart(res, {
+			ref: "R1",
+			value: "10k",
+			footprint: "Resistor_SMD:R_0805",
+			placement: { x: 50, y: 30, rot: 90, side: "F" },
+			props: { Tolerance: "1%" },
+		});
+		assert.deepEqual(
+			res.ir.nets.map((n) => ({ name: n.name, pins: n.pins })),
+			[{ name: "GND", pins: [{ partId: p.id, pin: "1" }] }],
+		);
 	});
 
 	test("parses older KiCad 6/7 fp_text reference and value and bottom side", () => {
@@ -208,13 +279,12 @@ describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 			)
 		)`;
 		const res = kicadPcbToIr(text, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts.length, 1);
-		const p = res.ir.parts[0];
-		assert.equal(p.ref, "C1");
-		assert.equal(p.value, "100nF");
-		assert.equal(p.footprint, "Capacitor_SMD:C_0603");
-		assert.deepEqual(p.placement, { x: 20, y: 40, rot: 180, side: "B" });
+		assertParsedSinglePart(res, {
+			ref: "C1",
+			value: "100nF",
+			footprint: "Capacitor_SMD:C_0603",
+			placement: { x: 20, y: 40, rot: 180, side: "B" },
+		});
 	});
 });
 
@@ -230,40 +300,11 @@ describe("kicadPcbToIr copper geometry: tracks, vias, and zones", () => {
 			(zone (net 2) (layer "B.Cu") (polygon (pts (xy 0 0) (xy 50 0) (xy 50 50) (xy 0 50))))
 		)`;
 		const res = kicadPcbToIr(text, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		const gndNetId = res.ir.nets.find((n) => n.name === "GND")?.id;
-		const vccNetId = res.ir.nets.find((n) => n.name === "+3V3")?.id;
-		assert.ok(gndNetId);
-		assert.ok(vccNetId);
-
-		assert.equal(res.board.tracks.length, 1);
-		assert.deepEqual(res.board.tracks[0], {
-			netId: gndNetId,
-			layer: "F.Cu",
-			start: [10, 20],
-			end: [30, 40],
-			widthMm: 0.25,
-		});
-
-		assert.equal(res.board.vias.length, 1);
-		assert.deepEqual(res.board.vias[0], {
-			netId: gndNetId,
-			at: [30, 40],
-			drillMm: 0.4,
-			sizeMm: 0.8,
-		});
-
-		assert.equal(res.board.zones.length, 1);
-		assert.deepEqual(res.board.zones[0], {
-			netId: vccNetId,
-			layer: "B.Cu",
-			polygon: [
-				[0, 0],
-				[50, 0],
-				[50, 50],
-				[0, 50],
-			],
-		});
+		const netMap = new Map(res.ir.nets.map((n) => [n.name, n.id]));
+		const gndNetId = netMap.get("GND");
+		const vccNetId = netMap.get("+3V3");
+		assert.strictEqual(Boolean(gndNetId && vccNetId), true);
+		assertCopperGeometry(res, gndNetId, vccNetId);
 	});
 });
 
@@ -273,14 +314,7 @@ describe("kicadPcbToIr Edge.Cuts board outline", () => {
 			(version 20241229)
 			(gr_rect (start 0 0) (end 100 80) (layer "Edge.Cuts"))
 		)`;
-		const res = kicadPcbToIr(text);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.board.outline, [
-			[0, 0],
-			[100, 0],
-			[100, 80],
-			[0, 80],
-		]);
+		assertOutlineResult(kicadPcbToIr(text), RECT_100_80_OUTLINE);
 	});
 
 	test("extracts chained line loop from gr_line elements", () => {
@@ -291,9 +325,7 @@ describe("kicadPcbToIr Edge.Cuts board outline", () => {
 			(gr_line (start 60 40) (end 0 40) (layer "Edge.Cuts"))
 			(gr_line (start 0 40) (end 0 0) (layer "Edge.Cuts"))
 		)`;
-		const res = kicadPcbToIr(text);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.board.outline, [
+		assertOutlineResult(kicadPcbToIr(text), [
 			[0, 0],
 			[60, 0],
 			[60, 40],
@@ -310,9 +342,14 @@ describe("kicadPcbToIr Edge.Cuts board outline", () => {
 			(gr_line (start 0 50) (end 0 0) (layer "Edge.Cuts"))
 		)`;
 		const res = kicadPcbToIr(text);
-		assert.equal(res.ok, true);
-		assert.ok(Array.isArray(res.board.outline));
-		assert.ok(res.board.outline.length >= 10);
+		assert.deepEqual(
+			{
+				ok: res.ok,
+				isArray: Array.isArray(res.board?.outline),
+				hasSegments: (res.board?.outline?.length ?? 0) >= 10,
+			},
+			{ ok: true, isArray: true, hasSegments: true },
+		);
 	});
 
 	test("returns outline null when no Edge.Cuts elements exist", () => {
@@ -320,9 +357,7 @@ describe("kicadPcbToIr Edge.Cuts board outline", () => {
 			(version 20241229)
 			(layers (0 "F.Cu" signal))
 		)`;
-		const res = kicadPcbToIr(text);
-		assert.equal(res.ok, true);
-		assert.equal(res.board.outline, null);
+		assertOutlineResult(kicadPcbToIr(text), null);
 	});
 });
 
@@ -337,17 +372,7 @@ describe("kicadPcbToIr determinism and round trip", () => {
 			name: ROUND_TRIP_IR.name,
 			idFn: makeIdCounter(),
 		});
-
-		assert.equal(imported.ok, true);
-		assert.equal(validateCircuitIR(imported.ir).ok, true);
-		assertPartsMatch(imported.ir.parts, ROUND_TRIP_IR.parts);
-		assertNetsMatch(imported.ir, ROUND_TRIP_IR);
-		assert.deepEqual(imported.board.outline, [
-			[0, 0],
-			[100, 0],
-			[100, 80],
-			[0, 80],
-		]);
+		assertRoundTripSuccess(imported, ROUND_TRIP_IR, RECT_100_80_OUTLINE);
 	});
 
 	test("deterministic idFn gives repeatable IDs", () => {
