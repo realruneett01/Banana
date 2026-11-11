@@ -5,61 +5,51 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createRegistry } from "../../backend/src/engine/tool-registry.js";
 import { createMcpServer } from "../../backend/src/mcp/server.js";
 
-function registerReadTool(registry) {
-	registry.register({
+function makeSchema(property, type = "string") {
+	return {
+		type: "object",
+		required: [property],
+		properties: { [property]: { type } },
+	};
+}
+
+const TEST_TOOLS = [
+	{
 		name: "tool_read",
 		description: "Reads data",
-		inputSchema: {
-			type: "object",
-			required: ["id"],
-			properties: { id: { type: "string" } },
-		},
-		outputSchema: {
-			type: "object",
-			required: ["data"],
-			properties: { data: { type: "string" } },
-		},
+		inputSchema: makeSchema("id"),
+		outputSchema: makeSchema("data"),
 		permission: "read",
 		handler: (input) => ({ data: `read-${input.id}` }),
-	});
+	},
+	{
+		name: "tool_write",
+		description: "Writes data",
+		inputSchema: makeSchema("value"),
+		outputSchema: makeSchema("status"),
+		permission: "write",
+		handler: (input) => ({ status: `wrote-${input.value}` }),
+	},
+	{
+		name: "tool_destructive",
+		description: "Destroys data",
+		inputSchema: makeSchema("target"),
+		outputSchema: makeSchema("destroyed", "boolean"),
+		permission: "destructive",
+		handler: (_input) => ({ destroyed: true }),
+	},
+];
+
+function registerReadTool(registry) {
+	registry.register(TEST_TOOLS[0]);
 }
 
 function registerWriteTool(registry) {
-	registry.register({
-		name: "tool_write",
-		description: "Writes data",
-		inputSchema: {
-			type: "object",
-			required: ["value"],
-			properties: { value: { type: "string" } },
-		},
-		outputSchema: {
-			type: "object",
-			required: ["status"],
-			properties: { status: { type: "string" } },
-		},
-		permission: "write",
-		handler: (input) => ({ status: `wrote-${input.value}` }),
-	});
+	registry.register(TEST_TOOLS[1]);
 }
 
 function registerDestructiveTool(registry) {
-	registry.register({
-		name: "tool_destructive",
-		description: "Destroys data",
-		inputSchema: {
-			type: "object",
-			required: ["target"],
-			properties: { target: { type: "string" } },
-		},
-		outputSchema: {
-			type: "object",
-			required: ["destroyed"],
-			properties: { destroyed: { type: "boolean" } },
-		},
-		permission: "destructive",
-		handler: (_input) => ({ destroyed: true }),
-	});
+	registry.register(TEST_TOOLS[2]);
 }
 
 function registerTestTools(registry) {
@@ -92,6 +82,17 @@ async function setupTestClient(options = {}) {
 	};
 }
 
+async function withTestClient(options = {}, fn) {
+	const registry = createRegistry();
+	registerTestTools(registry);
+	const { client, cleanup } = await setupTestClient({ registry, ...options });
+	try {
+		await fn(client);
+	} finally {
+		await cleanup();
+	}
+}
+
 function assertToolHints(tool, expectedHints) {
 	assert.ok(tool);
 	assert.equal(tool.annotations?.readOnlyHint, expectedHints.readOnlyHint);
@@ -102,143 +103,92 @@ function assertToolHints(tool, expectedHints) {
 	assert.equal(tool.inputSchema.type, "object");
 }
 
+const EXPECTED_HINTS = [
+	{ name: "tool_read", readOnlyHint: true, destructiveHint: false },
+	{ name: "tool_write", readOnlyHint: false, destructiveHint: false },
+	{ name: "tool_destructive", readOnlyHint: false, destructiveHint: true },
+];
+
 function assertToolsListHints(tools) {
-	assert.equal(tools.length, 3);
-	assertToolHints(
-		tools.find((t) => t.name === "tool_read"),
-		{
-			readOnlyHint: true,
-			destructiveHint: false,
-		},
-	);
-	assertToolHints(
-		tools.find((t) => t.name === "tool_write"),
-		{
-			readOnlyHint: false,
-			destructiveHint: false,
-		},
-	);
-	assertToolHints(
-		tools.find((t) => t.name === "tool_destructive"),
-		{
-			readOnlyHint: false,
-			destructiveHint: true,
-		},
-	);
+	assert.equal(tools.length, EXPECTED_HINTS.length);
+	for (const { name, ...hints } of EXPECTED_HINTS) {
+		assertToolHints(
+			tools.find((t) => t.name === name),
+			hints,
+		);
+	}
 }
 
-describe("mcp server", () => {
-	test("tools/list returns all three tools with correct hints", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({ registry });
+function assertToolSuccess(res, expectedData) {
+	assert.equal(res.isError, undefined);
+	assert.deepEqual(res.structuredContent, expectedData);
+	assert.equal(res.content.length, 1);
+	assert.equal(res.content[0].type, "text");
+	assert.equal(res.content[0].text, JSON.stringify(expectedData));
+}
 
-		try {
+function assertToolError(res, pattern) {
+	assert.equal(res.isError, true);
+	assert.equal(res.content[0].type, "text");
+	if (pattern) {
+		assert.match(res.content[0].text, pattern);
+	} else {
+		assert.ok(res.content[0].text.length > 0);
+	}
+}
+
+async function runTestCase(client, testCase) {
+	if (testCase.run) {
+		await testCase.run(client);
+		return;
+	}
+	const res = await client.callTool(testCase.call);
+	testCase.assert(res);
+}
+
+const CASES = [
+	{
+		name: "tools/list returns all three tools with correct hints",
+		run: async (client) => {
 			const res = await client.listTools();
 			assertToolsListHints(res.tools);
-		} finally {
-			await cleanup();
-		}
-	});
+		},
+	},
+	{
+		name: "calling the read tool returns its output as text and structuredContent",
+		call: { name: "tool_read", arguments: { id: "item-42" } },
+		assert: (res) => assertToolSuccess(res, { data: "read-item-42" }),
+	},
+	{
+		name: "calling a tool with invalid input returns isError",
+		call: { name: "tool_read", arguments: {} },
+		assert: (res) => assertToolError(res),
+	},
+	{
+		name: "destructive tool returns isError 'approval required' by default",
+		options: { approveDestructive: false },
+		call: { name: "tool_destructive", arguments: { target: "board" } },
+		assert: (res) => assertToolError(res, /approval required/i),
+	},
+	{
+		name: "destructive tool succeeds when approveDestructive is true",
+		options: { approveDestructive: true },
+		call: { name: "tool_destructive", arguments: { target: "board" } },
+		assert: (res) => assertToolSuccess(res, { destroyed: true }),
+	},
+	{
+		name: "calling unknown tool returns isError and does not crash",
+		call: { name: "tool_unknown", arguments: {} },
+		assert: (res) => assertToolError(res, /unknown tool/i),
+	},
+];
 
-	test("calling the read tool returns its output as text and structuredContent", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({ registry });
-
-		try {
-			const res = await client.callTool({
-				name: "tool_read",
-				arguments: { id: "item-42" },
-			});
-			assert.equal(res.isError, undefined);
-			assert.deepEqual(res.structuredContent, { data: "read-item-42" });
-			assert.equal(res.content.length, 1);
-			assert.equal(res.content[0].type, "text");
-			assert.equal(
-				res.content[0].text,
-				JSON.stringify({ data: "read-item-42" }),
+describe("mcp server", () => {
+	for (const testCase of CASES) {
+		test(testCase.name, async () => {
+			await withTestClient(testCase.options, (client) =>
+				runTestCase(client, testCase),
 			);
-		} finally {
-			await cleanup();
-		}
-	});
-
-	test("calling a tool with invalid input returns isError", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({ registry });
-
-		try {
-			const res = await client.callTool({
-				name: "tool_read",
-				arguments: {},
-			});
-			assert.equal(res.isError, true);
-			assert.equal(res.content[0].type, "text");
-			assert.ok(res.content[0].text.length > 0);
-		} finally {
-			await cleanup();
-		}
-	});
-
-	test("destructive tool returns isError 'approval required' by default", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({
-			registry,
-			approveDestructive: false,
 		});
-
-		try {
-			const res = await client.callTool({
-				name: "tool_destructive",
-				arguments: { target: "board" },
-			});
-			assert.equal(res.isError, true);
-			assert.equal(res.content[0].type, "text");
-			assert.match(res.content[0].text, /approval required/i);
-		} finally {
-			await cleanup();
-		}
-	});
-
-	test("destructive tool succeeds when approveDestructive is true", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({
-			registry,
-			approveDestructive: true,
-		});
-
-		try {
-			const res = await client.callTool({
-				name: "tool_destructive",
-				arguments: { target: "board" },
-			});
-			assert.equal(res.isError, undefined);
-			assert.deepEqual(res.structuredContent, { destroyed: true });
-			assert.equal(res.content[0].text, JSON.stringify({ destroyed: true }));
-		} finally {
-			await cleanup();
-		}
-	});
-
-	test("calling unknown tool returns isError and does not crash", async () => {
-		const registry = createRegistry();
-		registerTestTools(registry);
-		const { client, cleanup } = await setupTestClient({ registry });
-
-		try {
-			const res = await client.callTool({
-				name: "tool_unknown",
-				arguments: {},
-			});
-			assert.equal(res.isError, true);
-			assert.equal(res.content[0].type, "text");
-			assert.match(res.content[0].text, /unknown tool/i);
-		} finally {
-			await cleanup();
-		}
-	});
+	}
 });
