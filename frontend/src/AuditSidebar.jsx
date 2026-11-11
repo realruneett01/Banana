@@ -1,41 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { getCleanLayerName } from "./utils/auditLogUtils.js";
 
-const ACTION_DEFS = {
-	CHANGED: [
-		"rgba(245, 158, 11, 0.18)",
-		"rgba(245, 158, 11, 0.45)",
-		"#fbbf24",
-		"CHANGED",
-	],
-	ADDED: [
-		"rgba(16, 185, 129, 0.18)",
-		"rgba(16, 185, 129, 0.45)",
-		"#34d399",
-		"ADDED",
-	],
-	DELETED: [
-		"rgba(244, 63, 94, 0.18)",
-		"rgba(244, 63, 94, 0.45)",
-		"#fb7185",
-		"DELETED",
-	],
-	DEFAULT: [
-		"rgba(148, 163, 184, 0.18)",
-		"rgba(148, 163, 184, 0.35)",
-		"#cbd5e1",
-		"MODIFIED",
-	],
-};
+function makeAction(rgb, color, label, borderAlpha = "0.45") {
+	return {
+		bg: `rgba(${rgb}, 0.18)`,
+		border: `rgba(${rgb}, ${borderAlpha})`,
+		color,
+		label,
+	};
+}
 
-const ACTION_CONFIG = Object.freeze(
-	Object.fromEntries(
-		Object.entries(ACTION_DEFS).map(([key, [bg, border, color, label]]) => [
-			key,
-			{ bg, border, color, label },
-		]),
-	),
-);
+const ACTION_CONFIG = Object.freeze({
+	CHANGED: makeAction("245, 158, 11", "#fbbf24", "CHANGED"),
+	ADDED: makeAction("16, 185, 129", "#34d399", "ADDED"),
+	DELETED: makeAction("244, 63, 94", "#fb7185", "DELETED"),
+	DEFAULT: makeAction("148, 163, 184", "#cbd5e1", "MODIFIED", "0.35"),
+});
 
 function getBadgeStyle(conf) {
 	return {
@@ -205,18 +185,21 @@ function CardIndexTag({ idx, hovered }) {
 	);
 }
 
+const FLEX_ROW_CENTER = {
+	display: "flex",
+	alignItems: "center",
+};
+
+const FLEX_ROW_BETWEEN = {
+	...FLEX_ROW_CENTER,
+	justifyContent: "space-between",
+};
+
 function CardTopRow({ item, idx, isSelected, hovered }) {
 	const cleanLayer = getCleanLayerName(item.layer || item.time || "");
 	return (
-		<div
-			style={{
-				display: "flex",
-				alignItems: "center",
-				justifyContent: "space-between",
-				gap: "6px",
-			}}
-		>
-			<div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+		<div style={{ ...FLEX_ROW_BETWEEN, gap: "6px" }}>
+			<div style={{ ...FLEX_ROW_CENTER, gap: "6px" }}>
 				<ActionBadge action={item.action || item.type} />
 				<LayerChip cleanLayer={cleanLayer} />
 			</div>
@@ -229,20 +212,23 @@ function CardTopRow({ item, idx, isSelected, hovered }) {
 	);
 }
 
+const CARD_TEXT_BASE = {
+	wordBreak: "break-word",
+};
+
 function CardTitle({ item, isSelected }) {
-	const title = cleanDisplayTitle(item);
 	return (
 		<div
 			style={{
+				...CARD_TEXT_BASE,
 				fontSize: "12px",
 				fontWeight: 600,
 				color: isSelected ? "#ffffff" : "#f1f5f9",
 				letterSpacing: "0.01em",
-				wordBreak: "break-word",
 				lineHeight: "1.35",
 			}}
 		>
-			{title}
+			{cleanDisplayTitle(item)}
 		</div>
 	);
 }
@@ -252,10 +238,10 @@ function CardDetail({ detail, isSelected }) {
 	return (
 		<div
 			style={{
+				...CARD_TEXT_BASE,
 				fontSize: "11px",
 				color: isSelected ? "#cbd5e1" : "#94a3b8",
 				lineHeight: "1.45",
-				wordBreak: "break-word",
 			}}
 		>
 			{detail}
@@ -269,11 +255,10 @@ function CardCoords({ coords }) {
 	return (
 		<div
 			style={{
+				...FLEX_ROW_CENTER,
 				fontSize: "10px",
 				fontFamily: "monospace",
 				color: "#64748b",
-				display: "flex",
-				alignItems: "center",
 				gap: "4px",
 				marginTop: "2px",
 			}}
@@ -300,32 +285,32 @@ function useCardAutoScroll(cardRef, isSelected) {
 function useCardInteractions({ item, idx, onSelect, onHover }) {
 	const [hovered, setHovered] = useState(false);
 
-	const handleMouseEnter = () => {
-		setHovered(true);
-		onHover?.(item.diffIdx ?? idx);
+	const updateHover = (state) => {
+		setHovered(state);
+		onHover?.(state ? (item.diffIdx ?? idx) : null);
 	};
 
-	const handleMouseLeave = () => {
-		setHovered(false);
-		onHover?.(null);
-	};
-
-	const handleKeyDown = (e) => {
+	const onKeyDown = (e) => {
 		if (e.key === "Enter" || e.key === " ") {
 			e.preventDefault();
 			onSelect?.(item, idx);
 		}
 	};
 
-	return { hovered, handleMouseEnter, handleMouseLeave, handleKeyDown };
+	return {
+		hovered,
+		onMouseEnter: () => updateHover(true),
+		onMouseLeave: () => updateHover(false),
+		onKeyDown,
+	};
 }
 
 function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
 	const cardRef = useRef(null);
-	const { hovered, handleMouseEnter, handleMouseLeave, handleKeyDown } =
+	const { hovered, onMouseEnter, onMouseLeave, onKeyDown } =
 		useCardInteractions({ item, idx, onSelect, onHover });
-
 	useCardAutoScroll(cardRef, isSelected);
+	const rowProps = { item, idx, isSelected, hovered };
 
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: card holds block layout, which <button> cannot contain; role=button + Enter/Space handler is the ARIA pattern
@@ -334,17 +319,12 @@ function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
 			role="button"
 			tabIndex={0}
 			onClick={() => onSelect?.(item, idx)}
-			onKeyDown={handleKeyDown}
-			onMouseEnter={handleMouseEnter}
-			onMouseLeave={handleMouseLeave}
+			onKeyDown={onKeyDown}
+			onMouseEnter={onMouseEnter}
+			onMouseLeave={onMouseLeave}
 			style={getCardStyle(isSelected, hovered)}
 		>
-			<CardTopRow
-				item={item}
-				idx={idx}
-				isSelected={isSelected}
-				hovered={hovered}
-			/>
+			<CardTopRow {...rowProps} />
 			<CardTitle item={item} isSelected={isSelected} />
 			<CardDetail detail={item.detail} isSelected={isSelected} />
 			<CardCoords coords={item.targetCoords || item.baseCoords} />
@@ -354,7 +334,7 @@ function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
 
 function HeaderTitle() {
 	return (
-		<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+		<div style={{ ...FLEX_ROW_CENTER, gap: "8px" }}>
 			<IndicatorDot size={8} color="#10b981" shadow />
 			<h3
 				style={{
@@ -406,28 +386,64 @@ function makeHoverProps(hoverStyle, restStyle) {
 	};
 }
 
-const COLLAPSE_REST = { color: "#94a3b8", background: "transparent" };
-const COLLAPSE_HOVER = {
-	color: "#fadb14",
-	background: "rgba(250, 219, 20, 0.1)",
+const BTN_CONFIG = {
+	collapse: {
+		base: {
+			border: "none",
+			padding: "4px",
+			transition: "color 0.15s, background 0.15s",
+		},
+		rest: { color: "#94a3b8", background: "transparent" },
+		hover: { color: "#fadb14", background: "rgba(250, 219, 20, 0.1)" },
+	},
+	nav: {
+		base: {
+			background: "#1a1f33",
+			border: "1px solid #283250",
+			padding: "2px 7px",
+			fontSize: "11px",
+			lineHeight: "1.2",
+		},
+		rest: { color: "#cbd5e1", borderColor: "#283250" },
+		hover: { color: "#fadb14", borderColor: "#fadb14" },
+	},
+	exit: {
+		base: {
+			border: "1px solid #fadb14",
+			color: "#fadb14",
+			padding: "2px 8px",
+			fontSize: "11px",
+			fontWeight: 600,
+			marginLeft: "4px",
+		},
+		rest: { background: "rgba(250, 219, 20, 0.15)" },
+		hover: { background: "rgba(250, 219, 20, 0.28)" },
+	},
 };
-const COLLAPSE_BTN_STYLE = {
-	...BASE_BUTTON_STYLE,
-	border: "none",
-	padding: "4px",
-	transition: "color 0.15s, background 0.15s",
-	...COLLAPSE_REST,
-};
+
+function HoverButton({ variant = "nav", onClick, title, children }) {
+	const cfg = BTN_CONFIG[variant];
+	const style = { ...BASE_BUTTON_STYLE, ...cfg.base, ...cfg.rest };
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			title={title}
+			style={style}
+			{...makeHoverProps(cfg.hover, cfg.rest)}
+		>
+			{children}
+		</button>
+	);
+}
 
 function CollapseButton({ onCollapse }) {
 	if (!onCollapse) return null;
 	return (
-		<button
-			type="button"
+		<HoverButton
+			variant="collapse"
 			onClick={onCollapse}
 			title="Collapse audit sidebar"
-			style={COLLAPSE_BTN_STYLE}
-			{...makeHoverProps(COLLAPSE_HOVER, COLLAPSE_REST)}
 		>
 			<svg
 				width="15"
@@ -442,7 +458,7 @@ function CollapseButton({ onCollapse }) {
 				<title>Collapse audit sidebar</title>
 				<polyline points="9 18 15 12 9 6" />
 			</svg>
-		</button>
+		</HoverButton>
 	);
 }
 
@@ -450,17 +466,15 @@ function SidebarHeader({ count, onCollapse }) {
 	return (
 		<div
 			style={{
+				...FLEX_ROW_BETWEEN,
 				padding: "12px 14px",
 				borderBottom: "1px solid #1e2438",
 				background: "#121520",
-				display: "flex",
-				alignItems: "center",
-				justifyContent: "space-between",
 				flexShrink: 0,
 			}}
 		>
 			<HeaderTitle />
-			<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+			<div style={{ ...FLEX_ROW_CENTER, gap: "8px" }}>
 				<HeaderBadge count={count} />
 				<CollapseButton onCollapse={onCollapse} />
 			</div>
@@ -468,65 +482,31 @@ function SidebarHeader({ count, onCollapse }) {
 	);
 }
 
-const NAV_REST = { color: "#cbd5e1", borderColor: "#283250" };
-const NAV_HOVER = { color: "#fadb14", borderColor: "#fadb14" };
-const NAV_BUTTON_STYLE = {
-	...BASE_BUTTON_STYLE,
-	background: "#1a1f33",
-	border: "1px solid #283250",
-	padding: "2px 7px",
-	fontSize: "11px",
-	lineHeight: "1.2",
-	...NAV_REST,
-};
-
 function NavButton({ onClick, title, children }) {
 	return (
-		<button
-			type="button"
-			onClick={onClick}
-			title={title}
-			style={NAV_BUTTON_STYLE}
-			{...makeHoverProps(NAV_HOVER, NAV_REST)}
-		>
+		<HoverButton variant="nav" onClick={onClick} title={title}>
 			{children}
-		</button>
+		</HoverButton>
 	);
 }
-
-const EXIT_FOCUS_REST = { background: "rgba(250, 219, 20, 0.15)" };
-const EXIT_FOCUS_HOVER = { background: "rgba(250, 219, 20, 0.28)" };
-const EXIT_FOCUS_STYLE = {
-	...BASE_BUTTON_STYLE,
-	border: "1px solid #fadb14",
-	color: "#fadb14",
-	padding: "2px 8px",
-	fontSize: "11px",
-	fontWeight: 600,
-	marginLeft: "4px",
-	...EXIT_FOCUS_REST,
-};
 
 function ExitFocusButton({ visible, onClearFocus }) {
 	if (!visible || !onClearFocus) return null;
 	return (
-		<button
-			type="button"
+		<HoverButton
+			variant="exit"
 			onClick={onClearFocus}
 			title="Exit focus mode and restore full view (Esc)"
-			style={EXIT_FOCUS_STYLE}
-			{...makeHoverProps(EXIT_FOCUS_HOVER, EXIT_FOCUS_REST)}
 		>
 			✕ Exit Focus
-		</button>
+		</HoverButton>
 	);
 }
 
-function getPreviousIndex(focusedIndex, total) {
-	return focusedIndex <= 0 ? total - 1 : focusedIndex - 1;
-}
-
-function getNextIndex(focusedIndex, total) {
+function stepFocusIndex(focusedIndex, total, direction) {
+	if (direction < 0) {
+		return focusedIndex <= 0 ? total - 1 : focusedIndex - 1;
+	}
 	return focusedIndex < 0 || focusedIndex >= total - 1 ? 0 : focusedIndex + 1;
 }
 
@@ -551,7 +531,7 @@ function ActiveFocusTag({ current, total }) {
 
 function FocusStatus({ isAnyFocused, focusedIndex, totalCount }) {
 	return (
-		<div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+		<div style={{ ...FLEX_ROW_CENTER, gap: "6px" }}>
 			{isAnyFocused ? (
 				<ActiveFocusTag current={focusedIndex + 1} total={totalCount} />
 			) : (
@@ -568,9 +548,7 @@ function getFocusBarBg(isAnyFocused) {
 }
 
 const FOCUS_BAR_BASE_STYLE = {
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
+	...FLEX_ROW_BETWEEN,
 	padding: "8px 12px",
 	borderBottom: "1px solid #1e2438",
 	fontSize: "11px",
@@ -579,7 +557,7 @@ const FOCUS_BAR_BASE_STYLE = {
 
 function FocusNavControls({ onPrev, onNext, isAnyFocused, onClearFocus }) {
 	return (
-		<div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+		<div style={{ ...FLEX_ROW_CENTER, gap: "4px" }}>
 			<NavButton onClick={onPrev} title="Previous modification (←)">
 				◀
 			</NavButton>
@@ -592,34 +570,22 @@ function FocusNavControls({ onPrev, onNext, isAnyFocused, onClearFocus }) {
 }
 
 function useFocusNavigation({ modifications, focusedIndex, onSelectDiff }) {
-	const handlePrev = (e) => {
-		const targetIdx = getPreviousIndex(focusedIndex, modifications.length);
+	const step = (e, direction) => {
+		const targetIdx = stepFocusIndex(
+			focusedIndex,
+			modifications.length,
+			direction,
+		);
 		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
 	};
-	const handleNext = (e) => {
-		const targetIdx = getNextIndex(focusedIndex, modifications.length);
-		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
+	return {
+		handlePrev: (e) => step(e, -1),
+		handleNext: (e) => step(e, 1),
 	};
-	return { handlePrev, handleNext };
 }
 
-function FocusController({
-	modifications,
-	activeDiffIdx,
-	onSelectDiff,
-	onClearFocus,
-}) {
-	const focusedIndex = findFocusedIndex(modifications, activeDiffIdx);
+function FocusBarInner({ modifications, focusedIndex, nav, onClearFocus }) {
 	const isAnyFocused = focusedIndex !== -1;
-
-	const { handlePrev, handleNext } = useFocusNavigation({
-		modifications,
-		focusedIndex,
-		onSelectDiff,
-	});
-
-	if (modifications.length === 0) return null;
-
 	return (
 		<div
 			style={{
@@ -633,12 +599,33 @@ function FocusController({
 				totalCount={modifications.length}
 			/>
 			<FocusNavControls
-				onPrev={handlePrev}
-				onNext={handleNext}
+				onPrev={nav.handlePrev}
+				onNext={nav.handleNext}
 				isAnyFocused={isAnyFocused}
 				onClearFocus={onClearFocus}
 			/>
 		</div>
+	);
+}
+
+function FocusController({
+	modifications,
+	activeDiffIdx,
+	onSelectDiff,
+	onClearFocus,
+}) {
+	const focusedIndex = findFocusedIndex(modifications, activeDiffIdx);
+	const nav = useFocusNavigation({ modifications, focusedIndex, onSelectDiff });
+
+	if (modifications.length === 0) return null;
+
+	return (
+		<FocusBarInner
+			modifications={modifications}
+			focusedIndex={focusedIndex}
+			nav={nav}
+			onClearFocus={onClearFocus}
+		/>
 	);
 }
 
