@@ -1,11 +1,16 @@
 function nodeSym(node) {
 	if (node === null || node === undefined) return "";
-	return typeof node === "object" ? (node.sym ?? "") : String(node);
+	const val = typeof node === "object" ? node.sym : node;
+	return val !== null && val !== undefined ? String(val) : "";
 }
 
 function findChild(node, head) {
 	if (!Array.isArray(node)) return null;
-	return node.find((c) => Array.isArray(c) && nodeSym(c[0]) === head) ?? null;
+	for (let i = 0; i < node.length; i++) {
+		const c = node[i];
+		if (Array.isArray(c) && nodeSym(c[0]) === head) return c;
+	}
+	return null;
 }
 
 function childNum(node, head, index, fallback = 0) {
@@ -23,56 +28,72 @@ function childPt(node, head, fallback = [0, 0]) {
 
 function extractLayer(node, fallback = "F.SilkS") {
 	const sub = findChild(node, "layer");
-	if (!sub || sub.length < 2) return fallback;
-	return nodeSym(sub[1]) || fallback;
+	const name = Array.isArray(sub) && sub.length >= 2 ? nodeSym(sub[1]) : "";
+	return name || fallback;
 }
 
 function extractWidth(node, fallback = 0.15) {
 	const stroke = findChild(node, "stroke");
-	if (stroke) {
-		const w = childNum(stroke, "width", 1, 0);
-		if (w > 0) return w;
-	}
-	const directW = childNum(node, "width", 1, 0);
-	return directW > 0 ? directW : fallback;
+	const sw = stroke ? childNum(stroke, "width", 1, 0) : 0;
+	if (sw > 0) return sw;
+	const dw = childNum(node, "width", 1, 0);
+	return dw > 0 ? dw : fallback;
 }
 
 function calcArcCenter(p1, pm, p2) {
-	const d1mX = pm[0] - p1[0];
-	const d1mY = pm[1] - p1[1];
-	const dm2X = p2[0] - pm[0];
-	const dm2Y = p2[1] - pm[1];
-	const ma = [(p1[0] + pm[0]) / 2, (p1[1] + pm[1]) / 2];
-	const mb = [(pm[0] + p2[0]) / 2, (pm[1] + p2[1]) / 2];
-	const na = [-d1mY, d1mX];
-	const nb = [-dm2Y, dm2X];
-	const det = na[1] * nb[0] - na[0] * nb[1];
-	if (Math.abs(det) < 1e-10) {
-		return { center: ma, radius: Math.hypot(d1mX, d1mY) };
+	const [x1, y1] = p1;
+	const [x2, y2] = pm;
+	const [x3, y3] = p2;
+	const d = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2));
+	if (Math.abs(d) < 1e-10) {
+		return {
+			center: [(x1 + x2) / 2 || 0, (y1 + y2) / 2 || 0],
+			radius: Math.hypot(x2 - x1, y2 - y1),
+		};
 	}
-	const s = ((mb[0] - ma[0]) * -nb[1] - (mb[1] - ma[1]) * -nb[0]) / det;
-	const center = [ma[0] + s * na[0], ma[1] + s * na[1]];
-	const radius = Math.hypot(p1[0] - center[0], p1[1] - center[1]);
-	return { center, radius };
+	const q1 = x1 * x1 + y1 * y1;
+	const q2 = x2 * x2 + y2 * y2;
+	const q3 = x3 * x3 + y3 * y3;
+	const cx = (q1 * (y2 - y3) + q2 * (y3 - y1) + q3 * (y1 - y2)) / d;
+	const cy = (q1 * (x3 - x2) + q2 * (x1 - x3) + q3 * (x2 - x1)) / d;
+	return {
+		center: [cx || 0, cy || 0],
+		radius: Math.hypot(x1 - cx, y1 - cy),
+	};
 }
 
 function calcArcSweep(p1, pm, p2, c) {
-	const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]);
-	const am = Math.atan2(pm[1] - c[1], pm[0] - c[0]);
-	const a2 = Math.atan2(p2[1] - c[1], p2[0] - c[0]);
-	const dm = (((am - a1) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-	const d2 = (((a2 - a1) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-	const swept = dm < d2 ? d2 : 2 * Math.PI - d2;
+	const [a1, am, a2] = [p1, pm, p2].map((pt) =>
+		Math.atan2(pt[1] - c[1], pt[0] - c[0]),
+	);
+	const full = 2 * Math.PI;
+	const norm = (a) => ((a % full) + full) % full;
+	const dm = norm(am - a1);
+	const d2 = norm(a2 - a1);
+	const swept = dm < d2 ? d2 : full - d2;
 	return swept > Math.PI ? 1 : 0;
+}
+
+function getArcEndpoints(arc) {
+	const start = arc.start ?? [0, 0];
+	const end = arc.end ?? [0, 0];
+	const midFallback = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2];
+	return {
+		p1: start,
+		p2: end,
+		pm: arc.mid ?? midFallback,
+		c: arc.center ?? midFallback,
+	};
+}
+
+function getArcRadius(arc, p1, c) {
+	return arc.radius ?? Math.hypot(p1[0] - c[0], p1[1] - c[1]);
 }
 
 export function arcToSvgPath(arc) {
 	if (arc.d) return arc.d;
-	const p1 = arc.start ?? [0, 0];
-	const p2 = arc.end ?? [0, 0];
-	const pm = arc.mid ?? [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-	const c = arc.center ?? [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-	const r = arc.radius ?? Math.hypot(p1[0] - c[0], p1[1] - c[1]);
+	const { p1, p2, pm, c } = getArcEndpoints(arc);
+	const r = getArcRadius(arc, p1, c);
 	if (r <= 0) return `M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}`;
 	const cp =
 		(pm[0] - p1[0]) * (p2[1] - p1[1]) - (pm[1] - p1[1]) * (p2[0] - p1[0]);
@@ -81,20 +102,25 @@ export function arcToSvgPath(arc) {
 	return `M ${p1[0]} ${p1[1]} A ${r} ${r} 0 ${largeArc} ${sweep} ${p2[0]} ${p2[1]}`;
 }
 
-function parseAngleArc(startNode, endNode, angleNode, layer, width) {
-	const c = [Number(startNode[1]) || 0, Number(startNode[2]) || 0];
-	const p1 = [Number(endNode[1]) || 0, Number(endNode[2]) || 0];
-	const angleDeg = Number(angleNode[1]) || 0;
+function pointOnCircle(center, radius, angleRad) {
+	return [
+		center[0] + radius * Math.cos(angleRad),
+		center[1] + radius * Math.sin(angleRad),
+	];
+}
+
+function parseAngleArc(nodes, layer, width) {
+	const { start, end, angle } = nodes;
+	const c = [Number(start[1]) || 0, Number(start[2]) || 0];
+	const p1 = [Number(end[1]) || 0, Number(end[2]) || 0];
+	const angleDeg = Number(angle[1]) || 0;
 	const r = Math.hypot(p1[0] - c[0], p1[1] - c[1]);
 	const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]);
 	const sweepRad = (angleDeg * Math.PI) / 180;
-	const a2 = a1 + sweepRad;
-	const p2 = [c[0] + r * Math.cos(a2), c[1] + r * Math.sin(a2)];
-	const aMid = a1 + sweepRad / 2;
-	const pm = [c[0] + r * Math.cos(aMid), c[1] + r * Math.sin(aMid)];
+	const p2 = pointOnCircle(c, r, a1 + sweepRad);
+	const pm = pointOnCircle(c, r, a1 + sweepRad / 2);
 	const largeArc = Math.abs(angleDeg) > 180 ? 1 : 0;
 	const sweep = angleDeg > 0 ? 1 : 0;
-	const d = `M ${p1[0]} ${p1[1]} A ${r} ${r} 0 ${largeArc} ${sweep} ${p2[0]} ${p2[1]}`;
 	return {
 		type: "arc",
 		layer,
@@ -104,14 +130,15 @@ function parseAngleArc(startNode, endNode, angleNode, layer, width) {
 		end: p2,
 		center: c,
 		radius: r,
-		d,
+		d: `M ${p1[0]} ${p1[1]} A ${r} ${r} 0 ${largeArc} ${sweep} ${p2[0]} ${p2[1]}`,
 	};
 }
 
-function parseMidArc(startNode, midNode, endNode, layer, width) {
-	const p1 = [Number(startNode[1]) || 0, Number(startNode[2]) || 0];
-	const pm = [Number(midNode[1]) || 0, Number(midNode[2]) || 0];
-	const p2 = [Number(endNode[1]) || 0, Number(endNode[2]) || 0];
+function parseMidArc(nodes, layer, width) {
+	const { start, mid, end } = nodes;
+	const p1 = [Number(start[1]) || 0, Number(start[2]) || 0];
+	const pm = [Number(mid[1]) || 0, Number(mid[2]) || 0];
+	const p2 = [Number(end[1]) || 0, Number(end[2]) || 0];
 	const { center, radius } = calcArcCenter(p1, pm, p2);
 	const arc = {
 		type: "arc",
@@ -128,23 +155,22 @@ function parseMidArc(startNode, midNode, endNode, layer, width) {
 }
 
 function parseArcNode(node, layer, width) {
-	const s = findChild(node, "start");
-	const m = findChild(node, "mid");
-	const e = findChild(node, "end");
-	const a = findChild(node, "angle");
-	if (s && m && e) return parseMidArc(s, m, e, layer, width);
-	if (s && e && a) return parseAngleArc(s, e, a, layer, width);
+	const start = findChild(node, "start");
+	const mid = findChild(node, "mid");
+	const end = findChild(node, "end");
+	const angle = findChild(node, "angle");
+	if (start && end) {
+		if (mid) return parseMidArc({ start, mid, end }, layer, width);
+		if (angle) return parseAngleArc({ start, end, angle }, layer, width);
+	}
 	return null;
 }
 
 function parsePolyNode(node, layer, width) {
-	const ptsNode = findChild(node, "pts");
-	const pts = [];
-	for (const child of ptsNode?.slice(1) ?? []) {
-		if (Array.isArray(child) && nodeSym(child[0]) === "xy") {
-			pts.push([Number(child[1]) || 0, Number(child[2]) || 0]);
-		}
-	}
+	const ptsNode = findChild(node, "pts") ?? [];
+	const pts = ptsNode
+		.filter((c) => Array.isArray(c) && nodeSym(c[0]) === "xy")
+		.map((c) => [Number(c[1]) || 0, Number(c[2]) || 0]);
 	return { type: "poly", layer, width, pts };
 }
 
@@ -153,18 +179,10 @@ function parseGraphicNode(node) {
 	const head = nodeSym(node[0]);
 	const layer = extractLayer(node);
 	const width = extractWidth(node);
-	if (head === "fp_line") {
+	if (head === "fp_line" || head === "fp_rect") {
+		const type = head === "fp_line" ? "line" : "rect";
 		return {
-			type: "line",
-			layer,
-			width,
-			start: childPt(node, "start"),
-			end: childPt(node, "end"),
-		};
-	}
-	if (head === "fp_rect") {
-		return {
-			type: "rect",
+			type,
 			layer,
 			width,
 			start: childPt(node, "start"),
@@ -182,28 +200,48 @@ function parseGraphicNode(node) {
 	return null;
 }
 
+const PAD_SHAPE_MAP = {
+	roundrect: "roundrect",
+	rounded_rect: "roundrect",
+	oval: "oval",
+	oblong: "oval",
+	circle: "circle",
+	circular: "circle",
+};
+
 function normalizePadShape(shape) {
-	const s = String(shape || "").toLowerCase();
-	if (s === "roundrect" || s === "rounded_rect") return "roundrect";
-	if (s === "oval" || s === "oblong") return "oval";
-	if (s === "circle" || s === "circular") return "circle";
-	return "rect";
+	const key = String(shape || "").toLowerCase();
+	return PAD_SHAPE_MAP[key] ?? "rect";
+}
+
+function toNumPair(arr, fallback = 0) {
+	if (!Array.isArray(arr)) return [fallback, fallback];
+	return [Number(arr[0]) || 0, Number(arr[1]) || 0];
+}
+
+function extractPadRot(at) {
+	return Array.isArray(at) ? Number(at[2]) || 0 : 0;
+}
+
+function extractPadLayers(layers) {
+	return Array.isArray(layers) ? [...layers] : ["F.Cu"];
+}
+
+function extractPadDrill(drill) {
+	return drill ? Number(drill) : undefined;
 }
 
 function parsePad(pad) {
-	const at = Array.isArray(pad.at) ? pad.at : [0, 0, 0];
-	const size = Array.isArray(pad.size) ? pad.size : [1, 1];
-	const shape = normalizePadShape(pad.shape);
 	return {
 		type: "pad",
 		number: String(pad.number ?? ""),
 		padType: String(pad.type ?? "smd"),
-		shape,
-		center: [Number(at[0]) || 0, Number(at[1]) || 0],
-		size: [Number(size[0]) || 0, Number(size[1]) || 0],
-		rot: Number(at[2]) || 0,
-		layers: Array.isArray(pad.layers) ? [...pad.layers] : ["F.Cu"],
-		drill: pad.drill ? Number(pad.drill) : undefined,
+		shape: normalizePadShape(pad.shape),
+		center: toNumPair(pad.at, 0),
+		size: toNumPair(pad.size, 1),
+		rot: extractPadRot(pad.at),
+		layers: extractPadLayers(pad.layers),
+		drill: extractPadDrill(pad.drill),
 	};
 }
 
@@ -212,11 +250,7 @@ export function footprintToPrimitives(fp) {
 	const rawPads = Array.isArray(fp.pads) ? fp.pads : [];
 	const rawGraphics = Array.isArray(fp.graphics) ? fp.graphics : [];
 	const pads = rawPads.map(parsePad);
-	const graphics = [];
-	for (const g of rawGraphics) {
-		const parsed = parseGraphicNode(g);
-		if (parsed) graphics.push(parsed);
-	}
+	const graphics = rawGraphics.map(parseGraphicNode).filter(Boolean);
 	return { pads, graphics };
 }
 
@@ -226,6 +260,13 @@ function mapLayer(layer, side) {
 	return layer;
 }
 
+function rotate2D(x, y, angleDeg) {
+	const rad = (angleDeg * Math.PI) / 180;
+	const cos = Math.cos(rad);
+	const sin = Math.sin(rad);
+	return [x * cos - y * sin, x * sin + y * cos];
+}
+
 function transformPoint(pt, pl) {
 	const x = pl.x ?? 0;
 	const y = pl.y ?? 0;
@@ -233,10 +274,8 @@ function transformPoint(pt, pl) {
 	const px = pl.side === "B" ? -pt[0] : pt[0];
 	const py = pt[1];
 	if (!rot) return [x + px, y + py];
-	const rad = (rot * Math.PI) / 180;
-	const cos = Math.cos(rad);
-	const sin = Math.sin(rad);
-	return [x + px * cos - py * sin, y + px * sin + py * cos];
+	const [rx, ry] = rotate2D(px, py, rot);
+	return [x + rx, y + ry];
 }
 
 function transformRot(padRot, pl) {
@@ -254,6 +293,16 @@ function transformPad(pad, pl) {
 	};
 }
 
+function transformArcGraphic(g, pl, layer) {
+	const start = transformPoint(g.start, pl);
+	const mid = g.mid ? transformPoint(g.mid, pl) : undefined;
+	const end = transformPoint(g.end, pl);
+	const center = g.center ? transformPoint(g.center, pl) : undefined;
+	const arc = { ...g, layer, start, mid, end, center };
+	arc.d = arcToSvgPath(arc);
+	return arc;
+}
+
 function transformGraphic(g, pl) {
 	const layer = mapLayer(g.layer, pl.side);
 	if (g.type === "line" || g.type === "rect") {
@@ -267,15 +316,7 @@ function transformGraphic(g, pl) {
 	if (g.type === "circle") {
 		return { ...g, layer, center: transformPoint(g.center, pl) };
 	}
-	if (g.type === "arc") {
-		const start = transformPoint(g.start, pl);
-		const mid = g.mid ? transformPoint(g.mid, pl) : undefined;
-		const end = transformPoint(g.end, pl);
-		const center = g.center ? transformPoint(g.center, pl) : undefined;
-		const arc = { ...g, layer, start, mid, end, center };
-		arc.d = arcToSvgPath(arc);
-		return arc;
-	}
+	if (g.type === "arc") return transformArcGraphic(g, pl, layer);
 	if (g.type === "poly") {
 		return { ...g, layer, pts: g.pts.map((p) => transformPoint(p, pl)) };
 	}
@@ -295,26 +336,37 @@ export function transformPrimitives(prims, placement = {}) {
 	return { pads, graphics };
 }
 
+function round4(n) {
+	return Math.round(n * 10000) / 10000;
+}
+
+function getFootprintPads(fp) {
+	if (!fp?.pads) return [];
+	return Array.isArray(fp.pads) ? fp.pads : Object.values(fp.pads);
+}
+
+function getPadLocalPt(pad) {
+	if (Array.isArray(pad.at)) {
+		return [Number(pad.at[0]) || 0, Number(pad.at[1]) || 0];
+	}
+	return pad.center ?? [0, 0];
+}
+
+function calcPadWorldCoord(pad, pl) {
+	const localPt = getPadLocalPt(pad);
+	const [wx, wy] = transformPoint(localPt, pl);
+	return [round4(wx), round4(wy)];
+}
+
 export function padWorldPositions(fp, placement = {}) {
-	if (!fp) return {};
+	const pads = getFootprintPads(fp);
 	const pl = { x: 0, y: 0, rot: 0, side: "F", ...placement };
-	const pads = Array.isArray(fp.pads)
-		? fp.pads
-		: fp.pads
-			? Object.values(fp.pads)
-			: [];
 	const positions = {};
 	for (const pad of pads) {
 		const num = String(pad.number ?? "");
-		if (!num) continue;
-		const localPt = Array.isArray(pad.at)
-			? [pad.at[0] || 0, pad.at[1] || 0]
-			: (pad.center ?? [0, 0]);
-		const [wx, wy] = transformPoint(localPt, pl);
-		positions[num] = [
-			Math.round(wx * 10000) / 10000,
-			Math.round(wy * 10000) / 10000,
-		];
+		if (num) {
+			positions[num] = calcPadWorldCoord(pad, pl);
+		}
 	}
 	return positions;
 }
@@ -324,16 +376,13 @@ function pointInRotatedBox(lx, ly, hw, hh) {
 }
 
 function pointInOval(lx, ly, hw, hh) {
-	if (hw >= hh) {
-		const r = hh;
-		const sx = hw - r;
-		const px = Math.max(-sx, Math.min(sx, lx));
-		return (lx - px) ** 2 + ly ** 2 <= r ** 2;
-	}
-	const r = hw;
-	const sy = hh - r;
-	const py = Math.max(-sy, Math.min(sy, ly));
-	return lx ** 2 + (ly - py) ** 2 <= r ** 2;
+	const horizontal = hw >= hh;
+	const r = horizontal ? hh : hw;
+	const span = (horizontal ? hw : hh) - r;
+	const major = horizontal ? lx : ly;
+	const minor = horizontal ? ly : lx;
+	const clamped = Math.max(-span, Math.min(span, major));
+	return (major - clamped) ** 2 + minor ** 2 <= r ** 2;
 }
 
 function pointInRoundRect(lx, ly, hw, hh) {
@@ -350,12 +399,7 @@ function pointInRoundRect(lx, ly, hw, hh) {
 function pointInPad(pt, pad) {
 	const [px, py] = pt;
 	const [cx, cy] = pad.center;
-	const dx = px - cx;
-	const dy = py - cy;
-	const rot = pad.rot || 0;
-	const rad = (-rot * Math.PI) / 180;
-	const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
-	const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+	const [lx, ly] = rotate2D(px - cx, py - cy, -(pad.rot || 0));
 	const hw = (pad.size[0] || 0) / 2;
 	const hh = (pad.size[1] || 0) / 2;
 	if (pad.shape === "circle") return lx ** 2 + ly ** 2 <= Math.max(hw, hh) ** 2;
