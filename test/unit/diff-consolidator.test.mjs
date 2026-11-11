@@ -14,6 +14,12 @@ import {
 	processTraceMod,
 } from "../../backend/src/diff-consolidator.js";
 
+function assertObjectProps(obj, expectedProps) {
+	for (const [prop, val] of expectedProps) {
+		assert.equal(obj[prop], val);
+	}
+}
+
 function runCopperRegistrationTest({
 	processFn,
 	mod,
@@ -22,8 +28,16 @@ function runCopperRegistrationTest({
 }) {
 	const map = new Map();
 	processFn(mod, new Map(), map);
-	assert.equal(map.has(expectedKey), true);
-	assert.equal(map.get(expectedKey).diffIdx, expectedDiffIdx);
+	assert.deepEqual(
+		{
+			hasKey: map.has(expectedKey),
+			diffIdx: map.get(expectedKey)?.diffIdx,
+		},
+		{
+			hasKey: true,
+			diffIdx: expectedDiffIdx,
+		},
+	);
 }
 
 function runAbsorptionAndDedupTest({
@@ -43,38 +57,109 @@ function runAbsorptionAndDedupTest({
 	processFn(firstMod, new Map(), map);
 	processFn(secondMod, new Map(), map);
 
-	assert.equal(map.size, 1);
-	assert.equal(map.get(expectedKey)[expectedField], expectedVal);
+	assert.deepEqual(
+		{
+			size: map.size,
+			val: map.get(expectedKey)?.[expectedField],
+		},
+		{
+			size: 1,
+			val: expectedVal,
+		},
+	);
 }
+
+function defineModLifecycleTests({ describeName, copperCase, absorptionCase }) {
+	describe(describeName, () => {
+		test(copperCase.name, () => {
+			runCopperRegistrationTest(copperCase);
+		});
+		test(absorptionCase.name, () => {
+			runAbsorptionAndDedupTest(absorptionCase);
+		});
+	});
+}
+
+const MOD_SUITE_SPECS = [
+	{
+		describeName: "processTraceMod",
+		copperCase: {
+			name: "adds copper trace to traceMap keyed by normalized net and layer",
+			processFn: processTraceMod,
+			mod: { layer: "board-F_Cu.svg", name: "/RESET", diffIdx: 1 },
+			expectedKey: "reset@board-F_Cu.svg",
+			expectedDiffIdx: 1,
+		},
+		absorptionCase: {
+			name: "absorbs non-copper trace near footprint and deduplicates traces on same net and layer",
+			processFn: processTraceMod,
+			absorbedMod: {
+				layer: "board-SilkS.svg",
+				bbox: { x1: 0, y1: 0, x2: 2, y2: 2 },
+				name: "label",
+			},
+			footprintChanges: new Map([["R1", { targetAt: { x: 1, y: 1 } }]]),
+			firstMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 10 },
+			secondMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 20 },
+			expectedKey: "gnd@board-F_Cu.svg",
+			expectedField: "diffIdx",
+			expectedVal: 10,
+		},
+	},
+	{
+		describeName: "processGraphicMod",
+		copperCase: {
+			name: "adds copper graphic to graphicMap keyed by title and layer",
+			processFn: processGraphicMod,
+			mod: {
+				title: "board_outline",
+				layer: "board-F_Cu.svg",
+				diffIdx: 1,
+			},
+			expectedKey: "board_outline@board-F_Cu.svg",
+			expectedDiffIdx: 1,
+		},
+		absorptionCase: {
+			name: "absorbs non-copper graphic near footprint and deduplicates identical graphics",
+			processFn: processGraphicMod,
+			absorbedMod: {
+				title: "silkscreen_art",
+				layer: "board-SilkS.svg",
+				bbox: { x1: 2, y1: 2, x2: 4, y2: 4 },
+			},
+			footprintChanges: new Map([["U1", { targetAt: { x: 3, y: 3 } }]]),
+			firstMod: { title: "logo", layer: "F_Cu", id: "first_logo" },
+			secondMod: { title: "logo", layer: "F_Cu", id: "second_logo" },
+			expectedKey: "logo@F_Cu",
+			expectedField: "id",
+			expectedVal: "first_logo",
+		},
+	},
+];
 
 describe("diff-consolidator unit tests", () => {
 	describe("isCopperLayerFilename", () => {
 		test("table-driven validation of copper and non-copper layer filenames", () => {
-			const copperFilenames = [
-				"board-F_Cu.svg",
-				"board-B_Cu.svg",
-				"board-In1_Cu.svg",
-				"board-In32_Cu.svg",
+			const cases = [
+				...[
+					"board-F_Cu.svg",
+					"board-B_Cu.svg",
+					"board-In1_Cu.svg",
+					"board-In32_Cu.svg",
+				].map((name) => ({ name, expected: true })),
+				...[
+					"",
+					null,
+					undefined,
+					"board-Edge_Cuts.svg",
+					"board-F_Cu_SilkS.svg",
+				].map((name) => ({ name, expected: false })),
 			];
-			for (const name of copperFilenames) {
-				assert.equal(
-					isCopperLayerFilename(name),
-					true,
-					`Failed for input: ${name}`,
-				);
-			}
 
-			const nonCopperFilenames = [
-				"",
-				null,
-				undefined,
-				"board-Edge_Cuts.svg",
-				"board-F_Cu_SilkS.svg",
-			];
-			for (const name of nonCopperFilenames) {
+			for (const { name, expected } of cases) {
 				assert.equal(
 					isCopperLayerFilename(name),
-					false,
+					expected,
 					`Failed for input: ${name}`,
 				);
 			}
@@ -146,33 +231,36 @@ describe("diff-consolidator unit tests", () => {
 				targetAt: { x: 10.5, y: 20.5 },
 				baseAt: { x: 8, y: 20.5 },
 			};
-			const footprintChanges = new Map([["R1", fpChange]]);
 			const componentMap = new Map();
 			const traceMap = new Map();
 
-			processComponentMod(mod, footprintChanges, componentMap, traceMap);
+			processComponentMod(
+				mod,
+				new Map([["R1", fpChange]]),
+				componentMap,
+				traceMap,
+			);
 
-			assert.equal(componentMap.has("R1"), true);
 			const registered = componentMap.get("R1");
-			const expectedProps = [
+			assertObjectProps(registered, [
 				["action", "MOVED"],
 				["displacement", 2.5],
 				["detail", "Relocated by 2.50 mm on F.Cu • (10.50, 20.50)"],
-			];
-			for (const [prop, val] of expectedProps) {
-				assert.equal(registered[prop], val);
-			}
+			]);
 			assert.deepEqual(
 				{
 					baseCoords: registered.baseCoords,
 					targetCoords: registered.targetCoords,
+					hasR1: componentMap.has("R1"),
+					traceSize: traceMap.size,
 				},
 				{
 					baseCoords: { x: 8, y: 20.5 },
 					targetCoords: { x: 10.5, y: 20.5 },
+					hasR1: true,
+					traceSize: 0,
 				},
 			);
-			assert.equal(traceMap.size, 0);
 		});
 
 		test("routes to traceMap when footprintChanges is non-empty but does not contain refDes", () => {
@@ -187,17 +275,15 @@ describe("diff-consolidator unit tests", () => {
 
 			processComponentMod(mod, footprintChanges, componentMap, traceMap);
 
-			assert.equal(componentMap.size, 0);
-			assert.equal(traceMap.size, 1);
-			const traceEntry = traceMap.get("vcc@board-F_Cu.svg");
-			const expectedFields = [
+			assert.deepEqual(
+				{ compSize: componentMap.size, traceSize: traceMap.size },
+				{ compSize: 0, traceSize: 1 },
+			);
+			assertObjectProps(traceMap.get("vcc@board-F_Cu.svg"), [
 				["type", "TRACE"],
 				["name", "/VCC"],
 				["detail", "Connected to C1 • Layer F.Cu"],
-			];
-			for (const [field, expected] of expectedFields) {
-				assert.equal(traceEntry[field], expected);
-			}
+			]);
 		});
 
 		test("updates existing component when new mod is on F_Cu layer", () => {
@@ -219,17 +305,18 @@ describe("diff-consolidator unit tests", () => {
 				baseAt: { x: 1, y: 1 },
 				targetAt: { x: 2, y: 2 },
 			};
-			const footprintChanges = new Map([["U1", fpChange]]);
 
-			processComponentMod(mod, footprintChanges, componentMap, traceMap);
+			processComponentMod(
+				mod,
+				new Map([["U1", fpChange]]),
+				componentMap,
+				traceMap,
+			);
 
-			const expectedProps = [
+			assertObjectProps(existing, [
 				["layer", "board-F_Cu.svg"],
 				["diffIdx", 2],
-			];
-			for (const [prop, val] of expectedProps) {
-				assert.equal(existing[prop], val);
-			}
+			]);
 			assert.deepEqual(
 				{
 					bbox: existing.bbox,
@@ -245,65 +332,9 @@ describe("diff-consolidator unit tests", () => {
 		});
 	});
 
-	describe("processTraceMod", () => {
-		test("adds copper trace to traceMap keyed by normalized net and layer", () => {
-			runCopperRegistrationTest({
-				processFn: processTraceMod,
-				mod: { layer: "board-F_Cu.svg", name: "/RESET", diffIdx: 1 },
-				expectedKey: "reset@board-F_Cu.svg",
-				expectedDiffIdx: 1,
-			});
-		});
-
-		test("absorbs non-copper trace near footprint and deduplicates traces on same net and layer", () => {
-			runAbsorptionAndDedupTest({
-				processFn: processTraceMod,
-				absorbedMod: {
-					layer: "board-SilkS.svg",
-					bbox: { x1: 0, y1: 0, x2: 2, y2: 2 },
-					name: "label",
-				},
-				footprintChanges: new Map([["R1", { targetAt: { x: 1, y: 1 } }]]),
-				firstMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 10 },
-				secondMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 20 },
-				expectedKey: "gnd@board-F_Cu.svg",
-				expectedField: "diffIdx",
-				expectedVal: 10,
-			});
-		});
-	});
-
-	describe("processGraphicMod", () => {
-		test("adds copper graphic to graphicMap keyed by title and layer", () => {
-			runCopperRegistrationTest({
-				processFn: processGraphicMod,
-				mod: {
-					title: "board_outline",
-					layer: "board-F_Cu.svg",
-					diffIdx: 1,
-				},
-				expectedKey: "board_outline@board-F_Cu.svg",
-				expectedDiffIdx: 1,
-			});
-		});
-
-		test("absorbs non-copper graphic near footprint and deduplicates identical graphics", () => {
-			runAbsorptionAndDedupTest({
-				processFn: processGraphicMod,
-				absorbedMod: {
-					title: "silkscreen_art",
-					layer: "board-SilkS.svg",
-					bbox: { x1: 2, y1: 2, x2: 4, y2: 4 },
-				},
-				footprintChanges: new Map([["U1", { targetAt: { x: 3, y: 3 } }]]),
-				firstMod: { title: "logo", layer: "F_Cu", id: "first_logo" },
-				secondMod: { title: "logo", layer: "F_Cu", id: "second_logo" },
-				expectedKey: "logo@F_Cu",
-				expectedField: "id",
-				expectedVal: "first_logo",
-			});
-		});
-	});
+	for (const spec of MOD_SUITE_SPECS) {
+		defineModLifecycleTests(spec);
+	}
 
 	describe("consolidateModifications", () => {
 		test("consolidates mixed modifications preserving add_layer and delete_layer in order", () => {
@@ -317,17 +348,24 @@ describe("diff-consolidator unit tests", () => {
 
 			const result = consolidateModifications(mods);
 
-			const expectedOrder = [
-				[0, "type", "add_layer"],
-				[1, "type", "delete_layer"],
-				[2, "refDes", "R1"],
-				[3, "name", "SIG1"],
-				[4, "title", "Line1"],
-			];
-			assert.equal(result.length, expectedOrder.length);
-			for (const [idx, prop, val] of expectedOrder) {
-				assert.equal(result[idx][prop], val);
-			}
+			assert.deepEqual(
+				{
+					length: result.length,
+					type0: result[0]?.type,
+					type1: result[1]?.type,
+					refDes2: result[2]?.refDes,
+					name3: result[3]?.name,
+					title4: result[4]?.title,
+				},
+				{
+					length: 5,
+					type0: "add_layer",
+					type1: "delete_layer",
+					refDes2: "R1",
+					name3: "SIG1",
+					title4: "Line1",
+				},
+			);
 		});
 
 		test("handles empty input and deduplicates items in single batch", () => {
@@ -342,14 +380,10 @@ describe("diff-consolidator unit tests", () => {
 
 			const result = consolidateModifications(mods);
 
-			assert.equal(result.length, 2);
-			const expectedIds = [
-				[0, 1],
+			assert.deepEqual(
+				result.map((item) => item.id),
 				[1, 3],
-			];
-			for (const [idx, id] of expectedIds) {
-				assert.equal(result[idx].id, id);
-			}
+			);
 		});
 	});
 
@@ -364,13 +398,24 @@ describe("diff-consolidator unit tests", () => {
 				globalDiffIdx: 10,
 			});
 
-			for (const side of ["sideBySideBase", "sideBySideTarget"]) {
-				assert.equal(result[side].filename, "board-F_Cu.svg");
-			}
-			assert.equal(Array.isArray(result.modifications), true);
-			assert.equal(result.nextDiffIdx >= 10, true);
-			assert.ok(result.telemetry);
-			assert.equal(result.telemetry.layer, "board-F_Cu.svg");
+			assert.deepEqual(
+				{
+					baseFilename: result.sideBySideBase.filename,
+					targetFilename: result.sideBySideTarget.filename,
+					isModArray: Array.isArray(result.modifications),
+					hasNextDiff: result.nextDiffIdx >= 10,
+					hasTelemetry: Boolean(result.telemetry),
+					telemetryLayer: result.telemetry?.layer,
+				},
+				{
+					baseFilename: "board-F_Cu.svg",
+					targetFilename: "board-F_Cu.svg",
+					isModArray: true,
+					hasNextDiff: true,
+					hasTelemetry: true,
+					telemetryLayer: "board-F_Cu.svg",
+				},
+			);
 		});
 
 		test("catches diff failure and returns fallback layer pair with untouched diffIdx", () => {
@@ -381,11 +426,20 @@ describe("diff-consolidator unit tests", () => {
 				globalDiffIdx: 42,
 			});
 
-			assert.equal(result.nextDiffIdx, 42);
-			assert.deepEqual(result.modifications, []);
-			for (const val of [result.telemetry, result.sideBySideBase.content]) {
-				assert.equal(val, null);
-			}
+			assert.deepEqual(
+				{
+					nextDiffIdx: result.nextDiffIdx,
+					modifications: result.modifications,
+					telemetry: result.telemetry,
+					baseContent: result.sideBySideBase.content,
+				},
+				{
+					nextDiffIdx: 42,
+					modifications: [],
+					telemetry: null,
+					baseContent: null,
+				},
+			);
 		});
 	});
 
@@ -399,15 +453,20 @@ describe("diff-consolidator unit tests", () => {
 
 			const added = findAddedLayers(targetSvgs, baseSvgs);
 
-			assert.equal(added.length, 1);
-			const expectedProps = [
-				["type", "add_layer"],
-				["layer", "board-In1_Cu.svg"],
-				["text", "Entire layer board-In1_Cu.svg added"],
-			];
-			for (const [prop, val] of expectedProps) {
-				assert.equal(added[0].mod[prop], val);
-			}
+			assert.deepEqual(
+				{
+					count: added.length,
+					type: added[0]?.mod?.type,
+					layer: added[0]?.mod?.layer,
+					text: added[0]?.mod?.text,
+				},
+				{
+					count: 1,
+					type: "add_layer",
+					layer: "board-In1_Cu.svg",
+					text: "Entire layer board-In1_Cu.svg added",
+				},
+			);
 		});
 
 		test("returns empty when targets empty or when suffixes match across differing paths", () => {
