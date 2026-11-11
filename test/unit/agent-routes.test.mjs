@@ -21,73 +21,62 @@ function closeServer(server) {
 	return new Promise((resolve) => server.close(resolve));
 }
 
-async function postJson(port, path, body) {
-	const response = await fetch(`http://127.0.0.1:${port}${path}`, {
-		method: "POST",
+async function postJson(port, path, payload) {
+	const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+		body: JSON.stringify(payload),
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
+		method: "POST",
 	});
-	const json = await response.json().catch(() => ({}));
-	return { status: response.status, json };
+	const data = await res.json().catch(() => ({}));
+	return { json: data, status: res.status };
 }
 
 function makeValidCircuitIR() {
 	return {
-		schemaVersion: 1,
-		name: "TestCircuit",
-		parts: [],
-		nets: [],
 		constraints: [],
+		name: "TestCircuit",
+		nets: [],
+		parts: [],
+		schemaVersion: 1,
+	};
+}
+
+function createTwoStepModel(toolCall, step1Text, step2Text) {
+	let callCount = 0;
+	return {
+		generate: async () => {
+			callCount += 1;
+			if (callCount === 1) {
+				return {
+					text: step1Text,
+					toolCalls: [toolCall],
+				};
+			}
+			return { text: step2Text };
+		},
 	};
 }
 
 function createToolCallingModel() {
-	let callCount = 0;
-	return {
-		generate: async () => {
-			callCount += 1;
-			if (callCount === 1) {
-				return {
-					text: "Validating IR...",
-					toolCalls: [
-						{
-							name: "ir.validate",
-							input: { ir: makeValidCircuitIR() },
-						},
-					],
-				};
-			}
-			return {
-				text: "Circuit IR is valid and ready.",
-			};
-		},
-	};
+	return createTwoStepModel(
+		{ input: { ir: makeValidCircuitIR() }, name: "ir.validate" },
+		"Validating IR...",
+		"Circuit IR is valid and ready.",
+	);
 }
 
 function createDiffCallingModel() {
-	let callCount = 0;
-	return {
-		generate: async () => {
-			callCount += 1;
-			if (callCount === 1) {
-				return {
-					text: "Comparing files...",
-					toolCalls: [
-						{
-							name: "diff.compare_files",
-							input: {
-								basePath: "C:/fake/base.kicad_pcb",
-								targetPath: "C:/fake/target.kicad_pcb",
-							},
-						},
-					],
-				};
-			}
-			return {
-				text: "Diff completed.",
-			};
+	return createTwoStepModel(
+		{
+			input: {
+				basePath: "C:/fake/base.kicad_pcb",
+				targetPath: "C:/fake/target.kicad_pcb",
+			},
+			name: "diff.compare_files",
 		},
-	};
+		"Comparing files...",
+		"Diff completed.",
+	);
 }
 
 function createCommitCallingModel() {
@@ -96,15 +85,15 @@ function createCommitCallingModel() {
 			text: "Committing design...",
 			toolCalls: [
 				{
-					name: "design.commit",
 					input: {
-						repoPath: "C:/fake/repo",
 						baseName: "MyBoard",
-						ir: makeValidCircuitIR(),
-						boardW: 100,
 						boardH: 80,
+						boardW: 100,
+						ir: makeValidCircuitIR(),
 						message: "Initial design",
+						repoPath: "C:/fake/repo",
 					},
+					name: "design.commit",
 				},
 			],
 		}),
@@ -119,40 +108,145 @@ function createThrowingModel() {
 	};
 }
 
+function createAbortableModel(onAbort) {
+	return {
+		generate: ({ signal }) =>
+			new Promise((resolve, reject) => {
+				const timer = setTimeout(() => resolve({ text: "done" }), 1000);
+				signal.addEventListener("abort", () => {
+					clearTimeout(timer);
+					onAbort(true);
+					const err = new Error("aborted");
+					err.name = "AbortError";
+					reject(err);
+				});
+			}),
+	};
+}
+
+async function runWithLocals(app, port, { allowLocalRepos, body, factory }) {
+	if (allowLocalRepos) {
+		app.locals.allowLocalRepos = true;
+	} else {
+		delete app.locals.allowLocalRepos;
+	}
+	app.locals.agentModelFactory = factory;
+	try {
+		return await postJson(port, "/api/agent/run", body);
+	} finally {
+		delete app.locals.allowLocalRepos;
+	}
+}
+
+function assertErrorResponse(res, expectedStatus) {
+	assert.equal(res.status, expectedStatus);
+	assert.equal(typeof res.json?.error, "string");
+}
+
+function assertRunStatus(res, { steps, text }) {
+	assert.equal(res.status, 200);
+	assert.equal(res.json?.text, text);
+	assert.equal(res.json?.steps, steps);
+}
+
+function assertHasEvents(events) {
+	assert.ok(Array.isArray(events));
+	assert.ok(events.length > 0);
+}
+
+function assertToolEvent(event, { name, ok }) {
+	assert.equal(event?.name, name);
+	if (ok !== undefined) {
+		assert.equal(event?.ok, ok);
+	}
+}
+
+function assertServerError(res, expectedMsg) {
+	assert.equal(res.status, 500);
+	assert.equal(res.json?.error, expectedMsg);
+	assert.equal(res.json?.stack, undefined);
+}
+
+function assertToolFailed(toolResult, expectedError, { exact = true } = {}) {
+	assert.ok(toolResult);
+	assert.equal(toolResult.ok, false);
+	if (exact) {
+		assert.equal(toolResult.error, expectedError);
+	} else {
+		assert.notEqual(toolResult.error, expectedError);
+	}
+}
+
+function assertPendingApproval(res, expected) {
+	assert.equal(res.status, 200);
+	if (!expected) {
+		assert.equal(res.json?.pendingApproval, undefined);
+		return;
+	}
+	assert.ok(res.json?.pendingApproval);
+	assert.equal(res.json?.pendingApproval.name, expected.name);
+	assert.equal(res.json?.pendingApproval.input?.baseName, expected.baseName);
+}
+
+function assertHasLocalTools(names) {
+	assert.ok(names.includes("design.commit"));
+	assert.ok(names.includes("ir.route"));
+}
+
+async function fetchDiffToolResult(app, port, allowLocalRepos) {
+	const res = await runWithLocals(app, port, {
+		allowLocalRepos,
+		body: { message: "compare files" },
+		factory: () => createDiffCallingModel(),
+	});
+	assert.equal(res.status, 200);
+	return res.json.events.find(
+		(e) => e.type === "tool_result" && e.name === "diff.compare_files",
+	);
+}
+
+async function runCommitRequest(app, port, bodyExtras = {}) {
+	return runWithLocals(app, port, {
+		allowLocalRepos: true,
+		body: { message: "commit design", ...bodyExtras },
+		factory: () => createCommitCallingModel(),
+	});
+}
+
 const VALIDATION_CASES = [
-	{ name: "missing message", body: {}, expected: 400 },
-	{ name: "non-string message", body: { message: 123 }, expected: 400 },
-	{ name: "empty message", body: { message: "" }, expected: 400 },
+	{ body: {}, expected: 400, name: "missing message" },
+	{ body: { message: 123 }, expected: 400, name: "non-string message" },
+	{ body: { message: "" }, expected: 400, name: "empty message" },
 	{
-		name: "too long message",
 		body: { message: "a".repeat(8001) },
 		expected: 400,
+		name: "too long message",
 	},
-	{ name: "maxSteps < 1", body: { message: "hi", maxSteps: 0 }, expected: 400 },
+	{ body: { maxSteps: 0, message: "hi" }, expected: 400, name: "maxSteps < 1" },
 	{
+		body: { maxSteps: 17, message: "hi" },
+		expected: 400,
 		name: "maxSteps > 16",
-		body: { message: "hi", maxSteps: 17 },
-		expected: 400,
 	},
 	{
+		body: { maxSteps: 2.5, message: "hi" },
+		expected: 400,
 		name: "maxSteps float",
-		body: { message: "hi", maxSteps: 2.5 },
-		expected: 400,
 	},
 	{
+		body: { maxSteps: "4", message: "hi" },
+		expected: 400,
 		name: "maxSteps string",
-		body: { message: "hi", maxSteps: "4" },
-		expected: 400,
 	},
 	{
+		body: { approved: "true", message: "hi" },
+		expected: 400,
 		name: "approved non-boolean string",
-		body: { message: "hi", approved: "true" },
-		expected: 400,
 	},
 	{
-		name: "approved non-boolean number",
-		body: { message: "hi", approved: 1 },
+		body: { approved: 1, message: "hi" },
 		expected: 400,
+		name: "approved non-boolean number",
 	},
 ];
 
@@ -179,8 +273,7 @@ describe("agent-routes", () => {
 	for (const tc of VALIDATION_CASES) {
 		test(`validation rejects ${tc.name} with 400`, async () => {
 			const res = await postJson(port, "/api/agent/run", tc.body);
-			assert.equal(res.status, tc.expected);
-			assert.ok(typeof res.json.error === "string");
+			assertErrorResponse(res, tc.expected);
 		});
 	}
 
@@ -189,11 +282,8 @@ describe("agent-routes", () => {
 			generate: async () => ({ text: "done" }),
 		});
 		const res = await postJson(port, "/api/agent/run", { message: "hello" });
-		assert.equal(res.status, 200);
-		assert.equal(res.json.text, "done");
-		assert.equal(res.json.steps, 1);
-		assert.ok(Array.isArray(res.json.events));
-		assert.ok(res.json.events.length > 0);
+		assertRunStatus(res, { steps: 1, text: "done" });
+		assertHasEvents(res.json.events);
 	});
 
 	test("fake model with tool call runs ir.validate and returns follow-up", async () => {
@@ -201,14 +291,14 @@ describe("agent-routes", () => {
 		const res = await postJson(port, "/api/agent/run", {
 			message: "check circuit",
 		});
-		assert.equal(res.status, 200);
-		assert.equal(res.json.text, "Circuit IR is valid and ready.");
-		assert.equal(res.json.steps, 2);
+		assertRunStatus(res, {
+			steps: 2,
+			text: "Circuit IR is valid and ready.",
+		});
 		const toolCall = res.json.events.find((e) => e.type === "tool_call");
-		assert.equal(toolCall?.name, "ir.validate");
+		assertToolEvent(toolCall, { name: "ir.validate" });
 		const toolResult = res.json.events.find((e) => e.type === "tool_result");
-		assert.equal(toolResult?.name, "ir.validate");
-		assert.equal(toolResult?.ok, true);
+		assertToolEvent(toolResult, { name: "ir.validate", ok: true });
 	});
 
 	test("throwing model returns 500 with generic error and no stack", async () => {
@@ -216,9 +306,7 @@ describe("agent-routes", () => {
 		const res = await postJson(port, "/api/agent/run", {
 			message: "trigger error",
 		});
-		assert.equal(res.status, 500);
-		assert.equal(res.json.error, "Agent run failed");
-		assert.equal(res.json.stack, undefined);
+		assertServerError(res, "Agent run failed");
 		const bodyString = JSON.stringify(res.json);
 		assert.equal(bodyString.includes("ABC-123"), false);
 	});
@@ -228,25 +316,12 @@ describe("agent-routes", () => {
 		const abortPromise = new Promise((resolve) => {
 			onAbortTriggered = resolve;
 		});
-		app.locals.agentModelFactory = () => ({
-			generate: async ({ signal }) => {
-				return new Promise((resolve, reject) => {
-					const timer = setTimeout(() => resolve({ text: "done" }), 1000);
-					signal.addEventListener("abort", () => {
-						clearTimeout(timer);
-						onAbortTriggered(true);
-						const err = new Error("aborted");
-						err.name = "AbortError";
-						reject(err);
-					});
-				});
-			},
-		});
+		app.locals.agentModelFactory = () => createAbortableModel(onAbortTriggered);
 		const ac = new AbortController();
 		const reqPromise = fetch(`http://127.0.0.1:${port}/api/agent/run`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ message: "run" }),
+			headers: { "Content-Type": "application/json" },
+			method: "POST",
 			signal: ac.signal,
 		}).catch(() => {});
 		setTimeout(() => ac.abort(), 30);
@@ -256,34 +331,17 @@ describe("agent-routes", () => {
 	});
 
 	test("hosted mode rejects diff.compare_files as unknown tool", async () => {
-		delete app.locals.allowLocalRepos;
-		app.locals.agentModelFactory = () => createDiffCallingModel();
-		const res = await postJson(port, "/api/agent/run", {
-			message: "compare files",
+		const toolResult = await fetchDiffToolResult(app, port, false);
+		assertToolFailed(toolResult, "unknown tool: diff.compare_files", {
+			exact: true,
 		});
-		assert.equal(res.status, 200);
-		const toolResult = res.json.events.find(
-			(e) => e.type === "tool_result" && e.name === "diff.compare_files",
-		);
-		assert.ok(toolResult);
-		assert.equal(toolResult.ok, false);
-		assert.equal(toolResult.error, "unknown tool: diff.compare_files");
 	});
 
 	test("local mode reaches diff tool when allowLocalRepos is true", async () => {
-		app.locals.allowLocalRepos = true;
-		app.locals.agentModelFactory = () => createDiffCallingModel();
-		const res = await postJson(port, "/api/agent/run", {
-			message: "compare files",
+		const toolResult = await fetchDiffToolResult(app, port, true);
+		assertToolFailed(toolResult, "unknown tool: diff.compare_files", {
+			exact: false,
 		});
-		delete app.locals.allowLocalRepos;
-		assert.equal(res.status, 200);
-		const toolResult = res.json.events.find(
-			(e) => e.type === "tool_result" && e.name === "diff.compare_files",
-		);
-		assert.ok(toolResult);
-		assert.equal(toolResult.ok, false);
-		assert.notEqual(toolResult.error, "unknown tool: diff.compare_files");
 	});
 
 	test("hosted registry has no design.commit, ir.route, diff.*, or kicad.* tools", () => {
@@ -303,53 +361,37 @@ describe("agent-routes", () => {
 	});
 
 	test("local mode lists design.commit and ir.route", async () => {
-		app.locals.allowLocalRepos = true;
 		let receivedTools = [];
-		app.locals.agentModelFactory = () => ({
-			generate: async ({ tools }) => {
-				receivedTools = tools || [];
-				return { text: "done" };
-			},
+		const res = await runWithLocals(app, port, {
+			allowLocalRepos: true,
+			body: { message: "list tools" },
+			factory: () => ({
+				generate: async ({ tools }) => {
+					receivedTools = tools || [];
+					return { text: "done" };
+				},
+			}),
 		});
-		const res = await postJson(port, "/api/agent/run", {
-			message: "list tools",
-		});
-		delete app.locals.allowLocalRepos;
 		assert.equal(res.status, 200);
 		const names = receivedTools.map((t) => t.name);
-		assert.ok(names.includes("design.commit"));
-		assert.ok(names.includes("ir.route"));
+		assertHasLocalTools(names);
 	});
 
 	test("design.commit without approved returns pendingApproval through agent", async () => {
-		app.locals.allowLocalRepos = true;
-		app.locals.agentModelFactory = () => createCommitCallingModel();
-		const res = await postJson(port, "/api/agent/run", {
-			message: "commit design",
+		const res = await runCommitRequest(app, port);
+		assertPendingApproval(res, {
+			baseName: "MyBoard",
+			name: "design.commit",
 		});
-		delete app.locals.allowLocalRepos;
-		assert.equal(res.status, 200);
-		assert.ok(res.json.pendingApproval);
-		assert.equal(res.json.pendingApproval.name, "design.commit");
-		assert.equal(res.json.pendingApproval.input?.baseName, "MyBoard");
 	});
 
 	test("design.commit with approved:true reaches the tool", async () => {
-		app.locals.allowLocalRepos = true;
-		app.locals.agentModelFactory = () => createCommitCallingModel();
-		const res = await postJson(port, "/api/agent/run", {
-			message: "commit design",
-			approved: true,
-		});
-		delete app.locals.allowLocalRepos;
-		assert.equal(res.status, 200);
-		assert.equal(res.json.pendingApproval, undefined);
+		const res = await runCommitRequest(app, port, { approved: true });
+		assertPendingApproval(res, null);
 		const toolResult = res.json.events.find(
 			(e) => e.type === "tool_result" && e.name === "design.commit",
 		);
-		assert.ok(toolResult);
-		assert.equal(toolResult.ok, false);
-		assert.notEqual(toolResult.error, "approval required");
+		assertToolFailed(toolResult, "approval required", { exact: false });
 	});
 
 	test("buildLocalRegistry registers commit and route tools with deps", async () => {
@@ -359,7 +401,6 @@ describe("agent-routes", () => {
 			commit: { execFileFn: fakeExec, fsImpl: fakeFs },
 		});
 		const names = registry.list().map((t) => t.name);
-		assert.ok(names.includes("design.commit"));
-		assert.ok(names.includes("ir.route"));
+		assertHasLocalTools(names);
 	});
 });
