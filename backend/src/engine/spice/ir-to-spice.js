@@ -1,4 +1,5 @@
 import { validateCircuitIR } from "../circuit-ir.js";
+import { modelForPart } from "./part-models.js";
 
 const MULTIPLIERS = {
 	meg: 1e6,
@@ -270,24 +271,46 @@ function getElementHandler(upperRef) {
 	return null;
 }
 
+function getModelPins(part, pinRoles, ctx) {
+	const nodes = {};
+	for (const [role, pinNumber] of Object.entries(pinRoles)) {
+		const netId = ctx.pinToNet.get(`${part.id}:${pinNumber}`);
+		if (!netId) {
+			ctx.warnings.push(`Part '${part.ref}' pin '${pinNumber}' is unconnected`);
+			return null;
+		}
+		nodes[role] = ctx.nodeMap[netId];
+	}
+	return nodes;
+}
+
 function processPart(part, ctx) {
 	const upper = String(part.ref || "")
 		.trim()
 		.toUpperCase();
-	if (upper.startsWith("U")) {
-		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
-		return null;
-	}
-	const pins = getPartPins(part, ctx.pinToNet, ctx.nodeMap, ctx.warnings);
-	if (!pins) {
-		return null;
-	}
 	const handler = getElementHandler(upper);
-	if (!handler) {
+	if (handler) {
+		const pins = getPartPins(part, ctx.pinToNet, ctx.nodeMap, ctx.warnings);
+		if (!pins) {
+			return null;
+		}
+		return handler(part, pins, ctx);
+	}
+	const model = modelForPart(part);
+	if (!model) {
 		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
 		return null;
 	}
-	return handler(part, pins, ctx);
+	const nodes = getModelPins(part, model.pinRoles, ctx);
+	if (!nodes) {
+		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
+		return null;
+	}
+	const prefix = String(part.ref || "").trim()[0] || "U";
+	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
+	ctx.elementMap[part.id] = name;
+	const lines = model.build(nodes, name, model.params);
+	return lines.join("\n");
 }
 
 function sanitizeAnalysisParam(val, fallback) {
