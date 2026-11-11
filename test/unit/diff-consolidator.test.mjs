@@ -14,26 +14,68 @@ import {
 	processTraceMod,
 } from "../../backend/src/diff-consolidator.js";
 
+function runCopperRegistrationTest({
+	processFn,
+	mod,
+	expectedKey,
+	expectedDiffIdx,
+}) {
+	const map = new Map();
+	processFn(mod, new Map(), map);
+	assert.equal(map.has(expectedKey), true);
+	assert.equal(map.get(expectedKey).diffIdx, expectedDiffIdx);
+}
+
+function runAbsorptionAndDedupTest({
+	processFn,
+	absorbedMod,
+	footprintChanges,
+	firstMod,
+	secondMod,
+	expectedKey,
+	expectedField,
+	expectedVal,
+}) {
+	const map = new Map();
+	processFn(absorbedMod, footprintChanges, map);
+	assert.equal(map.size, 0);
+
+	processFn(firstMod, new Map(), map);
+	processFn(secondMod, new Map(), map);
+
+	assert.equal(map.size, 1);
+	assert.equal(map.get(expectedKey)[expectedField], expectedVal);
+}
+
 describe("diff-consolidator unit tests", () => {
 	describe("isCopperLayerFilename", () => {
 		test("table-driven validation of copper and non-copper layer filenames", () => {
-			const cases = [
-				{ input: "board-F_Cu.svg", expected: true },
-				{ input: "board-B_Cu.svg", expected: true },
-				{ input: "board-In1_Cu.svg", expected: true },
-				{ input: "board-In32_Cu.svg", expected: true },
-				{ input: "", expected: false },
-				{ input: null, expected: false },
-				{ input: undefined, expected: false },
-				{ input: "board-Edge_Cuts.svg", expected: false },
-				{ input: "board-F_Cu_SilkS.svg", expected: false },
+			const copperFilenames = [
+				"board-F_Cu.svg",
+				"board-B_Cu.svg",
+				"board-In1_Cu.svg",
+				"board-In32_Cu.svg",
 			];
-
-			for (const { input, expected } of cases) {
+			for (const name of copperFilenames) {
 				assert.equal(
-					isCopperLayerFilename(input),
-					expected,
-					`Failed for input: ${input}`,
+					isCopperLayerFilename(name),
+					true,
+					`Failed for input: ${name}`,
+				);
+			}
+
+			const nonCopperFilenames = [
+				"",
+				null,
+				undefined,
+				"board-Edge_Cuts.svg",
+				"board-F_Cu_SilkS.svg",
+			];
+			for (const name of nonCopperFilenames) {
+				assert.equal(
+					isCopperLayerFilename(name),
+					false,
+					`Failed for input: ${name}`,
 				);
 			}
 		});
@@ -76,23 +118,16 @@ describe("diff-consolidator unit tests", () => {
 				["R1", { targetAt: { x: 30, y: 30 } }],
 				["R2", { targetAt: null }],
 			]);
+			const falseCases = [
+				{ mod: {}, changes: farChanges },
+				{ mod: { bbox: null }, changes: farChanges },
+				{ mod: { bbox: { x1: 0, y1: 0, x2: 2, y2: 2 } }, changes: farChanges },
+				{ mod: { bbox: { x1: 0, y1: 0, x2: 2, y2: 2 } }, changes: new Map() },
+			];
 
-			assert.equal(isAbsorbedByFootprint({}, farChanges), false);
-			assert.equal(isAbsorbedByFootprint({ bbox: null }, farChanges), false);
-			assert.equal(
-				isAbsorbedByFootprint(
-					{ bbox: { x1: 0, y1: 0, x2: 2, y2: 2 } },
-					farChanges,
-				),
-				false,
-			);
-			assert.equal(
-				isAbsorbedByFootprint(
-					{ bbox: { x1: 0, y1: 0, x2: 2, y2: 2 } },
-					new Map(),
-				),
-				false,
-			);
+			for (const { mod, changes } of falseCases) {
+				assert.equal(isAbsorbedByFootprint(mod, changes), false);
+			}
 		});
 	});
 
@@ -119,14 +154,24 @@ describe("diff-consolidator unit tests", () => {
 
 			assert.equal(componentMap.has("R1"), true);
 			const registered = componentMap.get("R1");
-			assert.equal(registered.action, "MOVED");
-			assert.equal(registered.displacement, 2.5);
-			assert.equal(
-				registered.detail,
-				"Relocated by 2.50 mm on F.Cu • (10.50, 20.50)",
+			const expectedProps = [
+				["action", "MOVED"],
+				["displacement", 2.5],
+				["detail", "Relocated by 2.50 mm on F.Cu • (10.50, 20.50)"],
+			];
+			for (const [prop, val] of expectedProps) {
+				assert.equal(registered[prop], val);
+			}
+			assert.deepEqual(
+				{
+					baseCoords: registered.baseCoords,
+					targetCoords: registered.targetCoords,
+				},
+				{
+					baseCoords: { x: 8, y: 20.5 },
+					targetCoords: { x: 10.5, y: 20.5 },
+				},
 			);
-			assert.deepEqual(registered.baseCoords, { x: 8, y: 20.5 });
-			assert.deepEqual(registered.targetCoords, { x: 10.5, y: 20.5 });
 			assert.equal(traceMap.size, 0);
 		});
 
@@ -145,9 +190,14 @@ describe("diff-consolidator unit tests", () => {
 			assert.equal(componentMap.size, 0);
 			assert.equal(traceMap.size, 1);
 			const traceEntry = traceMap.get("vcc@board-F_Cu.svg");
-			assert.equal(traceEntry.type, "TRACE");
-			assert.equal(traceEntry.name, "/VCC");
-			assert.equal(traceEntry.detail, "Connected to C1 • Layer F.Cu");
+			const expectedFields = [
+				["type", "TRACE"],
+				["name", "/VCC"],
+				["detail", "Connected to C1 • Layer F.Cu"],
+			];
+			for (const [field, expected] of expectedFields) {
+				assert.equal(traceEntry[field], expected);
+			}
 		});
 
 		test("updates existing component when new mod is on F_Cu layer", () => {
@@ -173,81 +223,85 @@ describe("diff-consolidator unit tests", () => {
 
 			processComponentMod(mod, footprintChanges, componentMap, traceMap);
 
-			assert.equal(existing.layer, "board-F_Cu.svg");
-			assert.equal(existing.diffIdx, 2);
-			assert.deepEqual(existing.bbox, { x1: 5, y1: 5, x2: 8, y2: 8 });
-			assert.deepEqual(existing.baseCoords, { x: 1, y: 1 });
-			assert.deepEqual(existing.targetCoords, { x: 2, y: 2 });
+			const expectedProps = [
+				["layer", "board-F_Cu.svg"],
+				["diffIdx", 2],
+			];
+			for (const [prop, val] of expectedProps) {
+				assert.equal(existing[prop], val);
+			}
+			assert.deepEqual(
+				{
+					bbox: existing.bbox,
+					baseCoords: existing.baseCoords,
+					targetCoords: existing.targetCoords,
+				},
+				{
+					bbox: { x1: 5, y1: 5, x2: 8, y2: 8 },
+					baseCoords: { x: 1, y: 1 },
+					targetCoords: { x: 2, y: 2 },
+				},
+			);
 		});
 	});
 
 	describe("processTraceMod", () => {
 		test("adds copper trace to traceMap keyed by normalized net and layer", () => {
-			const mod = { layer: "board-F_Cu.svg", name: "/RESET", diffIdx: 1 };
-			const traceMap = new Map();
-
-			processTraceMod(mod, new Map(), traceMap);
-
-			assert.equal(traceMap.has("reset@board-F_Cu.svg"), true);
-			assert.equal(traceMap.get("reset@board-F_Cu.svg").diffIdx, 1);
+			runCopperRegistrationTest({
+				processFn: processTraceMod,
+				mod: { layer: "board-F_Cu.svg", name: "/RESET", diffIdx: 1 },
+				expectedKey: "reset@board-F_Cu.svg",
+				expectedDiffIdx: 1,
+			});
 		});
 
 		test("absorbs non-copper trace near footprint and deduplicates traces on same net and layer", () => {
-			const absorbedMod = {
-				layer: "board-SilkS.svg",
-				bbox: { x1: 0, y1: 0, x2: 2, y2: 2 },
-				name: "label",
-			};
-			const footprintChanges = new Map([["R1", { targetAt: { x: 1, y: 1 } }]]);
-			const traceMap = new Map();
-
-			processTraceMod(absorbedMod, footprintChanges, traceMap);
-			assert.equal(traceMap.size, 0);
-
-			const first = { layer: "board-F_Cu.svg", net: "GND", diffIdx: 10 };
-			const second = { layer: "board-F_Cu.svg", net: "GND", diffIdx: 20 };
-			processTraceMod(first, new Map(), traceMap);
-			processTraceMod(second, new Map(), traceMap);
-
-			assert.equal(traceMap.size, 1);
-			assert.equal(traceMap.get("gnd@board-F_Cu.svg").diffIdx, 10);
+			runAbsorptionAndDedupTest({
+				processFn: processTraceMod,
+				absorbedMod: {
+					layer: "board-SilkS.svg",
+					bbox: { x1: 0, y1: 0, x2: 2, y2: 2 },
+					name: "label",
+				},
+				footprintChanges: new Map([["R1", { targetAt: { x: 1, y: 1 } }]]),
+				firstMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 10 },
+				secondMod: { layer: "board-F_Cu.svg", net: "GND", diffIdx: 20 },
+				expectedKey: "gnd@board-F_Cu.svg",
+				expectedField: "diffIdx",
+				expectedVal: 10,
+			});
 		});
 	});
 
 	describe("processGraphicMod", () => {
 		test("adds copper graphic to graphicMap keyed by title and layer", () => {
-			const mod = {
-				title: "board_outline",
-				layer: "board-F_Cu.svg",
-				diffIdx: 1,
-			};
-			const graphicMap = new Map();
-
-			processGraphicMod(mod, new Map(), graphicMap);
-
-			assert.equal(graphicMap.has("board_outline@board-F_Cu.svg"), true);
-			assert.equal(graphicMap.get("board_outline@board-F_Cu.svg").diffIdx, 1);
+			runCopperRegistrationTest({
+				processFn: processGraphicMod,
+				mod: {
+					title: "board_outline",
+					layer: "board-F_Cu.svg",
+					diffIdx: 1,
+				},
+				expectedKey: "board_outline@board-F_Cu.svg",
+				expectedDiffIdx: 1,
+			});
 		});
 
 		test("absorbs non-copper graphic near footprint and deduplicates identical graphics", () => {
-			const absorbedMod = {
-				title: "silkscreen_art",
-				layer: "board-SilkS.svg",
-				bbox: { x1: 2, y1: 2, x2: 4, y2: 4 },
-			};
-			const footprintChanges = new Map([["U1", { targetAt: { x: 3, y: 3 } }]]);
-			const graphicMap = new Map();
-
-			processGraphicMod(absorbedMod, footprintChanges, graphicMap);
-			assert.equal(graphicMap.size, 0);
-
-			const first = { title: "logo", layer: "F_Cu", id: "first_logo" };
-			const second = { title: "logo", layer: "F_Cu", id: "second_logo" };
-			processGraphicMod(first, new Map(), graphicMap);
-			processGraphicMod(second, new Map(), graphicMap);
-
-			assert.equal(graphicMap.size, 1);
-			assert.equal(graphicMap.get("logo@F_Cu").id, "first_logo");
+			runAbsorptionAndDedupTest({
+				processFn: processGraphicMod,
+				absorbedMod: {
+					title: "silkscreen_art",
+					layer: "board-SilkS.svg",
+					bbox: { x1: 2, y1: 2, x2: 4, y2: 4 },
+				},
+				footprintChanges: new Map([["U1", { targetAt: { x: 3, y: 3 } }]]),
+				firstMod: { title: "logo", layer: "F_Cu", id: "first_logo" },
+				secondMod: { title: "logo", layer: "F_Cu", id: "second_logo" },
+				expectedKey: "logo@F_Cu",
+				expectedField: "id",
+				expectedVal: "first_logo",
+			});
 		});
 	});
 
@@ -263,12 +317,17 @@ describe("diff-consolidator unit tests", () => {
 
 			const result = consolidateModifications(mods);
 
-			assert.equal(result.length, 5);
-			assert.equal(result[0].type, "add_layer");
-			assert.equal(result[1].type, "delete_layer");
-			assert.equal(result[2].refDes, "R1");
-			assert.equal(result[3].name, "SIG1");
-			assert.equal(result[4].title, "Line1");
+			const expectedOrder = [
+				[0, "type", "add_layer"],
+				[1, "type", "delete_layer"],
+				[2, "refDes", "R1"],
+				[3, "name", "SIG1"],
+				[4, "title", "Line1"],
+			];
+			assert.equal(result.length, expectedOrder.length);
+			for (const [idx, prop, val] of expectedOrder) {
+				assert.equal(result[idx][prop], val);
+			}
 		});
 
 		test("handles empty input and deduplicates items in single batch", () => {
@@ -284,8 +343,13 @@ describe("diff-consolidator unit tests", () => {
 			const result = consolidateModifications(mods);
 
 			assert.equal(result.length, 2);
-			assert.equal(result[0].id, 1);
-			assert.equal(result[1].id, 3);
+			const expectedIds = [
+				[0, 1],
+				[1, 3],
+			];
+			for (const [idx, id] of expectedIds) {
+				assert.equal(result[idx].id, id);
+			}
 		});
 	});
 
@@ -300,8 +364,9 @@ describe("diff-consolidator unit tests", () => {
 				globalDiffIdx: 10,
 			});
 
-			assert.equal(result.sideBySideBase.filename, "board-F_Cu.svg");
-			assert.equal(result.sideBySideTarget.filename, "board-F_Cu.svg");
+			for (const side of ["sideBySideBase", "sideBySideTarget"]) {
+				assert.equal(result[side].filename, "board-F_Cu.svg");
+			}
 			assert.equal(Array.isArray(result.modifications), true);
 			assert.equal(result.nextDiffIdx >= 10, true);
 			assert.ok(result.telemetry);
@@ -318,8 +383,9 @@ describe("diff-consolidator unit tests", () => {
 
 			assert.equal(result.nextDiffIdx, 42);
 			assert.deepEqual(result.modifications, []);
-			assert.equal(result.telemetry, null);
-			assert.equal(result.sideBySideBase.content, null);
+			for (const val of [result.telemetry, result.sideBySideBase.content]) {
+				assert.equal(val, null);
+			}
 		});
 	});
 
@@ -334,9 +400,14 @@ describe("diff-consolidator unit tests", () => {
 			const added = findAddedLayers(targetSvgs, baseSvgs);
 
 			assert.equal(added.length, 1);
-			assert.equal(added[0].mod.type, "add_layer");
-			assert.equal(added[0].mod.layer, "board-In1_Cu.svg");
-			assert.equal(added[0].mod.text, "Entire layer board-In1_Cu.svg added");
+			const expectedProps = [
+				["type", "add_layer"],
+				["layer", "board-In1_Cu.svg"],
+				["text", "Entire layer board-In1_Cu.svg added"],
+			];
+			for (const [prop, val] of expectedProps) {
+				assert.equal(added[0].mod[prop], val);
+			}
 		});
 
 		test("returns empty when targets empty or when suffixes match across differing paths", () => {
