@@ -80,42 +80,48 @@ export const SIM_RUN_SCHEMA = {
 	},
 };
 
-function joinPath(base, key) {
+const ENV_RANGE_CHECKS = [
+	{ prop: "ambientC", low: "min", high: "max" },
+	{ prop: "humidityPct", low: "min", high: "max" },
+	{ prop: "vibration", low: "fromHz", high: "toHz" },
+];
+
+function formatPath(base, segment) {
 	if (!base || base === "$") {
-		return base ? `$.${key}` : key;
+		return base ? `$.${segment}` : segment;
 	}
-	return `${base}.${key}`;
+	return `${base}.${segment}`;
 }
 
-function hasMinMax(obj) {
-	if (!obj || typeof obj !== "object") {
-		return false;
+function checkFieldId(value, fieldPath, kind, errors) {
+	if (typeof value === "string" && !isId(value, kind)) {
+		const article = kind === "env" ? "an" : "a";
+		errors.push(`${fieldPath}: must be ${article} ${kind} id`);
 	}
-	return typeof obj.min === "number" && typeof obj.max === "number";
 }
 
-function hasFromTo(obj) {
-	if (!obj || typeof obj !== "object") {
-		return false;
+function validateRangeOrder(target, spec, targetPath, errors) {
+	if (!target || typeof target !== "object") {
+		return;
 	}
-	return typeof obj.fromHz === "number" && typeof obj.toHz === "number";
+	const lowVal = target[spec.low];
+	const highVal = target[spec.high];
+	if (typeof lowVal !== "number" || typeof highVal !== "number") {
+		return;
+	}
+	if (lowVal > highVal) {
+		errors.push(`${targetPath}: ${spec.low} must be <= ${spec.high}`);
+	}
 }
 
 function checkEnvSemantics(env, path, errors) {
 	if (!env || typeof env !== "object") {
 		return;
 	}
-	if (typeof env.id === "string" && !isId(env.id, "env")) {
-		errors.push(`${joinPath(path, "id")}: must be an env id`);
-	}
-	if (hasMinMax(env.ambientC) && env.ambientC.min > env.ambientC.max) {
-		errors.push(`${joinPath(path, "ambientC")}: min must be <= max`);
-	}
-	if (hasMinMax(env.humidityPct) && env.humidityPct.min > env.humidityPct.max) {
-		errors.push(`${joinPath(path, "humidityPct")}: min must be <= max`);
-	}
-	if (hasFromTo(env.vibration) && env.vibration.fromHz > env.vibration.toHz) {
-		errors.push(`${joinPath(path, "vibration")}: fromHz must be <= toHz`);
+	checkFieldId(env.id, formatPath(path, "id"), "env", errors);
+	for (const check of ENV_RANGE_CHECKS) {
+		const target = env[check.prop];
+		validateRangeOrder(target, check, formatPath(path, check.prop), errors);
 	}
 }
 
@@ -123,40 +129,30 @@ function checkSimSemantics(run, path, errors) {
 	if (!run || typeof run !== "object") {
 		return;
 	}
-	if (typeof run.id === "string" && !isId(run.id, "sim")) {
-		errors.push(`${joinPath(path, "id")}: must be a sim id`);
-	}
-	if (typeof run.envId === "string" && !isId(run.envId, "env")) {
-		errors.push(`${joinPath(path, "envId")}: must be an env id`);
+	checkFieldId(run.id, formatPath(path, "id"), "sim", errors);
+	checkFieldId(run.envId, formatPath(path, "envId"), "env", errors);
+}
+
+function runValidation(schema, data, path, semanticCheck) {
+	try {
+		const parsed = validate(schema, data, path);
+		const errors = [...parsed.errors];
+		semanticCheck(data, path, errors);
+		return { ok: errors.length === 0, errors };
+	} catch (err) {
+		// Broad catch to guarantee validator never throws on malformed input
+		const detail = err?.message || String(err);
+		return {
+			ok: false,
+			errors: [`${path}: unexpected error: ${detail}`],
+		};
 	}
 }
 
 export function validateEnvironment(env, path = "$") {
-	try {
-		const result = validate(ENVIRONMENT_SCHEMA, env, path);
-		const errors = [...result.errors];
-		checkEnvSemantics(env, path, errors);
-		return { ok: errors.length === 0, errors };
-	} catch (err) {
-		// Broad catch to guarantee validator never throws on malformed input
-		return {
-			ok: false,
-			errors: [`${path}: unexpected error: ${err?.message || String(err)}`],
-		};
-	}
+	return runValidation(ENVIRONMENT_SCHEMA, env, path, checkEnvSemantics);
 }
 
 export function validateSimRun(run, path = "$") {
-	try {
-		const result = validate(SIM_RUN_SCHEMA, run, path);
-		const errors = [...result.errors];
-		checkSimSemantics(run, path, errors);
-		return { ok: errors.length === 0, errors };
-	} catch (err) {
-		// Broad catch to guarantee validator never throws on malformed input
-		return {
-			ok: false,
-			errors: [`${path}: unexpected error: ${err?.message || String(err)}`],
-		};
-	}
+	return runValidation(SIM_RUN_SCHEMA, run, path, checkSimSemantics);
 }
