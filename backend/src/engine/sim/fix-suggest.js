@@ -28,12 +28,16 @@ export function nextE12(value) {
 	return Number(Number(mult * scale).toPrecision(10));
 }
 
+function findPartById(parts, id) {
+	return parts?.find((p) => p.id === id) ?? null;
+}
+
 function findResistorInNet(ir, net) {
 	const resPin = net.pins?.find((pin) => {
-		const part = ir.parts?.find((p) => p.id === pin.partId);
-		return part && isResistorPart(part);
+		const part = findPartById(ir.parts, pin.partId);
+		return part ? isResistorPart(part) : false;
 	});
-	return resPin ? ir.parts?.find((p) => p.id === resPin.partId) : null;
+	return resPin ? findPartById(ir.parts, resPin.partId) : null;
 }
 
 function findSeriesResistor(ir, part) {
@@ -48,18 +52,22 @@ function findSeriesResistor(ir, part) {
 	return ir.parts?.find(isResistorPart) ?? null;
 }
 
+function getSourceVoltage(source) {
+	if (!source) return null;
+	const val = parseSiValue(source.props?.voltage ?? source.value);
+	return Number.isFinite(val) && val > 0 ? val : null;
+}
+
+function getMaxNodeVoltage(nodeVoltages) {
+	const voltages = Object.values(nodeVoltages || {}).filter(Number.isFinite);
+	if (voltages.length === 0) return null;
+	const maxV = Math.max(...voltages);
+	return maxV > 0 ? maxV : null;
+}
+
 function getSupplyVoltage(ir, nodeVoltages) {
 	const source = ir?.parts?.find(isSourcePart);
-	if (source) {
-		const val = parseSiValue(source.props?.voltage ?? source.value);
-		if (Number.isFinite(val) && val > 0) return val;
-	}
-	const voltages = Object.values(nodeVoltages || {}).filter(Number.isFinite);
-	if (voltages.length > 0) {
-		const maxV = Math.max(...voltages);
-		if (maxV > 0) return maxV;
-	}
-	return 5.0;
+	return getSourceVoltage(source) ?? getMaxNodeVoltage(nodeVoltages) ?? 5.0;
 }
 
 function getLedForwardVoltage(ledPart) {
@@ -72,77 +80,99 @@ function getLedForwardVoltage(ledPart) {
 	return 2.0;
 }
 
-function buildLedOvercurrentFix(led, resistor, card, newR) {
+function buildResistorChangeFix(params) {
+	const { id, forCardId, title, why, resistorId, newR } = params;
 	return {
-		id: `fix-led-overcurrent-${led.id}`,
-		forCardId: card?.id ?? `card-${led.id}`,
-		title: `Increase ${resistor.ref} to ${newR}Ω`,
-		why: "A bigger resistor lets less electricity through, so the LED won't burn out.",
+		id,
+		forCardId,
+		title,
+		why,
 		commands: [
 			{
 				type: "setPartField",
-				partId: resistor.id,
+				partId: resistorId,
 				field: "value",
 				value: String(newR),
 			},
 		],
 		risk: "low",
 	};
+}
+
+function isDimCard(card) {
+	return card?.level === "warning" && /dim|off/i.test(card.title);
+}
+
+function isDimCurrent(current) {
+	return current > 0 && current < 0.001;
+}
+
+function isLedDim(card, current) {
+	return isDimCard(card) || isDimCurrent(current);
+}
+
+function isLedOvercurrent(card, current) {
+	return card?.level === "danger" || current > 0.03;
+}
+
+const LED_FIX_CONFIG = {
+	overcurrent: {
+		predicate: isLedOvercurrent,
+		targetCurrent: 0.015,
+		verb: "Increase",
+		why: "A bigger resistor lets less electricity through, so the LED won't burn out.",
+	},
+	dim: {
+		predicate: isLedDim,
+		targetCurrent: 0.02,
+		verb: "Decrease",
+		why: "A smaller resistor allows more electricity through so the LED can shine brightly.",
+	},
+};
+
+function computeLedTargetR(ir, led, nodeVoltages, targetCurrent) {
+	const vSupply = getSupplyVoltage(ir, nodeVoltages);
+	const vf = getLedForwardVoltage(led);
+	return nextE12(Math.max(1, (vSupply - vf) / targetCurrent));
+}
+
+function findLedPart(ir) {
+	return ir.parts?.find(isLedPart) ?? null;
+}
+
+function checkLedState(ctx, type) {
+	const led = findLedPart(ctx.ir);
+	if (!led) return null;
+	const current = Math.abs(ctx.partCurrents?.[led.id] ?? 0);
+	const card = ctx.cards?.find((c) => c.partIds?.includes(led.id));
+	const config = LED_FIX_CONFIG[type];
+	if (!config.predicate(card, current)) return null;
+
+	const resistor = findSeriesResistor(ctx.ir, led);
+	if (!resistor) return null;
+
+	const newR = computeLedTargetR(
+		ctx.ir,
+		led,
+		ctx.nodeVoltages,
+		config.targetCurrent,
+	);
+	return buildResistorChangeFix({
+		id: `fix-led-${type}-${led.id}`,
+		forCardId: card?.id ?? `card-${led.id}`,
+		title: `${config.verb} ${resistor.ref} to ${newR}Ω`,
+		why: config.why,
+		resistorId: resistor.id,
+		newR,
+	});
 }
 
 function checkLedOvercurrent(ctx) {
-	const { ir, partCurrents, cards } = ctx;
-	const led = ir.parts?.find(isLedPart);
-	if (!led) return null;
-	const current = Math.abs(partCurrents?.[led.id] ?? 0);
-	const ledCard = cards.find((c) => c.partIds?.includes(led.id));
-	if (ledCard?.level !== "danger" && current <= 0.03) return null;
-
-	const resistor = findSeriesResistor(ir, led);
-	if (!resistor) return null;
-
-	const vSupply = getSupplyVoltage(ir, ctx.nodeVoltages);
-	const vf = getLedForwardVoltage(led);
-	const newR = nextE12(Math.max(1, (vSupply - vf) / 0.015));
-	return buildLedOvercurrentFix(led, resistor, ledCard, newR);
-}
-
-function buildLedDimFix(led, resistor, card, newR) {
-	return {
-		id: `fix-led-dim-${led.id}`,
-		forCardId: card?.id ?? `card-${led.id}`,
-		title: `Decrease ${resistor.ref} to ${newR}Ω`,
-		why: "A smaller resistor allows more electricity through so the LED can shine brightly.",
-		commands: [
-			{
-				type: "setPartField",
-				partId: resistor.id,
-				field: "value",
-				value: String(newR),
-			},
-		],
-		risk: "low",
-	};
+	return checkLedState(ctx, "overcurrent");
 }
 
 function checkLedTooDim(ctx) {
-	const { ir, partCurrents, cards } = ctx;
-	const led = ir.parts?.find(isLedPart);
-	if (!led) return null;
-	const current = Math.abs(partCurrents?.[led.id] ?? 0);
-	const ledCard = cards.find((c) => c.partIds?.includes(led.id));
-	const isDim =
-		(ledCard?.level === "warning" && /dim|off/i.test(ledCard.title)) ||
-		(current > 0 && current < 0.001);
-	if (!isDim) return null;
-
-	const resistor = findSeriesResistor(ir, led);
-	if (!resistor) return null;
-
-	const vSupply = getSupplyVoltage(ir, ctx.nodeVoltages);
-	const vf = getLedForwardVoltage(led);
-	const newR = nextE12(Math.max(1, (vSupply - vf) / 0.02));
-	return buildLedDimFix(led, resistor, ledCard, newR);
+	return checkLedState(ctx, "dim");
 }
 
 function getResistorPower(resistor, partCurrents, partPowers) {
@@ -157,21 +187,14 @@ function getResistorPower(resistor, partCurrents, partPowers) {
 }
 
 function buildResistorValueFix(resistor, resCard, newR) {
-	return {
+	return buildResistorChangeFix({
 		id: `fix-resistor-value-${resistor.id}`,
 		forCardId: resCard?.id ?? `card-${resistor.id}`,
 		title: `Increase ${resistor.ref} to ${newR}Ω`,
 		why: "A larger resistor reduces current and keeps heat below 50% of the rating.",
-		commands: [
-			{
-				type: "setPartField",
-				partId: resistor.id,
-				field: "value",
-				value: String(newR),
-			},
-		],
-		risk: "low",
-	};
+		resistorId: resistor.id,
+		newR,
+	});
 }
 
 function buildResistorPowerFix(resistor, resCard) {
@@ -195,7 +218,7 @@ function buildResistorPowerFix(resistor, resCard) {
 function checkResistorOverPower(ctx, resistor) {
 	const { partCurrents, partPowers, cards } = ctx;
 	const power = getResistorPower(resistor, partCurrents, partPowers);
-	const resCard = cards.find((c) => c.partIds?.includes(resistor.id));
+	const resCard = cards?.find((c) => c.partIds?.includes(resistor.id));
 	if (power <= 0.25 && resCard?.level !== "danger") return [];
 
 	const rawR = parseSiValue(resistor.props?.resistance ?? resistor.value);
@@ -222,17 +245,17 @@ function nextPartRef(parts, prefix) {
 	return `${prefix}${max + 1}`;
 }
 
+function getPartCurrent(part, partCurrents) {
+	if (!part) return 0;
+	const cur = Math.abs(partCurrents?.[part.id] ?? 0);
+	return cur > 0 && cur < 1.0 ? cur : 0;
+}
+
 function getNormalCurrent(ir, partCurrents) {
-	const source = ir.parts?.find(isSourcePart);
-	const cur = source ? Math.abs(partCurrents?.[source.id] ?? 0) : 0;
-	if (cur > 0 && cur < 1.0) {
-		return cur;
-	}
-	const led = ir.parts?.find(isLedPart);
-	if (led) {
-		const ledCur = Math.abs(partCurrents?.[led.id] ?? 0);
-		if (ledCur > 0 && ledCur < 1.0) return ledCur;
-	}
+	const sourceCur = getPartCurrent(ir.parts?.find(isSourcePart), partCurrents);
+	if (sourceCur > 0) return sourceCur;
+	const ledCur = getPartCurrent(ir.parts?.find(isLedPart), partCurrents);
+	if (ledCur > 0) return ledCur;
 	return 0.015;
 }
 
@@ -244,18 +267,21 @@ function formatFuseRating(currentA) {
 	return `${Number(val.toFixed(2))}A`;
 }
 
+function isPositiveSupplyPin(pin, sourceId) {
+	if (pin.partId !== sourceId) return false;
+	return pin.pin === "1" || pin.pin === "+";
+}
+
 function findSupplyConnection(ir) {
 	const source = ir.parts?.find(isSourcePart);
 	if (!source) return null;
 	const net = ir.nets?.find((n) =>
-		n.pins?.some(
-			(p) => p.partId === source.id && (p.pin === "1" || p.pin === "+"),
-		),
+		n.pins?.some((p) => isPositiveSupplyPin(p, source.id)),
 	);
 	if (!net) return null;
-	const otherPin = net.pins.find((p) => p.partId !== source.id);
+	const otherPin = net.pins?.find((p) => p.partId !== source.id);
 	if (!otherPin) return null;
-	const sourcePin = net.pins.find((p) => p.partId === source.id)?.pin ?? "1";
+	const sourcePin = net.pins?.find((p) => p.partId === source.id)?.pin ?? "1";
 	return { source, sourcePin, otherPin, net };
 }
 
@@ -285,84 +311,87 @@ function createSeriesBatch(params) {
 	};
 }
 
-function buildFuseFix(part, conn, card) {
+function hasFaultCondition(fault, cards, kind) {
+	const cardId = `card-fault-${kind}`;
+	return fault?.kind === kind || Boolean(cards?.some((c) => c.id === cardId));
+}
+
+function hasPartWithPrefix(parts, prefix) {
+	return Boolean(
+		parts?.some((p) =>
+			String(p.ref || "")
+				.toUpperCase()
+				.startsWith(prefix),
+		),
+	);
+}
+
+function createSeriesProtectionFix(ctx, config) {
+	const { ir, cards, idFn } = ctx;
+	const conn = findSupplyConnection(ir);
+	if (!conn) return null;
+
+	const value =
+		typeof config.value === "function" ? config.value(ctx) : config.value;
+	const part = {
+		id: idFn("part"),
+		ref: nextPartRef(ir.parts, config.prefix),
+		value,
+		symbol: config.symbol,
+	};
+	const card = cards?.find((c) => c.id === config.cardId);
 	return {
-		id: `fix-add-fuse-${part.id}`,
-		forCardId: card?.id ?? "card-fault-short_nets",
-		title: `Add fuse ${part.ref} (${part.value}) in series with ${conn.source.ref}`,
-		why: "A fuse cuts power when wires short-circuit, preventing fire and component damage.",
+		id: config.fixId(part),
+		forCardId: card?.id ?? config.cardId,
+		title: config.title(part, conn),
+		why: config.why,
 		commands: [createSeriesBatch({ part, conn })],
 		risk: "medium",
 	};
 }
 
 function checkShortNetsFault(ctx) {
-	const { ir, fault, partCurrents, cards, idFn } = ctx;
-	const isShort =
-		fault?.kind === "short_nets" ||
-		cards.some((c) => c.id === "card-fault-short_nets");
-	const hasFuse = ir.parts?.some((p) =>
-		String(p.ref || "")
-			.toUpperCase()
-			.startsWith("F"),
-	);
-	if (!isShort || hasFuse) return null;
+	if (!hasFaultCondition(ctx.fault, ctx.cards, "short_nets")) return null;
+	if (hasPartWithPrefix(ctx.ir.parts, "F")) return null;
 
-	const conn = findSupplyConnection(ir);
-	if (!conn) return null;
-
-	const fuseVal = formatFuseRating(getNormalCurrent(ir, partCurrents));
-	const part = {
-		id: idFn("part"),
-		ref: nextPartRef(ir.parts, "F"),
-		value: fuseVal,
+	return createSeriesProtectionFix(ctx, {
+		cardId: "card-fault-short_nets",
+		prefix: "F",
 		symbol: "Device:Fuse",
-	};
-	const card = cards.find((c) => c.id === "card-fault-short_nets");
-	return buildFuseFix(part, conn, card);
-}
-
-function buildDiodeFix(part, conn, card) {
-	return {
-		id: `fix-reverse-polarity-${part.id}`,
-		forCardId: card?.id ?? "card-fault-reverse_polarity",
-		title: `Add protection diode ${part.ref} (1N5819) in series`,
-		why: "A protection diode blocks reverse current, protecting components if power is connected backwards.",
-		commands: [createSeriesBatch({ part, conn })],
-		risk: "medium",
-	};
+		value: (c) => formatFuseRating(getNormalCurrent(c.ir, c.partCurrents)),
+		fixId: (p) => `fix-add-fuse-${p.id}`,
+		title: (p, conn) =>
+			`Add fuse ${p.ref} (${p.value}) in series with ${conn.source.ref}`,
+		why: "A fuse cuts power when wires short-circuit, preventing fire and component damage.",
+	});
 }
 
 function checkReversePolarityFault(ctx) {
-	const { ir, fault, cards, idFn } = ctx;
-	const isRev =
-		fault?.kind === "reverse_polarity" ||
-		cards.some((c) => c.id === "card-fault-reverse_polarity");
-	if (!isRev) return null;
+	if (!hasFaultCondition(ctx.fault, ctx.cards, "reverse_polarity")) return null;
 
-	const conn = findSupplyConnection(ir);
-	if (!conn) return null;
-
-	const part = {
-		id: idFn("part"),
-		ref: nextPartRef(ir.parts, "D"),
-		value: "1N5819",
+	return createSeriesProtectionFix(ctx, {
+		cardId: "card-fault-reverse_polarity",
+		prefix: "D",
 		symbol: "Device:D_Schottky",
-	};
-	const card = cards.find((c) => c.id === "card-fault-reverse_polarity");
-	return buildDiodeFix(part, conn, card);
+		value: "1N5819",
+		fixId: (p) => `fix-reverse-polarity-${p.id}`,
+		title: (p) => `Add protection diode ${p.ref} (1N5819) in series`,
+		why: "A protection diode blocks reverse current, protecting components if power is connected backwards.",
+	});
 }
 
-function findGroundPins(ir, fault) {
-	const gndNet = ir.nets?.find(
-		(n) =>
-			(fault?.netId && (n.id === fault.netId || n.name === fault.netId)) ||
-			n.name?.includes("DISCONNECTED") ||
-			isGroundNet(n),
-	);
-	if (gndNet && gndNet.pins?.length >= 2) {
-		return { pinA: gndNet.pins[0], pinB: gndNet.pins[1] };
-	}
+function isFaultTargetNet(net, faultNetId) {
+	if (!faultNetId) return false;
+	return net.id === faultNetId || net.name === faultNetId;
+}
+
+function isGroundCandidateNet(net, faultNetId) {
+	if (isFaultTargetNet(net, faultNetId)) return true;
+	if (net.name?.includes("DISCONNECTED")) return true;
+	return isGroundNet(net);
+}
+
+function findFallbackGroundPins(ir) {
 	const source = ir.parts?.find(isSourcePart);
 	const led = ir.parts?.find(isLedPart);
 	if (source && led) {
@@ -372,6 +401,14 @@ function findGroundPins(ir, fault) {
 		};
 	}
 	return null;
+}
+
+function findGroundPins(ir, fault) {
+	const gndNet = ir.nets?.find((n) => isGroundCandidateNet(n, fault?.netId));
+	if (gndNet?.pins?.length >= 2) {
+		return { pinA: gndNet.pins[0], pinB: gndNet.pins[1] };
+	}
+	return findFallbackGroundPins(ir);
 }
 
 function buildGroundFix(pins, card) {
@@ -394,43 +431,45 @@ function buildGroundFix(pins, card) {
 }
 
 function checkMissingGroundFault(ctx) {
-	const { ir, fault, cards } = ctx;
-	const isMissing =
-		fault?.kind === "missing_ground" ||
-		cards.some((c) => c.id === "card-fault-missing_ground");
-	if (!isMissing) return null;
+	if (!hasFaultCondition(ctx.fault, ctx.cards, "missing_ground")) return null;
 
-	const pins = findGroundPins(ir, fault);
+	const pins = findGroundPins(ctx.ir, ctx.fault);
 	if (!pins) return null;
 
-	const card = cards.find((c) => c.id === "card-fault-missing_ground");
+	const card = ctx.cards?.find((c) => c.id === "card-fault-missing_ground");
 	return buildGroundFix(pins, card);
 }
 
+const CONTEXT_CHECKERS = [checkLedOvercurrent, checkLedTooDim];
+
+const FAULT_CHECKERS = [
+	checkShortNetsFault,
+	checkReversePolarityFault,
+	checkMissingGroundFault,
+];
+
+function runCheckers(checkers, ctx) {
+	return checkers.map((fn) => fn(ctx)).filter(Boolean);
+}
+
+function collectResistorFixes(ctx) {
+	const resistors = (ctx.ir.parts || []).filter(isResistorPart);
+	return resistors.flatMap((p) => checkResistorOverPower(ctx, p));
+}
+
 function collectFixes(ctx) {
-	const fixes = [];
-	const ledOver = checkLedOvercurrent(ctx);
-	if (ledOver) fixes.push(ledOver);
+	return [
+		...runCheckers(CONTEXT_CHECKERS, ctx),
+		...collectResistorFixes(ctx),
+		...runCheckers(FAULT_CHECKERS, ctx),
+	];
+}
 
-	const ledDim = checkLedTooDim(ctx);
-	if (ledDim) fixes.push(ledDim);
-
-	for (const p of ctx.ir.parts || []) {
-		if (isResistorPart(p)) {
-			fixes.push(...checkResistorOverPower(ctx, p));
-		}
+function resolveCards(options, simParams) {
+	if (Array.isArray(options.cards)) {
+		return options.cards;
 	}
-
-	const shortFix = checkShortNetsFault(ctx);
-	if (shortFix) fixes.push(shortFix);
-
-	const revFix = checkReversePolarityFault(ctx);
-	if (revFix) fixes.push(revFix);
-
-	const gndFix = checkMissingGroundFault(ctx);
-	if (gndFix) fixes.push(gndFix);
-
-	return fixes;
+	return explainCircuitResult(simParams).cards;
 }
 
 export function suggestFixes(options = {}) {
@@ -440,14 +479,12 @@ export function suggestFixes(options = {}) {
 		if (!ir || typeof ir !== "object" || !Array.isArray(ir.parts)) {
 			return [];
 		}
-		const cards = Array.isArray(options.cards)
-			? options.cards
-			: explainCircuitResult({
-					ir,
-					partCurrents,
-					nodeVoltages,
-					fault,
-				}).cards;
+		const cards = resolveCards(options, {
+			ir,
+			partCurrents,
+			nodeVoltages,
+			fault,
+		});
 		const idFn = options.idFn ?? defaultIdFn;
 		const ctx = { ir, partCurrents, nodeVoltages, cards, fault, idFn };
 		return collectFixes(ctx);
