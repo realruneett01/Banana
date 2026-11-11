@@ -7,7 +7,6 @@ import {
 } from "./footprintRender.js";
 import {
 	addTrack,
-	constrain45,
 	deleteTrack,
 	footprintRect,
 	hitTest,
@@ -15,6 +14,12 @@ import {
 	ratsnest,
 	snapToGrid,
 } from "./pcbGeometry.js";
+import {
+	addVia,
+	constrainAngle,
+	proposeRoute,
+	WIDTH_PRESETS,
+} from "./routingModel.js";
 
 const CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -49,6 +54,18 @@ const TOOL_BUTTON_STYLE = Object.freeze({
 	borderRadius: "4px",
 	cursor: "pointer",
 	fontSize: "12px",
+});
+
+const STATUS_BAR_STYLE = Object.freeze({
+	display: "flex",
+	justifyContent: "space-between",
+	alignItems: "center",
+	padding: "4px 12px",
+	background: "#161b2b",
+	borderTop: "1px solid #23283e",
+	fontSize: "12px",
+	color: "#94a3b8",
+	userSelect: "none",
 });
 
 const SVG_STYLE = Object.freeze({
@@ -179,7 +196,7 @@ function findSnapEndpoint(board, ir, pt, padPositions, tol = 1.0) {
 	return pt;
 }
 
-function handleToolKeys(e, key, ctx) {
+function handlePartKeys(e, key, ctx) {
 	if (key === "r" && ctx.selectedPartId) {
 		e.preventDefault();
 		ctx.editor.dispatch({
@@ -187,16 +204,48 @@ function handleToolKeys(e, key, ctx) {
 			partId: ctx.selectedPartId,
 			deltaDeg: 90,
 		});
-	} else if (key === "f" && ctx.selectedPartId) {
+		return true;
+	}
+	if (key === "f" && ctx.selectedPartId) {
 		e.preventDefault();
 		ctx.editor.dispatch({ type: "flipPart", partId: ctx.selectedPartId });
-	} else if (key === "v") {
+		return true;
+	}
+	return false;
+}
+
+function handleRoutingKeys(e, key, ctx) {
+	if (key === "v") {
 		e.preventDefault();
-		ctx.toggleLayer();
-	} else if (key === "x") {
+		if (ctx.isRouting) {
+			ctx.placeVia();
+		} else {
+			ctx.toggleLayer();
+		}
+		return true;
+	}
+	if (key === "w") {
+		e.preventDefault();
+		ctx.cycleWidthPreset();
+		return true;
+	}
+	if (key === "/") {
+		e.preventDefault();
+		ctx.toggleRouteMode();
+		return true;
+	}
+	if (key === "x") {
 		e.preventDefault();
 		ctx.toggleRoute();
-	} else if (key === "delete" || key === "backspace") {
+		return true;
+	}
+	return false;
+}
+
+function handleToolKeys(e, key, ctx) {
+	if (handlePartKeys(e, key, ctx)) return;
+	if (handleRoutingKeys(e, key, ctx)) return;
+	if (key === "delete" || key === "backspace") {
 		e.preventDefault();
 		ctx.deleteSelected();
 	}
@@ -663,35 +712,100 @@ function RatsnestLayer({ lines }) {
 	);
 }
 
-function RoutingPreviewLayer({ points, activeLayer }) {
-	if (!Array.isArray(points) || points.length < 1) return null;
+function RoutingCollisionTip({ collision }) {
+	const [x, y] = collision.at ?? [0, 0];
+	const text = collision.message;
+	const w = Math.max(22, text.length * 0.72 + 2);
+	return (
+		<g
+			className="pcb-collision-tooltip"
+			transform={`translate(${x + 1}, ${y - 3})`}
+		>
+			<rect
+				x={0}
+				y={0}
+				width={w}
+				height={4}
+				fill="#1e1e2e"
+				stroke="#ef4444"
+				strokeWidth={0.2}
+				rx={0.6}
+			/>
+			<text x={1} y={2.6} fill="#f87171" fontSize={1.2} fontWeight={600}>
+				{text}
+			</text>
+		</g>
+	);
+}
+
+function RoutingProposedSegment({ p1, p2, isColliding, color, widthMm }) {
+	const stroke = isColliding ? "#ef4444" : color;
+	return (
+		<line
+			x1={p1[0]}
+			y1={p1[1]}
+			x2={p2[0]}
+			y2={p2[1]}
+			stroke={stroke}
+			strokeWidth={widthMm}
+			strokeDasharray={isColliding ? "1,0.5" : undefined}
+			strokeLinecap="round"
+		/>
+	);
+}
+
+function RoutingPreviewLayer({
+	points,
+	proposed,
+	activeLayer,
+	widthMm = 0.25,
+}) {
+	const hasPoints = Array.isArray(points) && points.length > 0;
+	const hasProposed =
+		Array.isArray(proposed?.points) && proposed.points.length > 1;
+	if (!hasPoints && !hasProposed) return null;
+
 	const color = LAYER_COLORS[activeLayer] ?? "#c83434";
+	const collisions = proposed?.collisions ?? [];
+
 	return (
 		<g className="pcb-routing-preview" style={{ pointerEvents: "none" }}>
-			{points.map((pt, i) => {
-				if (i === 0) return null;
-				const prev = points[i - 1];
-				return (
-					<line
-						key={`route_${prev[0]}_${prev[1]}_${pt[0]}_${pt[1]}`}
-						x1={prev[0]}
-						y1={prev[1]}
-						x2={pt[0]}
-						y2={pt[1]}
-						stroke={color}
-						strokeWidth={0.3}
-						strokeDasharray="1,0.5"
-						strokeLinecap="round"
-					/>
-				);
-			})}
-			{points.map((pt) => (
-				<circle
-					key={`pt_${pt[0]}_${pt[1]}`}
-					cx={pt[0]}
-					cy={pt[1]}
-					r={0.35}
-					fill={color}
+			{hasPoints &&
+				points.map((pt, i) => {
+					if (i === 0) return null;
+					const prev = points[i - 1];
+					return (
+						<line
+							key={`route_${prev[0]}_${prev[1]}_${pt[0]}_${pt[1]}`}
+							x1={prev[0]}
+							y1={prev[1]}
+							x2={pt[0]}
+							y2={pt[1]}
+							stroke={color}
+							strokeWidth={widthMm}
+							strokeLinecap="round"
+						/>
+					);
+				})}
+			{hasProposed &&
+				proposed.points.slice(1).map((pt, i) => {
+					const prev = proposed.points[i];
+					const isColliding = collisions.some((c) => c.segmentIndex === i);
+					return (
+						<RoutingProposedSegment
+							key={`prop_${prev[0]}_${prev[1]}_${pt[0]}_${pt[1]}`}
+							p1={prev}
+							p2={pt}
+							isColliding={isColliding}
+							color={color}
+							widthMm={widthMm}
+						/>
+					);
+				})}
+			{collisions.map((c) => (
+				<RoutingCollisionTip
+					key={`col_${c.segmentIndex}_${c.at[0]}_${c.at[1]}`}
+					collision={c}
 				/>
 			))}
 		</g>
@@ -746,6 +860,10 @@ function PcbToolbar({
 	onToggleRoute,
 	visibleLayers,
 	onToggleLayerVis,
+	widthPreset,
+	onCycleWidth,
+	routeMode,
+	onToggleRouteMode,
 }) {
 	return (
 		<div style={TOOLBAR_STYLE}>
@@ -773,11 +891,45 @@ function PcbToolbar({
 				>
 					{isRouting ? "Routing... [Double-click to End]" : "Route Track (X)"}
 				</button>
+				<button
+					type="button"
+					aria-label="Cycle width preset (W)"
+					onClick={onCycleWidth}
+					style={TOOL_BUTTON_STYLE}
+				>
+					Width: <strong>{widthPreset?.label ?? "0.25 mm"}</strong> (W)
+				</button>
+				<button
+					type="button"
+					aria-label="Toggle routing angle mode (/)"
+					onClick={onToggleRouteMode}
+					style={TOOL_BUTTON_STYLE}
+				>
+					Angle: <strong>{routeMode ?? "45"}°</strong> (/)
+				</button>
 			</div>
 			<LayerCheckboxes
 				visibleLayers={visibleLayers}
 				onToggleLayer={onToggleLayerVis}
 			/>
+		</div>
+	);
+}
+
+function PcbStatusBar({ isRouting, widthPreset, routeMode }) {
+	return (
+		<div style={STATUS_BAR_STYLE}>
+			<span>
+				Width:{" "}
+				<strong style={{ color: "#f1f5f9" }}>{widthPreset?.label}</strong> (
+				{widthPreset?.hint}) [W] | Mode:{" "}
+				<strong style={{ color: "#f1f5f9" }}>{routeMode}°</strong> [/]
+			</span>
+			<span>
+				{isRouting
+					? "Routing: Click to route (Shift to bypass DRC), V for via, Double-click to end"
+					: "Ready: Press X to route, V to toggle layer"}
+			</span>
 		</div>
 	);
 }
@@ -838,9 +990,46 @@ function usePartDrag(editor, svgRef) {
 	return { onStartDrag, onDropDrag, onPointerMove };
 }
 
-function nextRoutePoints(prev, target) {
-	if (prev.length === 0) return [target];
-	return [...prev, ...constrain45(prev[prev.length - 1], target)];
+function findPinNet(nets, partId, pinNum) {
+	for (const net of nets ?? []) {
+		for (const pin of net.pins ?? []) {
+			if (pin.partId === partId && String(pin.pin) === String(pinNum)) {
+				return net.id ?? net.name ?? "";
+			}
+		}
+	}
+	return "";
+}
+
+function findPadNet(ir, padPositions, pt, tol = 1.0) {
+	for (const p of ir?.parts ?? []) {
+		const pads = padPositions?.[p.id];
+		if (!pads) continue;
+		for (const [pinNum, pos] of Object.entries(pads)) {
+			if (Math.hypot(pt[0] - pos[0], pt[1] - pos[1]) <= tol) {
+				return findPinNet(ir?.nets, p.id, pinNum);
+			}
+		}
+	}
+	return "";
+}
+
+function findTrackNet(tracks, pt, tol = 1.0) {
+	for (const t of tracks ?? []) {
+		if (Math.hypot(pt[0] - t.start[0], pt[1] - t.start[1]) <= tol) {
+			return t.netId ?? "";
+		}
+		if (Math.hypot(pt[0] - t.end[0], pt[1] - t.end[1]) <= tol) {
+			return t.netId ?? "";
+		}
+	}
+	return "";
+}
+
+function detectNetAtPoint(ir, board, pt, padPositions) {
+	const padNet = findPadNet(ir, padPositions, pt);
+	if (padNet) return padNet;
+	return findTrackNet(board?.tracks, pt);
 }
 
 function resolveRouteTarget(board, ir, raw, hasPoints, padPositions) {
@@ -849,18 +1038,69 @@ function resolveRouteTarget(board, ir, raw, hasPoints, padPositions) {
 	return snapped;
 }
 
-function commitRouteTrack(board, activeLayer, points) {
-	return addTrack(board, {
-		netId: "",
-		layer: activeLayer,
+function executeViaPlacement(viaCtx) {
+	const {
+		board,
+		activeLayer,
 		points,
-		widthMm: 0.25,
+		cursorPos,
+		widthMm,
+		netId,
+		routeMode,
+		pushBoard,
+		toggleLayer,
+		setPoints,
+	} = viaCtx;
+
+	const start = points[points.length - 1] ?? cursorPos ?? [0, 0];
+	const target = cursorPos ?? start;
+	const cornerPts =
+		points.length > 0 ? constrainAngle(start, target, routeMode) : [];
+	const fullPoints = points.length > 0 ? [...points, ...cornerPts] : [start];
+	const viaAt = fullPoints[fullPoints.length - 1];
+
+	let nextBoard = board;
+	if (fullPoints.length >= 2) {
+		nextBoard = addTrack(nextBoard, {
+			netId,
+			layer: activeLayer,
+			points: fullPoints,
+			widthMm,
+		});
+	}
+	nextBoard = addVia(nextBoard, {
+		at: viaAt,
+		netId,
+		drillMm: 0.3,
+		sizeMm: 0.6,
 	});
+	pushBoard(nextBoard);
+	toggleLayer();
+	setPoints([viaAt]);
+}
+
+function checkCommitAllowed(routeCtx, target, isShiftHeld) {
+	const { points, activeLayer, widthMm, board, currentNetId, routeMode } =
+		routeCtx;
+	if (points.length === 0 || isShiftHeld) return true;
+	const start = points[points.length - 1];
+	const prop = proposeRoute({
+		start,
+		cursor: target,
+		layer: activeLayer,
+		widthMm,
+		clearanceMm: 0.2,
+		board,
+		netId: currentNetId,
+		mode: routeMode,
+	});
+	return prop.collisions.length === 0;
 }
 
 function useRoutingState({
 	board,
 	activeLayer,
+	toggleLayer,
 	pushBoard,
 	svgRef,
 	ir,
@@ -868,6 +1108,38 @@ function useRoutingState({
 }) {
 	const [isRouting, setIsRouting] = useState(false);
 	const [points, setPoints] = useState([]);
+	const [cursorPos, setCursorPos] = useState(null);
+	const [routeMode, setRouteMode] = useState("45");
+	const [presetIdx, setPresetIdx] = useState(0);
+	const [currentNetId, setCurrentNetId] = useState("");
+
+	const currentPreset = WIDTH_PRESETS[presetIdx];
+	const widthMm = currentPreset.mm;
+
+	const proposedRoute = useMemo(() => {
+		if (!isRouting || points.length === 0 || !cursorPos) {
+			return { points: [], collisions: [] };
+		}
+		return proposeRoute({
+			start: points[points.length - 1],
+			cursor: cursorPos,
+			layer: activeLayer,
+			widthMm,
+			clearanceMm: 0.2,
+			board,
+			netId: currentNetId,
+			mode: routeMode,
+		});
+	}, [
+		isRouting,
+		points,
+		cursorPos,
+		activeLayer,
+		widthMm,
+		board,
+		currentNetId,
+		routeMode,
+	]);
 
 	const onCanvasClick = useCallback(
 		(e) => {
@@ -880,33 +1152,125 @@ function useRoutingState({
 				points.length > 0,
 				padPositions,
 			);
-			setPoints((prev) => nextRoutePoints(prev, target));
+			if (points.length === 0) {
+				setCurrentNetId(detectNetAtPoint(ir, board, target, padPositions));
+				setPoints([target]);
+				return;
+			}
+			const routeCtx = {
+				points,
+				activeLayer,
+				widthMm,
+				board,
+				currentNetId,
+				routeMode,
+			};
+			if (!checkCommitAllowed(routeCtx, target, e.shiftKey)) return;
+			const start = points[points.length - 1];
+			setPoints((prev) => [
+				...prev,
+				...constrainAngle(start, target, routeMode),
+			]);
 		},
-		[isRouting, points.length, board, ir, svgRef, padPositions],
+		[
+			isRouting,
+			points,
+			board,
+			ir,
+			svgRef,
+			padPositions,
+			activeLayer,
+			widthMm,
+			currentNetId,
+			routeMode,
+		],
 	);
 
 	const onCanvasDoubleClick = useCallback(
 		(e) => {
 			e.preventDefault();
 			if (!isRouting || points.length < 2) return;
-			pushBoard(commitRouteTrack(board, activeLayer, points));
+			pushBoard(
+				addTrack(board, {
+					netId: currentNetId,
+					layer: activeLayer,
+					points,
+					widthMm,
+				}),
+			);
 			setPoints([]);
 			setIsRouting(false);
+			setCurrentNetId("");
 		},
-		[isRouting, points, board, activeLayer, pushBoard],
+		[isRouting, points, board, activeLayer, widthMm, currentNetId, pushBoard],
+	);
+
+	const onPointerMove = useCallback(
+		(e) => {
+			if (!isRouting) return;
+			const raw = screenToBoardCoords(e, svgRef.current);
+			setCursorPos(snapToGrid(raw, 0.25));
+		},
+		[isRouting, svgRef],
 	);
 
 	const toggleRoute = useCallback(() => {
 		setIsRouting((r) => !r);
 		setPoints([]);
+		setCurrentNetId("");
+		setCursorPos(null);
 	}, []);
+
+	const cycleWidthPreset = useCallback(() => {
+		setPresetIdx((i) => (i + 1) % WIDTH_PRESETS.length);
+	}, []);
+
+	const toggleRouteMode = useCallback(() => {
+		setRouteMode((m) => (m === "45" ? "90" : "45"));
+	}, []);
+
+	const placeViaAndSwitchLayer = useCallback(() => {
+		if (!isRouting) return;
+		executeViaPlacement({
+			board,
+			activeLayer,
+			points,
+			cursorPos,
+			widthMm,
+			netId: currentNetId,
+			routeMode,
+			pushBoard,
+			toggleLayer,
+			setPoints,
+		});
+	}, [
+		isRouting,
+		points,
+		cursorPos,
+		routeMode,
+		board,
+		currentNetId,
+		activeLayer,
+		widthMm,
+		pushBoard,
+		toggleLayer,
+	]);
 
 	return {
 		isRouting,
 		points,
+		cursorPos,
+		routeMode,
+		widthPreset: currentPreset,
+		widthMm,
+		proposedRoute,
 		onCanvasClick,
 		onCanvasDoubleClick,
+		onPointerMove,
 		toggleRoute,
+		toggleRouteMode,
+		cycleWidthPreset,
+		placeViaAndSwitchLayer,
 	};
 }
 
@@ -1016,6 +1380,10 @@ function buildShortcuts(ctx) {
 		selectedPartId: ctx.sel.selectedPartId,
 		toggleLayer: ctx.layers.toggleLayer,
 		toggleRoute: ctx.route.toggleRoute,
+		toggleRouteMode: ctx.route.toggleRouteMode,
+		cycleWidthPreset: ctx.route.cycleWidthPreset,
+		placeVia: ctx.route.placeViaAndSwitchLayer,
+		isRouting: ctx.route.isRouting,
 		deleteSelected: ctx.sel.deleteSelected,
 		undoBoard: ctx.history.undoBoard,
 		redoBoard: ctx.history.redoBoard,
@@ -1045,7 +1413,10 @@ function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
 			onClick={route.onCanvasClick}
 			onDoubleClick={route.onCanvasDoubleClick}
 			onPointerDown={sceneData.onPointerDown}
-			onPointerMove={drag.onPointerMove}
+			onPointerMove={(e) => {
+				drag.onPointerMove(e);
+				route.onPointerMove(e);
+			}}
 			onPointerUp={drag.onDropDrag}
 		>
 			<title>PCB Canvas</title>
@@ -1075,7 +1446,9 @@ function PcbSvgScene({ svgRef, viewBox, route, layers, sceneData, drag }) {
 			/>
 			<RoutingPreviewLayer
 				points={route.points}
+				proposed={route.proposedRoute}
 				activeLayer={layers.activeLayer}
+				widthMm={route.widthMm}
 			/>
 		</svg>
 	);
@@ -1102,6 +1475,7 @@ export default function PcbCanvas({
 	const route = useRoutingState({
 		board,
 		activeLayer: layers.activeLayer,
+		toggleLayer: layers.toggleLayer,
 		pushBoard: history.pushBoard,
 		svgRef,
 		ir,
@@ -1139,6 +1513,10 @@ export default function PcbCanvas({
 				onToggleRoute={route.toggleRoute}
 				visibleLayers={layers.visibleLayers}
 				onToggleLayerVis={layers.toggleLayerVis}
+				widthPreset={route.widthPreset}
+				onCycleWidth={route.cycleWidthPreset}
+				routeMode={route.routeMode}
+				onToggleRouteMode={route.toggleRouteMode}
 			/>
 			<PcbSvgScene
 				svgRef={svgRef}
@@ -1147,6 +1525,11 @@ export default function PcbCanvas({
 				layers={layers}
 				sceneData={sceneData}
 				drag={drag}
+			/>
+			<PcbStatusBar
+				isRouting={route.isRouting}
+				widthPreset={route.widthPreset}
+				routeMode={route.routeMode}
 			/>
 		</div>
 	);
