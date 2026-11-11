@@ -7,22 +7,26 @@ import { registerDesignTools } from "../../backend/src/engine/tools/design-tools
 
 const TEST_COMMIT = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9012";
 
-const BASE_PART = {
+const DEFAULT_PART_DATA = Object.freeze({
 	ref: "R1",
 	value: "10k",
 	symbol: "Device:R",
 	footprint: "Resistor_SMD:R_0603_1608Metric",
-};
+});
 
 function makePart(overrides = {}) {
-	return { id: newId("part"), props: {}, ...BASE_PART, ...overrides };
+	return Object.assign(
+		{ id: newId("part"), props: {} },
+		DEFAULT_PART_DATA,
+		overrides,
+	);
 }
 
 function makeCleanIR(partOverrides = {}) {
 	const parts = ["R1", "R2"].map((ref) =>
-		makePart(ref === "R1" ? { ref, ...partOverrides } : { ref }),
+		makePart({ ref, ...(ref === "R1" ? partOverrides : {}) }),
 	);
-	const connect = (name, pin) => ({
+	const linkNet = (name, pin) => ({
 		id: newId("net"),
 		name,
 		pins: parts.map((p) => ({ partId: p.id, pin })),
@@ -31,22 +35,37 @@ function makeCleanIR(partOverrides = {}) {
 		schemaVersion: 1,
 		name: "TestDesign",
 		parts,
-		nets: [connect("VCC", "1"), connect("GND", "2")],
+		nets: [linkNet("VCC", "1"), linkNet("GND", "2")],
 		constraints: [
 			{ id: "c1", kind: "rail", target: "VCC", value: 3.3, unit: "V" },
 		],
 	};
 }
 
-const BASE_ENV = {
-	name: "LabEnv",
-	ambientC: { min: 20, max: 25 },
-	humidityPct: { min: 40, max: 60 },
-	altitudeM: 100,
-};
-
 function makeEnv(overrides = {}) {
-	return { id: newId("env"), ...BASE_ENV, ...overrides };
+	const tempRange = (min, max) => ({ min, max });
+	return Object.assign(
+		{
+			id: newId("env"),
+			name: "LabEnv",
+			ambientC: tempRange(20, 25),
+			humidityPct: tempRange(40, 60),
+			altitudeM: 100,
+		},
+		overrides,
+	);
+}
+
+function makeThermalIR() {
+	const thermalProps = { powerW: 2.0, thetaJA: 50, tjMaxC: 125 };
+	const part = makePart({
+		ref: "U1",
+		value: "LDO",
+		symbol: "Reg:LDO",
+		footprint: "Pkg:SOT-223",
+		props: thermalProps,
+	});
+	return { parts: [part] };
 }
 
 function makeFaultyIR() {
@@ -65,6 +84,15 @@ async function invokeTool(tool, input, deps) {
 	return registry.call(tool, input);
 }
 
+async function invokeSimRun(options = {}, deps) {
+	const { env = makeEnv(), inputs = {}, kind = "thermal" } = options;
+	return invokeTool(
+		"sim.run",
+		{ kind, env, commit: TEST_COMMIT, inputs },
+		deps,
+	);
+}
+
 function assertSuccess(res) {
 	assert.equal(res.ok, true);
 	return res.output;
@@ -74,11 +102,13 @@ function assertFailure(res, expectedError) {
 	assert.equal(res.ok, false);
 	if (typeof expectedError === "string") {
 		assert.equal(res.error, expectedError);
-	} else if (expectedError instanceof RegExp) {
-		assert.match(res.error, expectedError);
-	} else {
-		assert.ok(typeof res.error === "string");
+		return;
 	}
+	if (expectedError instanceof RegExp) {
+		assert.match(res.error, expectedError);
+		return;
+	}
+	assert.equal(typeof res.error, "string");
 }
 
 function assertNonEmptyArray(arr) {
@@ -93,9 +123,7 @@ function assertToolMetadata(tool) {
 }
 
 function assertValidationSuccess(res) {
-	const out = assertSuccess(res);
-	assert.equal(out.valid, true);
-	assert.deepEqual(out.errors, []);
+	assert.deepEqual(assertSuccess(res), { valid: true, errors: [] });
 }
 
 function assertValidationFailure(res) {
@@ -110,59 +138,57 @@ function assertInjectedCalled(res, called) {
 }
 
 function assertZeroIssues(res) {
-	const out = assertSuccess(res);
-	assert.deepEqual(out.issues, []);
+	assert.deepEqual(assertSuccess(res).issues, []);
 }
 
 function assertDetectedIssues(res) {
-	const out = assertSuccess(res);
-	assertNonEmptyArray(out.issues);
+	assertNonEmptyArray(assertSuccess(res).issues);
 }
 
 function assertMockIssueResult(res, expectedId) {
-	const out = assertSuccess(res);
-	assert.equal(out.issues.length, 1);
-	assert.equal(out.issues[0]?.id, expectedId);
+	const { issues } = assertSuccess(res);
+	assert.deepEqual([issues.length, issues[0]?.id], [1, expectedId]);
 }
 
 function assertAutoPlaceSuccess(res) {
-	const out = assertSuccess(res);
-	assert.ok(Array.isArray(out.placed));
-	assert.equal(out.placed.length, 2);
-	assert.ok(out.ir.parts[0]?.placement && out.ir.parts[1]?.placement);
+	const { placed, ir } = assertSuccess(res);
+	assert.equal(Array.isArray(placed) && placed.length, 2);
+	assert.ok(ir.parts[0]?.placement && ir.parts[1]?.placement);
 }
 
 function assertMockPlacedResult(res, expectedPlaced) {
-	const out = assertSuccess(res);
-	assert.deepEqual(out.placed, expectedPlaced);
+	assert.deepEqual(assertSuccess(res).placed, expectedPlaced);
 }
 
 function assertValidSexprDoc(res, rootSym) {
-	const out = assertSuccess(res);
-	assert.equal(typeof out.text, "string");
-	assert.ok(Array.isArray(out.warnings));
-	const parsed = parse(out.text);
-	assert.ok(parsed);
-	assert.equal(parsed[0]?.sym, rootSym);
+	const { text, warnings } = assertSuccess(res);
+	assert.equal(typeof text, "string");
+	assert.ok(Array.isArray(warnings));
+	const parsed = parse(text);
+	assert.equal(parsed?.[0]?.sym, rootSym);
 }
 
 function assertInvalidIr(res) {
 	assertFailure(res, /Invalid circuit IR/i);
 }
 
+async function checkInvalidIrReported(tool, extra = {}) {
+	const res = await invokeTool(tool, { ir: { schemaVersion: 999 }, ...extra });
+	assertInvalidIr(res);
+}
+
 function assertThermalRunSuccess(res) {
-	const out = assertSuccess(res);
-	assert.deepEqual(
-		{ status: out.run.status, kind: out.run.kind },
-		{ status: "done", kind: "thermal" },
-	);
-	assert.ok(Array.isArray(out.issues));
+	const { run, issues } = assertSuccess(res);
+	assert.deepEqual([run.status, run.kind], ["done", "thermal"]);
+	assert.ok(Array.isArray(issues));
 }
 
 function assertSimulationFailedOutput(res) {
-	const out = assertSuccess(res);
-	assert.equal(out.run.status, "failed");
-	assert.match(out.error, /.+/);
+	const { run, error } = assertSuccess(res);
+	assert.deepEqual(
+		{ status: run?.status, hasError: Boolean(error && /.+/.test(error)) },
+		{ status: "failed", hasError: true },
+	);
 }
 
 describe("engine-design-tools registration", () => {
@@ -290,10 +316,7 @@ describe("ir.to_kicad_sch tool", () => {
 	});
 
 	test("reports engine error on invalid IR", async () => {
-		const res = await invokeTool("ir.to_kicad_sch", {
-			ir: { schemaVersion: 999 },
-		});
-		assertInvalidIr(res);
+		await checkInvalidIrReported("ir.to_kicad_sch");
 	});
 });
 
@@ -311,100 +334,59 @@ describe("ir.to_kicad_pcb tool", () => {
 	});
 
 	test("reports engine error on invalid IR", async () => {
-		const res = await invokeTool("ir.to_kicad_pcb", {
-			ir: { schemaVersion: 999 },
+		await checkInvalidIrReported("ir.to_kicad_pcb", {
 			boardW: 50,
 			boardH: 50,
 		});
-		assertInvalidIr(res);
 	});
 });
 
 describe("sim.run tool", () => {
 	test("runs thermal simulation end-to-end", async () => {
-		const part = {
-			id: newId("part"),
-			ref: "U1",
-			value: "LDO",
-			symbol: "Reg:LDO",
-			footprint: "Pkg:SOT-223",
-			props: { powerW: 2.0, thetaJA: 50, tjMaxC: 125 },
-		};
-		const inputs = { ir: { parts: [part] } };
-		const res = await invokeTool("sim.run", {
-			kind: "thermal",
-			env: makeEnv(),
-			commit: TEST_COMMIT,
-			inputs,
-		});
+		const res = await invokeSimRun({ inputs: { ir: makeThermalIR() } });
 		assertThermalRunSuccess(res);
 	});
 
 	test("captures simulation error in output when env is invalid", async () => {
 		const invalidEnv = makeEnv({ ambientC: { min: 40, max: 10 } });
-		const res = await invokeTool("sim.run", {
-			kind: "thermal",
-			env: invalidEnv,
-			commit: TEST_COMMIT,
-			inputs: {},
-		});
+		const res = await invokeSimRun({ env: invalidEnv });
 		assertSimulationFailedOutput(res);
 	});
 
 	test("returns ok:false when handler throws or rejects", async () => {
-		const res = await invokeTool(
-			"sim.run",
-			{
-				kind: "thermal",
-				env: makeEnv(),
-				commit: TEST_COMMIT,
-				inputs: {},
+		const crashDeps = {
+			runSimulation: async () => {
+				throw new Error("Simulation crash");
 			},
-			{
-				runSimulation: async () => {
-					throw new Error("Simulation crash");
-				},
-			},
-		);
+		};
+		const res = await invokeSimRun({}, crashDeps);
 		assertFailure(res, "Simulation crash");
 	});
 });
 
 describe("input validation errors", () => {
-	const BAD_INPUT_CASES = [
-		{ tool: "ir.validate", input: {}, label: "missing ir" },
-		{ tool: "erc.run", input: { ir: {} }, label: "missing commit" },
-		{ tool: "erc.run", input: { commit: "abc" }, label: "missing ir" },
-		{
-			tool: "ir.auto_place",
-			input: { ir: {} },
-			label: "missing boardW, boardH",
-		},
-		{
-			tool: "ir.auto_place",
-			input: { ir: {}, boardW: 50 },
-			label: "missing boardH",
-		},
-		{ tool: "ir.to_kicad_sch", input: {}, label: "missing ir" },
-		{
-			tool: "ir.to_kicad_pcb",
-			input: { ir: {} },
-			label: "missing boardW, boardH",
-		},
-		{ tool: "sim.run", input: {}, label: "missing required sim fields" },
-		{
-			tool: "sim.run",
-			input: { kind: "invalid-kind", env: {}, commit: "abc", inputs: {} },
-			label: "invalid kind enum",
-		},
-		{
-			tool: "ir.validate",
-			input: { ir: {}, extraField: true },
-			label: "extra property on additionalProperties: false",
-		},
+	const REJECT_CASES = [
+		["ir.validate", {}, "missing ir"],
+		["erc.run", { ir: {} }, "missing commit"],
+		["erc.run", { commit: "abc" }, "missing ir"],
+		["ir.auto_place", { ir: {} }, "missing boardW, boardH"],
+		["ir.auto_place", { ir: {}, boardW: 50 }, "missing boardH"],
+		["ir.to_kicad_sch", {}, "missing ir"],
+		["ir.to_kicad_pcb", { ir: {} }, "missing boardW, boardH"],
+		["sim.run", {}, "missing required sim fields"],
+		[
+			"sim.run",
+			{ kind: "invalid-kind", env: {}, commit: "abc", inputs: {} },
+			"invalid kind enum",
+		],
+		[
+			"ir.validate",
+			{ ir: {}, extraField: true },
+			"extra property on additionalProperties: false",
+		],
 	];
 
-	for (const { tool, input, label } of BAD_INPUT_CASES) {
+	for (const [tool, input, label] of REJECT_CASES) {
 		test(`${tool} rejects input: ${label}`, async () => {
 			const res = await invokeTool(tool, input);
 			assertFailure(res);
