@@ -217,19 +217,6 @@ function RepoBadges({ publicRepos, totalPrivateRepos }) {
 	);
 }
 
-function UserNameTag({ name, login }) {
-	return (
-		<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-			<Text strong style={{ color: "#fff", fontSize: "16px" }}>
-				{name || login}
-			</Text>
-			<Tag color="success" icon={<CheckCircleFilled />}>
-				Connected
-			</Tag>
-		</div>
-	);
-}
-
 function ProfileUserInfo({ user }) {
 	return (
 		<div style={PROFILE_USER_HEADER_STYLE}>
@@ -240,7 +227,14 @@ function ProfileUserInfo({ user }) {
 				style={PROFILE_AVATAR_STYLE}
 			/>
 			<div style={{ flex: 1 }}>
-				<UserNameTag name={user.name} login={user.login} />
+				<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+					<Text strong style={{ color: "#fff", fontSize: "16px" }}>
+						{user.name || user.login}
+					</Text>
+					<Tag color="success" icon={<CheckCircleFilled />}>
+						Connected
+					</Tag>
+				</div>
 				<div style={{ color: "#8b949e", fontSize: "12px" }}>@{user.login}</div>
 				<RepoBadges
 					publicRepos={user.publicRepos}
@@ -258,8 +252,9 @@ function isGithubProfileUrl(url) {
 		const isHttpsGithub =
 			parsed.protocol === "https:" && parsed.hostname === "github.com";
 		return isHttpsGithub && url.startsWith("https://github.com/");
-	} catch {
+	} catch (err) {
 		// Return false for invalid profile URLs
+		console.debug("Invalid profile URL:", err);
 		return false;
 	}
 }
@@ -277,20 +272,6 @@ function ViewGithubLink({ href }) {
 	);
 }
 
-function DisconnectButton({ onClick }) {
-	return (
-		<Button
-			danger
-			type="text"
-			size="small"
-			icon={<DisconnectOutlined />}
-			onClick={onClick}
-		>
-			Disconnect Account
-		</Button>
-	);
-}
-
 function ProfileActions({ htmlUrl, onDisconnect }) {
 	const handleDisconnect = () => {
 		onDisconnect();
@@ -298,15 +279,17 @@ function ProfileActions({ htmlUrl, onDisconnect }) {
 	};
 
 	return (
-		<div
-			style={{
-				display: "flex",
-				justifyContent: "space-between",
-				alignItems: "center",
-			}}
-		>
+		<div style={FOOTER_CONTAINER_STYLE}>
 			<ViewGithubLink href={htmlUrl} />
-			<DisconnectButton onClick={handleDisconnect} />
+			<Button
+				danger
+				type="text"
+				size="small"
+				icon={<DisconnectOutlined />}
+				onClick={handleDisconnect}
+			>
+				Disconnect Account
+			</Button>
 		</div>
 	);
 }
@@ -339,19 +322,6 @@ function AuthenticatedProfileCard({ githubUser, onDisconnect, onClose }) {
 // ----------------------------------------------------------------------
 // 1. Detected System Credentials Card (Phase 3.1 & 4.2)
 // ----------------------------------------------------------------------
-function DetectedNameTag({ login, source }) {
-	return (
-		<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-			<Text strong style={{ color: "#fff", fontSize: "14px" }}>
-				@{login}
-			</Text>
-			<Tag color="success" icon={<LaptopOutlined />}>
-				{source}
-			</Tag>
-		</div>
-	);
-}
-
 function DetectedUserBadge({ user, source }) {
 	return (
 		<div style={DETECTED_CONTAINER_STYLE}>
@@ -362,7 +332,14 @@ function DetectedUserBadge({ user, source }) {
 				style={DETECTED_AVATAR_STYLE}
 			/>
 			<div style={{ flex: 1 }}>
-				<DetectedNameTag login={user.login} source={source} />
+				<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+					<Text strong style={{ color: "#fff", fontSize: "14px" }}>
+						@{user.login}
+					</Text>
+					<Tag color="success" icon={<LaptopOutlined />}>
+						{source}
+					</Tag>
+				</div>
 				<Text style={{ color: "#86efac", fontSize: "11px" }}>
 					Existing credentials detected on this computer.
 				</Text>
@@ -371,50 +348,31 @@ function DetectedUserBadge({ user, source }) {
 	);
 }
 
-function ConnectDetectedButton({ token, user, onConnect }) {
-	return (
-		<Button
-			type="primary"
-			icon={<GithubOutlined />}
-			onClick={() => onConnect(token, user)}
-			style={DETECTED_CONNECT_BTN_STYLE}
-		>
-			Connect as @{user.login} (1-Click)
-		</Button>
-	);
-}
-
-function DetectedCardActions({ detected, onConnect, onIgnore }) {
-	return (
-		<div style={ACTIONS_CONTAINER_STYLE}>
-			<Button
-				type="text"
-				size="small"
-				onClick={onIgnore}
-				style={{ color: "#94a3b8", fontSize: "11px" }}
-			>
-				Use another account
-			</Button>
-			<ConnectDetectedButton
-				token={detected.token}
-				user={detected.user}
-				onConnect={onConnect}
-			/>
-		</div>
-	);
-}
-
 function SystemDetectedCard({ detected, onConnect, onIgnore }) {
 	if (!detected?.user) return null;
+	const { user, source, token } = detected;
 
 	return (
 		<Card style={SYSTEM_DETECTED_CARD_STYLE}>
-			<DetectedUserBadge user={detected.user} source={detected.source} />
-			<DetectedCardActions
-				detected={detected}
-				onConnect={onConnect}
-				onIgnore={onIgnore}
-			/>
+			<DetectedUserBadge user={user} source={source} />
+			<div style={ACTIONS_CONTAINER_STYLE}>
+				<Button
+					type="text"
+					size="small"
+					onClick={onIgnore}
+					style={{ color: "#94a3b8", fontSize: "11px" }}
+				>
+					Use another account
+				</Button>
+				<Button
+					type="primary"
+					icon={<GithubOutlined />}
+					onClick={() => onConnect(token, user)}
+					style={DETECTED_CONNECT_BTN_STYLE}
+				>
+					Connect as @{user.login} (1-Click)
+				</Button>
+			</div>
 		</Card>
 	);
 }
@@ -442,8 +400,9 @@ function resolveVerificationUrl(uri) {
 		if (parsed.protocol === "https:" && parsed.hostname === "github.com") {
 			return uri;
 		}
-	} catch {
+	} catch (err) {
 		// Fall back to default device login on invalid URL
+		console.debug("Invalid verification URL:", err);
 	}
 	return "https://github.com/login/device";
 }
@@ -595,17 +554,6 @@ function useDeviceFlow({ onAuthSuccess, onClose }) {
 	};
 }
 
-function DevicePromptDescription() {
-	return (
-		<Paragraph
-			style={{ color: "#a6adbb", fontSize: "12px", marginBottom: "16px" }}
-		>
-			Connect securely without copying secrets or generating tokens. A one-time
-			code will be opened in your browser to approve.
-		</Paragraph>
-	);
-}
-
 function DevicePromptAlert({ message: msg }) {
 	if (!msg) return null;
 	return (
@@ -621,7 +569,12 @@ function DevicePromptAlert({ message: msg }) {
 function DeviceFlowPrompt({ loading, errorMsg, onStart }) {
 	return (
 		<div>
-			<DevicePromptDescription />
+			<Paragraph
+				style={{ color: "#a6adbb", fontSize: "12px", marginBottom: "16px" }}
+			>
+				Connect securely without copying secrets or generating tokens. A
+				one-time code will be opened in your browser to approve.
+			</Paragraph>
 			<DevicePromptAlert message={errorMsg} />
 			<Button
 				type="primary"
@@ -732,36 +685,28 @@ function DeviceFlowTab({ onAuthSuccess, onClose }) {
 // ----------------------------------------------------------------------
 // 3. PAT Authentication Tab
 // ----------------------------------------------------------------------
-function PatTokenDescription() {
-	return (
-		<Paragraph
-			style={{ color: "#a6adbb", fontSize: "12px", marginBottom: "14px" }}
-		>
-			Connect using a GitHub Personal Access Token (Classic or Fine-grained)
-			with{" "}
-			<Text code style={{ color: "#fadb14" }}>
-				repo
-			</Text>{" "}
-			permissions.
-		</Paragraph>
-	);
-}
-
 function PatInputSection({ patInput, setPatInput, onVerify }) {
 	return (
-		<>
-			<PatTokenDescription />
-			<div style={{ marginBottom: "16px" }}>
-				<Text style={PAT_LABEL_STYLE}>GitHub Personal Access Token:</Text>
-				<Input.Password
-					placeholder="ghp_... or github_pat_..."
-					value={patInput}
-					onChange={(e) => setPatInput(e.target.value)}
-					onPressEnter={onVerify}
-					style={PAT_INPUT_STYLE}
-				/>
-			</div>
-		</>
+		<div style={{ marginBottom: "16px" }}>
+			<Paragraph
+				style={{ color: "#a6adbb", fontSize: "12px", marginBottom: "14px" }}
+			>
+				Connect using a GitHub Personal Access Token (Classic or Fine-grained)
+				with{" "}
+				<Text code style={{ color: "#fadb14" }}>
+					repo
+				</Text>{" "}
+				permissions.
+			</Paragraph>
+			<Text style={PAT_LABEL_STYLE}>GitHub Personal Access Token:</Text>
+			<Input.Password
+				placeholder="ghp_... or github_pat_..."
+				value={patInput}
+				onChange={(e) => setPatInput(e.target.value)}
+				onPressEnter={onVerify}
+				style={PAT_INPUT_STYLE}
+			/>
+		</div>
 	);
 }
 
@@ -784,44 +729,28 @@ function PatSecurityAlert() {
 	);
 }
 
-function GenerateTokenLink() {
-	return (
-		<a
-			href={NEW_TOKEN_URL}
-			target="_blank"
-			rel="noreferrer"
-			style={GITHUB_LINK_STYLE}
-		>
-			Generate Token on GitHub <ExportOutlined />
-		</a>
-	);
-}
-
-function PatActionButtons({ verifying, onVerify, onClose }) {
-	return (
-		<Space>
-			<Button onClick={onClose}>Cancel</Button>
-			<Button
-				type="primary"
-				loading={verifying}
-				onClick={onVerify}
-				style={PAT_VERIFY_BTN_STYLE}
-			>
-				Verify & Connect
-			</Button>
-		</Space>
-	);
-}
-
 function PatFooterActions({ verifying, onVerify, onClose }) {
 	return (
 		<div style={FOOTER_CONTAINER_STYLE}>
-			<GenerateTokenLink />
-			<PatActionButtons
-				verifying={verifying}
-				onVerify={onVerify}
-				onClose={onClose}
-			/>
+			<a
+				href={NEW_TOKEN_URL}
+				target="_blank"
+				rel="noreferrer"
+				style={GITHUB_LINK_STYLE}
+			>
+				Generate Token on GitHub <ExportOutlined />
+			</a>
+			<Space>
+				<Button onClick={onClose}>Cancel</Button>
+				<Button
+					type="primary"
+					loading={verifying}
+					onClick={onVerify}
+					style={PAT_VERIFY_BTN_STYLE}
+				>
+					Verify & Connect
+				</Button>
+			</Space>
 		</div>
 	);
 }
@@ -865,17 +794,17 @@ function useSystemAuthDetection(open) {
 
 	// Auto-detect system GitHub credentials on mount (T3.1, T4.1, T4.2)
 	useEffect(() => {
-		if (!open) return;
-		if (window.banana?.github?.detectSystemAuth) {
-			window.banana.github.detectSystemAuth().then((res) => {
-				if (res?.detected) {
-					setDetectedCli(res);
-					setShowDetected(true);
-					return;
-				}
-				setDetectedCli(null);
+		if (!open || !window.banana?.github?.detectSystemAuth) return;
+		window.banana.github
+			.detectSystemAuth()
+			.then((res) => {
+				const detected = Boolean(res?.detected);
+				setDetectedCli(detected ? res : null);
+				if (detected) setShowDetected(true);
+			})
+			.catch((err) => {
+				console.debug("Failed to detect system auth:", err);
 			});
-		}
 	}, [open]);
 
 	return {
@@ -938,8 +867,12 @@ function createDeviceTabItem(onAuthSuccess, onClose) {
 	};
 }
 
-function createPatTabItem(patState, onClose) {
-	return {
+function buildAuthTabItems({ onAuthSuccess, onClose, patState }) {
+	const items = [];
+	if (window.banana?.isElectron) {
+		items.push(createDeviceTabItem(onAuthSuccess, onClose));
+	}
+	items.push({
 		key: "pat",
 		label: (
 			<span>
@@ -956,16 +889,7 @@ function createPatTabItem(patState, onClose) {
 				onClose={onClose}
 			/>
 		),
-	};
-}
-
-function buildAuthTabItems({ onAuthSuccess, onClose, patState }) {
-	const isDesktop = Boolean(window.banana?.isElectron);
-	const items = [];
-	if (isDesktop) {
-		items.push(createDeviceTabItem(onAuthSuccess, onClose));
-	}
-	items.push(createPatTabItem(patState, onClose));
+	});
 	return items;
 }
 
