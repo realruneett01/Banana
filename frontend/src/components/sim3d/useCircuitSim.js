@@ -45,13 +45,28 @@ async function executeSim({
 	}
 }
 
-function useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim }) {
+function useFaultsLoader({
+	api,
+	ir,
+	setFaults,
+	setSelectedFault,
+	resetSim,
+	hasResultRef,
+}) {
 	const abortRef = useRef(null);
 
 	useEffect(() => {
-		setSelectedFault(null);
-		resetSim();
-		if (!api?.suggestFaults || !ir) {
+		if (!ir) {
+			setSelectedFault(null);
+			resetSim();
+			setFaults([]);
+			return;
+		}
+		if (!hasResultRef.current) {
+			setSelectedFault(null);
+			resetSim();
+		}
+		if (!api?.suggestFaults) {
 			setFaults([]);
 			return;
 		}
@@ -61,7 +76,7 @@ function useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim }) {
 			setFaults(res.data?.faults ?? []);
 		});
 		return () => stopController(abortRef);
-	}, [api, ir, setFaults, setSelectedFault, resetSim]);
+	}, [api, ir, setFaults, setSelectedFault, resetSim, hasResultRef]);
 }
 
 function usePlaybackAnimation({
@@ -205,36 +220,89 @@ function useSimExecution({
 	return run;
 }
 
-export function useCircuitSim({ api, ir }) {
+function shouldResimulate(prevIr, nextIr, hasResult) {
+	if (!hasResult) {
+		return false;
+	}
+	if (!prevIr || !nextIr) {
+		return false;
+	}
+	return prevIr !== nextIr;
+}
+
+function useAutoResim({ ir, run, hasResultRef }) {
+	const prevIrRef = useRef(ir);
+
+	useEffect(() => {
+		const prevIr = prevIrRef.current;
+		prevIrRef.current = ir;
+		if (shouldResimulate(prevIr, ir, hasResultRef.current)) {
+			run();
+		}
+	}, [ir, run, hasResultRef]);
+}
+
+function useSimResultState(ir) {
 	const [status, setStatus] = useState("idle");
 	const [error, setError] = useState(null);
 	const [result, setResult] = useState(null);
-	const [faults, setFaults] = useState([]);
-	const [selectedFault, setSelectedFault] = useState(null);
-	const [analysisMode, setAnalysisMode] = useState("snapshot");
+	const hasResultRef = useRef(false);
+
+	if (result) {
+		hasResultRef.current = true;
+	} else if (!ir) {
+		hasResultRef.current = false;
+	}
 
 	const resetSim = useCallback(() => {
 		setResult(null);
 		setError(null);
 		setStatus("idle");
+		hasResultRef.current = false;
 	}, []);
 
-	useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim });
+	return {
+		status,
+		setStatus,
+		error,
+		setError,
+		result,
+		setResult,
+		resetSim,
+		hasResultRef,
+	};
+}
+
+export function useCircuitSim({ api, ir }) {
+	const resState = useSimResultState(ir);
+	const [faults, setFaults] = useState([]);
+	const [selectedFault, setSelectedFault] = useState(null);
+	const [analysisMode, setAnalysisMode] = useState("snapshot");
+
+	useFaultsLoader({
+		api,
+		ir,
+		setFaults,
+		setSelectedFault,
+		resetSim: resState.resetSim,
+		hasResultRef: resState.hasResultRef,
+	});
 	const run = useSimExecution({
 		api,
 		ir,
 		selectedFault,
 		analysisMode,
-		setResult,
-		setStatus,
-		setError,
+		setResult: resState.setResult,
+		setStatus: resState.setStatus,
+		setError: resState.setError,
 	});
-	const playback = useSimPlayback({ result, ir });
+	useAutoResim({ ir, run, hasResultRef: resState.hasResultRef });
+	const playback = useSimPlayback({ result: resState.result, ir });
 
 	return {
-		status,
-		error,
-		result,
+		status: resState.status,
+		error: resState.error,
+		result: resState.result,
 		faults,
 		selectedFault,
 		setFault: setSelectedFault,

@@ -5,6 +5,7 @@ import {
 	Empty,
 	Grid,
 	Layout,
+	message,
 	theme,
 } from "antd";
 import { useEffect } from "react";
@@ -121,19 +122,41 @@ function EmptyDesignNotice({ onStartEmpty }) {
 	);
 }
 
+function handleStudioApplyFix(loop, fix) {
+	const result = loop.applyFix(fix);
+	if (result?.ok) {
+		message.success(`Fix applied: ${fix.title}`);
+	} else {
+		message.error(result?.error);
+	}
+}
+
 function StudioDrawer({ loop }) {
 	return (
 		<Drawer
 			title="3D Studio"
 			open={loop.studioOpen}
 			onClose={loop.closeStudio}
+			extra={
+				<Button
+					size="small"
+					disabled={!loop.canUndoFix}
+					onClick={() => loop.undoFix()}
+				>
+					Undo last fix
+				</Button>
+			}
 			width="100%"
 			destroyOnHidden={false}
 			className="bn-drawer"
 			styles={{ body: { padding: 0, height: "100%" } }}
 		>
 			{loop.ir ? (
-				<SimulationStudio api={loop.api} ir={loop.ir} />
+				<SimulationStudio
+					api={loop.api}
+					ir={loop.ir}
+					onApplyFix={(fix) => handleStudioApplyFix(loop, fix)}
+				/>
 			) : (
 				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
 			)}
@@ -153,7 +176,12 @@ function EditorDrawer({ loop }) {
 			styles={{ body: { padding: 0, height: "100%" } }}
 		>
 			{loop.ir ? (
-				<EditorScreen ir={loop.ir} board={null} onSave={loop.saveFromEditor} />
+				<EditorScreen
+					ir={loop.ir}
+					board={null}
+					onSave={loop.saveFromEditor}
+					focusItemId={loop.focusItemId}
+				/>
 			) : (
 				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
 			)}
@@ -186,6 +214,7 @@ function DesignDrawers({ loop, commit }) {
 				ir={loop.ir}
 				commit={commit}
 				api={loop.api}
+				onSelectItem={loop.focusInEditor}
 			/>
 			<StudioDrawer loop={loop} />
 			<EditorDrawer loop={loop} />

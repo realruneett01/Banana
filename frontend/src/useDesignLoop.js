@@ -25,9 +25,38 @@ function useStudioState(setIr) {
 	return { studioOpen, openStudio, closeStudio };
 }
 
+function resolveFocusId(itemId, issue) {
+	const id = itemId ?? issue?.itemIds?.[0];
+	if (typeof id !== "string") {
+		return null;
+	}
+	return id.length > 0 ? id : null;
+}
+
+function useEditorFocus(setEditorOpen) {
+	const [focusItemId, setFocusItemId] = useState(null);
+	const clearFocus = useCallback(() => setFocusItemId(null), []);
+	const focusInEditor = useCallback(
+		(itemId, issue) => {
+			const id = resolveFocusId(itemId, issue);
+			if (id) {
+				setFocusItemId(id);
+				setEditorOpen(true);
+			}
+		},
+		[setEditorOpen],
+	);
+	return { focusItemId, clearFocus, focusInEditor };
+}
+
 function useEditorState(setIr) {
 	const [editorOpen, setEditorOpen] = useState(false);
-	const closeEditor = useCallback(() => setEditorOpen(false), []);
+	const { focusItemId, clearFocus, focusInEditor } =
+		useEditorFocus(setEditorOpen);
+	const closeEditor = useCallback(() => {
+		setEditorOpen(false);
+		clearFocus();
+	}, [clearFocus]);
 	const openEditor = useCallback(
 		(nextIr) => {
 			if (isCircuitIr(nextIr)) {
@@ -46,7 +75,14 @@ function useEditorState(setIr) {
 		},
 		[setIr],
 	);
-	return { editorOpen, openEditor, closeEditor, saveFromEditor };
+	return {
+		editorOpen,
+		openEditor,
+		closeEditor,
+		saveFromEditor,
+		focusItemId,
+		focusInEditor,
+	};
 }
 
 function useSimState(setIr) {
