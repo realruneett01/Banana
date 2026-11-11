@@ -1,10 +1,94 @@
 import fs from "node:fs";
 import path from "node:path";
-import { config } from "./config.js";
+import { BANANA_DATA_DIR, config } from "./config.js";
 
 const GITHUB_API_URL = "https://api.github.com";
 const GITHUB_OAUTH_URL = "https://github.com/login/oauth";
 const USER_AGENT = "Banana-Hardware-Diff-Studio";
+const REPO_SEGMENT_REGEX = /^[A-Za-z0-9_.-]{1,100}$/;
+
+export function validateRepoSegment(name) {
+	if (typeof name !== "string" || !REPO_SEGMENT_REGEX.test(name)) {
+		throw new Error("invalid GitHub path");
+	}
+	if (name === "." || name === "..") {
+		throw new Error("invalid GitHub path");
+	}
+}
+
+export const validateOwner = validateRepoSegment;
+export const validateRepo = validateRepoSegment;
+
+export function validateRepoSlug(owner, repo) {
+	validateRepoSegment(owner);
+	validateRepoSegment(repo);
+}
+
+function isAbsoluteFilePath(filePath) {
+	if (filePath.startsWith("/") || filePath.includes("\\")) {
+		return true;
+	}
+	return path.win32.isAbsolute(filePath) || path.posix.isAbsolute(filePath);
+}
+
+function hasDotDotSegment(filePath) {
+	const segments = filePath.split("/");
+	return segments.some((seg) => seg === "..");
+}
+
+export function validateFilePath(filePath) {
+	if (typeof filePath !== "string" || !filePath) {
+		throw new Error("invalid GitHub path");
+	}
+	if (isAbsoluteFilePath(filePath) || hasDotDotSegment(filePath)) {
+		throw new Error("invalid GitHub path");
+	}
+}
+
+export function encodeFilePath(filePath) {
+	validateFilePath(filePath);
+	return filePath
+		.split("/")
+		.map((segment) => encodeURIComponent(segment))
+		.join("/");
+}
+
+export function validateDestinationPath(destinationPath) {
+	if (typeof destinationPath !== "string" || !destinationPath) {
+		throw new Error("destination outside data dir");
+	}
+	const resolvedRoot = path.resolve(BANANA_DATA_DIR);
+	const resolvedDest = path.resolve(destinationPath);
+	const rel = path.relative(resolvedRoot, resolvedDest);
+	if (!rel || rel.startsWith("..")) {
+		throw new Error("destination outside data dir");
+	}
+	if (path.isAbsolute(rel)) {
+		throw new Error("destination outside data dir");
+	}
+	return resolvedDest;
+}
+
+export function buildContentsApiUrl(owner, repo, filePath, commitSha) {
+	validateRepoSlug(owner, repo);
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
+	const encPath = encodeFilePath(filePath);
+	const refQuery = commitSha ? `?ref=${encodeURIComponent(commitSha)}` : "";
+	return `${GITHUB_API_URL}/repos/${encOwner}/${encRepo}/contents/${encPath}${refQuery}`;
+}
+
+export function buildRawFileUrl(owner, repo, commitSha, filePath) {
+	validateRepoSlug(owner, repo);
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
+	const encSha = encodeURIComponent(commitSha);
+	const encPath = encodeFilePath(filePath);
+	return `https://raw.githubusercontent.com/${encOwner}/${encRepo}/${encSha}/${encPath}`;
+}
+
+export const getRepoContentsUrl = buildContentsApiUrl;
+export const getRepoRawUrl = buildRawFileUrl;
 
 /**
  * Generates the GitHub OAuth authorization URL.
@@ -38,18 +122,20 @@ export async function exchangeCodeForToken(code) {
 		throw new Error("GitHub OAuth Client ID or Client Secret not configured.");
 	}
 
+	const body = JSON.stringify({
+		client_id: config.githubClientId,
+		client_secret: config.githubClientSecret,
+		code,
+	});
+	const headers = {
+		Accept: "application/json",
+		"Content-Type": "application/json",
+		"User-Agent": USER_AGENT,
+	};
 	const response = await fetch(`${GITHUB_OAUTH_URL}/access_token`, {
 		method: "POST",
-		headers: {
-			Accept: "application/json",
-			"Content-Type": "application/json",
-			"User-Agent": USER_AGENT,
-		},
-		body: JSON.stringify({
-			client_id: config.githubClientId,
-			client_secret: config.githubClientSecret,
-			code: code,
-		}),
+		headers,
+		body,
 	});
 
 	if (!response.ok) {
@@ -142,8 +228,11 @@ export async function getUserRepositories(token, page = 1, perPage = 100) {
  */
 export async function getRepoBranches(token, owner, repo) {
 	if (!token) throw new Error("Missing GitHub access token");
+	validateRepoSlug(owner, repo);
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
 	const branches = await fetchGithubJson(
-		`/repos/${owner}/${repo}/branches?per_page=100`,
+		`/repos/${encOwner}/${encRepo}/branches?per_page=100`,
 		token,
 	);
 
@@ -153,24 +242,23 @@ export async function getRepoBranches(token, owner, repo) {
 	}));
 }
 
-/**
- * Fetches commits for a repository, optionally filtered by branch and/or file path.
- */
 function formatCommitItem(c) {
 	const commitMsg = c.commit?.message || "";
-	const authorName = c.commit?.author?.name || c.author?.login || "Unknown";
+	const author = c.commit?.author;
+	const authorName = author?.name || c.author?.login || "Unknown";
+	const shortHash = c.sha ? c.sha.substring(0, 7) : "";
 	return {
 		hash: c.sha,
-		shortHash: c.sha ? c.sha.substring(0, 7) : "",
+		shortHash,
 		message: commitMsg.split("\n")[0],
 		fullMessage: commitMsg,
 		author: authorName,
-		authorAvatar: c.author?.avatar_url || null,
-		date: c.commit?.author?.date || null,
+		authorAvatar: c.author?.avatar_url ?? null,
+		date: author?.date ?? null,
 	};
 }
 
-function resolveCommitQuery(options, restArgs) {
+function resolveCommitQuery(options, restArgs = []) {
 	if (typeof options === "object" && options !== null) {
 		return {
 			sha: options.sha,
@@ -188,19 +276,28 @@ function resolveCommitQuery(options, restArgs) {
 /**
  * Fetches commits for a repository, optionally filtered by branch and/or file path.
  */
-export async function getRepoCommits(token, owner, repo, options = {}) {
+export async function getRepoCommits(
+	token,
+	owner,
+	repo,
+	options = {},
+	...rest
+) {
 	if (!token) throw new Error("Missing GitHub access token");
+	validateRepoSlug(owner, repo);
 
-	const { sha, pathFilter, limit } = resolveCommitQuery(options, [
-		arguments[4],
-		arguments[5],
-	]);
+	const { sha, pathFilter, limit } = resolveCommitQuery(options, rest);
+	if (pathFilter) {
+		validateFilePath(pathFilter);
+	}
 	const params = new URLSearchParams({ per_page: String(limit) });
 	if (sha) params.append("sha", sha);
 	if (pathFilter) params.append("path", pathFilter);
 
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
 	const commits = await fetchGithubJson(
-		`/repos/${owner}/${repo}/commits?${params.toString()}`,
+		`/repos/${encOwner}/${encRepo}/commits?${params.toString()}`,
 		token,
 	);
 	return commits.map(formatCommitItem);
@@ -211,8 +308,11 @@ export async function getRepoCommits(token, owner, repo, options = {}) {
  */
 export async function getRepoPullRequests(token, owner, repo, state = "open") {
 	if (!token) throw new Error("Missing GitHub access token");
+	validateRepoSlug(owner, repo);
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
 	const pulls = await fetchGithubJson(
-		`/repos/${owner}/${repo}/pulls?state=${state}&per_page=50`,
+		`/repos/${encOwner}/${encRepo}/pulls?state=${state}&per_page=50`,
 		token,
 	);
 
@@ -239,8 +339,12 @@ export async function getRepoPullRequests(token, owner, repo, state = "open") {
  */
 export async function getRepoHardwareFiles(token, owner, repo, ref = "main") {
 	if (!token) throw new Error("Missing GitHub access token");
+	validateRepoSlug(owner, repo);
+	const encOwner = encodeURIComponent(owner);
+	const encRepo = encodeURIComponent(repo);
+	const encRef = encodeURIComponent(ref);
 	const data = await fetchGithubJson(
-		`/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+		`/repos/${encOwner}/${encRepo}/git/trees/${encRef}?recursive=1`,
 		token,
 	);
 	const tree = data.tree || [];
@@ -258,7 +362,7 @@ export async function getRepoHardwareFiles(token, owner, repo, ref = "main") {
 		}));
 }
 
-function resolveDownloadParams(options, restArgs) {
+function resolveDownloadParams(options, restArgs = []) {
 	if (typeof options === "object" && options !== null) {
 		return options;
 	}
@@ -273,8 +377,8 @@ function resolveDownloadParams(options, restArgs) {
 
 async function fetchRawFileBuffer(token, params) {
 	const { owner, repo, filePath, commitSha } = params;
-	const rawUrl = `${GITHUB_API_URL}/repos/${owner}/${repo}/contents/${filePath}?ref=${encodeURIComponent(commitSha)}`;
-	const fallbackUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${encodeURIComponent(commitSha)}/${filePath}`;
+	const rawUrl = buildContentsApiUrl(owner, repo, filePath, commitSha);
+	const fallbackUrl = buildRawFileUrl(owner, repo, commitSha, filePath);
 
 	const headers = {
 		Authorization: `Bearer ${token}`,
@@ -303,6 +407,7 @@ async function isExistingFileNonEmpty(dest) {
 		const stat = await fs.promises.stat(dest);
 		return stat.size > 0;
 	} catch {
+		// File does not exist yet or is inaccessible
 		return false;
 	}
 }
@@ -310,14 +415,13 @@ async function isExistingFileNonEmpty(dest) {
 /**
  * Downloads a specific version of a CAD file at a commit hash and writes it to disk.
  */
-export async function downloadRepoFile(token, options) {
+export async function downloadRepoFile(token, options, ...rest) {
 	if (!token) throw new Error("Missing GitHub access token");
 
-	const params = resolveDownloadParams(
-		options,
-		Array.prototype.slice.call(arguments, 2),
-	);
-	const dest = params.destinationPath;
+	const params = resolveDownloadParams(options, rest);
+	validateRepoSlug(params.owner, params.repo);
+	validateFilePath(params.filePath);
+	const dest = validateDestinationPath(params.destinationPath);
 
 	const parentDir = path.dirname(dest);
 	await fs.promises.mkdir(parentDir, { recursive: true });
