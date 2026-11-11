@@ -66,46 +66,51 @@ const CANNED_DRC_VIOLATIONS = [
 	},
 ];
 
-function createCannedErcReport() {
-	return {
-		violations: CANNED_ERC_VIOLATIONS,
-		summary: { errors: 1, warnings: 1 },
-	};
-}
+const CANNED_ERC_REPORT = {
+	violations: CANNED_ERC_VIOLATIONS,
+	summary: { errors: 1, warnings: 1 },
+};
 
-function createCannedDrcReport() {
-	return {
-		violations: CANNED_DRC_VIOLATIONS,
-		summary: { errors: 1, warnings: 2 },
-	};
-}
+const CANNED_DRC_REPORT = {
+	violations: CANNED_DRC_VIOLATIONS,
+	summary: { errors: 1, warnings: 2 },
+};
 
 function createFakeCli(overrides = {}) {
 	const runErcCalls = [];
 	const runDrcCalls = [];
 	const exportNetlistCalls = [];
+	const recordCall = async (calls, args, error, defaultVal) => {
+		calls.push(args);
+		if (error) throw error;
+		return defaultVal;
+	};
 	return {
 		runErcCalls,
 		runDrcCalls,
 		exportNetlistCalls,
-		async runErc(schPath, outJsonPath) {
-			runErcCalls.push({ schPath, outJsonPath });
-			if (overrides.ercError) throw overrides.ercError;
-			return overrides.ercReport || createCannedErcReport();
-		},
-		async runDrc(pcbPath, outJsonPath) {
-			runDrcCalls.push({ pcbPath, outJsonPath });
-			if (overrides.drcError) throw overrides.drcError;
-			return overrides.drcReport || createCannedDrcReport();
-		},
-		async exportNetlist(schPath, outPath, format) {
-			exportNetlistCalls.push({ schPath, outPath, format });
-			if (overrides.exportError) throw overrides.exportError;
-			return outPath;
-		},
-		async version() {
-			return "fake-kicad-10.0.0";
-		},
+		runErc: (schPath, outJsonPath) =>
+			recordCall(
+				runErcCalls,
+				{ schPath, outJsonPath },
+				overrides.ercError,
+				overrides.ercReport || CANNED_ERC_REPORT,
+			),
+		runDrc: (pcbPath, outJsonPath) =>
+			recordCall(
+				runDrcCalls,
+				{ pcbPath, outJsonPath },
+				overrides.drcError,
+				overrides.drcReport || CANNED_DRC_REPORT,
+			),
+		exportNetlist: (schPath, outPath, format) =>
+			recordCall(
+				exportNetlistCalls,
+				{ schPath, outPath, format },
+				overrides.exportError,
+				outPath,
+			),
+		version: async () => "fake-kicad-10.0.0",
 	};
 }
 
@@ -127,6 +132,38 @@ function assertValidIssues(issues, expectedSource) {
 			`Issue invalid: ${validation.errors.join("; ")}`,
 		);
 	}
+}
+
+function assertToolExecution(opts) {
+	const { res, call, expectedPath, summary, source } = opts;
+	assert.equal(res.ok, true);
+	assert.equal(call.schPath || call.pcbPath, expectedPath);
+	assert.equal(path.dirname(call.outJsonPath), os.tmpdir());
+	assert.deepEqual(res.output.summary, summary);
+	assertValidIssues(res.output.issues, source);
+}
+
+function assertErcMappedIssues(issues) {
+	const severities = issues.map((i) => i.severity);
+	assert.deepEqual(severities, ["error", "warning", "info", "error"]);
+	assert.deepEqual(
+		[issues[0].itemIds[0], issues[2].itemIds[0]],
+		[`part_${UUID_PART}`, `net_${UUID_NET}`],
+	);
+	assert.equal(isId(issues[3].itemIds[0], "part"), true);
+	assert.match(issues[3].message, /Unconnected label VCC/);
+}
+
+async function callExportNetlist(params) {
+	const cli = createFakeCli();
+	const registry = setupRegistry(cli);
+	const res = await registry.call("kicad.export_netlist", params);
+	return { cli, res };
+}
+
+function assertExportNetlistCall(cli, res, format) {
+	assert.equal(res.ok, true);
+	assert.equal(cli.exportNetlistCalls[0].format, format);
 }
 
 describe("module contract", () => {
@@ -163,27 +200,20 @@ describe("kicad.erc tool execution", () => {
 		const cli = createFakeCli();
 		const registry = setupRegistry(cli);
 		const res = await registry.call("kicad.erc", { schPath: VALID_SCH });
-		assert.equal(res.ok, true);
-		assert.equal(cli.runErcCalls[0].schPath, VALID_SCH);
-		assert.equal(path.dirname(cli.runErcCalls[0].outJsonPath), os.tmpdir());
-		assert.deepEqual(res.output.summary, { errors: 1, warnings: 1 });
-		assertValidIssues(res.output.issues, "erc");
+		assertToolExecution({
+			res,
+			call: cli.runErcCalls[0],
+			expectedPath: VALID_SCH,
+			summary: { errors: 1, warnings: 1 },
+			source: "erc",
+		});
 	});
 
 	test("maps severity and item prefixes for ERC violations", async () => {
 		const registry = setupRegistry(createFakeCli());
 		const res = await registry.call("kicad.erc", { schPath: VALID_SCH });
 		assert.equal(res.ok, true);
-		const { issues } = res.output;
-
-		assert.equal(issues[0].severity, "error");
-		assert.equal(issues[0].itemIds[0], `part_${UUID_PART}`);
-		assert.equal(issues[1].severity, "warning");
-		assert.equal(issues[2].severity, "info");
-		assert.equal(issues[2].itemIds[0], `net_${UUID_NET}`);
-		assert.equal(issues[3].severity, "error");
-		assert.equal(isId(issues[3].itemIds[0], "part"), true);
-		assert.match(issues[3].message, /Unconnected label VCC/);
+		assertErcMappedIssues(res.output.issues);
 	});
 });
 
@@ -192,11 +222,13 @@ describe("kicad.drc tool execution", () => {
 		const cli = createFakeCli();
 		const registry = setupRegistry(cli);
 		const res = await registry.call("kicad.drc", { pcbPath: VALID_PCB });
-		assert.equal(res.ok, true);
-		assert.equal(cli.runDrcCalls[0].pcbPath, VALID_PCB);
-		assert.equal(path.dirname(cli.runDrcCalls[0].outJsonPath), os.tmpdir());
-		assert.deepEqual(res.output.summary, { errors: 1, warnings: 2 });
-		assertValidIssues(res.output.issues, "drc");
+		assertToolExecution({
+			res,
+			call: cli.runDrcCalls[0],
+			expectedPath: VALID_PCB,
+			summary: { errors: 1, warnings: 2 },
+			source: "drc",
+		});
 		assert.deepEqual(res.output.issues[0].itemIds, [
 			`part_${UUID_PART}`,
 			`trace_${UUID_TRACE}`,
@@ -209,95 +241,134 @@ describe("kicad.drc tool execution", () => {
 		const registry = createRegistry();
 		registerKicadTools(registry, { cli: createFakeCli() });
 		const res = await registry.call("kicad.drc", { pcbPath: VALID_PCB });
-		assert.equal(res.ok, true);
-		assert.equal(res.output.issues[0].commit, "HEAD");
+		assert.deepEqual(
+			{ ok: res.ok, commit: res.output.issues[0].commit },
+			{ ok: true, commit: "HEAD" },
+		);
 	});
 });
 
 describe("kicad.export_netlist tool execution", () => {
 	test("exports netlist with default format kicadsexpr", async () => {
-		const cli = createFakeCli();
-		const registry = setupRegistry(cli);
-		const res = await registry.call("kicad.export_netlist", {
-			schPath: VALID_SCH,
-		});
-		assert.equal(res.ok, true);
+		const { cli, res } = await callExportNetlist({ schPath: VALID_SCH });
+		assertExportNetlistCall(cli, res, "kicadsexpr");
 		assert.equal(cli.exportNetlistCalls[0].schPath, VALID_SCH);
-		assert.equal(cli.exportNetlistCalls[0].format, "kicadsexpr");
 		assert.equal(path.dirname(res.output.netlistPath), os.tmpdir());
 	});
 
 	test("exports netlist with custom format parameter", async () => {
-		const cli = createFakeCli();
-		const registry = setupRegistry(cli);
-		const res = await registry.call("kicad.export_netlist", {
+		const { cli, res } = await callExportNetlist({
 			schPath: VALID_SCH,
 			format: "spice",
 		});
-		assert.equal(res.ok, true);
-		assert.equal(cli.exportNetlistCalls[0].format, "spice");
+		assertExportNetlistCall(cli, res, "spice");
 		assert.match(res.output.netlistPath, /\.cir$/);
 	});
 });
 
 describe("input path validation via registry", () => {
-	const BAD_ERC_INPUTS = [
-		{ label: "missing schPath", input: {} },
-		{ label: "relative path", input: { schPath: "board.kicad_sch" } },
-		{ label: "wrong extension", input: { schPath: "/abs/board.kicad_pcb" } },
+	const REJECT_CASES = [
 		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
+			label: "missing schPath",
+			input: {},
+		},
+		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
+			label: "relative path",
+			input: { schPath: "board.kicad_sch" },
+		},
+		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
+			label: "wrong extension",
+			input: { schPath: "/abs/board.kicad_pcb" },
+		},
+		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
 			label: "suffix extension",
 			input: { schPath: "/abs/board.kicad_sch.bak" },
 		},
-		{ label: "non-string schPath", input: { schPath: 999 } },
-		{ label: "extra property", input: { schPath: VALID_SCH, extra: true } },
-	];
-
-	for (const { label, input } of BAD_ERC_INPUTS) {
-		test(`kicad.erc rejects ${label}`, async () => {
-			const cli = createFakeCli();
-			const registry = setupRegistry(cli);
-			const res = await registry.call("kicad.erc", input);
-			assert.equal(res.ok, false);
-			assert.equal(cli.runErcCalls.length, 0);
-		});
-	}
-
-	const BAD_DRC_INPUTS = [
-		{ label: "missing pcbPath", input: {} },
-		{ label: "relative path", input: { pcbPath: "board.kicad_pcb" } },
-		{ label: "wrong extension", input: { pcbPath: "/abs/board.kicad_sch" } },
 		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
+			label: "non-string schPath",
+			input: { schPath: 999 },
+		},
+		{
+			tool: "kicad.erc",
+			callKey: "runErcCalls",
+			label: "extra property",
+			input: { schPath: VALID_SCH, extra: true },
+		},
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
+			label: "missing pcbPath",
+			input: {},
+		},
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
+			label: "relative path",
+			input: { pcbPath: "board.kicad_pcb" },
+		},
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
+			label: "wrong extension",
+			input: { pcbPath: "/abs/board.kicad_sch" },
+		},
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
 			label: "suffix extension",
 			input: { pcbPath: "/abs/board.kicad_pcb.tmp" },
 		},
-		{ label: "non-string pcbPath", input: { pcbPath: false } },
-		{ label: "extra property", input: { pcbPath: VALID_PCB, foo: "bar" } },
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
+			label: "non-string pcbPath",
+			input: { pcbPath: false },
+		},
+		{
+			tool: "kicad.drc",
+			callKey: "runDrcCalls",
+			label: "extra property",
+			input: { pcbPath: VALID_PCB, foo: "bar" },
+		},
+		{
+			tool: "kicad.export_netlist",
+			callKey: "exportNetlistCalls",
+			label: "missing schPath",
+			input: {},
+		},
+		{
+			tool: "kicad.export_netlist",
+			callKey: "exportNetlistCalls",
+			label: "relative path",
+			input: { schPath: "test.kicad_sch" },
+		},
+		{
+			tool: "kicad.export_netlist",
+			callKey: "exportNetlistCalls",
+			label: "non-string format",
+			input: { schPath: VALID_SCH, format: 123 },
+		},
 	];
 
-	for (const { label, input } of BAD_DRC_INPUTS) {
-		test(`kicad.drc rejects ${label}`, async () => {
+	for (const { tool, callKey, label, input } of REJECT_CASES) {
+		test(`${tool} rejects ${label}`, async () => {
 			const cli = createFakeCli();
 			const registry = setupRegistry(cli);
-			const res = await registry.call("kicad.drc", input);
-			assert.equal(res.ok, false);
-			assert.equal(cli.runDrcCalls.length, 0);
-		});
-	}
-
-	const BAD_NETLIST_INPUTS = [
-		{ label: "missing schPath", input: {} },
-		{ label: "relative path", input: { schPath: "test.kicad_sch" } },
-		{ label: "non-string format", input: { schPath: VALID_SCH, format: 123 } },
-	];
-
-	for (const { label, input } of BAD_NETLIST_INPUTS) {
-		test(`kicad.export_netlist rejects ${label}`, async () => {
-			const cli = createFakeCli();
-			const registry = setupRegistry(cli);
-			const res = await registry.call("kicad.export_netlist", input);
-			assert.equal(res.ok, false);
-			assert.equal(cli.exportNetlistCalls.length, 0);
+			const res = await registry.call(tool, input);
+			assert.deepEqual(
+				{ ok: res.ok, callCount: cli[callKey].length },
+				{ ok: false, callCount: 0 },
+			);
 		});
 	}
 
@@ -312,31 +383,45 @@ describe("input path validation via registry", () => {
 });
 
 describe("error handling and cli failure", () => {
-	test("returns error when CLI runErc fails", async () => {
-		const cli = createFakeCli({ ercError: new Error("ERC process killed") });
-		const registry = setupRegistry(cli);
-		const res = await registry.call("kicad.erc", { schPath: VALID_SCH });
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "ERC process killed");
-	});
+	const CLI_FAILURE_CASES = [
+		{
+			name: "returns error when CLI runErc fails",
+			tool: "kicad.erc",
+			input: { schPath: VALID_SCH },
+			override: { ercError: new Error("ERC process killed") },
+			expectedError: "ERC process killed",
+		},
+		{
+			name: "returns error when CLI runDrc fails",
+			tool: "kicad.drc",
+			input: { pcbPath: VALID_PCB },
+			override: { drcError: new Error("DRC failed") },
+			expectedError: "DRC failed",
+		},
+		{
+			name: "returns error when CLI exportNetlist fails",
+			tool: "kicad.export_netlist",
+			input: { schPath: VALID_SCH },
+			override: { exportError: new Error("Netlist export crash") },
+			expectedError: "Netlist export crash",
+		},
+	];
 
-	test("returns error when CLI runDrc fails", async () => {
-		const cli = createFakeCli({ drcError: new Error("DRC failed") });
-		const registry = setupRegistry(cli);
-		const res = await registry.call("kicad.drc", { pcbPath: VALID_PCB });
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "DRC failed");
-	});
-
-	test("returns error when CLI exportNetlist fails", async () => {
-		const cli = createFakeCli({
-			exportError: new Error("Netlist export crash"),
+	for (const {
+		name,
+		tool,
+		input,
+		override,
+		expectedError,
+	} of CLI_FAILURE_CASES) {
+		test(name, async () => {
+			const cli = createFakeCli(override);
+			const registry = setupRegistry(cli);
+			const res = await registry.call(tool, input);
+			assert.deepEqual(
+				{ ok: res.ok, error: res.error },
+				{ ok: false, error: expectedError },
+			);
 		});
-		const registry = setupRegistry(cli);
-		const res = await registry.call("kicad.export_netlist", {
-			schPath: VALID_SCH,
-		});
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "Netlist export crash");
-	});
+	}
 });
