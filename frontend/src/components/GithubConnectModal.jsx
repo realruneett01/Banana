@@ -32,16 +32,21 @@ const { Text, Paragraph } = Typography;
 const NEW_TOKEN_URL =
 	"https://github.com/settings/tokens/new?scopes=repo,read:user&description=Banana%20Hardware%20Diff%20Studio";
 
+const DARK_BG = "#0f1015";
+const DARK_BORDER = "#232738";
+const YELLOW_ACCENT = "#fadb14";
+const MUTED_GRAY = "#8b949e";
+
 const MODAL_STYLES = Object.freeze({
 	content: {
 		backgroundColor: "#161821",
-		border: "1px solid #232738",
+		border: `1px solid ${DARK_BORDER}`,
 		borderRadius: "8px",
 		boxShadow: "0 20px 40px rgba(0, 0, 0, 0.7)",
 	},
 });
 
-const HEADER_ICON_CONTAINER_STYLE = Object.freeze({
+const HEADER_ICON_STYLE = Object.freeze({
 	width: 32,
 	height: 32,
 	borderRadius: "50%",
@@ -52,74 +57,23 @@ const HEADER_ICON_CONTAINER_STYLE = Object.freeze({
 	border: "1px solid #30363d",
 });
 
-const PROFILE_CARD_STYLE = Object.freeze({
-	background: "#0f1015",
-	borderColor: "#232738",
+const CARD_BOX_STYLE = Object.freeze({
+	background: DARK_BG,
+	borderColor: DARK_BORDER,
 	borderRadius: "8px",
 });
 
-const PROFILE_USER_HEADER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "14px",
-	marginBottom: "16px",
-});
-
-const PROFILE_AVATAR_STYLE = Object.freeze({
-	border: "2px solid #fadb14",
-});
-
-const REPO_TAG_STYLE = Object.freeze({
-	background: "#1c1f2b",
-	borderColor: "#30363d",
-	color: "#a6adbb",
-	fontSize: "11px",
-});
-
-const GITHUB_LINK_STYLE = Object.freeze({
-	color: "#fadb14",
-	fontSize: "12px",
-	display: "flex",
-	alignItems: "center",
-	gap: "4px",
-});
-
-const SYSTEM_DETECTED_CARD_STYLE = Object.freeze({
+const DETECTED_CARD_STYLE = Object.freeze({
 	background: "#131b14",
 	borderColor: "#234427",
 	borderRadius: "8px",
 	marginBottom: "16px",
 });
 
-const DETECTED_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "12px",
-	marginBottom: "12px",
-});
-
-const DETECTED_AVATAR_STYLE = Object.freeze({
-	border: "2px solid #52c41a",
-});
-
-const DETECTED_CONNECT_BTN_STYLE = Object.freeze({
-	background: "#52c41a",
-	borderColor: "#52c41a",
-	color: "#000",
-	fontWeight: 600,
-});
-
-const ACTIONS_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	gap: "8px",
-	justifyContent: "flex-end",
-	alignItems: "center",
-});
-
-const CODE_BOX_CONTAINER_STYLE = Object.freeze({
+const CODE_BOX_STYLE = Object.freeze({
 	cursor: "pointer",
-	background: "#0f1015",
-	border: "2px dashed #fadb14",
+	background: DARK_BG,
+	border: `2px dashed ${YELLOW_ACCENT}`,
 	borderRadius: "8px",
 	padding: "16px",
 	display: "inline-block",
@@ -130,51 +84,37 @@ const CODE_TEXT_STYLE = Object.freeze({
 	fontSize: "26px",
 	fontWeight: 800,
 	letterSpacing: "4px",
-	color: "#fadb14",
+	color: YELLOW_ACCENT,
 	fontFamily: "monospace",
 });
 
-const DEVICE_LOGIN_BTN_STYLE = Object.freeze({
-	background: "#24292e",
-	borderColor: "#444c56",
-	color: "#fff",
-	fontWeight: 600,
-});
-
-const STATUS_SPIN_CONTAINER_STYLE = Object.freeze({
-	color: "#94a3b8",
+const LINK_STYLE = Object.freeze({
+	color: YELLOW_ACCENT,
 	fontSize: "12px",
 	display: "flex",
 	alignItems: "center",
-	justifyContent: "center",
-	gap: "8px",
+	gap: "4px",
 });
 
-const PAT_INPUT_STYLE = Object.freeze({
-	background: "#0f1015",
-	borderColor: "#232738",
-	color: "#fff",
-	fontFamily: "monospace",
-});
-
-const PAT_LABEL_STYLE = Object.freeze({
-	fontSize: "12px",
-	color: "#e2e8f0",
-	display: "block",
-	marginBottom: "6px",
-});
-
-const PAT_VERIFY_BTN_STYLE = Object.freeze({
-	background: "#fadb14",
+const YELLOW_BTN_STYLE = Object.freeze({
+	background: YELLOW_ACCENT,
 	color: "#000",
 	fontWeight: 600,
 	border: "none",
 });
 
-const FOOTER_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	justifyContent: "space-between",
-	alignItems: "center",
+const GREEN_BTN_STYLE = Object.freeze({
+	background: "#52c41a",
+	borderColor: "#52c41a",
+	color: "#000",
+	fontWeight: 600,
+});
+
+const DARK_BTN_STYLE = Object.freeze({
+	background: "#24292e",
+	borderColor: "#444c56",
+	color: "#fff",
+	fontWeight: 600,
 });
 
 const DEVICE_POLL_ERRORS = Object.freeze({
@@ -185,7 +125,7 @@ const DEVICE_POLL_ERRORS = Object.freeze({
 function ModalHeader() {
 	return (
 		<div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-			<div style={HEADER_ICON_CONTAINER_STYLE}>
+			<div style={HEADER_ICON_STYLE}>
 				<GithubOutlined style={{ fontSize: "18px", color: "#fff" }} />
 			</div>
 			<div>
@@ -193,7 +133,7 @@ function ModalHeader() {
 					GitHub Cloud Integration
 				</Text>
 				<div
-					style={{ fontSize: "11px", color: "#8b949e", fontWeight: "normal" }}
+					style={{ fontSize: "11px", color: MUTED_GRAY, fontWeight: "normal" }}
 				>
 					Diff remote hardware repositories, branches & Pull Requests
 				</div>
@@ -203,73 +143,150 @@ function ModalHeader() {
 }
 
 function RepoBadges({ publicRepos, totalPrivateRepos }) {
+	const badgeItems = [
+		{ count: publicRepos, label: "Public Repos", active: true },
+		{
+			count: totalPrivateRepos,
+			label: "Private Repos",
+			active: totalPrivateRepos > 0,
+		},
+	];
+	const tagStyle = {
+		background: "#1c1f2b",
+		borderColor: "#30363d",
+		color: "#a6adbb",
+		fontSize: "11px",
+	};
+
 	return (
 		<div style={{ marginTop: "6px", display: "flex", gap: "8px" }}>
-			<Tag color="default" style={REPO_TAG_STYLE}>
-				{publicRepos} Public Repos
-			</Tag>
-			{totalPrivateRepos > 0 && (
-				<Tag color="default" style={REPO_TAG_STYLE}>
-					{totalPrivateRepos} Private Repos
-				</Tag>
-			)}
+			{badgeItems
+				.filter((b) => b.active)
+				.map((b) => (
+					<Tag key={b.label} color="default" style={tagStyle}>
+						{b.count} {b.label}
+					</Tag>
+				))}
 		</div>
 	);
 }
 
-function ProfileUserInfo({ user }) {
+function UserTitleRow({ title, tag }) {
 	return (
-		<div style={PROFILE_USER_HEADER_STYLE}>
-			<Avatar
-				src={user.avatarUrl}
-				size={56}
-				icon={<GithubOutlined />}
-				style={PROFILE_AVATAR_STYLE}
-			/>
+		<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+			{title}
+			{tag}
+		</div>
+	);
+}
+
+function UserHeaderLayout({
+	avatar,
+	title,
+	tag,
+	subtitle,
+	children,
+	gap = "14px",
+}) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				alignItems: "center",
+				gap,
+				marginBottom: "16px",
+			}}
+		>
+			{avatar}
 			<div style={{ flex: 1 }}>
-				<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-					<Text strong style={{ color: "#fff", fontSize: "16px" }}>
-						{user.name || user.login}
-					</Text>
-					<Tag color="success" icon={<CheckCircleFilled />}>
-						Connected
-					</Tag>
-				</div>
-				<div style={{ color: "#8b949e", fontSize: "12px" }}>@{user.login}</div>
-				<RepoBadges
-					publicRepos={user.publicRepos}
-					totalPrivateRepos={user.totalPrivateRepos}
-				/>
+				<UserTitleRow title={title} tag={tag} />
+				{subtitle}
+				{children}
 			</div>
 		</div>
 	);
 }
 
-function isGithubProfileUrl(url) {
-	if (typeof url !== "string") return false;
+function ProfileUserInfo({ user }) {
+	const avatar = (
+		<Avatar
+			src={user.avatarUrl}
+			size={56}
+			icon={<GithubOutlined />}
+			style={{ border: `2px solid ${YELLOW_ACCENT}` }}
+		/>
+	);
+	const title = (
+		<Text strong style={{ color: "#fff", fontSize: "16px" }}>
+			{user.name || user.login}
+		</Text>
+	);
+	const tag = (
+		<Tag color="success" icon={<CheckCircleFilled />}>
+			Connected
+		</Tag>
+	);
+	const subtitle = (
+		<div style={{ color: MUTED_GRAY, fontSize: "12px" }}>@{user.login}</div>
+	);
+
+	return (
+		<UserHeaderLayout
+			avatar={avatar}
+			title={title}
+			tag={tag}
+			subtitle={subtitle}
+		>
+			<RepoBadges
+				publicRepos={user.publicRepos}
+				totalPrivateRepos={user.totalPrivateRepos}
+			/>
+		</UserHeaderLayout>
+	);
+}
+
+function parseGithubUrl(raw) {
+	if (typeof raw !== "string") return null;
 	try {
-		const parsed = new URL(url);
-		const isHttpsGithub =
+		const parsed = new URL(raw);
+		const isGh =
 			parsed.protocol === "https:" && parsed.hostname === "github.com";
-		return isHttpsGithub && url.startsWith("https://github.com/");
+		return isGh ? parsed : null;
 	} catch (err) {
 		// Return false for invalid profile URLs
 		console.debug("Invalid profile URL:", err);
-		return false;
+		return null;
 	}
+}
+
+function isGithubProfileUrl(url) {
+	const parsed = parseGithubUrl(url);
+	return Boolean(parsed && url.startsWith("https://github.com/"));
+}
+
+function resolveVerificationUrl(uri) {
+	const parsed = parseGithubUrl(uri);
+	// Fall back to default device login on invalid URL
+	return parsed ? uri : "https://github.com/login/device";
+}
+
+function ExternalGithubLink({ href, children }) {
+	return (
+		<a href={href} target="_blank" rel="noreferrer" style={LINK_STYLE}>
+			{children} <ExportOutlined />
+		</a>
+	);
 }
 
 function ViewGithubLink({ href }) {
 	if (!isGithubProfileUrl(href)) {
 		return (
-			<span style={{ color: "#8b949e", fontSize: "12px" }}>View on GitHub</span>
+			<span style={{ color: MUTED_GRAY, fontSize: "12px" }}>
+				View on GitHub
+			</span>
 		);
 	}
-	return (
-		<a href={href} target="_blank" rel="noreferrer" style={GITHUB_LINK_STYLE}>
-			View on GitHub <ExportOutlined />
-		</a>
-	);
+	return <ExternalGithubLink href={href}>View on GitHub</ExternalGithubLink>;
 }
 
 function ProfileActions({ htmlUrl, onDisconnect }) {
@@ -279,7 +296,13 @@ function ProfileActions({ htmlUrl, onDisconnect }) {
 	};
 
 	return (
-		<div style={FOOTER_CONTAINER_STYLE}>
+		<div
+			style={{
+				display: "flex",
+				justifyContent: "space-between",
+				alignItems: "center",
+			}}
+		>
 			<ViewGithubLink href={htmlUrl} />
 			<Button
 				danger
@@ -297,9 +320,9 @@ function ProfileActions({ htmlUrl, onDisconnect }) {
 function AuthenticatedProfileCard({ githubUser, onDisconnect, onClose }) {
 	return (
 		<div style={{ padding: "16px 0 8px" }}>
-			<Card style={PROFILE_CARD_STYLE}>
+			<Card style={CARD_BOX_STYLE}>
 				<ProfileUserInfo user={githubUser} />
-				<Divider style={{ borderColor: "#232738", margin: "12px 0" }} />
+				<Divider style={{ borderColor: DARK_BORDER, margin: "12px 0" }} />
 				<ProfileActions
 					htmlUrl={githubUser.htmlUrl}
 					onDisconnect={onDisconnect}
@@ -307,11 +330,7 @@ function AuthenticatedProfileCard({ githubUser, onDisconnect, onClose }) {
 			</Card>
 
 			<div style={{ marginTop: "16px", textAlign: "right" }}>
-				<Button
-					type="primary"
-					onClick={onClose}
-					style={{ background: "#fadb14", color: "#000", fontWeight: 600 }}
-				>
+				<Button type="primary" onClick={onClose} style={YELLOW_BTN_STYLE}>
 					Done
 				</Button>
 			</div>
@@ -323,28 +342,38 @@ function AuthenticatedProfileCard({ githubUser, onDisconnect, onClose }) {
 // 1. Detected System Credentials Card (Phase 3.1 & 4.2)
 // ----------------------------------------------------------------------
 function DetectedUserBadge({ user, source }) {
+	const avatar = (
+		<Avatar
+			src={user.avatarUrl}
+			size={48}
+			icon={<GithubOutlined />}
+			style={{ border: "2px solid #52c41a" }}
+		/>
+	);
+	const title = (
+		<Text strong style={{ color: "#fff", fontSize: "14px" }}>
+			@{user.login}
+		</Text>
+	);
+	const tag = (
+		<Tag color="success" icon={<LaptopOutlined />}>
+			{source}
+		</Tag>
+	);
+	const subtitle = (
+		<Text style={{ color: "#86efac", fontSize: "11px" }}>
+			Existing credentials detected on this computer.
+		</Text>
+	);
+
 	return (
-		<div style={DETECTED_CONTAINER_STYLE}>
-			<Avatar
-				src={user.avatarUrl}
-				size={48}
-				icon={<GithubOutlined />}
-				style={DETECTED_AVATAR_STYLE}
-			/>
-			<div style={{ flex: 1 }}>
-				<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-					<Text strong style={{ color: "#fff", fontSize: "14px" }}>
-						@{user.login}
-					</Text>
-					<Tag color="success" icon={<LaptopOutlined />}>
-						{source}
-					</Tag>
-				</div>
-				<Text style={{ color: "#86efac", fontSize: "11px" }}>
-					Existing credentials detected on this computer.
-				</Text>
-			</div>
-		</div>
+		<UserHeaderLayout
+			avatar={avatar}
+			title={title}
+			tag={tag}
+			subtitle={subtitle}
+			gap="12px"
+		/>
 	);
 }
 
@@ -353,9 +382,16 @@ function SystemDetectedCard({ detected, onConnect, onIgnore }) {
 	const { user, source, token } = detected;
 
 	return (
-		<Card style={SYSTEM_DETECTED_CARD_STYLE}>
+		<Card style={DETECTED_CARD_STYLE}>
 			<DetectedUserBadge user={user} source={source} />
-			<div style={ACTIONS_CONTAINER_STYLE}>
+			<div
+				style={{
+					display: "flex",
+					gap: "8px",
+					justifyContent: "flex-end",
+					alignItems: "center",
+				}}
+			>
 				<Button
 					type="text"
 					size="small"
@@ -368,7 +404,7 @@ function SystemDetectedCard({ detected, onConnect, onIgnore }) {
 					type="primary"
 					icon={<GithubOutlined />}
 					onClick={() => onConnect(token, user)}
-					style={DETECTED_CONNECT_BTN_STYLE}
+					style={GREEN_BTN_STYLE}
 				>
 					Connect as @{user.login} (1-Click)
 				</Button>
@@ -392,19 +428,6 @@ async function requestDeviceCode() {
 		);
 	}
 	return await window.banana.github.startDeviceFlow();
-}
-
-function resolveVerificationUrl(uri) {
-	try {
-		const parsed = new URL(uri);
-		if (parsed.protocol === "https:" && parsed.hostname === "github.com") {
-			return uri;
-		}
-	} catch (err) {
-		// Fall back to default device login on invalid URL
-		console.debug("Invalid verification URL:", err);
-	}
-	return "https://github.com/login/device";
 }
 
 function openDeviceVerification(deviceData) {
@@ -582,7 +605,7 @@ function DeviceFlowPrompt({ loading, errorMsg, onStart }) {
 				loading={loading}
 				icon={<GithubOutlined />}
 				onClick={onStart}
-				style={DEVICE_LOGIN_BTN_STYLE}
+				style={DARK_BTN_STYLE}
 			>
 				Start 1-Click Browser Login
 			</Button>
@@ -606,7 +629,7 @@ function DeviceCodeBox({ userCode, onClick }) {
 			onClick={onClick}
 			onKeyDown={handleKeyDown}
 			title="Click to copy and open GitHub"
-			style={CODE_BOX_CONTAINER_STYLE}
+			style={CODE_BOX_STYLE}
 		>
 			<div style={CODE_TEXT_STYLE}>{userCode}</div>
 			<div style={{ fontSize: "11px", color: "#94a3b8", marginTop: "4px" }}>
@@ -618,13 +641,21 @@ function DeviceCodeBox({ userCode, onClick }) {
 
 function DeviceFlowStatus({ polling, statusMsg }) {
 	if (!polling) return null;
+	const icon = (
+		<LoadingOutlined style={{ fontSize: 16, color: YELLOW_ACCENT }} spin />
+	);
 	return (
-		<div style={STATUS_SPIN_CONTAINER_STYLE}>
-			<Spin
-				indicator={
-					<LoadingOutlined style={{ fontSize: 16, color: "#fadb14" }} spin />
-				}
-			/>
+		<div
+			style={{
+				color: "#94a3b8",
+				fontSize: "12px",
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "center",
+				gap: "8px",
+			}}
+		>
+			<Spin indicator={icon} />
 			<span>{statusMsg}</span>
 		</div>
 	);
@@ -632,6 +663,8 @@ function DeviceFlowStatus({ polling, statusMsg }) {
 
 function DeviceFlowApproval(props) {
 	const { deviceData, polling, statusMsg, onOpen, onCancel } = props;
+	const openBtnStyle = { ...YELLOW_BTN_STYLE, marginRight: "8px" };
+
 	return (
 		<div>
 			<Paragraph style={{ color: "#a6adbb", fontSize: "12px" }}>
@@ -639,16 +672,7 @@ function DeviceFlowApproval(props) {
 			</Paragraph>
 			<DeviceCodeBox userCode={deviceData.user_code} onClick={onOpen} />
 			<div style={{ marginBottom: "16px" }}>
-				<Button
-					type="primary"
-					onClick={onOpen}
-					style={{
-						background: "#fadb14",
-						color: "#000",
-						fontWeight: 600,
-						marginRight: "8px",
-					}}
-				>
+				<Button type="primary" onClick={onOpen} style={openBtnStyle}>
 					Open GitHub in Browser
 				</Button>
 				<Button onClick={onCancel}>Cancel</Button>
@@ -693,18 +717,32 @@ function PatInputSection({ patInput, setPatInput, onVerify }) {
 			>
 				Connect using a GitHub Personal Access Token (Classic or Fine-grained)
 				with{" "}
-				<Text code style={{ color: "#fadb14" }}>
+				<Text code style={{ color: YELLOW_ACCENT }}>
 					repo
 				</Text>{" "}
 				permissions.
 			</Paragraph>
-			<Text style={PAT_LABEL_STYLE}>GitHub Personal Access Token:</Text>
+			<Text
+				style={{
+					fontSize: "12px",
+					color: "#e2e8f0",
+					display: "block",
+					marginBottom: "6px",
+				}}
+			>
+				GitHub Personal Access Token:
+			</Text>
 			<Input.Password
 				placeholder="ghp_... or github_pat_..."
 				value={patInput}
 				onChange={(e) => setPatInput(e.target.value)}
 				onPressEnter={onVerify}
-				style={PAT_INPUT_STYLE}
+				style={{
+					background: DARK_BG,
+					borderColor: DARK_BORDER,
+					color: "#fff",
+					fontFamily: "monospace",
+				}}
 			/>
 		</div>
 	);
@@ -715,12 +753,12 @@ function PatSecurityAlert() {
 		<Alert
 			type="info"
 			showIcon
-			icon={<SafetyCertificateOutlined style={{ color: "#fadb14" }} />}
+			icon={<SafetyCertificateOutlined style={{ color: YELLOW_ACCENT }} />}
 			title="Encrypted via OS Keychain"
 			description="In Desktop mode, tokens are encrypted in your operating system keychain (Windows Credential Manager / macOS Keychain)."
 			style={{
-				background: "#0f1015",
-				borderColor: "#232738",
+				background: DARK_BG,
+				borderColor: DARK_BORDER,
 				color: "#a6adbb",
 				fontSize: "11px",
 				marginBottom: "16px",
@@ -731,22 +769,23 @@ function PatSecurityAlert() {
 
 function PatFooterActions({ verifying, onVerify, onClose }) {
 	return (
-		<div style={FOOTER_CONTAINER_STYLE}>
-			<a
-				href={NEW_TOKEN_URL}
-				target="_blank"
-				rel="noreferrer"
-				style={GITHUB_LINK_STYLE}
-			>
-				Generate Token on GitHub <ExportOutlined />
-			</a>
+		<div
+			style={{
+				display: "flex",
+				justifyContent: "space-between",
+				alignItems: "center",
+			}}
+		>
+			<ExternalGithubLink href={NEW_TOKEN_URL}>
+				Generate Token on GitHub
+			</ExternalGithubLink>
 			<Space>
 				<Button onClick={onClose}>Cancel</Button>
 				<Button
 					type="primary"
 					loading={verifying}
 					onClick={onVerify}
-					style={PAT_VERIFY_BTN_STYLE}
+					style={YELLOW_BTN_STYLE}
 				>
 					Verify & Connect
 				</Button>
@@ -854,43 +893,46 @@ function usePatVerification({ onAuthSuccess, onClose }) {
 	return { patInput, setPatInput, verifying, handleVerifyPat };
 }
 
-function createDeviceTabItem(onAuthSuccess, onClose) {
+function makeTabItem(key, icon, label, children) {
 	return {
-		key: "device",
+		key,
 		label: (
 			<span>
-				<GithubOutlined style={{ marginRight: "6px" }} />
-				1-Click Browser Login
+				{icon}
+				{label}
 			</span>
 		),
-		children: <DeviceFlowTab onAuthSuccess={onAuthSuccess} onClose={onClose} />,
+		children,
 	};
 }
 
 function buildAuthTabItems({ onAuthSuccess, onClose, patState }) {
-	const items = [];
+	const tabs = [];
 	if (window.banana?.isElectron) {
-		items.push(createDeviceTabItem(onAuthSuccess, onClose));
+		tabs.push(
+			makeTabItem(
+				"device",
+				<GithubOutlined style={{ marginRight: "6px" }} />,
+				"1-Click Browser Login",
+				<DeviceFlowTab onAuthSuccess={onAuthSuccess} onClose={onClose} />,
+			),
+		);
 	}
-	items.push({
-		key: "pat",
-		label: (
-			<span>
-				<KeyOutlined style={{ marginRight: "6px" }} />
-				Personal Access Token
-			</span>
-		),
-		children: (
+	tabs.push(
+		makeTabItem(
+			"pat",
+			<KeyOutlined style={{ marginRight: "6px" }} />,
+			"Personal Access Token",
 			<PatAuthTab
 				patInput={patState.patInput}
 				setPatInput={patState.setPatInput}
 				verifying={patState.verifying}
 				onVerify={patState.handleVerifyPat}
 				onClose={onClose}
-			/>
+			/>,
 		),
-	});
-	return items;
+	);
+	return tabs;
 }
 
 function UnauthenticatedContent(props) {
