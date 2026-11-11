@@ -18,12 +18,16 @@ function buildMaxStepsText(text, maxSteps) {
 	return `${text}\n\n${note}`;
 }
 
+function hasToolCalls(calls) {
+	return Array.isArray(calls) && calls.length > 0;
+}
+
 function createAssistantMessage(response) {
 	const msg = {
 		role: "assistant",
 		content: response.text || "",
 	};
-	if (Array.isArray(response.toolCalls) && response.toolCalls.length > 0) {
+	if (hasToolCalls(response.toolCalls)) {
 		msg.toolCalls = response.toolCalls;
 	}
 	return msg;
@@ -84,45 +88,51 @@ function checkAbortSignal(signal) {
 	}
 }
 
+function getTools(registry) {
+	return registry?.list ? registry.list() : undefined;
+}
+
+async function resolveStepOutcome(params, response, step) {
+	const text = response.text || "";
+	if (!hasToolCalls(response.toolCalls)) {
+		return { text, steps: step };
+	}
+	if (step >= params.maxSteps) {
+		return {
+			text: buildMaxStepsText(response.text, params.maxSteps),
+			steps: step,
+		};
+	}
+	const block = await processToolCalls({
+		registry: params.registry,
+		toolCalls: response.toolCalls,
+		approved: params.approved,
+		onEvent: params.onEvent,
+		step,
+		messages: params.messages,
+	});
+	if (block?.pendingApproval) {
+		return { text, steps: step, pendingApproval: block.pendingApproval };
+	}
+	return null;
+}
+
+async function executeAgentStep(params, tools, step) {
+	const { model, system, maxSteps, onEvent, messages, signal } = params;
+	onEvent({ type: "step", step, maxSteps });
+	const response = await model.generate({ system, messages, tools, signal });
+	messages.push(createAssistantMessage(response));
+	return resolveStepOutcome(params, response, step);
+}
+
 async function executeAgentLoop(params) {
-	const {
-		model,
-		registry,
-		system,
-		maxSteps,
-		onEvent,
-		messages,
-		approved,
-		signal,
-	} = params;
-	const tools = registry?.list ? registry.list() : undefined;
+	const { maxSteps, onEvent, signal, registry } = params;
+	const tools = getTools(registry);
 	for (let step = 1; step <= maxSteps; step++) {
 		checkAbortSignal(signal);
-		onEvent({ type: "step", step, maxSteps });
-		const response = await model.generate({ system, messages, tools, signal });
-		messages.push(createAssistantMessage(response));
-		const toolCalls = response.toolCalls;
-		if (!toolCalls || toolCalls.length === 0) {
-			return finishRun(onEvent, { text: response.text || "", steps: step });
-		}
-		if (step >= maxSteps) {
-			const text = buildMaxStepsText(response.text, maxSteps);
-			return finishRun(onEvent, { text, steps: step });
-		}
-		const block = await processToolCalls({
-			registry,
-			toolCalls,
-			approved,
-			onEvent,
-			step,
-			messages,
-		});
-		if (block?.pendingApproval) {
-			return finishRun(onEvent, {
-				text: response.text || "",
-				steps: step,
-				pendingApproval: block.pendingApproval,
-			});
+		const outcome = await executeAgentStep(params, tools, step);
+		if (outcome) {
+			return finishRun(onEvent, outcome);
 		}
 	}
 }
