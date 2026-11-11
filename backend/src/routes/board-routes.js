@@ -14,48 +14,39 @@ function hasRepositoryTarget({ repoPath, owner, repo }) {
 }
 
 const COMMIT_HEX_REGEX = /^[0-9a-fA-F]{4,40}$/;
-const BRANCH_TAG_REGEX = /^[A-Za-z0-9._/-]{1,200}$/;
+const BRANCH_REF_REGEX = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
 
 function isValidCommitRef(ref) {
 	if (typeof ref !== "string" || !ref) {
 		return false;
 	}
-	if (COMMIT_HEX_REGEX.test(ref)) {
-		return true;
-	}
-	if (!BRANCH_TAG_REGEX.test(ref)) {
-		return false;
-	}
-	if (ref.startsWith("-") || ref.includes("..")) {
-		return false;
-	}
-	return true;
+	return COMMIT_HEX_REGEX.test(ref) || BRANCH_REF_REGEX.test(ref);
 }
 
 function isAbsolutePath(filePath) {
-	if (path.isAbsolute(filePath)) return true;
-	if (path.win32.isAbsolute(filePath)) return true;
-	if (path.posix.isAbsolute(filePath)) return true;
-	return /^[a-zA-Z]:/.test(filePath);
+	const isDriveLetter = /^[a-zA-Z]:/.test(filePath);
+	return (
+		isDriveLetter ||
+		path.win32.isAbsolute(filePath) ||
+		path.posix.isAbsolute(filePath)
+	);
 }
 
 function hasTraversalSegment(filePath) {
-	const segments = filePath.split(/[/\\]/);
-	return segments.includes("..");
+	return filePath.split(/[/\\]/).includes("..");
 }
 
+const ALLOWED_EXTENSIONS = [".kicad_pcb", ".kicad_sch"];
+
 function hasValidExtension(filePath) {
-	return filePath.endsWith(".kicad_pcb") || filePath.endsWith(".kicad_sch");
+	return ALLOWED_EXTENSIONS.some((ext) => filePath.endsWith(ext));
 }
 
 function isValidFilePath(filePath) {
 	if (typeof filePath !== "string" || !filePath) {
 		return false;
 	}
-	if (isAbsolutePath(filePath)) {
-		return false;
-	}
-	if (hasTraversalSegment(filePath)) {
+	if (isAbsolutePath(filePath) || hasTraversalSegment(filePath)) {
 		return false;
 	}
 	return hasValidExtension(filePath);
@@ -174,9 +165,8 @@ function cleanupTempDir(dirPath) {
 }
 
 function extractAuthToken(req) {
-	return (
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body.token
-	);
+	const headerToken = req.headers.authorization?.replace(/^Bearer\s+/i, "");
+	return headerToken || req.body?.token;
 }
 
 function extractBoardRequest(req) {
