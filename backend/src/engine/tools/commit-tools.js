@@ -50,7 +50,7 @@ const COMMIT_OUTPUT_SCHEMA = {
 	},
 };
 
-function validateRepoPath(repoPath) {
+export function validateRepoPath(repoPath) {
 	if (typeof repoPath !== "string") {
 		throw new Error("repoPath must be a string");
 	}
@@ -59,7 +59,7 @@ function validateRepoPath(repoPath) {
 	}
 }
 
-function validateDir(repoPath, rawDir) {
+export function validateDir(repoPath, rawDir) {
 	const dir = rawDir ?? "hardware";
 	if (path.isAbsolute(dir) || ROOT_OR_DRIVE.test(dir)) {
 		throw new Error("dir must not be absolute");
@@ -84,7 +84,7 @@ function validateDimensions(boardW, boardH) {
 	}
 }
 
-function validateMessage(message) {
+export function validateMessage(message) {
 	if (typeof message !== "string") {
 		throw new Error("message must be a string");
 	}
@@ -100,7 +100,7 @@ function checkCircuitIR(irValidator, ir) {
 	}
 }
 
-async function ensureGitWorkTree(execFileFn, repoPath) {
+export async function ensureGitWorkTree(execFileFn, repoPath) {
 	try {
 		const { stdout } = await execFileFn("git", [
 			"-C",
@@ -126,7 +126,7 @@ async function writeDesignFiles(ctx, files) {
 	await fsImpl.writeFile(pcbPath, pcbText, "utf8");
 }
 
-async function commitFiles(execFileFn, repoPath, relFiles, message) {
+export async function commitFiles(execFileFn, repoPath, relFiles, message) {
 	const env = { ...process.env, ...GIT_ENV };
 	await execFileFn("git", ["-C", repoPath, "add", "--", ...relFiles]);
 	try {

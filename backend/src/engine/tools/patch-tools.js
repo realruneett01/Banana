@@ -1,0 +1,226 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+import { patchKicadText } from "../kicad-inplace.js";
+import {
+	commitFiles,
+	ensureGitWorkTree,
+	validateMessage,
+	validateRepoPath,
+} from "./commit-tools.js";
+
+const ROOT_OR_DRIVE = /^[a-zA-Z]:|^[/\\]/;
+
+const PATCH_INPUT_SCHEMA = {
+	type: "object",
+	required: ["repoPath", "files", "message"],
+	additionalProperties: false,
+	properties: {
+		repoPath: { type: "string" },
+		files: {
+			type: "array",
+			items: {
+				type: "object",
+				required: ["path", "kind", "edits"],
+				additionalProperties: false,
+				properties: {
+					path: { type: "string" },
+					kind: { enum: ["sch", "pcb"] },
+					edits: { type: "array" },
+				},
+			},
+		},
+		message: {
+			type: "string",
+			minLength: 1,
+			pattern: "^[\\s\\S]{1,200}$",
+		},
+	},
+};
+
+const PATCH_OUTPUT_SCHEMA = {
+	type: "object",
+	required: ["commit", "files"],
+	additionalProperties: false,
+	properties: {
+		commit: { type: "string" },
+		files: {
+			type: "array",
+			items: {
+				type: "object",
+				required: ["path", "applied", "skipped"],
+				additionalProperties: false,
+				properties: {
+					path: { type: "string" },
+					applied: { type: "number" },
+					skipped: { type: "array" },
+				},
+			},
+		},
+	},
+};
+
+function validatePathFormat(filePath) {
+	if (typeof filePath !== "string" || filePath.length === 0) {
+		throw new Error("path must be a non-empty string");
+	}
+	if (path.isAbsolute(filePath) || ROOT_OR_DRIVE.test(filePath)) {
+		throw new Error("path must not be absolute");
+	}
+	if (filePath.includes("..") || filePath.includes("\\")) {
+		throw new Error("path must not contain traversal characters");
+	}
+}
+
+function validatePathInsideRepo(repoPath, filePath) {
+	const resolved = path.resolve(repoPath, filePath);
+	const rel = path.relative(repoPath, resolved);
+	if (rel.startsWith("..") || path.isAbsolute(rel)) {
+		throw new Error("path resolves outside repoPath");
+	}
+	return resolved;
+}
+
+function validateKindAndExtension(kind, filePath) {
+	if (kind === "sch") {
+		if (!filePath.endsWith(".kicad_sch")) {
+			throw new Error("path must end with .kicad_sch for kind sch");
+		}
+		return;
+	}
+	if (kind === "pcb") {
+		if (!filePath.endsWith(".kicad_pcb")) {
+			throw new Error("path must end with .kicad_pcb for kind pcb");
+		}
+		return;
+	}
+	throw new Error(`unsupported kind: ${kind}`);
+}
+
+function validateEdits(edits) {
+	if (!Array.isArray(edits) || edits.length > 500) {
+		throw new Error("edits must be an array of at most 500 items");
+	}
+}
+
+function validateFileEntry(repoPath, file) {
+	if (!file || typeof file !== "object") {
+		throw new Error("file entry must be an object");
+	}
+	validatePathFormat(file.path);
+	const resolvedPath = validatePathInsideRepo(repoPath, file.path);
+	validateKindAndExtension(file.kind, file.path);
+	validateEdits(file.edits);
+	return resolvedPath;
+}
+
+function validateFiles(repoPath, files) {
+	if (!Array.isArray(files)) {
+		throw new Error("files must be an array");
+	}
+	if (files.length < 1 || files.length > 2) {
+		throw new Error("files must contain 1 or 2 entries");
+	}
+	return files.map((file) => ({
+		file,
+		resolvedPath: validateFileEntry(repoPath, file),
+	}));
+}
+
+async function readAndPatchFile(fsImpl, patchFn, target) {
+	const { file, resolvedPath } = target;
+	let content;
+	try {
+		content = await fsImpl.readFile(resolvedPath, "utf8");
+	} catch {
+		// Avoid leaking system paths or raw filesystem error in message
+		throw new Error(`Failed to read file: ${file.path}`);
+	}
+	const res = patchFn(content, { kind: file.kind, edits: file.edits });
+	if (!res?.ok) {
+		const reason = res?.error || "unknown patch failure";
+		throw new Error(`Failed to patch ${file.path}: ${reason}`);
+	}
+	return {
+		relPath: file.path,
+		resolvedPath,
+		text: res.text,
+		applied: res.applied,
+		skipped: res.skipped,
+	};
+}
+
+async function processPatchTargets(fsImpl, patchFn, targets) {
+	const results = [];
+	let totalApplied = 0;
+	for (const target of targets) {
+		const item = await readAndPatchFile(fsImpl, patchFn, target);
+		totalApplied += item.applied;
+		results.push(item);
+	}
+	if (totalApplied === 0) {
+		throw new Error("No edits were applied");
+	}
+	return results;
+}
+
+async function writeAllPatchedFiles(fsImpl, results) {
+	for (const item of results) {
+		await fsImpl.writeFile(item.resolvedPath, item.text, "utf8");
+	}
+}
+
+async function commitPatchedFiles(execFileFn, repoPath, results, message) {
+	const relFiles = results.map((r) => r.relPath);
+	const commit = await commitFiles(execFileFn, repoPath, relFiles, message);
+	return {
+		commit,
+		files: results.map((r) => ({
+			path: r.relPath,
+			applied: r.applied,
+			skipped: r.skipped,
+		})),
+	};
+}
+
+function createPatchHandler(deps) {
+	const { execFileFn, fsImpl, patchFn } = deps;
+	return async (input) => {
+		validateRepoPath(input.repoPath);
+		validateMessage(input.message);
+		const targets = validateFiles(input.repoPath, input.files);
+		await ensureGitWorkTree(execFileFn, input.repoPath);
+
+		const results = await processPatchTargets(fsImpl, patchFn, targets);
+		await writeAllPatchedFiles(fsImpl, results);
+		return await commitPatchedFiles(
+			execFileFn,
+			input.repoPath,
+			results,
+			input.message,
+		);
+	};
+}
+
+export function registerPatchTools(registry, deps = {}) {
+	const execFileFn = deps.execFileFn ?? promisify(execFile);
+	const fsImpl = deps.fsImpl ?? fs.promises;
+	const patchFn = deps.patchKicadText ?? patchKicadText;
+
+	const handler = createPatchHandler({
+		execFileFn,
+		fsImpl,
+		patchFn,
+	});
+
+	registry.register({
+		name: "design.patch",
+		description:
+			"Applies targeted in-place edits to KiCad files and creates a git commit",
+		inputSchema: PATCH_INPUT_SCHEMA,
+		outputSchema: PATCH_OUTPUT_SCHEMA,
+		permission: "destructive",
+		handler,
+	});
+}
