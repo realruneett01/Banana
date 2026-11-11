@@ -2,6 +2,42 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { validate } from "../../backend/src/engine/schema-lite.js";
 
+function assertValid(res) {
+	assert.equal(res.ok, true);
+	assert.deepEqual(res.errors, []);
+}
+
+function assertInvalid(res, errors) {
+	assert.equal(res.ok, false);
+	assert.deepEqual(res.errors, errors);
+}
+
+function assertTypeError(res, type) {
+	assert.equal(res.ok, false);
+	assert.equal(res.errors.length, 1);
+	assert.match(res.errors[0], new RegExp(`^\\$: expected ${type}`));
+}
+
+function assertMatchError(res, pattern) {
+	assert.equal(res.ok, false);
+	assert.match(res.errors[0], pattern);
+}
+
+function assertSafeValidation(fn) {
+	assert.doesNotThrow(() => {
+		const res = fn();
+		assert.equal(typeof res.ok, "boolean");
+		assert.equal(Array.isArray(res.errors), true);
+	});
+}
+
+function assertInvalidPatternDoesNotThrow(schema, value) {
+	assert.doesNotThrow(() => {
+		const res = validate(schema, value);
+		assert.equal(res.ok, false);
+	});
+}
+
 describe("schema-lite: type keyword", () => {
 	const PASS_CASES = [
 		{ type: "object", value: {} },
@@ -15,9 +51,7 @@ describe("schema-lite: type keyword", () => {
 
 	for (const { type, value } of PASS_CASES) {
 		test(`accepts valid ${type}`, () => {
-			const res = validate({ type }, value);
-			assert.equal(res.ok, true);
-			assert.deepEqual(res.errors, []);
+			assertValid(validate({ type }, value));
 		});
 	}
 
@@ -35,10 +69,7 @@ describe("schema-lite: type keyword", () => {
 
 	for (const { type, value } of FAIL_CASES) {
 		test(`rejects invalid ${type}`, () => {
-			const res = validate({ type }, value);
-			assert.equal(res.ok, false);
-			assert.equal(res.errors.length, 1);
-			assert.match(res.errors[0], new RegExp(`^\\$: expected ${type}`));
+			assertTypeError(validate({ type }, value), type);
 		});
 	}
 });
@@ -50,22 +81,22 @@ describe("schema-lite: required keyword", () => {
 	};
 
 	test("passes when all required keys are present", () => {
-		const res = validate(schema, { id: "p1", name: "R1" });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validate(schema, { id: "p1", name: "R1" }));
 	});
 
-	test("fails when required key is missing", () => {
-		const res = validate(schema, { id: "p1" });
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$.name: missing"]);
-	});
+	const FAIL_CASES = [
+		{ name: "fails when required key is missing", value: { id: "p1" } },
+		{
+			name: "fails when required key is undefined",
+			value: { id: "p1", name: undefined },
+		},
+	];
 
-	test("fails when required key is undefined", () => {
-		const res = validate(schema, { id: "p1", name: undefined });
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$.name: missing"]);
-	});
+	for (const { name, value } of FAIL_CASES) {
+		test(name, () => {
+			assertInvalid(validate(schema, value), ["$.name: missing"]);
+		});
+	}
 });
 
 describe("schema-lite: properties keyword", () => {
@@ -77,22 +108,24 @@ describe("schema-lite: properties keyword", () => {
 		},
 	};
 
-	test("passes when properties match schema", () => {
-		const res = validate(schema, { count: 10, label: "test" });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
-	});
+	const PASS_CASES = [
+		{
+			name: "passes when properties match schema",
+			value: { count: 10, label: "test" },
+		},
+		{ name: "ignores omitted optional properties", value: { count: 10 } },
+	];
 
-	test("ignores omitted optional properties", () => {
-		const res = validate(schema, { count: 10 });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
-	});
+	for (const { name, value } of PASS_CASES) {
+		test(name, () => {
+			assertValid(validate(schema, value));
+		});
+	}
 
 	test("fails on invalid property type with child path", () => {
-		const res = validate(schema, { count: "ten" });
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$.count: expected integer"]);
+		assertInvalid(validate(schema, { count: "ten" }), [
+			"$.count: expected integer",
+		]);
 	});
 });
 
@@ -106,15 +139,13 @@ describe("schema-lite: additionalProperties keyword", () => {
 	};
 
 	test("passes when only declared properties exist", () => {
-		const res = validate(schema, { id: "abc" });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validate(schema, { id: "abc" }));
 	});
 
 	test("fails when extra property is present", () => {
-		const res = validate(schema, { id: "abc", extra: 123 });
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$.extra: unexpected property"]);
+		assertInvalid(validate(schema, { id: "abc", extra: 123 }), [
+			"$.extra: unexpected property",
+		]);
 	});
 });
 
@@ -125,15 +156,11 @@ describe("schema-lite: items keyword", () => {
 	};
 
 	test("passes when array items match schema", () => {
-		const res = validate(schema, [1, 2, 3.5]);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validate(schema, [1, 2, 3.5]));
 	});
 
 	test("fails when an item does not match", () => {
-		const res = validate(schema, [1, "two", 3]);
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$[1]: expected number"]);
+		assertInvalid(validate(schema, [1, "two", 3]), ["$[1]: expected number"]);
 	});
 });
 
@@ -146,9 +173,10 @@ describe("schema-lite: enum keyword", () => {
 	});
 
 	test("fails for value outside enum", () => {
-		const res = validate(schema, "yellow");
-		assert.equal(res.ok, false);
-		assert.match(res.errors[0], /^\$: must be one of red, green, blue$/);
+		assertMatchError(
+			validate(schema, "yellow"),
+			/^\$: must be one of red, green, blue$/,
+		);
 	});
 });
 
@@ -165,17 +193,16 @@ describe("schema-lite: minimum and maximum keywords", () => {
 		assert.equal(validate(schema, 100).ok, true);
 	});
 
-	test("fails below minimum", () => {
-		const res = validate(schema, -1);
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$: must be >= 0"]);
-	});
+	const FAIL_CASES = [
+		{ name: "fails below minimum", value: -1, errors: ["$: must be >= 0"] },
+		{ name: "fails above maximum", value: 101, errors: ["$: must be <= 100"] },
+	];
 
-	test("fails above maximum", () => {
-		const res = validate(schema, 101);
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$: must be <= 100"]);
-	});
+	for (const { name, value, errors } of FAIL_CASES) {
+		test(name, () => {
+			assertInvalid(validate(schema, value), errors);
+		});
+	}
 });
 
 describe("schema-lite: minLength and pattern keywords", () => {
@@ -190,17 +217,24 @@ describe("schema-lite: minLength and pattern keywords", () => {
 		assert.equal(res.ok, true);
 	});
 
-	test("fails when shorter than minLength", () => {
-		const res = validate(schema, "AB");
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$: must be at least 3 characters"]);
-	});
+	const FAIL_CASES = [
+		{
+			name: "fails when shorter than minLength",
+			value: "AB",
+			errors: ["$: must be at least 3 characters"],
+		},
+		{
+			name: "fails when pattern does not match",
+			value: "abc",
+			errors: ["$: must match pattern ^[A-Z]+$"],
+		},
+	];
 
-	test("fails when pattern does not match", () => {
-		const res = validate(schema, "abc");
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$: must match pattern ^[A-Z]+$"]);
-	});
+	for (const { name, value, errors } of FAIL_CASES) {
+		test(name, () => {
+			assertInvalid(validate(schema, value), errors);
+		});
+	}
 });
 
 describe("schema-lite: nested paths", () => {
@@ -222,31 +256,32 @@ describe("schema-lite: nested paths", () => {
 		},
 	};
 
-	test("validates deeply nested structure", () => {
-		const ir = {
-			parts: [
-				{ id: "part_1", ref: "R1" },
-				{ id: "part_2", ref: "C1" },
-				{ ref: "U1" },
-			],
-		};
-		const res = validate(circuitSchema, ir);
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["$.parts[2].id: missing"]);
-	});
+	const SAMPLE_IR = {
+		parts: [
+			{ id: "part_1", ref: "R1" },
+			{ id: "part_2", ref: "C1" },
+			{ ref: "U1" },
+		],
+	};
 
-	test("supports unrooted path prefix when requested", () => {
-		const ir = {
-			parts: [
-				{ id: "part_1", ref: "R1" },
-				{ id: "part_2", ref: "C1" },
-				{ ref: "U1" },
-			],
-		};
-		const res = validate(circuitSchema, ir, "");
-		assert.equal(res.ok, false);
-		assert.deepEqual(res.errors, ["parts[2].id: missing"]);
-	});
+	const CASES = [
+		{
+			name: "validates deeply nested structure",
+			args: [circuitSchema, SAMPLE_IR],
+			expected: ["$.parts[2].id: missing"],
+		},
+		{
+			name: "supports unrooted path prefix when requested",
+			args: [circuitSchema, SAMPLE_IR, ""],
+			expected: ["parts[2].id: missing"],
+		},
+	];
+
+	for (const { name, args, expected } of CASES) {
+		test(name, () => {
+			assertInvalid(validate(...args), expected);
+		});
+	}
 });
 
 describe("schema-lite: never throws on weird input", () => {
@@ -265,32 +300,22 @@ describe("schema-lite: never throws on weird input", () => {
 
 	for (const input of WEIRD_INPUTS) {
 		test(`does not throw for weird value: ${String(input)}`, () => {
-			assert.doesNotThrow(() => {
-				const res = validate({ type: "object" }, input);
-				assert.equal(typeof res.ok, "boolean");
-				assert.equal(Array.isArray(res.errors), true);
-			});
+			assertSafeValidation(() => validate({ type: "object" }, input));
 		});
 
 		test(`does not throw for weird schema: ${String(input)}`, () => {
-			assert.doesNotThrow(() => {
-				const res = validate(input, { a: 1 });
-				assert.equal(typeof res.ok, "boolean");
-				assert.equal(Array.isArray(res.errors), true);
-			});
+			assertSafeValidation(() => validate(input, { a: 1 }));
 		});
 	}
 
 	test("does not throw on invalid regex pattern in schema", () => {
-		assert.doesNotThrow(() => {
-			const res = validate({ type: "string", pattern: "[invalid(" }, "hello");
-			assert.equal(res.ok, false);
-		});
+		assertInvalidPatternDoesNotThrow(
+			{ type: "string", pattern: "[invalid(" },
+			"hello",
+		);
 	});
 
 	test("empty schema accepts any value", () => {
-		const res = validate({}, { any: "data" });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validate({}, { any: "data" }));
 	});
 });
