@@ -153,6 +153,13 @@ function EvolutionToggleBadge({
 		if (hasIntermediate) toggleEvolutionMode();
 	};
 
+	const handleKeyDown = (e) => {
+		if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+			e.preventDefault();
+			handleClick();
+		}
+	};
+
 	const handleSwitchChange = (checked, e) => {
 		if (e?.stopPropagation) e.stopPropagation();
 		toggleEvolutionMode(checked);
@@ -160,7 +167,14 @@ function EvolutionToggleBadge({
 
 	return (
 		<Tooltip title={tooltip}>
-			<div style={containerStyle} onClick={handleClick}>
+			{/* biome-ignore lint/a11y/useSemanticElements: badge contains switch child */}
+			<div
+				role="button"
+				tabIndex={hasIntermediate ? 0 : -1}
+				style={containerStyle}
+				onClick={handleClick}
+				onKeyDown={handleKeyDown}
+			>
 				<HistoryOutlined style={{ color: colors.icon, fontSize: "13px" }} />
 				<span style={{ fontSize: "11px", fontWeight: 600, color: colors.text }}>
 					History Evolution
