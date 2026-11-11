@@ -5,259 +5,142 @@ import { irToKicadPcb } from "../kicad-pcb-writer.js";
 import { irToKicadSch } from "../kicad-sch-writer.js";
 import { runSimulation, SIM_KINDS } from "../sim/run-sim.js";
 
-const IR_VALIDATE_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-	},
-};
+const T_OBJ = { type: "object" };
+const T_STR = { type: "string" };
+const T_NUM = { type: "number" };
+const T_ARR = { type: "array" };
+const T_STR_ARR = { type: "array", items: T_STR };
 
-const IR_VALIDATE_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["valid", "errors"],
-	additionalProperties: false,
-	properties: {
-		valid: { type: "boolean" },
-		errors: {
-			type: "array",
-			items: { type: "string" },
-		},
-	},
-};
+function createSchema(properties, required = []) {
+	return {
+		type: "object",
+		required,
+		additionalProperties: false,
+		properties,
+	};
+}
 
-const ERC_RUN_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir", "commit"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		commit: { type: "string" },
+const KICAD_WRITER_OUTPUT_SCHEMA = createSchema(
+	{
+		text: T_STR,
+		warnings: T_STR_ARR,
 	},
-};
+	["text", "warnings"],
+);
 
-const ERC_RUN_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["issues"],
-	additionalProperties: false,
-	properties: {
-		issues: { type: "array" },
-	},
-};
-
-const AUTO_PLACE_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir", "boardW", "boardH"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		boardW: { type: "number" },
-		boardH: { type: "number" },
-		gridMm: { type: "number" },
-		marginMm: { type: "number" },
-	},
-};
-
-const AUTO_PLACE_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["ir", "placed"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		placed: {
-			type: "array",
-			items: { type: "string" },
-		},
-	},
-};
-
-const TO_KICAD_SCH_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		title: { type: "string" },
-	},
-};
-
-const TO_KICAD_SCH_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["text", "warnings"],
-	additionalProperties: false,
-	properties: {
-		text: { type: "string" },
-		warnings: {
-			type: "array",
-			items: { type: "string" },
-		},
-	},
-};
-
-const TO_KICAD_PCB_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir", "boardW", "boardH"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		boardW: { type: "number" },
-		boardH: { type: "number" },
-	},
-};
-
-const TO_KICAD_PCB_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["text", "warnings"],
-	additionalProperties: false,
-	properties: {
-		text: { type: "string" },
-		warnings: {
-			type: "array",
-			items: { type: "string" },
-		},
-	},
-};
-
-const SIM_RUN_INPUT_SCHEMA = {
-	type: "object",
-	required: ["kind", "env", "commit", "inputs"],
-	additionalProperties: false,
-	properties: {
-		kind: {
-			type: "string",
-			enum: SIM_KINDS,
-		},
-		env: { type: "object" },
-		commit: { type: "string" },
-		inputs: { type: "object" },
-	},
-};
-
-const SIM_RUN_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["run", "issues"],
-	additionalProperties: false,
-	properties: {
-		run: { type: "object" },
-		issues: { type: "array" },
-		error: { type: "string" },
-	},
-};
-
-function handleValidateIr(input, fn) {
-	const res = fn(input.ir);
+const handleValidate = (fn, { ir }) => {
+	const res = fn(ir);
 	return {
 		valid: res.ok,
 		errors: res.errors,
 	};
-}
+};
 
-function handleRunErc(input, fn) {
-	const issues = fn(input.ir, { commit: input.commit });
-	return { issues };
-}
+const handleErc = (fn, { ir, commit }) => ({
+	issues: fn(ir, { commit }),
+});
 
-function handleAutoPlace(input, fn) {
-	return fn(input.ir, {
-		boardW: input.boardW,
-		boardH: input.boardH,
-		gridMm: input.gridMm,
-		marginMm: input.marginMm,
-	});
-}
+const handleIrWithOptions = (fn, { ir, ...opts }) => fn(ir, opts);
 
-function handleToKicadSch(input, fn) {
-	return fn(input.ir, { title: input.title });
-}
+const handleSim = (fn, input) => fn(input);
 
-function handleToKicadPcb(input, fn) {
-	return fn(input.ir, {
-		boardW: input.boardW,
-		boardH: input.boardH,
-	});
-}
-
-function handleSimRun(input, fn) {
-	return fn(input);
-}
-
-function createIrToolDefs(deps) {
-	const validateFn = deps.validateCircuitIR || validateCircuitIR;
-	const ercFn = deps.runErc || runErc;
-	const autoPlaceFn = deps.autoPlace || autoPlace;
-
-	return [
-		{
-			name: "ir.validate",
-			description:
-				"Validates a Circuit IR document against schema and semantics",
-			inputSchema: IR_VALIDATE_INPUT_SCHEMA,
-			outputSchema: IR_VALIDATE_OUTPUT_SCHEMA,
-			handler: (input) => handleValidateIr(input, validateFn),
-		},
-		{
-			name: "erc.run",
-			description: "Runs electrical rules check on a Circuit IR",
-			inputSchema: ERC_RUN_INPUT_SCHEMA,
-			outputSchema: ERC_RUN_OUTPUT_SCHEMA,
-			handler: (input) => handleRunErc(input, ercFn),
-		},
-		{
-			name: "ir.auto_place",
-			description: "Automatically places unplaced components on a PCB grid",
-			inputSchema: AUTO_PLACE_INPUT_SCHEMA,
-			outputSchema: AUTO_PLACE_OUTPUT_SCHEMA,
-			handler: (input) => handleAutoPlace(input, autoPlaceFn),
-		},
-	];
-}
-
-function createWriterAndSimToolDefs(deps) {
-	const schFn = deps.irToKicadSch || irToKicadSch;
-	const pcbFn = deps.irToKicadPcb || irToKicadPcb;
-	const simFn = deps.runSimulation || runSimulation;
-
-	return [
-		{
-			name: "ir.to_kicad_sch",
-			description:
-				"Generates KiCad schematic S-expression text from Circuit IR",
-			inputSchema: TO_KICAD_SCH_INPUT_SCHEMA,
-			outputSchema: TO_KICAD_SCH_OUTPUT_SCHEMA,
-			handler: (input) => handleToKicadSch(input, schFn),
-		},
-		{
-			name: "ir.to_kicad_pcb",
-			description:
-				"Generates KiCad PCB layout S-expression text from Circuit IR",
-			inputSchema: TO_KICAD_PCB_INPUT_SCHEMA,
-			outputSchema: TO_KICAD_PCB_OUTPUT_SCHEMA,
-			handler: (input) => handleToKicadPcb(input, pcbFn),
-		},
-		{
-			name: "sim.run",
-			description: "Runs thermal, trace current, or IR drop simulation",
-			inputSchema: SIM_RUN_INPUT_SCHEMA,
-			outputSchema: SIM_RUN_OUTPUT_SCHEMA,
-			handler: (input) => handleSimRun(input, simFn),
-		},
-	];
-}
+const TOOL_SPECS = [
+	{
+		name: "ir.validate",
+		description: "Validates a Circuit IR document against schema and semantics",
+		inputSchema: createSchema({ ir: T_OBJ }, ["ir"]),
+		outputSchema: createSchema(
+			{ valid: { type: "boolean" }, errors: T_STR_ARR },
+			["valid", "errors"],
+		),
+		dep: "validateCircuitIR",
+		fallback: validateCircuitIR,
+		handle: handleValidate,
+	},
+	{
+		name: "erc.run",
+		description: "Runs electrical rules check on a Circuit IR",
+		inputSchema: createSchema({ ir: T_OBJ, commit: T_STR }, ["ir", "commit"]),
+		outputSchema: createSchema({ issues: T_ARR }, ["issues"]),
+		dep: "runErc",
+		fallback: runErc,
+		handle: handleErc,
+	},
+	{
+		name: "ir.auto_place",
+		description: "Automatically places unplaced components on a PCB grid",
+		inputSchema: createSchema(
+			{
+				ir: T_OBJ,
+				boardW: T_NUM,
+				boardH: T_NUM,
+				gridMm: T_NUM,
+				marginMm: T_NUM,
+			},
+			["ir", "boardW", "boardH"],
+		),
+		outputSchema: createSchema({ ir: T_OBJ, placed: T_STR_ARR }, [
+			"ir",
+			"placed",
+		]),
+		dep: "autoPlace",
+		fallback: autoPlace,
+		handle: handleIrWithOptions,
+	},
+	{
+		name: "ir.to_kicad_sch",
+		description: "Generates KiCad schematic S-expression text from Circuit IR",
+		inputSchema: createSchema({ ir: T_OBJ, title: T_STR }, ["ir"]),
+		outputSchema: KICAD_WRITER_OUTPUT_SCHEMA,
+		dep: "irToKicadSch",
+		fallback: irToKicadSch,
+		handle: handleIrWithOptions,
+	},
+	{
+		name: "ir.to_kicad_pcb",
+		description: "Generates KiCad PCB layout S-expression text from Circuit IR",
+		inputSchema: createSchema({ ir: T_OBJ, boardW: T_NUM, boardH: T_NUM }, [
+			"ir",
+			"boardW",
+			"boardH",
+		]),
+		outputSchema: KICAD_WRITER_OUTPUT_SCHEMA,
+		dep: "irToKicadPcb",
+		fallback: irToKicadPcb,
+		handle: handleIrWithOptions,
+	},
+	{
+		name: "sim.run",
+		description: "Runs thermal, trace current, or IR drop simulation",
+		inputSchema: createSchema(
+			{
+				kind: { type: "string", enum: SIM_KINDS },
+				env: T_OBJ,
+				commit: T_STR,
+				inputs: T_OBJ,
+			},
+			["kind", "env", "commit", "inputs"],
+		),
+		outputSchema: createSchema({ run: T_OBJ, issues: T_ARR, error: T_STR }, [
+			"run",
+			"issues",
+		]),
+		dep: "runSimulation",
+		fallback: runSimulation,
+		handle: handleSim,
+	},
+];
 
 export function registerDesignTools(registry, deps = {}) {
-	const toolDefs = [
-		...createIrToolDefs(deps),
-		...createWriterAndSimToolDefs(deps),
-	];
-	for (const tool of toolDefs) {
+	for (const tool of TOOL_SPECS) {
+		const targetFn = deps[tool.dep] || tool.fallback;
 		registry.register({
 			name: tool.name,
 			description: tool.description,
 			inputSchema: tool.inputSchema,
 			outputSchema: tool.outputSchema,
 			permission: "read",
-			handler: tool.handler,
+			handler: (input) => tool.handle(targetFn, input),
 		});
 	}
 }
