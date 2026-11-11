@@ -34,6 +34,10 @@ function makeLineElement(opts) {
 	};
 }
 
+function makeLine([x1, y1, x2, y2], opts = {}) {
+	return makeLineElement({ x1, y1, x2, y2, ...opts });
+}
+
 function makeChain(opts) {
 	const { start, end, subSegments = [], bbox = null, totalLength = 0 } = opts;
 	const defaultBbox = {
@@ -68,7 +72,7 @@ function makeSegment(x1, y1, x2, y2) {
 	return { pts: { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } } };
 }
 
-function makeTestChain(x1, y1, x2, y2, opts = {}) {
+function makeTestChain([x1, y1, x2, y2], opts = {}) {
 	return makeChain({
 		start: { x: x1, y: y1 },
 		end: { x: x2, y: y2 },
@@ -76,9 +80,24 @@ function makeTestChain(x1, y1, x2, y2, opts = {}) {
 	});
 }
 
+function makeNode(id) {
+	return { id, visited: false };
+}
+
 function assertClassificationRef(meta, diffIdx, layer) {
 	assert.equal(meta.diffIdx, diffIdx);
 	assert.equal(meta.layer, layer);
+}
+
+function assertMatchResult(actual, expectedBase, expectedMinD) {
+	assert.equal(actual.bestBaseChain, expectedBase);
+	assert.equal(actual.minD, expectedMinD);
+}
+
+function assertChainMetrics(comp, expectedLen, expectedBbox) {
+	const metrics = computeChainMetrics(comp);
+	assert.equal(metrics.totalLength, expectedLen);
+	assert.deepEqual(metrics.bbox, expectedBbox);
 }
 
 function verifyAssembledChain(elements, layerFilename, expected) {
@@ -112,6 +131,95 @@ function verifyLegacyChainClassification(bChain, tChain, bSeg) {
 	);
 }
 
+function createClassificationPair(bId, tId, targetCoords = [0, 0, 10, 0]) {
+	const bSeg = { id: bId };
+	const tSeg = { id: tId };
+	const bChain = makeTestChain([0, 0, 10, 0], { subSegments: [bSeg] });
+	const tChain = makeTestChain(targetCoords, { subSegments: [tSeg] });
+	return { bSeg, tSeg, bChain, tChain, ctx: createTestContext() };
+}
+
+function makeMatchChain(y, segs) {
+	return makeTestChain([0, y, 10, y], { subSegments: segs, totalLength: 10 });
+}
+
+function getMatchPassCases(segBase) {
+	const bChain = makeMatchChain(0, [segBase]);
+	const tChanged = makeMatchChain(1, [{ geoKey: "targ1" }]);
+	const tIdentical = makeMatchChain(0, [segBase]);
+	return [
+		{
+			base: [bChain],
+			target: [tChanged],
+			startIdx: 0,
+			expectedIdx: 1,
+			expectedClass: "diff-changed",
+		},
+		{
+			base: [bChain],
+			target: [tIdentical],
+			startIdx: 5,
+			expectedIdx: 5,
+			expectedClass: "diff-unchanged",
+		},
+		{
+			base: [],
+			target: [],
+			startIdx: 7,
+			expectedIdx: 7,
+			expectedClass: null,
+		},
+	];
+}
+
+function verifyMatchPass(tc, segBase) {
+	const ctx = createTestContext();
+	const resultIdx = matchTrackChainsPass(
+		tc.base,
+		tc.target,
+		ctx,
+		"board-F_Cu.svg",
+		tc.startIdx,
+	);
+	assert.equal(resultIdx, tc.expectedIdx);
+	if (tc.expectedClass) {
+		assert.equal(
+			ctx.baseClassifications.get(segBase).diffClass,
+			tc.expectedClass,
+		);
+	}
+}
+
+function getBaseChainCases(reversedBase, distantBase) {
+	const emptySet = new Set();
+	return [
+		{
+			baseChains: [],
+			matched: emptySet,
+			expectedBase: null,
+			expectedMinD: Infinity,
+		},
+		{
+			baseChains: [reversedBase],
+			matched: emptySet,
+			expectedBase: reversedBase,
+			expectedMinD: 0,
+		},
+		{
+			baseChains: [reversedBase],
+			matched: new Set([reversedBase]),
+			expectedBase: null,
+			expectedMinD: Infinity,
+		},
+		{
+			baseChains: [distantBase],
+			matched: emptySet,
+			expectedBase: null,
+			expectedMinD: Infinity,
+		},
+	];
+}
+
 describe("Copper Track Chain Assembly & Topological Matching", () => {
 	test("isCopperLayerFilename classifies copper, non-copper, empty, and edge cases", () => {
 		const cases = [
@@ -133,9 +241,7 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("findConnectedComponent traverses components, single nodes, and cycles", () => {
-		const nodeA = { id: "A", visited: false };
-		const nodeB = { id: "B", visited: false };
-		const nodeC = { id: "C", visited: false };
+		const [nodeA, nodeB, nodeC] = ["A", "B", "C"].map(makeNode);
 		const graph = new Map([
 			[nodeA, [nodeB]],
 			[nodeB, [nodeC]],
@@ -147,12 +253,13 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 		);
 		assert.deepEqual(component, [nodeA, nodeB, nodeC]);
 
-		const isolated = { id: "iso", visited: false };
-		const isolatedRes = findConnectedComponent(isolated, () => []);
-		assert.deepEqual(isolatedRes, [isolated]);
+		const isolated = makeNode("iso");
+		assert.deepEqual(
+			findConnectedComponent(isolated, () => []),
+			[isolated],
+		);
 
-		const cycleA = { id: "c1", visited: false };
-		const cycleB = { id: "c2", visited: false };
+		const [cycleA, cycleB] = ["c1", "c2"].map(makeNode);
 		const cycleGraph = new Map([
 			[cycleA, [cycleB]],
 			[cycleB, [cycleA]],
@@ -200,36 +307,37 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("computeChainMetrics computes bbox and totalLength for normal, empty, and edge cases", () => {
-		const normalComp = [makeSegment(0, 0, 3, 4), makeSegment(3, 4, 3, 10)];
-		const edgeComp = [{ pts: null }, makeSegment(5, 5, 5, 5)];
-
 		const cases = [
 			{
-				comp: normalComp,
+				comp: [makeSegment(0, 0, 3, 4), makeSegment(3, 4, 3, 10)],
 				expectedLen: 11,
 				expectedBbox: { minX: 0, minY: 0, maxX: 3, maxY: 10 },
 			},
 			{
-				comp: edgeComp,
+				comp: [{ pts: null }, makeSegment(5, 5, 5, 5)],
 				expectedLen: 0,
 				expectedBbox: { minX: 5, minY: 5, maxX: 5, maxY: 5 },
+			},
+			{
+				comp: [],
+				expectedLen: 0,
+				expectedBbox: {
+					minX: Infinity,
+					minY: Infinity,
+					maxX: -Infinity,
+					maxY: -Infinity,
+				},
 			},
 		];
 
 		for (const { comp, expectedLen, expectedBbox } of cases) {
-			const metrics = computeChainMetrics(comp);
-			assert.equal(metrics.totalLength, expectedLen);
-			assert.deepEqual(metrics.bbox, expectedBbox);
+			assertChainMetrics(comp, expectedLen, expectedBbox);
 		}
-
-		const emptyMetrics = computeChainMetrics([]);
-		assert.equal(emptyMetrics.totalLength, 0);
-		assert.equal(emptyMetrics.bbox.minX, Infinity);
 	});
 
 	test("assembleTrackChains groups connected copper tracks into chains", () => {
-		const el1 = makeLineElement({ x1: 0, y1: 0, x2: 10, y2: 0 });
-		const el2 = makeLineElement({ x1: 10, y1: 0, x2: 10, y2: 20 });
+		const el1 = makeLine([0, 0, 10, 0]);
+		const el2 = makeLine([10, 0, 10, 20]);
 		verifyAssembledChain([el1, el2], "board-F_Cu.svg", {
 			subSegments: 2,
 			totalLength: 30,
@@ -240,14 +348,8 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("assembleTrackChains filters non-copper, non-tracks, and empty elements", () => {
-		const track = makeLineElement({ x1: 0, y1: 0, x2: 10, y2: 0 });
-		const component = makeLineElement({
-			x1: 0,
-			y1: 0,
-			x2: 10,
-			y2: 0,
-			isComponent: true,
-		});
+		const track = makeLine([0, 0, 10, 0]);
+		const component = makeLine([0, 0, 10, 0], { isComponent: true });
 		const closedPath = {
 			tag: "path",
 			fullMatch: '<path d="M 0 0 L 10 0" fill="red"/>',
@@ -268,9 +370,9 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("findBestMatchingBaseChain matches nearest base chain within distance threshold", () => {
-		const bChain1 = makeTestChain(0, 0, 10, 0);
-		const bChain2 = makeTestChain(0, 20, 10, 20);
-		const tChain = makeTestChain(0.1, 0, 10.1, 0);
+		const bChain1 = makeTestChain([0, 0, 10, 0]);
+		const bChain2 = makeTestChain([0, 20, 10, 20]);
+		const tChain = makeTestChain([0.1, 0, 10.1, 0]);
 
 		const result = findBestMatchingBaseChain(
 			tChain,
@@ -283,54 +385,29 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("findBestMatchingBaseChain handles empty base chains, reversed chains, and matched sets", () => {
-		const tChain = makeTestChain(0, 0, 10, 0);
-		const reversedBase = makeTestChain(10, 0, 0, 0);
-		const distantBase = makeTestChain(50, 50, 60, 50);
+		const tChain = makeTestChain([0, 0, 10, 0]);
+		const reversedBase = makeTestChain([10, 0, 0, 0]);
+		const distantBase = makeTestChain([50, 50, 60, 50]);
 
-		const cases = [
-			{
-				baseChains: [],
-				matched: new Set(),
-				expectedBase: null,
-				expectedMinD: Infinity,
-			},
-			{
-				baseChains: [reversedBase],
-				matched: new Set(),
-				expectedBase: reversedBase,
-				expectedMinD: 0,
-			},
-			{
-				baseChains: [reversedBase],
-				matched: new Set([reversedBase]),
-				expectedBase: null,
-				expectedMinD: Infinity,
-			},
-			{
-				baseChains: [distantBase],
-				matched: new Set(),
-				expectedBase: null,
-				expectedMinD: Infinity,
-			},
-		];
-
-		for (const { baseChains, matched, expectedBase, expectedMinD } of cases) {
-			const res = findBestMatchingBaseChain(tChain, baseChains, matched);
-			assert.equal(res.bestBaseChain, expectedBase);
-			assert.equal(res.minD, expectedMinD);
+		for (const tc of getBaseChainCases(reversedBase, distantBase)) {
+			assertMatchResult(
+				findBestMatchingBaseChain(tChain, tc.baseChains, tc.matched),
+				tc.expectedBase,
+				tc.expectedMinD,
+			);
 		}
 	});
 
 	test("areChainsIdentical validates identity via geoKeys, bbox/length tolerances, and handles nulls", () => {
 		const seg1 = { geoKey: "line1" };
 		const seg2 = { geoKey: "line2" };
-		const bChain = makeTestChain(0, 0, 10, 0, {
+		const bChain = makeTestChain([0, 0, 10, 0], {
 			subSegments: [seg1],
 			bbox: { minX: 0, minY: 0, maxX: 10, maxY: 0 },
 			totalLength: 10,
 		});
-		const sameGeo = makeTestChain(0, 0, 10, 0, { subSegments: [seg1] });
-		const diffGeo = makeTestChain(0.05, 0, 10.05, 0, {
+		const sameGeo = makeTestChain([0, 0, 10, 0], { subSegments: [seg1] });
+		const diffGeo = makeTestChain([0.05, 0, 10.05, 0], {
 			subSegments: [seg2],
 			bbox: { minX: 0.05, minY: 0, maxX: 10.05, maxY: 0 },
 			totalLength: 10.05,
@@ -349,30 +426,25 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("applyChainClassifications assigns diff-unchanged for identical chains", () => {
-		const bSeg = { id: "b1" };
-		const tSeg = { id: "t1" };
-		const bChain = makeTestChain(0, 0, 10, 0, { subSegments: [bSeg] });
-		const tChain = makeTestChain(0, 0, 10, 0, { subSegments: [tSeg] });
-		const ctx = createTestContext();
-
+		const { bSeg, tSeg, bChain, tChain, ctx } = createClassificationPair(
+			"b1",
+			"t1",
+		);
 		applyChainClassifications(bChain, tChain, { chainsIdentical: true }, ctx);
 
 		assert.ok(ctx.matchedBase.has(bSeg));
 		assert.ok(ctx.matchedTarget.has(tSeg));
-		assert.deepEqual(ctx.baseClassifications.get(bSeg), {
-			diffClass: "diff-unchanged",
-		});
-		assert.deepEqual(ctx.targetClassifications.get(tSeg), {
-			diffClass: "diff-unchanged",
-		});
+		const unchanged = { diffClass: "diff-unchanged" };
+		assert.deepEqual(ctx.baseClassifications.get(bSeg), unchanged);
+		assert.deepEqual(ctx.targetClassifications.get(tSeg), unchanged);
 	});
 
 	test("applyChainClassifications assigns diff-changed metadata and supports legacy arguments", () => {
-		const bSeg = { id: "b2" };
-		const tSeg = { id: "t2" };
-		const bChain = makeTestChain(0, 0, 10, 0, { subSegments: [bSeg] });
-		const tChain = makeTestChain(0, 2, 10, 2, { subSegments: [tSeg] });
-		const ctx = createTestContext();
+		const { bSeg, tSeg, bChain, tChain, ctx } = createClassificationPair(
+			"b2",
+			"t2",
+			[0, 2, 10, 2],
+		);
 
 		applyChainClassifications(
 			bChain,
@@ -398,65 +470,8 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 
 	test("matchTrackChainsPass matches changed, identical, and empty chains", () => {
 		const segBase = { geoKey: "base1" };
-		const bChain = makeTestChain(0, 0, 10, 0, {
-			subSegments: [segBase],
-			totalLength: 10,
-		});
-		const tChanged = makeTestChain(0, 1, 10, 1, {
-			subSegments: [{ geoKey: "targ1" }],
-			totalLength: 10,
-		});
-		const tIdentical = makeTestChain(0, 0, 10, 0, {
-			subSegments: [segBase],
-			totalLength: 10,
-		});
-
-		const cases = [
-			{
-				base: [bChain],
-				target: [tChanged],
-				startIdx: 0,
-				expectedIdx: 1,
-				expectedClass: "diff-changed",
-			},
-			{
-				base: [bChain],
-				target: [tIdentical],
-				startIdx: 5,
-				expectedIdx: 5,
-				expectedClass: "diff-unchanged",
-			},
-			{
-				base: [],
-				target: [],
-				startIdx: 7,
-				expectedIdx: 7,
-				expectedClass: null,
-			},
-		];
-
-		for (const {
-			base,
-			target,
-			startIdx,
-			expectedIdx,
-			expectedClass,
-		} of cases) {
-			const ctx = createTestContext();
-			const resultIdx = matchTrackChainsPass(
-				base,
-				target,
-				ctx,
-				"board-F_Cu.svg",
-				startIdx,
-			);
-			assert.equal(resultIdx, expectedIdx);
-			if (expectedClass) {
-				assert.equal(
-					ctx.baseClassifications.get(segBase).diffClass,
-					expectedClass,
-				);
-			}
+		for (const tc of getMatchPassCases(segBase)) {
+			verifyMatchPass(tc, segBase);
 		}
 	});
 });
