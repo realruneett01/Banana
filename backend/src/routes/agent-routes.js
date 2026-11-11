@@ -6,6 +6,7 @@ import { registerCommitTools } from "../engine/tools/commit-tools.js";
 import { registerDesignTools } from "../engine/tools/design-tools.js";
 import { registerDiffTools } from "../engine/tools/diff-tools.js";
 import { registerKicadTools } from "../engine/tools/kicad-tools.js";
+import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { registerRouteTools } from "../engine/tools/route-tools.js";
 
 function isPlainObject(val) {
@@ -68,6 +69,7 @@ export function buildLocalRegistry(deps = {}) {
 	registerDesignTools(registry);
 	registerRouteTools(registry, deps?.route);
 	registerCommitTools(registry, deps?.commit ?? deps);
+	registerPatchTools(registry, deps?.patch ?? deps);
 	return registry;
 }
 

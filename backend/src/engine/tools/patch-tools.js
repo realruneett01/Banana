@@ -115,6 +115,17 @@ function validateFileEntry(repoPath, file) {
 	return resolvedPath;
 }
 
+function checkDuplicatePaths(files) {
+	const seen = new Set();
+	for (const file of files) {
+		const normalized = path.posix.normalize(file.path);
+		if (seen.has(normalized)) {
+			throw new Error("files must not repeat the same path");
+		}
+		seen.add(normalized);
+	}
+}
+
 function validateFiles(repoPath, files) {
 	if (!Array.isArray(files)) {
 		throw new Error("files must be an array");
@@ -122,10 +133,12 @@ function validateFiles(repoPath, files) {
 	if (files.length < 1 || files.length > 2) {
 		throw new Error("files must contain 1 or 2 entries");
 	}
-	return files.map((file) => ({
+	const targets = files.map((file) => ({
 		file,
 		resolvedPath: validateFileEntry(repoPath, file),
 	}));
+	checkDuplicatePaths(files);
+	return targets;
 }
 
 async function readAndPatchFile(fsImpl, patchFn, target) {
@@ -184,12 +197,41 @@ async function commitPatchedFiles(execFileFn, repoPath, results, message) {
 	};
 }
 
+async function checkTargetRealPath(fsImpl, realRepo, resolvedPath) {
+	let realTarget;
+	try {
+		realTarget = await fsImpl.realpath(resolvedPath);
+	} catch {
+		return;
+	}
+	const rel = path.relative(realRepo, realTarget);
+	if (rel.startsWith("..") || path.isAbsolute(rel)) {
+		throw new Error("path resolves outside repoPath");
+	}
+}
+
+async function validateRealPaths(fsImpl, repoPath, targets) {
+	if (typeof fsImpl?.realpath !== "function") {
+		return;
+	}
+	let realRepo;
+	try {
+		realRepo = await fsImpl.realpath(repoPath);
+	} catch {
+		return;
+	}
+	for (const target of targets) {
+		await checkTargetRealPath(fsImpl, realRepo, target.resolvedPath);
+	}
+}
+
 function createPatchHandler(deps) {
 	const { execFileFn, fsImpl, patchFn } = deps;
 	return async (input) => {
 		validateRepoPath(input.repoPath);
 		validateMessage(input.message);
 		const targets = validateFiles(input.repoPath, input.files);
+		await validateRealPaths(fsImpl, input.repoPath, targets);
 		await ensureGitWorkTree(execFileFn, input.repoPath);
 
 		const results = await processPatchTargets(fsImpl, patchFn, targets);
