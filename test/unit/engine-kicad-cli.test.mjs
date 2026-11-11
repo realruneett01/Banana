@@ -33,6 +33,16 @@ function createExitError(code) {
 	return err;
 }
 
+async function withTempReport(name, content, fn) {
+	const outPath = createTempReportPath(name);
+	fs.writeFileSync(outPath, JSON.stringify(content), "utf8");
+	try {
+		return await fn(outPath);
+	} finally {
+		fs.rmSync(outPath, { force: true });
+	}
+}
+
 const SAMPLE_REPORT = {
 	violations: [
 		{
@@ -70,10 +80,10 @@ describe("module contract", () => {
 
 	test("returns runner object with required methods", () => {
 		const runner = createKicadCli();
-		assert.equal(typeof runner.runErc, "function");
-		assert.equal(typeof runner.runDrc, "function");
-		assert.equal(typeof runner.exportNetlist, "function");
-		assert.equal(typeof runner.version, "function");
+		const REQUIRED_METHODS = ["runErc", "runDrc", "exportNetlist", "version"];
+		for (const method of REQUIRED_METHODS) {
+			assert.equal(typeof runner[method], "function");
+		}
 	});
 
 	test("uses KICAD_CLI_PATH by default", async () => {
@@ -85,83 +95,65 @@ describe("module contract", () => {
 });
 
 describe("exact argument arrays", () => {
-	test("runErc passes exact argument array", async () => {
-		const outPath = createTempReportPath("erc");
-		fs.writeFileSync(outPath, JSON.stringify({ violations: [] }), "utf8");
-		const schPath = path.resolve("/tmp/board.kicad_sch");
-		const { fake, calls } = createFakeExec();
-		const runner = createKicadCli({ cliPath: "/bin/kicad-cli", exec: fake });
+	const REPORT_CLI_CASES = [
+		[
+			"runErc passes exact argument array",
+			"erc",
+			["sch", "erc"],
+			path.resolve("/tmp/board.kicad_sch"),
+			(runner, file, out) => runner.runErc(file, out),
+		],
+		[
+			"runDrc passes exact argument array",
+			"drc",
+			["pcb", "drc"],
+			path.resolve("/tmp/board.kicad_pcb"),
+			(runner, file, out) => runner.runDrc(file, out),
+		],
+	];
 
-		try {
-			await runner.runErc(schPath, outPath);
-			assert.deepEqual(calls[0].args, [
-				"sch",
-				"erc",
-				"--format",
-				"json",
-				"--severity-all",
-				"--output",
-				outPath,
-				schPath,
-			]);
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
-
-	test("runDrc passes exact argument array", async () => {
-		const outPath = createTempReportPath("drc");
-		fs.writeFileSync(outPath, JSON.stringify({ violations: [] }), "utf8");
-		const pcbPath = path.resolve("/tmp/board.kicad_pcb");
-		const { fake, calls } = createFakeExec();
-		const runner = createKicadCli({ cliPath: "/bin/kicad-cli", exec: fake });
-
-		try {
-			await runner.runDrc(pcbPath, outPath);
-			assert.deepEqual(calls[0].args, [
-				"pcb",
-				"drc",
-				"--format",
-				"json",
-				"--severity-all",
-				"--output",
-				outPath,
-				pcbPath,
-			]);
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
+	for (const [name, kind, subcommands, inputPath, run] of REPORT_CLI_CASES) {
+		test(name, async () => {
+			const { fake, calls } = createFakeExec();
+			const runner = createKicadCli({ cliPath: "/bin/kicad-cli", exec: fake });
+			await withTempReport(kind, { violations: [] }, async (outPath) => {
+				await run(runner, inputPath, outPath);
+				assert.deepEqual(calls[0].args, [
+					...subcommands,
+					"--format",
+					"json",
+					"--severity-all",
+					"--output",
+					outPath,
+					inputPath,
+				]);
+			});
+		});
+	}
 
 	test("exportNetlist passes exact argument array with default and custom format", async () => {
 		const schPath = path.resolve("/tmp/main.kicad_sch");
 		const outNet = path.resolve("/tmp/main.net");
 		const { fake, calls } = createFakeExec();
 		const runner = createKicadCli({ cliPath: "/bin/kicad-cli", exec: fake });
+		const NETLIST_CASES = [
+			["kicadsexpr", () => runner.exportNetlist(schPath, outNet)],
+			["spice", () => runner.exportNetlist(schPath, outNet, "spice")],
+		];
 
-		await runner.exportNetlist(schPath, outNet);
-		assert.deepEqual(calls[0].args, [
-			"sch",
-			"export",
-			"netlist",
-			"--format",
-			"kicadsexpr",
-			"--output",
-			outNet,
-			schPath,
-		]);
-
-		await runner.exportNetlist(schPath, outNet, "spice");
-		assert.deepEqual(calls[1].args, [
-			"sch",
-			"export",
-			"netlist",
-			"--format",
-			"spice",
-			"--output",
-			outNet,
-			schPath,
-		]);
+		for (const [idx, [format, run]] of NETLIST_CASES.entries()) {
+			await run();
+			assert.deepEqual(calls[idx].args, [
+				"sch",
+				"export",
+				"netlist",
+				"--format",
+				format,
+				"--output",
+				outNet,
+				schPath,
+			]);
+		}
 	});
 
 	test("version passes exact argument array", async () => {
@@ -174,186 +166,203 @@ describe("exact argument arrays", () => {
 });
 
 describe("timeout and buffer options", () => {
-	test("passes default timeout 120000 and 16MB maxBuffer", async () => {
-		const { fake, calls } = createFakeExec({ stdout: "1.0.0" });
-		const runner = createKicadCli({ exec: fake });
-		await runner.version();
-		assert.equal(calls[0].options.timeout, 120000);
-		assert.equal(calls[0].options.maxBuffer, 16 * 1024 * 1024);
-	});
-
-	test("passes custom timeoutMs", async () => {
-		const { fake, calls } = createFakeExec({ stdout: "1.0.0" });
-		const runner = createKicadCli({ exec: fake, timeoutMs: 45000 });
-		await runner.version();
-		assert.equal(calls[0].options.timeout, 45000);
-	});
-});
-
-describe("path rejection before spawning", () => {
-	const REJECTION_CASES = [
-		{
-			name: "relative schPath for runErc",
-			fn: (r) => r.runErc("board.kicad_sch", "/tmp/out.json"),
-		},
-		{
-			name: "wrong extension for runErc",
-			fn: (r) =>
-				r.runErc(path.resolve("/tmp/board.kicad_pcb"), "/tmp/out.json"),
-		},
-		{
-			name: "relative pcbPath for runDrc",
-			fn: (r) => r.runDrc("board.kicad_pcb", "/tmp/out.json"),
-		},
-		{
-			name: "wrong extension for runDrc",
-			fn: (r) =>
-				r.runDrc(path.resolve("/tmp/board.kicad_sch"), "/tmp/out.json"),
-		},
-		{
-			name: "relative schPath for exportNetlist",
-			fn: (r) => r.exportNetlist("board.kicad_sch", "/tmp/out.net"),
-		},
-		{
-			name: "wrong extension for exportNetlist",
-			fn: (r) =>
-				r.exportNetlist(path.resolve("/tmp/board.kicad_pcb"), "/tmp/out.net"),
-		},
-		{
-			name: "empty output path",
-			fn: (r) => r.runErc(path.resolve("/tmp/board.kicad_sch"), ""),
-		},
+	const TIMEOUT_CASES = [
+		[
+			"passes default timeout 120000 and 16MB maxBuffer",
+			{},
+			120000,
+			16 * 1024 * 1024,
+		],
+		["passes custom timeoutMs", { timeoutMs: 45000 }, 45000, null],
 	];
 
-	for (const { name, fn } of REJECTION_CASES) {
-		test(`rejects ${name} before spawning`, async () => {
-			const { fake, calls } = createFakeExec();
-			const runner = createKicadCli({ exec: fake });
-			await assert.rejects(() => fn(runner));
-			assert.equal(calls.length, 0);
+	for (const [
+		name,
+		config,
+		expectedTimeout,
+		expectedMaxBuffer,
+	] of TIMEOUT_CASES) {
+		test(name, async () => {
+			const { fake, calls } = createFakeExec({ stdout: "1.0.0" });
+			const runner = createKicadCli({ exec: fake, ...config });
+			await runner.version();
+			assert.equal(calls[0].options.timeout, expectedTimeout);
+			if (expectedMaxBuffer !== null) {
+				assert.equal(calls[0].options.maxBuffer, expectedMaxBuffer);
+			}
 		});
 	}
 });
 
-describe("report parsing", () => {
-	test("parses violations and calculates summary accurately", async () => {
-		const outPath = createTempReportPath("parsing");
-		fs.writeFileSync(outPath, JSON.stringify(SAMPLE_REPORT), "utf8");
-		const schPath = path.resolve("/tmp/board.kicad_sch");
-		const { fake } = createFakeExec();
+describe("path rejection before spawning", () => {
+	async function assertRejectsBeforeSpawn(action) {
+		const { fake, calls } = createFakeExec();
 		const runner = createKicadCli({ exec: fake });
+		await assert.rejects(() => action(runner));
+		assert.equal(calls.length, 0);
+	}
 
-		try {
-			const report = await runner.runErc(schPath, outPath);
-			assert.equal(report.violations.length, 2);
-			assert.equal(report.summary.errors, 1);
-			assert.equal(report.summary.warnings, 1);
-			assert.deepEqual(report.violations[0].items[0], {
-				uuid: "uuid-1",
-				description: "Pad 1 of R1",
-				pos: { x: 10.5, y: 20.25 },
-			});
-			assert.deepEqual(report.violations[1].items[0], {
-				uuid: "uuid-2",
-				description: "Pin 2 of U1",
-				pos: null,
-			});
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
-
-	test("parses empty violations cleanly", async () => {
-		const outPath = createTempReportPath("empty");
-		fs.writeFileSync(outPath, JSON.stringify({ violations: [] }), "utf8");
-		const pcbPath = path.resolve("/tmp/board.kicad_pcb");
-		const { fake } = createFakeExec();
-		const runner = createKicadCli({ exec: fake });
-
-		try {
-			const report = await runner.runDrc(pcbPath, outPath);
-			assert.deepEqual(report.violations, []);
-			assert.deepEqual(report.summary, { errors: 0, warnings: 0 });
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
-});
-
-describe("exit code 5 handling", () => {
-	test("runErc accepts exit code 5 as non-error and parses report", async () => {
-		const outPath = createTempReportPath("erc5");
-		fs.writeFileSync(outPath, JSON.stringify(SAMPLE_REPORT), "utf8");
-		const schPath = path.resolve("/tmp/board.kicad_sch");
-		const { fake } = createFakeExec({ error: createExitError(5) });
-		const runner = createKicadCli({ exec: fake });
-
-		try {
-			const report = await runner.runErc(schPath, outPath);
-			assert.equal(report.violations.length, 2);
-			assert.equal(report.summary.errors, 1);
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
-
-	test("runDrc accepts exit code 5 as non-error and parses report", async () => {
-		const outPath = createTempReportPath("drc5");
-		fs.writeFileSync(outPath, JSON.stringify(SAMPLE_REPORT), "utf8");
-		const pcbPath = path.resolve("/tmp/board.kicad_pcb");
-		const { fake } = createFakeExec({ error: createExitError(5) });
-		const runner = createKicadCli({ exec: fake });
-
-		try {
-			const report = await runner.runDrc(pcbPath, outPath);
-			assert.equal(report.violations.length, 2);
-			assert.equal(report.summary.warnings, 1);
-		} finally {
-			fs.rmSync(outPath, { force: true });
-		}
-	});
-});
-
-describe("non-zero exit rejection", () => {
-	const ERROR_CASES = [
+	const REJECTION_METHODS = [
 		{
-			name: "runErc with exit code 1",
-			fn: (r, sch, out) => r.runErc(sch, out),
-			file: path.resolve("/tmp/b.kicad_sch"),
-			err: createExitError(1),
+			method: "runErc",
+			pathParam: "schPath",
+			relPath: "board.kicad_sch",
+			wrongExt: "/tmp/board.kicad_pcb",
+			call: (r, p, o) => r.runErc(p, o),
+			out: "/tmp/out.json",
 		},
 		{
-			name: "runDrc with exit code 2",
-			fn: (r, pcb, out) => r.runDrc(pcb, out),
-			file: path.resolve("/tmp/b.kicad_pcb"),
-			err: createExitError(2),
+			method: "runDrc",
+			pathParam: "pcbPath",
+			relPath: "board.kicad_pcb",
+			wrongExt: "/tmp/board.kicad_sch",
+			call: (r, p, o) => r.runDrc(p, o),
+			out: "/tmp/out.json",
 		},
 		{
-			name: "exportNetlist with exit code 5",
-			fn: (r, sch, out) => r.exportNetlist(sch, out),
-			file: path.resolve("/tmp/b.kicad_sch"),
-			err: createExitError(5),
-		},
-		{
-			name: "exportNetlist with exit code 1",
-			fn: (r, sch, out) => r.exportNetlist(sch, out),
-			file: path.resolve("/tmp/b.kicad_sch"),
-			err: createExitError(1),
-		},
-		{
-			name: "version with exit code 1",
-			fn: (r) => r.version(),
-			file: null,
-			err: createExitError(1),
+			method: "exportNetlist",
+			pathParam: "schPath",
+			relPath: "board.kicad_sch",
+			wrongExt: "/tmp/board.kicad_pcb",
+			call: (r, p, o) => r.exportNetlist(p, o),
+			out: "/tmp/out.net",
 		},
 	];
 
-	for (const { name, fn, file, err } of ERROR_CASES) {
+	for (const {
+		method,
+		pathParam,
+		relPath,
+		wrongExt,
+		call,
+		out,
+	} of REJECTION_METHODS) {
+		test(`rejects relative ${pathParam} for ${method} before spawning`, () =>
+			assertRejectsBeforeSpawn((runner) => call(runner, relPath, out)));
+
+		test(`rejects wrong extension for ${method} before spawning`, () =>
+			assertRejectsBeforeSpawn((runner) =>
+				call(runner, path.resolve(wrongExt), out),
+			));
+	}
+
+	test("rejects empty output path before spawning", () =>
+		assertRejectsBeforeSpawn((runner) =>
+			runner.runErc(path.resolve("/tmp/board.kicad_sch"), ""),
+		));
+});
+
+describe("report parsing", () => {
+	const PARSING_CASES = [
+		[
+			"parses violations and calculates summary accurately",
+			"parsing",
+			SAMPLE_REPORT,
+			path.resolve("/tmp/board.kicad_sch"),
+			(runner, file, out) => runner.runErc(file, out),
+			(report) => {
+				assert.equal(report.violations.length, 2);
+				assert.equal(report.summary.errors, 1);
+				assert.equal(report.summary.warnings, 1);
+				const expectedItems = [
+					{
+						uuid: "uuid-1",
+						description: "Pad 1 of R1",
+						pos: { x: 10.5, y: 20.25 },
+					},
+					{
+						uuid: "uuid-2",
+						description: "Pin 2 of U1",
+						pos: null,
+					},
+				];
+				for (const [idx, item] of expectedItems.entries()) {
+					assert.deepEqual(report.violations[idx].items[0], item);
+				}
+			},
+		],
+		[
+			"parses empty violations cleanly",
+			"empty",
+			{ violations: [] },
+			path.resolve("/tmp/board.kicad_pcb"),
+			(runner, file, out) => runner.runDrc(file, out),
+			(report) => {
+				assert.deepEqual(report.violations, []);
+				assert.deepEqual(report.summary, { errors: 0, warnings: 0 });
+			},
+		],
+	];
+
+	for (const [name, tag, data, filePath, run, check] of PARSING_CASES) {
+		test(name, async () => {
+			const { fake } = createFakeExec();
+			const runner = createKicadCli({ exec: fake });
+			await withTempReport(tag, data, async (outPath) => {
+				const report = await run(runner, filePath, outPath);
+				check(report);
+			});
+		});
+	}
+});
+
+describe("exit code 5 handling", () => {
+	const EXIT_5_CASES = [
+		[
+			"runErc",
+			"erc5",
+			path.resolve("/tmp/board.kicad_sch"),
+			(runner, file, out) => runner.runErc(file, out),
+			"errors",
+		],
+		[
+			"runDrc",
+			"drc5",
+			path.resolve("/tmp/board.kicad_pcb"),
+			(runner, file, out) => runner.runDrc(file, out),
+			"warnings",
+		],
+	];
+
+	for (const [name, tag, filePath, run, summaryKey] of EXIT_5_CASES) {
+		test(`${name} accepts exit code 5 as non-error and parses report`, async () => {
+			const { fake } = createFakeExec({ error: createExitError(5) });
+			const runner = createKicadCli({ exec: fake });
+
+			await withTempReport(tag, SAMPLE_REPORT, async (outPath) => {
+				const report = await run(runner, filePath, outPath);
+				assert.equal(report.violations.length, 2);
+				assert.equal(report.summary[summaryKey], 1);
+			});
+		});
+	}
+});
+
+describe("non-zero exit rejection", () => {
+	const schTarget = path.resolve("/tmp/b.kicad_sch");
+	const pcbTarget = path.resolve("/tmp/b.kicad_pcb");
+	const ERROR_CASES = [
+		["runErc with exit code 1", 1, (r, out) => r.runErc(schTarget, out)],
+		["runDrc with exit code 2", 2, (r, out) => r.runDrc(pcbTarget, out)],
+		[
+			"exportNetlist with exit code 5",
+			5,
+			(r, out) => r.exportNetlist(schTarget, out),
+		],
+		[
+			"exportNetlist with exit code 1",
+			1,
+			(r, out) => r.exportNetlist(schTarget, out),
+		],
+		["version with exit code 1", 1, (r) => r.version()],
+	];
+
+	for (const [name, exitCode, invoke] of ERROR_CASES) {
 		test(`rejects promise on ${name}`, async () => {
 			const outPath = createTempReportPath("err");
-			const { fake } = createFakeExec({ error: err });
+			const { fake } = createFakeExec({ error: createExitError(exitCode) });
 			const runner = createKicadCli({ exec: fake });
-			await assert.rejects(() => fn(runner, file, outPath));
+			await assert.rejects(() => invoke(runner, outPath));
 		});
 	}
 });
