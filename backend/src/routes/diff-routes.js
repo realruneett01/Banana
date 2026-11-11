@@ -39,52 +39,26 @@ function findMissingParamError(body, required, prefix) {
 	return hasMissing ? `${prefix}${required.join(", ")}` : null;
 }
 
-const COMMIT_HEX_REGEX = /^[0-9a-fA-F]{4,40}$/;
-const BRANCH_TAG_REGEX = /^[A-Za-z0-9._/-]{1,200}$/;
+const COMMIT_REF_PATTERN = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
+const VALID_EXTENSIONS = new Set([".kicad_pcb", ".kicad_sch"]);
 
 function isValidCommitRef(ref) {
-	if (typeof ref !== "string" || !ref) {
-		return false;
-	}
-	if (COMMIT_HEX_REGEX.test(ref)) {
-		return true;
-	}
-	if (!BRANCH_TAG_REGEX.test(ref)) {
-		return false;
-	}
-	if (ref.startsWith("-") || ref.includes("..")) {
-		return false;
-	}
-	return true;
+	return typeof ref === "string" && COMMIT_REF_PATTERN.test(ref);
 }
 
-function isAbsolutePath(filePath) {
-	if (path.isAbsolute(filePath)) return true;
-	if (path.win32.isAbsolute(filePath)) return true;
-	if (path.posix.isAbsolute(filePath)) return true;
-	return /^[a-zA-Z]:/.test(filePath);
-}
-
-function hasTraversalSegment(filePath) {
-	const segments = filePath.split(/[/\\]/);
-	return segments.includes("..");
-}
-
-function hasValidExtension(filePath) {
-	return filePath.endsWith(".kicad_pcb") || filePath.endsWith(".kicad_sch");
+function isExternalOrTraversal(filePath) {
+	const isAbsolute =
+		path.posix.isAbsolute(filePath) ||
+		path.win32.isAbsolute(filePath) ||
+		/^[a-zA-Z]:/.test(filePath);
+	if (isAbsolute) return true;
+	return filePath.split(/[/\\]/).includes("..");
 }
 
 function isValidFilePath(filePath) {
-	if (typeof filePath !== "string" || !filePath) {
-		return false;
-	}
-	if (isAbsolutePath(filePath)) {
-		return false;
-	}
-	if (hasTraversalSegment(filePath)) {
-		return false;
-	}
-	return hasValidExtension(filePath);
+	if (typeof filePath !== "string" || !filePath) return false;
+	if (isExternalOrTraversal(filePath)) return false;
+	return VALID_EXTENSIONS.has(path.extname(filePath));
 }
 
 function validateDiffGuards({ baseCommit, targetCommit, relativeFilePath }) {
@@ -118,9 +92,11 @@ function validateGithubDiffParams(token, body) {
 }
 
 function extractAuthToken(req) {
-	return (
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body?.token
-	);
+	const authHeader = req.headers?.authorization;
+	if (authHeader?.toLowerCase().startsWith("bearer ")) {
+		return authHeader.slice(7).trim();
+	}
+	return req.body?.token;
 }
 
 function sendInternalError(res, error, details) {
