@@ -8,69 +8,136 @@ import { createSimStore } from "../../backend/src/engine/sim/sim-store.js";
 const COMMIT_A = "111111111111";
 const COMMIT_B = "222222222222";
 
-function makeValidEnv(overrides = {}) {
-	return Object.assign(
-		{ id: newId("env"), altitudeM: 0, airflowMs: 0, name: "Nominal" },
-		{ ambientC: { min: -10, max: 25 }, humidityPct: { min: 10, max: 90 } },
-		overrides,
+const INVALID_GET_CASES = [
+	{
+		name: "GET /api/sim/runs rejects invalid commit",
+		path: "/api/sim/runs?commit=bad",
+	},
+	{
+		name: "GET /api/sim/runs rejects invalid envId",
+		path: "/api/sim/runs?envId=bad",
+	},
+	{
+		name: "GET /api/sim/runs rejects invalid kind",
+		path: "/api/sim/runs?kind=bad",
+	},
+	{
+		name: "GET /api/sim/runs/:id rejects invalid id",
+		path: "/api/sim/runs/not-an-id",
+	},
+];
+
+function createSimEnv(patch = {}) {
+	return {
+		id: newId("env"),
+		name: "Nominal",
+		altitudeM: 0,
+		airflowMs: 0,
+		ambientC: { min: -10, max: 25 },
+		humidityPct: { min: 10, max: 90 },
+		...patch,
+	};
+}
+
+function buildThermalPayload(commit, env, powerW) {
+	return {
+		kind: "thermal",
+		commit,
+		env,
+		inputs: {
+			ir: {
+				parts: [
+					{
+						id: newId("part"),
+						ref: "U1",
+						value: "LDO",
+						symbol: "Reg:LDO",
+						footprint: "Pkg:SOT-223",
+						props: { powerW, thetaJA: 50, tjMaxC: 125 },
+					},
+				],
+			},
+		},
+	};
+}
+
+async function startTestHarness(simStore) {
+	const app = createApp();
+	app.locals.simStore = simStore;
+	const server = http.createServer(app);
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const base = `http://127.0.0.1:${server.address().port}`;
+
+	const send = async (method, path, body) => {
+		const init = { method };
+		if (body !== undefined) {
+			init.headers = { "Content-Type": "application/json" };
+			init.body = JSON.stringify(body);
+		}
+		const res = await fetch(`${base}${path}`, init);
+		const json = await res.json().catch(() => ({}));
+		return { status: res.status, json };
+	};
+
+	return {
+		get: (path) => send("GET", path),
+		post: (path, body) => send("POST", path, body),
+		patch: (path, body) => send("PATCH", path, body),
+		close: () => new Promise((resolve) => server.close(resolve)),
+	};
+}
+
+function assertSimRunOk(res) {
+	assert.equal(res.status, 200);
+	assert.equal(res.json?.run?.status, "done");
+}
+
+function assertRunsOk(res) {
+	assert.equal(res.status, 200);
+	return res.json.runs;
+}
+
+function assertRunDetails(res, expectedRunId, expectedIssueIds) {
+	assert.equal(res.status, 200);
+	assert.equal(res.json.run.id, expectedRunId);
+	assert.deepEqual(
+		res.json.issues.map((issue) => issue.id),
+		expectedIssueIds,
 	);
 }
 
-function makeThermalInputs(powerW = 3.0) {
-	const part = {
-		id: newId("part"),
-		ref: "U1",
-		value: "LDO",
-		symbol: "Reg:LDO",
-		footprint: "Pkg:SOT-223",
-		props: { powerW, thetaJA: 50, tjMaxC: 125 },
-	};
-	return { ir: { parts: [part] } };
+function assertNotFound(res, expectedError) {
+	assert.deepEqual(
+		{ status: res.status, error: res.json?.error },
+		{ status: 404, error: expectedError },
+	);
 }
 
-function bootServer(app) {
-	const server = http.createServer(app);
-	return new Promise((resolve) => {
-		server.listen(0, "127.0.0.1", () => {
-			resolve({ server, port: server.address().port });
-		});
-	});
+function assertInvalidRequest(res) {
+	assert.deepEqual(
+		{ status: res.status, hasErrorString: typeof res.json?.error === "string" },
+		{ status: 400, hasErrorString: true },
+	);
 }
 
-const shutdownServer = (server) =>
-	new Promise((resolve) => {
-		if (!server) {
-			resolve();
-			return;
-		}
-		server.close(resolve);
+async function verifyIssueStatusUpdate(api, runId, issueId, newStatus) {
+	const patchRes = await api.patch(`/api/issues/${issueId}`, {
+		status: newStatus,
 	});
+	assert.deepEqual(
+		{ status: patchRes.status, json: patchRes.json },
+		{ status: 200, json: { ok: true } },
+	);
 
-async function requestJson(port, path, options = {}) {
-	const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
-	const json = await response.json().catch(() => ({}));
-	return { status: response.status, json };
+	const getRes = await api.get(`/api/sim/runs/${runId}`);
+	assert.deepEqual(
+		{ status: getRes.status, issueStatus: getRes.json.issues[0]?.status },
+		{ status: 200, issueStatus: newStatus },
+	);
 }
-
-const getJson = (port, path) => requestJson(port, path);
-
-const postJson = (port, path, body) =>
-	requestJson(port, path, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-
-const patchJson = (port, path, body) =>
-	requestJson(port, path, {
-		method: "PATCH",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
 
 describe("sim-history routes", () => {
-	let server;
-	let port;
+	let api;
 	let store;
 	let env;
 	let runAId;
@@ -79,234 +146,173 @@ describe("sim-history routes", () => {
 
 	before(async () => {
 		store = createSimStore({ filename: ":memory:" });
-		const app = createApp();
-		app.locals.simStore = store;
-		const started = await bootServer(app);
-		server = started.server;
-		port = started.port;
-		env = makeValidEnv();
+		api = await startTestHarness(store);
+		env = createSimEnv();
 	});
 
 	after(async () => {
-		await shutdownServer(server);
+		await api.close();
 		store.close();
 	});
 
 	describe("simulation run and persistence", () => {
 		test("runs thermal sim on commit A (with issues) and persists", async () => {
-			const body = {
-				kind: "thermal",
-				commit: COMMIT_A,
-				env,
-				inputs: makeThermalInputs(3.0),
-			};
-			const { status, json } = await postJson(port, "/api/sim/run", body);
-			assert.equal(status, 200);
-			assert.equal(json?.run?.status, "done");
-			assert.ok(Array.isArray(json?.issues) && json.issues.length > 0);
-			runAId = json.run.id;
-			runAIssueId = json.issues[0].id;
+			const res = await api.post(
+				"/api/sim/run",
+				buildThermalPayload(COMMIT_A, env, 3.0),
+			);
+			assertSimRunOk(res);
+			assert.ok(Array.isArray(res.json?.issues) && res.json.issues.length > 0);
+			runAId = res.json.run.id;
+			runAIssueId = res.json.issues[0].id;
 		});
 
 		test("runs thermal sim on commit B (low power, no issues) and persists", async () => {
-			const body = {
-				kind: "thermal",
-				commit: COMMIT_B,
-				env,
-				inputs: makeThermalInputs(0.1),
-			};
-			const { status, json } = await postJson(port, "/api/sim/run", body);
-			assert.equal(status, 200);
-			assert.equal(json?.run?.status, "done");
-			assert.equal(json?.issues?.length, 0);
-			runBId = json.run.id;
+			const res = await api.post(
+				"/api/sim/run",
+				buildThermalPayload(COMMIT_B, env, 0.1),
+			);
+			assertSimRunOk(res);
+			assert.equal(res.json?.issues?.length, 0);
+			runBId = res.json.run.id;
 		});
 	});
 
 	describe("POST /api/sim/compare", () => {
 		test("compares runs across commits and detects fixed issues", async () => {
-			const body = {
+			const res = await api.post("/api/sim/compare", {
 				before: COMMIT_A,
 				after: COMMIT_B,
 				envId: env.id,
 				kind: "thermal",
-			};
-			const { status, json } = await postJson(port, "/api/sim/compare", body);
-			assert.equal(status, 200);
-			assert.equal(json.fixed.length, 1);
-			assert.equal(json.fixed[0].id, runAIssueId);
-			assert.equal(json.stillOpen.length, 0);
-			assert.equal(json.new.length, 0);
+			});
+			assert.equal(res.status, 200);
+			assert.deepEqual(
+				{
+					fixedIds: res.json.fixed.map((item) => item.id),
+					stillOpenCount: res.json.stillOpen.length,
+					newCount: res.json.new.length,
+				},
+				{
+					fixedIds: [runAIssueId],
+					stillOpenCount: 0,
+					newCount: 0,
+				},
+			);
 		});
 	});
 
 	describe("GET /api/sim/runs list and filters", () => {
 		test("lists all simulation runs", async () => {
-			const { status, json } = await getJson(port, "/api/sim/runs");
-			assert.equal(status, 200);
-			assert.ok(Array.isArray(json.runs));
-			assert.ok(json.runs.length >= 2);
+			const runs = assertRunsOk(await api.get("/api/sim/runs"));
+			assert.ok(Array.isArray(runs) && runs.length >= 2);
 		});
 
 		test("filters simulation runs by commit", async () => {
-			const { status, json } = await getJson(
-				port,
-				`/api/sim/runs?commit=${COMMIT_A}`,
+			const runs = assertRunsOk(
+				await api.get(`/api/sim/runs?commit=${COMMIT_A}`),
 			);
-			assert.equal(status, 200);
-			assert.equal(json.runs.length, 1);
-			assert.equal(json.runs[0].commit, COMMIT_A);
+			assert.deepEqual(
+				runs.map((item) => item.commit),
+				[COMMIT_A],
+			);
 		});
 
 		test("filters simulation runs by envId and kind", async () => {
-			const { status, json } = await getJson(
-				port,
-				`/api/sim/runs?envId=${env.id}&kind=thermal`,
+			const runs = assertRunsOk(
+				await api.get(`/api/sim/runs?envId=${env.id}&kind=thermal`),
 			);
-			assert.equal(status, 200);
-			assert.equal(json.runs.length, 2);
+			assert.equal(runs.length, 2);
 		});
 
 		test("accepts empty filter query params", async () => {
-			const { status, json } = await getJson(
-				port,
-				"/api/sim/runs?commit=&envId=&kind=",
+			const runs = assertRunsOk(
+				await api.get("/api/sim/runs?commit=&envId=&kind="),
 			);
-			assert.equal(status, 200);
-			assert.ok(json.runs.length >= 2);
+			assert.ok(runs.length >= 2);
 		});
 	});
 
 	describe("GET /api/sim/runs/:id", () => {
 		test("retrieves a simulation run with its issues", async () => {
-			const { status, json } = await getJson(port, `/api/sim/runs/${runAId}`);
-			assert.equal(status, 200);
-			assert.equal(json.run.id, runAId);
-			assert.equal(json.issues.length, 1);
-			assert.equal(json.issues[0].id, runAIssueId);
+			const res = await api.get(`/api/sim/runs/${runAId}`);
+			assertRunDetails(res, runAId, [runAIssueId]);
 		});
 
 		test("retrieves a simulation run with no issues", async () => {
-			const { status, json } = await getJson(port, `/api/sim/runs/${runBId}`);
-			assert.equal(status, 200);
-			assert.equal(json.run.id, runBId);
-			assert.equal(json.issues.length, 0);
+			const res = await api.get(`/api/sim/runs/${runBId}`);
+			assertRunDetails(res, runBId, []);
 		});
 	});
 
 	describe("PATCH /api/issues/:id and verification via GET", () => {
 		test("updates issue status to fixed and GET shows updated status", async () => {
-			const patchRes = await patchJson(port, `/api/issues/${runAIssueId}`, {
-				status: "fixed",
-			});
-			assert.equal(patchRes.status, 200);
-			assert.deepEqual(patchRes.json, { ok: true });
-
-			const getRes = await getJson(port, `/api/sim/runs/${runAId}`);
-			assert.equal(getRes.status, 200);
-			assert.equal(getRes.json.issues[0].status, "fixed");
+			await verifyIssueStatusUpdate(api, runAId, runAIssueId, "fixed");
 		});
 
 		test("updates issue status to wontfix", async () => {
-			const patchRes = await patchJson(port, `/api/issues/${runAIssueId}`, {
-				status: "wontfix",
-			});
-			assert.equal(patchRes.status, 200);
-			assert.deepEqual(patchRes.json, { ok: true });
-
-			const getRes = await getJson(port, `/api/sim/runs/${runAId}`);
-			assert.equal(getRes.status, 200);
-			assert.equal(getRes.json.issues[0].status, "wontfix");
+			await verifyIssueStatusUpdate(api, runAId, runAIssueId, "wontfix");
 		});
 	});
 
 	describe("404 errors", () => {
 		test("GET /api/sim/runs/:id returns 404 for unknown run", async () => {
-			const unknownSimId = newId("sim");
-			const { status, json } = await getJson(
-				port,
-				`/api/sim/runs/${unknownSimId}`,
-			);
-			assert.equal(status, 404);
-			assert.equal(json.error, "Run not found");
+			const res = await api.get(`/api/sim/runs/${newId("sim")}`);
+			assertNotFound(res, "Run not found");
 		});
 
 		test("POST /api/sim/compare returns 404 when commit has no run", async () => {
-			const body = { before: "999999999999", after: COMMIT_B };
-			const { status, json } = await postJson(port, "/api/sim/compare", body);
-			assert.equal(status, 404);
-			assert.ok(json.error.includes("no run for"));
+			const res = await api.post("/api/sim/compare", {
+				before: "999999999999",
+				after: COMMIT_B,
+			});
+			assert.equal(res.status, 404);
+			assert.ok(res.json?.error?.includes("no run for"));
 		});
 
 		test("PATCH /api/issues/:id returns 404 for unknown issue", async () => {
-			const unknownIssueId = newId("issue");
-			const { status, json } = await patchJson(
-				port,
-				`/api/issues/${unknownIssueId}`,
-				{ status: "fixed" },
-			);
-			assert.equal(status, 404);
-			assert.equal(json.error, "Issue not found");
+			const res = await api.patch(`/api/issues/${newId("issue")}`, {
+				status: "fixed",
+			});
+			assertNotFound(res, "Issue not found");
 		});
 	});
 
 	describe("validation 400 errors", () => {
-		test("GET /api/sim/runs rejects invalid commit", async () => {
-			const { status, json } = await getJson(port, "/api/sim/runs?commit=bad");
-			assert.equal(status, 400);
-			assert.ok(typeof json.error === "string");
-		});
-
-		test("GET /api/sim/runs rejects invalid envId", async () => {
-			const { status, json } = await getJson(port, "/api/sim/runs?envId=bad");
-			assert.equal(status, 400);
-			assert.ok(typeof json.error === "string");
-		});
-
-		test("GET /api/sim/runs rejects invalid kind", async () => {
-			const { status, json } = await getJson(port, "/api/sim/runs?kind=bad");
-			assert.equal(status, 400);
-			assert.ok(typeof json.error === "string");
-		});
-
-		test("GET /api/sim/runs/:id rejects invalid id", async () => {
-			const { status, json } = await getJson(port, "/api/sim/runs/not-an-id");
-			assert.equal(status, 400);
-			assert.ok(typeof json.error === "string");
-		});
+		for (const { name, path } of INVALID_GET_CASES) {
+			test(name, async () => {
+				const res = await api.get(path);
+				assertInvalidRequest(res);
+			});
+		}
 
 		test("POST /api/sim/compare rejects invalid body and commits", async () => {
-			const res1 = await postJson(port, "/api/sim/compare", []);
-			assert.equal(res1.status, 400);
-			const res2 = await postJson(port, "/api/sim/compare", {
-				before: "bad",
-				after: COMMIT_B,
-			});
-			assert.equal(res2.status, 400);
-			const res3 = await postJson(port, "/api/sim/compare", {
-				before: COMMIT_A,
-				after: "bad",
-			});
-			assert.equal(res3.status, 400);
-			const res4 = await postJson(port, "/api/sim/compare", {
-				before: COMMIT_A,
-				after: COMMIT_B,
-				envId: "not-an-env",
-			});
-			assert.equal(res4.status, 400);
+			const invalidBodies = [
+				[],
+				{ before: "bad", after: COMMIT_B },
+				{ before: COMMIT_A, after: "bad" },
+				{ before: COMMIT_A, after: COMMIT_B, envId: "not-an-env" },
+			];
+			const responses = await Promise.all(
+				invalidBodies.map((body) => api.post("/api/sim/compare", body)),
+			);
+			assert.deepEqual(
+				responses.map((r) => r.status),
+				[400, 400, 400, 400],
+			);
 		});
 
 		test("PATCH /api/issues/:id rejects invalid id and status", async () => {
-			const res1 = await patchJson(port, "/api/issues/not-an-id", {
-				status: "fixed",
-			});
-			assert.equal(res1.status, 400);
-			const res2 = await patchJson(port, `/api/issues/${runAIssueId}`, {
-				status: "invalid-status",
-			});
-			assert.equal(res2.status, 400);
-			const res3 = await patchJson(port, `/api/issues/${runAIssueId}`, []);
-			assert.equal(res3.status, 400);
+			const invalidRequests = [
+				api.patch("/api/issues/not-an-id", { status: "fixed" }),
+				api.patch(`/api/issues/${runAIssueId}`, { status: "invalid-status" }),
+				api.patch(`/api/issues/${runAIssueId}`, []),
+			];
+			const responses = await Promise.all(invalidRequests);
+			assert.deepEqual(
+				responses.map((r) => r.status),
+				[400, 400, 400],
+			);
 		});
 	});
 });
