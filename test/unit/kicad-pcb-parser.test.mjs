@@ -16,6 +16,99 @@ import {
 	toBoardAbsolute,
 } from "../../backend/src/kicad-pcb-parser.js";
 
+function assertPartialMatch(actual, expected) {
+	for (const [key, val] of Object.entries(expected)) {
+		assert.deepEqual(actual[key], val);
+	}
+}
+
+function withTempPcbFile(fileName, content, callback) {
+	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
+	const pcbPath = path.join(tmpDir, fileName);
+	fs.writeFileSync(pcbPath, content, "utf8");
+	try {
+		return callback(pcbPath);
+	} finally {
+		fs.rmSync(tmpDir, { recursive: true, force: true });
+	}
+}
+
+const SAMPLE_NET_AST = [
+	"kicad_pcb",
+	["net", 0, ""],
+	["net", 1, "GND"],
+	["net", 2, "+3V3"],
+	[
+		"segment",
+		["start", 10, 20],
+		["end", 30, 40],
+		["width", 0.25],
+		["layer", "F.Cu"],
+		["net", 1],
+	],
+	[
+		"segment",
+		["start", 50, 60],
+		["end", 70, 80],
+		["layer", "B.Cu"],
+		["net", 2],
+	],
+];
+
+const METADATA_CASES = [
+	{
+		name: "extracts netMap, segments, and footprints from KiCad PCB content",
+		pcbContent: `
+			(kicad_pcb (version 20211014)
+				(net 0 "")
+				(net 1 "GND")
+				(segment (start 10.5 20.5) (end 30.5 40.5) (width 0.25) (layer "F.Cu") (net 1))
+				(footprint "Resistor_SMD:R_0805" (layer "F.Cu") (at 100 200 90)
+					(property "Reference" "R1" (at 0 0 0))
+					(property "Value" "10k" (at 0 1 0))
+				)
+			)
+		`,
+		expectedNets: [[1, "GND"]],
+		expectedSegments: [
+			{
+				start: { x: 10.5, y: 20.5 },
+				end: { x: 30.5, y: 40.5 },
+				layer: "F.Cu",
+				netId: 1,
+				netName: "GND",
+			},
+		],
+		expectedFootprints: [
+			{
+				layer: "F.Cu",
+				center: { x: 100, y: 200 },
+				ref: "R1",
+				value: "10k",
+			},
+		],
+	},
+	{
+		name: "parses arc segments and unquoted net names with fallback naming",
+		pcbContent: `
+			(kicad_pcb
+				(net 3 VCC_IO)
+				(arc (start 12 14) (end 16 18) (layer B.Cu) (net 3))
+				(segment (start 20 22) (end 24 26) (layer F.Cu) (net 42))
+				(footprint "Cap:C0603" (layer B.Cu) (at 50 60)
+					(property "Reference" "C1")
+				)
+			)
+		`,
+		expectedNets: [[3, "VCC_IO"]],
+		expectedSegments: [
+			{ netName: "VCC_IO", layer: "B.Cu" },
+			{ netName: "Net-42" },
+		],
+		expectedFootprints: [{ ref: "C1", value: "" }],
+	},
+];
+
 describe("parseSExpr", () => {
 	test("parses nested S-expressions with tokens and quoted strings", () => {
 		const input = '(kicad_pcb (version 20211014) (generator "pcbnew"))';
@@ -77,46 +170,30 @@ describe("toBoardAbsolute", () => {
 
 describe("parsePcbNetSegments", () => {
 	test("extracts net declarations and track segments with resolved net names", () => {
-		const ast = [
-			"kicad_pcb",
-			["net", 0, ""],
-			["net", 1, "GND"],
-			["net", 2, "+3V3"],
-			[
-				"segment",
-				["start", 10, 20],
-				["end", 30, 40],
-				["width", 0.25],
-				["layer", "F.Cu"],
-				["net", 1],
-			],
-			[
-				"segment",
-				["start", 50, 60],
-				["end", 70, 80],
-				["layer", "B.Cu"],
-				["net", 2],
-			],
-		];
-		const { netIndexMap, trackSegments } = parsePcbNetSegments(ast);
+		const { netIndexMap, trackSegments } = parsePcbNetSegments(SAMPLE_NET_AST);
 		assert.equal(netIndexMap.size, 3);
 		assert.equal(netIndexMap.get(1), "GND");
 		assert.equal(netIndexMap.get(2), "+3V3");
-		assert.equal(trackSegments.length, 2);
-		assert.deepEqual(trackSegments[0], {
-			start: { x: 10, y: 20 },
-			end: { x: 30, y: 40 },
-			netId: 1,
-			netName: "GND",
-			layer: "F.Cu",
-		});
-		assert.deepEqual(trackSegments[1], {
-			start: { x: 50, y: 60 },
-			end: { x: 70, y: 80 },
-			netId: 2,
-			netName: "+3V3",
-			layer: "B.Cu",
-		});
+		const expectedTracks = [
+			{
+				start: { x: 10, y: 20 },
+				end: { x: 30, y: 40 },
+				netId: 1,
+				netName: "GND",
+				layer: "F.Cu",
+			},
+			{
+				start: { x: 50, y: 60 },
+				end: { x: 70, y: 80 },
+				netId: 2,
+				netName: "+3V3",
+				layer: "B.Cu",
+			},
+		];
+		assert.equal(trackSegments.length, expectedTracks.length);
+		for (const [i, expected] of expectedTracks.entries()) {
+			assert.deepEqual(trackSegments[i], expected);
+		}
 	});
 
 	test("returns empty netIndexMap and trackSegments for empty AST", () => {
@@ -139,36 +216,22 @@ describe("parsePcbNetSegments", () => {
 });
 
 describe("parsePcbMetadata", () => {
-	test("extracts netMap, segments, and footprints from KiCad PCB content", () => {
-		const pcbContent = `
-			(kicad_pcb (version 20211014)
-				(net 0 "")
-				(net 1 "GND")
-				(segment (start 10.5 20.5) (end 30.5 40.5) (width 0.25) (layer "F.Cu") (net 1))
-				(footprint "Resistor_SMD:R_0805" (layer "F.Cu") (at 100 200 90)
-					(property "Reference" "R1" (at 0 0 0))
-					(property "Value" "10k" (at 0 1 0))
-				)
-			)
-		`;
-		const { netMap, segments, footprints } = parsePcbMetadata(pcbContent);
-		assert.equal(netMap.get(1), "GND");
-		assert.equal(segments.length, 1);
-		assert.deepEqual(segments[0], {
-			start: { x: 10.5, y: 20.5 },
-			end: { x: 30.5, y: 40.5 },
-			layer: "F.Cu",
-			netId: 1,
-			netName: "GND",
+	for (const tc of METADATA_CASES) {
+		test(tc.name, () => {
+			const { netMap, segments, footprints } = parsePcbMetadata(tc.pcbContent);
+			for (const [netId, netName] of tc.expectedNets) {
+				assert.equal(netMap.get(netId), netName);
+			}
+			assert.equal(segments.length, tc.expectedSegments.length);
+			for (const [i, expSeg] of tc.expectedSegments.entries()) {
+				assertPartialMatch(segments[i], expSeg);
+			}
+			assert.equal(footprints.length, tc.expectedFootprints.length);
+			for (const [i, expFp] of tc.expectedFootprints.entries()) {
+				assertPartialMatch(footprints[i], expFp);
+			}
 		});
-		assert.equal(footprints.length, 1);
-		assert.deepEqual(footprints[0], {
-			layer: "F.Cu",
-			center: { x: 100, y: 200 },
-			ref: "R1",
-			value: "10k",
-		});
-	});
+	}
 
 	test("returns empty collections for null, undefined, or non-string input", () => {
 		const falsyInputs = [null, undefined, "", 123, {}];
@@ -178,28 +241,6 @@ describe("parsePcbMetadata", () => {
 			assert.equal(res.segments.length, 0);
 			assert.equal(res.footprints.length, 0);
 		}
-	});
-
-	test("parses arc segments and unquoted net names with fallback naming", () => {
-		const pcbContent = `
-			(kicad_pcb
-				(net 3 VCC_IO)
-				(arc (start 12 14) (end 16 18) (layer B.Cu) (net 3))
-				(segment (start 20 22) (end 24 26) (layer F.Cu) (net 42))
-				(footprint "Cap:C0603" (layer B.Cu) (at 50 60)
-					(property "Reference" "C1")
-				)
-			)
-		`;
-		const { netMap, segments, footprints } = parsePcbMetadata(pcbContent);
-		assert.equal(netMap.get(3), "VCC_IO");
-		assert.equal(segments.length, 2);
-		assert.equal(segments[0].netName, "VCC_IO");
-		assert.equal(segments[0].layer, "B.Cu");
-		assert.equal(segments[1].netName, "Net-42");
-		assert.equal(footprints.length, 1);
-		assert.equal(footprints[0].ref, "C1");
-		assert.equal(footprints[0].value, "");
 	});
 });
 
@@ -229,11 +270,7 @@ describe("parseKiCadBoard", () => {
 	)`;
 
 	test("parses a valid kicad_pcb file into typed board data structure", () => {
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
-		const pcbPath = path.join(tmpDir, "board.kicad_pcb");
-		fs.writeFileSync(pcbPath, sampleBoardText, "utf8");
-
-		try {
+		withTempPcbFile("board.kicad_pcb", sampleBoardText, (pcbPath) => {
 			const board = parseKiCadBoard(pcbPath);
 			assert.equal(board.metadata.version, "20211014");
 			assert.equal(board.metadata.generator, "pcbnew");
@@ -249,24 +286,20 @@ describe("parseKiCadBoard", () => {
 			assert.equal(board.vias.length, 1);
 			assert.equal(board.zones.length, 1);
 			assert.equal(board.groups.length, 1);
-		} finally {
-			fs.rmSync(tmpDir, { recursive: true, force: true });
-		}
+		});
 	});
 
 	test("throws error when root S-expression is not kicad_pcb", () => {
-		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
-		const pcbPath = path.join(tmpDir, "invalid.kicad_pcb");
-		fs.writeFileSync(pcbPath, "(other_root (version 1))", "utf8");
-
-		try {
-			assert.throws(
-				() => parseKiCadBoard(pcbPath),
-				/Invalid \.kicad_pcb file: root S-expression must be \(kicad_pcb \.\.\.\)/,
-			);
-		} finally {
-			fs.rmSync(tmpDir, { recursive: true, force: true });
-		}
+		withTempPcbFile(
+			"invalid.kicad_pcb",
+			"(other_root (version 1))",
+			(pcbPath) => {
+				assert.throws(
+					() => parseKiCadBoard(pcbPath),
+					/Invalid \.kicad_pcb file: root S-expression must be \(kicad_pcb \.\.\.\)/,
+				);
+			},
+		);
 	});
 
 	test("throws error when file does not exist", () => {
