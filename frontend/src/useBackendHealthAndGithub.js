@@ -5,11 +5,10 @@ import { API_BASE_URL } from "./config.js";
 async function fetchBackendHealthStatus() {
 	try {
 		const res = await fetch(`${API_BASE_URL}/api/health-check`);
-		if (res.ok) {
-			const data = await res.json();
-			if (data.status === "healthy") {
-				return { status: "healthy", version: data.kicadVersion || "" };
-			}
+		if (!res.ok) return { status: "unhealthy", version: "" };
+		const data = await res.json();
+		if (data.status === "healthy") {
+			return { status: "healthy", version: data.kicadVersion || "" };
 		}
 	} catch (err) {
 		console.debug("[Banana] Health check error:", err);
@@ -36,6 +35,42 @@ function parseUrlAuthParams() {
 	};
 }
 
+function clearUrlAuthParams() {
+	if (typeof window !== "undefined" && window.history) {
+		window.history.replaceState({}, document.title, window.location.pathname);
+	}
+}
+
+function getStoredGithubToken() {
+	return localStorage.getItem("banana:githubToken") || "";
+}
+
+function saveStoredGithubToken(token) {
+	if (window.banana?.github?.saveToken) {
+		window.banana.github.saveToken(token);
+	} else {
+		localStorage.setItem("banana:githubToken", token);
+	}
+}
+
+function clearStoredGithubToken() {
+	localStorage.removeItem("banana:githubToken");
+	if (window.banana?.github?.clearSavedToken) {
+		window.banana.github.clearSavedToken();
+	}
+}
+
+function saveStoredSourceMode(mode) {
+	localStorage.setItem("banana:sourceMode", mode);
+}
+
+function saveAuthSession(token, setGithubToken, setSourceMode) {
+	saveStoredGithubToken(token);
+	setGithubToken(token);
+	setSourceMode("github");
+	saveStoredSourceMode("github");
+}
+
 function handleUrlAuthCallback({
 	setGithubToken,
 	setSourceMode,
@@ -45,21 +80,18 @@ function handleUrlAuthCallback({
 	const { token: tokenFromUrl, error: errorFromUrl } = parseUrlAuthParams();
 
 	if (tokenFromUrl) {
-		if (window.banana?.github?.saveToken) {
-			window.banana.github.saveToken(tokenFromUrl);
-		} else {
-			localStorage.setItem("banana:githubToken", tokenFromUrl);
-		}
-		setGithubToken(tokenFromUrl);
-		setSourceMode("github");
-		localStorage.setItem("banana:sourceMode", "github");
+		saveAuthSession(tokenFromUrl, setGithubToken, setSourceMode);
 		verifyGithubToken(tokenFromUrl);
-		window.history.replaceState({}, document.title, window.location.pathname);
+		clearUrlAuthParams();
 		message.success("GitHub OAuth login successful!");
-	} else if (errorFromUrl) {
+		return;
+	}
+	if (errorFromUrl) {
 		message.error(`GitHub login error: ${errorFromUrl}`);
-		window.history.replaceState({}, document.title, window.location.pathname);
-	} else if (existingToken) {
+		clearUrlAuthParams();
+		return;
+	}
+	if (existingToken) {
 		verifyGithubToken(existingToken);
 	}
 }
@@ -108,79 +140,120 @@ function useBackendHealth() {
 	return { backendStatus, kicadVersion, checkHealth };
 }
 
-function useGithubSession() {
-	const [sourceMode, setSourceMode] = useState(initialSourceMode);
-	const [githubToken, setGithubToken] = useState(
-		localStorage.getItem("banana:githubToken") || "",
-	);
-	const [githubUser, setGithubUser] = useState(null);
-	const [githubModalOpen, setGithubModalOpen] = useState(false);
-	const [selectedRemoteRepo, setSelectedRemoteRepo] = useState(null);
+async function requestGithubVerify(token) {
+	try {
+		const res = await fetch(`${API_BASE_URL}/api/auth/github/verify`, {
+			headers: { Authorization: `Bearer ${token}` },
+		});
+		return res.ok ? await res.json() : null;
+	} catch (e) {
+		console.warn("GitHub token verify error:", e.message);
+		return { failed: true };
+	}
+}
 
-	const handleDisconnectGithub = useCallback(() => {
-		localStorage.removeItem("banana:githubToken");
-		if (window.banana?.github?.clearSavedToken) {
-			window.banana.github.clearSavedToken();
-		}
-		setGithubToken("");
-		setGithubUser(null);
-		setSelectedRemoteRepo(null);
-		setSourceMode("local");
-		localStorage.setItem("banana:sourceMode", "local");
-	}, []);
-
-	const verifyGithubToken = useCallback(
+function useVerifyGithubToken(setGithubUser, handleDisconnectGithub) {
+	return useCallback(
 		async (token) => {
 			if (!token) return;
-			try {
-				const res = await fetch(`${API_BASE_URL}/api/auth/github/verify`, {
-					headers: { Authorization: `Bearer ${token}` },
-				});
-				const data = res.ok ? await res.json() : null;
-				if (data?.authenticated) {
-					setGithubUser(data.user);
-				} else {
-					handleDisconnectGithub();
-				}
-			} catch (e) {
-				console.warn("GitHub token verify error:", e.message);
+			const data = await requestGithubVerify(token);
+			if (data?.failed) return;
+			if (data?.authenticated) {
+				setGithubUser(data.user);
+			} else {
+				handleDisconnectGithub();
 			}
 		},
-		[handleDisconnectGithub],
+		[handleDisconnectGithub, setGithubUser],
 	);
+}
 
+function useAuthSuccess(setGithubToken, setGithubUser, setSourceMode) {
+	return useCallback(
+		(token, user) => {
+			// Desktop keeps the token only in the OS keychain, never in plaintext localStorage
+			saveAuthSession(token, setGithubToken, setSourceMode);
+			setGithubUser(user);
+		},
+		[setGithubToken, setSourceMode, setGithubUser],
+	);
+}
+
+function useSourceMode() {
+	const [sourceMode, setSourceMode] = useState(initialSourceMode);
 	const handleSourceModeChange = useCallback((val) => {
 		setSourceMode(val);
-		localStorage.setItem("banana:sourceMode", val);
+		saveStoredSourceMode(val);
 	}, []);
+	return { sourceMode, setSourceMode, handleSourceModeChange };
+}
 
-	const handleAuthSuccess = useCallback((token, user) => {
-		// Desktop keeps the token only in the OS keychain, never in plaintext localStorage
-		if (window.banana?.github?.saveToken) {
-			window.banana.github.saveToken(token);
-		} else {
-			localStorage.setItem("banana:githubToken", token);
-		}
-		setGithubToken(token);
-		setGithubUser(user);
-		setSourceMode("github");
-		localStorage.setItem("banana:sourceMode", "github");
-	}, []);
-
+function useGithubDialogState() {
+	const [githubModalOpen, setGithubModalOpen] = useState(false);
+	const [selectedRemoteRepo, setSelectedRemoteRepo] = useState(null);
 	return {
-		sourceMode,
-		setSourceMode,
-		githubToken,
-		setGithubToken,
-		githubUser,
 		githubModalOpen,
 		setGithubModalOpen,
 		selectedRemoteRepo,
 		setSelectedRemoteRepo,
+	};
+}
+
+function useGithubAuthActions({
+	setGithubToken,
+	setGithubUser,
+	setSelectedRemoteRepo,
+	setSourceMode,
+}) {
+	const handleDisconnectGithub = useCallback(() => {
+		clearStoredGithubToken();
+		setGithubToken("");
+		setGithubUser(null);
+		setSelectedRemoteRepo(null);
+		setSourceMode("local");
+		saveStoredSourceMode("local");
+	}, [setGithubToken, setGithubUser, setSelectedRemoteRepo, setSourceMode]);
+
+	const verifyGithubToken = useVerifyGithubToken(
+		setGithubUser,
 		handleDisconnectGithub,
-		verifyGithubToken,
-		handleSourceModeChange,
-		handleAuthSuccess,
+	);
+	const handleAuthSuccess = useAuthSuccess(
+		setGithubToken,
+		setGithubUser,
+		setSourceMode,
+	);
+
+	return { handleDisconnectGithub, verifyGithubToken, handleAuthSuccess };
+}
+
+function useGithubSession() {
+	const source = useSourceMode();
+	const dialog = useGithubDialogState();
+	const [githubToken, setGithubToken] = useState(getStoredGithubToken);
+	const [githubUser, setGithubUser] = useState(null);
+
+	const actions = useGithubAuthActions({
+		setGithubToken,
+		setGithubUser,
+		setSelectedRemoteRepo: dialog.setSelectedRemoteRepo,
+		setSourceMode: source.setSourceMode,
+	});
+
+	return {
+		props: {
+			sourceMode: source.sourceMode,
+			githubToken,
+			githubUser,
+			...dialog,
+			handleDisconnectGithub: actions.handleDisconnectGithub,
+			handleSourceModeChange: source.handleSourceModeChange,
+			handleAuthSuccess: actions.handleAuthSuccess,
+		},
+		githubToken,
+		setGithubToken,
+		setSourceMode: source.setSourceMode,
+		verifyGithubToken: actions.verifyGithubToken,
 	};
 }
 
@@ -204,16 +277,7 @@ export function useBackendHealthAndGithub({ onMountRepoInit }) {
 	return {
 		backendStatus: health.backendStatus,
 		kicadVersion: health.kicadVersion,
-		sourceMode: session.sourceMode,
-		githubToken: session.githubToken,
-		githubUser: session.githubUser,
-		githubModalOpen: session.githubModalOpen,
-		setGithubModalOpen: session.setGithubModalOpen,
-		selectedRemoteRepo: session.selectedRemoteRepo,
-		setSelectedRemoteRepo: session.setSelectedRemoteRepo,
-		handleDisconnectGithub: session.handleDisconnectGithub,
-		handleSourceModeChange: session.handleSourceModeChange,
-		handleAuthSuccess: session.handleAuthSuccess,
+		...session.props,
 		checkHealth: health.checkHealth,
 	};
 }
