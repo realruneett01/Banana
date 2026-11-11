@@ -9,20 +9,18 @@ const PART_ID_3 = "part_33333333-3333-3333-3333-333333333333";
 const NET_ID_1 = "net_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const NET_ID_2 = "net_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
-function createSmdPad(number, x) {
-	return {
-		number,
-		type: "smd",
-		shape: "roundrect",
-		at: [x, 0],
-		size: [1, 1],
-		layers: ["F.Cu", "F.Paste", "F.Mask"],
-	};
-}
+const F_CU_LAYERS = ["F.Cu", "F.Paste", "F.Mask"];
 
 const SAMPLE_FOOTPRINTS = {
 	"Resistor_SMD:R_0805": {
-		pads: [createSmdPad("1", -1), createSmdPad("2", 1)],
+		pads: [-1, 1].map((x, idx) => ({
+			number: String(idx + 1),
+			type: "smd",
+			shape: "roundrect",
+			at: [x, 0],
+			size: [1, 1],
+			layers: F_CU_LAYERS,
+		})),
 	},
 	"Package_TO_SOT_THT:TO-92": [
 		{
@@ -37,45 +35,52 @@ const SAMPLE_FOOTPRINTS = {
 	],
 };
 
-function createValidBaseIr() {
+function makePart(id, ref, [value, symbol, footprint], placement) {
+	return {
+		id,
+		ref,
+		value,
+		symbol,
+		footprint,
+		props: {},
+		...(placement ? { placement } : {}),
+	};
+}
+
+function makeNet(id, name, partId, pin) {
+	return { id, name, pins: [{ partId, pin }] };
+}
+
+function createValidBaseIr(extraPart) {
+	const parts = [
+		makePart(PART_ID_1, "R1", ["10k", "Device:R", "Resistor_SMD:R_0805"], {
+			x: 50,
+			y: 30,
+			rot: 90,
+			side: "F",
+		}),
+	];
+	if (extraPart) parts.push(extraPart);
 	return {
 		schemaVersion: 1,
 		name: "DemoBoard",
-		parts: [
-			{
-				id: PART_ID_1,
-				ref: "R1",
-				value: "10k",
-				symbol: "Device:R",
-				footprint: "Resistor_SMD:R_0805",
-				props: {},
-				placement: { x: 50, y: 30, rot: 90, side: "F" },
-			},
-		],
+		parts,
 		nets: [
-			{
-				id: NET_ID_1,
-				name: "GND",
-				pins: [{ partId: PART_ID_1, pin: "1" }],
-			},
-			{
-				id: NET_ID_2,
-				name: "+3V3",
-				pins: [{ partId: PART_ID_1, pin: "2" }],
-			},
+			makeNet(NET_ID_1, "GND", PART_ID_1, "1"),
+			makeNet(NET_ID_2, "+3V3", PART_ID_1, "2"),
 		],
 		constraints: [],
 	};
 }
 
+const hasSym = (tag) => (node) => Array.isArray(node) && node[0]?.sym === tag;
+
 function findNodeByTag(ast, tag) {
-	if (!Array.isArray(ast)) return null;
-	return ast.find((child) => Array.isArray(child) && child[0]?.sym === tag);
+	return Array.isArray(ast) ? (ast.find(hasSym(tag)) ?? null) : null;
 }
 
 function findNodesByTag(ast, tag) {
-	if (!Array.isArray(ast)) return [];
-	return ast.filter((child) => Array.isArray(child) && child[0]?.sym === tag);
+	return Array.isArray(ast) ? ast.filter(hasSym(tag)) : [];
 }
 
 function buildPcbAst(ir = createValidBaseIr(), options) {
@@ -92,12 +97,20 @@ function assertTaggedChildren(node, expectations) {
 	}
 }
 
-function assertProperties(props, expected) {
-	assert.equal(props.length, expected.length);
-	for (let i = 0; i < expected.length; i++) {
-		assert.equal(props[i][1], expected[i][0]);
-		assert.equal(props[i][2], expected[i][1]);
+function assertTaggedNode(parent, tag, expectations) {
+	const node = findNodeByTag(parent, tag);
+	assert.ok(node);
+	if (expectations) {
+		assertTaggedChildren(node, expectations);
 	}
+	return node;
+}
+
+function assertProperties(props, expected) {
+	assert.deepEqual(
+		props.map((p) => [p[1], p[2]]),
+		expected,
+	);
 }
 
 describe("irToKicadPcb validation and roundtrip", () => {
@@ -133,8 +146,7 @@ describe("irToKicadPcb validation and roundtrip", () => {
 describe("irToKicadPcb layers and board outline", () => {
 	test("contains all 13 standard layers and setup clearance", () => {
 		const { ast } = buildPcbAst();
-		const layersNode = findNodeByTag(ast, "layers");
-		assert.ok(layersNode);
+		const layersNode = assertTaggedNode(ast, "layers");
 		assert.equal(layersNode.length, 14);
 		assertTaggedChildren(ast, [
 			["setup", [{ sym: "pad_to_mask_clearance" }, 0]],
@@ -146,9 +158,7 @@ describe("irToKicadPcb layers and board outline", () => {
 			boardW: 120,
 			boardH: 90,
 		});
-		const rect = findNodeByTag(ast, "gr_rect");
-		assert.ok(rect);
-		assertTaggedChildren(rect, [
+		assertTaggedNode(ast, "gr_rect", [
 			["start", 0, 0],
 			["end", 120, 90],
 			["fill", { sym: "no" }],
@@ -168,9 +178,7 @@ describe("irToKicadPcb footprints and placements", () => {
 			const ir = createValidBaseIr();
 			ir.parts[0].placement.side = side;
 			const { ast } = buildPcbAst(ir, { footprints: SAMPLE_FOOTPRINTS });
-			const fp = findNodeByTag(ast, "footprint");
-			assert.ok(fp);
-			assertTaggedChildren(fp, [
+			assertTaggedNode(ast, "footprint", [
 				["layer", expectedLayer],
 				["at", 50, 30, 90],
 			]);
@@ -181,7 +189,7 @@ describe("irToKicadPcb footprints and placements", () => {
 		const { ast } = buildPcbAst(createValidBaseIr(), {
 			footprints: SAMPLE_FOOTPRINTS,
 		});
-		const fp = findNodeByTag(ast, "footprint");
+		const fp = assertTaggedNode(ast, "footprint");
 		const props = findNodesByTag(fp, "property");
 		assertProperties(props, [
 			["Reference", "R1"],
@@ -192,23 +200,18 @@ describe("irToKicadPcb footprints and placements", () => {
 
 describe("irToKicadPcb pads and net mapping", () => {
 	test("pads map correctly to IR net numbers and include drill when specified", () => {
-		const ir = createValidBaseIr();
-		ir.parts.push({
-			id: PART_ID_2,
-			ref: "Q1",
-			value: "2N3904",
-			symbol: "Device:Q_NPN",
-			footprint: "Package_TO_SOT_THT:TO-92",
-			props: {},
-			placement: { x: 20, y: 15, rot: 0, side: "F" },
-		});
+		const q1 = makePart(
+			PART_ID_2,
+			"Q1",
+			["2N3904", "Device:Q_NPN", "Package_TO_SOT_THT:TO-92"],
+			{ x: 20, y: 15, rot: 0, side: "F" },
+		);
+		const ir = createValidBaseIr(q1);
 		ir.nets[0].pins.push({ partId: PART_ID_2, pin: "1" });
 		const { ast } = buildPcbAst(ir, { footprints: SAMPLE_FOOTPRINTS });
 		const fps = findNodesByTag(ast, "footprint");
 		const q1Fp = fps.find((f) => f[1] === "Package_TO_SOT_THT:TO-92");
-		const padNode = findNodeByTag(q1Fp, "pad");
-		assert.ok(padNode);
-		assertTaggedChildren(padNode, [
+		assertTaggedNode(q1Fp, "pad", [
 			["drill", 0.8],
 			["net", 1, "GND"],
 		]);
@@ -217,16 +220,12 @@ describe("irToKicadPcb pads and net mapping", () => {
 
 describe("irToKicadPcb warnings and edge cases", () => {
 	test("warns on unplaced parts and skips emitting their footprint", () => {
-		const ir = createValidBaseIr();
-		ir.parts.push({
-			id: PART_ID_2,
-			ref: "C1",
-			value: "100nF",
-			symbol: "Device:C",
-			footprint: "Capacitor_SMD:C_0603",
-			props: {},
-		});
-		const { warnings, ast } = buildPcbAst(ir);
+		const c1 = makePart(PART_ID_2, "C1", [
+			"100nF",
+			"Device:C",
+			"Capacitor_SMD:C_0603",
+		]);
+		const { warnings, ast } = buildPcbAst(createValidBaseIr(c1));
 		assert.ok(warnings.includes("unplaced part C1"));
 		const fps = findNodesByTag(ast, "footprint");
 		assert.equal(fps.length, 1);
@@ -234,17 +233,15 @@ describe("irToKicadPcb warnings and edge cases", () => {
 	});
 
 	test("warns when footprint definition is missing", () => {
-		const ir = createValidBaseIr();
-		ir.parts.push({
-			id: PART_ID_3,
-			ref: "U2",
-			value: "NE555",
-			symbol: "Timer:NE555",
-			footprint: "Package_SO:SOIC-8",
-			props: {},
-			placement: { x: 10, y: 10, rot: 0, side: "F" },
+		const u2 = makePart(
+			PART_ID_3,
+			"U2",
+			["NE555", "Timer:NE555", "Package_SO:SOIC-8"],
+			{ x: 10, y: 10, rot: 0, side: "F" },
+		);
+		const { warnings } = irToKicadPcb(createValidBaseIr(u2), {
+			footprints: SAMPLE_FOOTPRINTS,
 		});
-		const { warnings } = irToKicadPcb(ir, { footprints: SAMPLE_FOOTPRINTS });
 		assert.ok(
 			warnings.includes("no footprint definition for U2 (Package_SO:SOIC-8)"),
 		);
@@ -265,7 +262,6 @@ describe("irToKicadPcb determinism and thickness option", () => {
 		assert.equal(run1.text, run2.text);
 		assert.deepEqual(run1.warnings, run2.warnings);
 		const ast = parse(run1.text);
-		const general = findNodeByTag(ast, "general");
-		assertTaggedChildren(general, [["thickness", 2.4]]);
+		assertTaggedNode(ast, "general", [["thickness", 2.4]]);
 	});
 });
