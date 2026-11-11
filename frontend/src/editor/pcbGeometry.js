@@ -8,25 +8,36 @@ export const LAYER_COLORS = Object.freeze({
 	"B.Mask": "#6366f1",
 });
 
-const FOOTPRINT_SIZES = [
-	{ match: /(?:^|\D)0402(?:\D|$)/i, w: 1.0, h: 0.5 },
-	{ match: /(?:^|\D)0603(?:\D|$)/i, w: 1.6, h: 0.8 },
-	{ match: /(?:^|\D)0805(?:\D|$)/i, w: 2.0, h: 1.25 },
-	{ match: /(?:^|\D)1206(?:\D|$)/i, w: 3.2, h: 1.6 },
-	{ match: /sot[-_]?23/i, w: 2.9, h: 1.3 },
-	{ match: /soic[-_]?8/i, w: 4.9, h: 3.9 },
-	{ match: /dip[-_]?8/i, w: 9.5, h: 6.5 },
+const SIZES_BY_CODE = {
+	"0402": [1.0, 0.5],
+	"0603": [1.6, 0.8],
+	"0805": [2.0, 1.25],
+	1206: [3.2, 1.6],
+	sot23: [2.9, 1.3],
+	soic8: [4.9, 3.9],
+	dip8: [9.5, 6.5],
+};
+
+const PACKAGE_PATTERNS = [
+	[/(?:^|\D)(0402|0603|0805|1206)(?:\D|$)/i, (m) => m[1]],
+	[/sot[-_]?23/i, () => "sot23"],
+	[/soic[-_]?8/i, () => "soic8"],
+	[/dip[-_]?8/i, () => "dip8"],
 ];
+
+function matchPackageKey(str) {
+	for (const [regex, getKey] of PACKAGE_PATTERNS) {
+		const match = str.match(regex);
+		if (match) return getKey(match);
+	}
+	return null;
+}
 
 function resolveFootprintSize(name) {
 	if (!name) return { w: 5, h: 5 };
-	const str = String(name);
-	for (const entry of FOOTPRINT_SIZES) {
-		if (entry.match.test(str)) {
-			return { w: entry.w, h: entry.h };
-		}
-	}
-	return { w: 5, h: 5 };
+	const key = matchPackageKey(String(name));
+	const dims = key ? SIZES_BY_CODE[key] : null;
+	return dims ? { w: dims[0], h: dims[1] } : { w: 5, h: 5 };
 }
 
 export function footprintRect(part) {
@@ -54,6 +65,11 @@ function snapNum(n, grid) {
 	return Math.round(snapped * 10000) / 10000;
 }
 
+function isPointObject(v) {
+	if (!v || typeof v !== "object") return false;
+	return "x" in v && "y" in v;
+}
+
 export function snapToGrid(v, grid = 0.25) {
 	if (typeof v === "number") {
 		return snapNum(v, grid);
@@ -61,7 +77,7 @@ export function snapToGrid(v, grid = 0.25) {
 	if (Array.isArray(v)) {
 		return [snapNum(v[0], grid), snapNum(v[1], grid)];
 	}
-	if (v && typeof v === "object" && "x" in v && "y" in v) {
+	if (isPointObject(v)) {
 		return { x: snapNum(v.x, grid), y: snapNum(v.y, grid) };
 	}
 	return v;
@@ -72,73 +88,87 @@ function ptCoords(p) {
 	return [p?.x ?? 0, p?.y ?? 0];
 }
 
+function pointDistance(p1, p2) {
+	const [x1, y1] = ptCoords(p1);
+	const [x2, y2] = ptCoords(p2);
+	return Math.hypot(x2 - x1, y2 - y1);
+}
+
+function polylineLength(points) {
+	let total = 0;
+	for (let i = 0; i < points.length - 1; i++) {
+		total += pointDistance(points[i], points[i + 1]);
+	}
+	return total;
+}
+
 export function trackLength(track) {
 	if (!track) return 0;
 	if (Array.isArray(track.points) && track.points.length >= 2) {
-		let total = 0;
-		for (let i = 0; i < track.points.length - 1; i++) {
-			const [x1, y1] = ptCoords(track.points[i]);
-			const [x2, y2] = ptCoords(track.points[i + 1]);
-			total += Math.hypot(x2 - x1, y2 - y1);
-		}
-		return total;
+		return polylineLength(track.points);
 	}
 	if (track.start && track.end) {
-		const [x1, y1] = ptCoords(track.start);
-		const [x2, y2] = ptCoords(track.end);
-		return Math.hypot(x2 - x1, y2 - y1);
+		return pointDistance(track.start, track.end);
 	}
 	return 0;
 }
 
-export function addTrack(board, options = {}) {
-	const { netId = "", layer = "F.Cu", points = [], widthMm = 0.25 } = options;
-	const currentTracks = Array.isArray(board?.tracks) ? [...board.tracks] : [];
-	const newSegments = [];
+function getBoardTracks(board) {
+	return Array.isArray(board?.tracks) ? [...board.tracks] : [];
+}
+
+function createTrackSegments(points, meta) {
+	const segments = [];
 	for (let i = 0; i < points.length - 1; i++) {
-		const [x1, y1] = ptCoords(points[i]);
-		const [x2, y2] = ptCoords(points[i + 1]);
-		newSegments.push({
-			netId,
-			layer,
-			start: [x1, y1],
-			end: [x2, y2],
-			widthMm,
+		segments.push({
+			netId: meta.netId,
+			layer: meta.layer,
+			start: ptCoords(points[i]),
+			end: ptCoords(points[i + 1]),
+			widthMm: meta.widthMm,
 		});
 	}
+	return segments;
+}
+
+export function addTrack(board, options = {}) {
+	const { netId = "", layer = "F.Cu", points = [], widthMm = 0.25 } = options;
+	const segments = createTrackSegments(points, { netId, layer, widthMm });
 	return {
 		...(board ?? {}),
-		tracks: [...currentTracks, ...newSegments],
+		tracks: [...getBoardTracks(board), ...segments],
 	};
 }
 
 export function deleteTrack(board, index) {
-	const currentTracks = Array.isArray(board?.tracks) ? [...board.tracks] : [];
-	if (typeof index === "number" && index >= 0 && index < currentTracks.length) {
-		currentTracks.splice(index, 1);
+	const tracks = getBoardTracks(board);
+	if (typeof index === "number" && index >= 0 && index < tracks.length) {
+		tracks.splice(index, 1);
 	}
 	return {
 		...(board ?? {}),
-		tracks: currentTracks,
+		tracks,
 	};
 }
 
-function resolvePin(pin, padPos, partMap) {
+function lookupPadPosition(padPos, partId, pinId) {
 	if (typeof padPos === "function") {
-		const pos = padPos(pin.partId, pin.pin);
-		if (pos) return ptCoords(pos);
+		return padPos(partId, pinId);
+	}
+	if (padPos instanceof Map) {
+		return padPos.get(`${partId}:${pinId}`);
 	}
 	if (padPos && typeof padPos === "object") {
-		const key = `${pin.partId}:${pin.pin}`;
-		const lookup =
-			padPos instanceof Map ? padPos.get(key) : padPos[pin.partId]?.[pin.pin];
-		if (lookup) return ptCoords(lookup);
-	}
-	const part = partMap.get(pin.partId);
-	if (part?.placement) {
-		return [part.placement.x ?? 0, part.placement.y ?? 0];
+		return padPos[partId]?.[pinId];
 	}
 	return null;
+}
+
+function resolvePin(pin, padPos, partMap) {
+	const pos = lookupPadPosition(padPos, pin.partId, pin.pin);
+	if (pos) return ptCoords(pos);
+	const pl = partMap.get(pin.partId)?.placement;
+	return pl ? [pl.x ?? 0, pl.y ?? 0] : null;
 }
 
 function collectPinsWithPos(net, padPos, partMap) {
@@ -156,27 +186,24 @@ function buildNetPairs(pins) {
 	const pairs = [];
 	for (let i = 0; i < pins.length; i++) {
 		for (let j = i + 1; j < pins.length; j++) {
-			const dist = Math.hypot(pins[i].x - pins[j].x, pins[i].y - pins[j].y);
-			pairs.push({ u: i, v: j, dist });
+			pairs.push({ u: i, v: j, dist: pointDistance(pins[i], pins[j]) });
 		}
 	}
 	return pairs.sort((a, b) => a.dist - b.dist);
 }
 
 function findRoot(parent, i) {
-	let curr = i;
-	while (parent[curr] !== curr) {
-		parent[curr] = parent[parent[curr]];
-		curr = parent[curr];
+	if (parent[i] !== i) {
+		parent[i] = findRoot(parent, parent[i]);
 	}
-	return curr;
+	return parent[i];
 }
 
-function unionRoots(parent, i, j) {
-	const rootI = findRoot(parent, i);
-	const rootJ = findRoot(parent, j);
-	if (rootI === rootJ) return false;
-	parent[rootI] = rootJ;
+function unionRoots(parent, a, b) {
+	const ra = findRoot(parent, a);
+	const rb = findRoot(parent, b);
+	if (ra === rb) return false;
+	parent[ra] = rb;
 	return true;
 }
 
@@ -205,8 +232,7 @@ export function ratsnest(ir, padPos) {
 	const links = [];
 	for (const net of ir.nets) {
 		const pins = collectPinsWithPos(net, padPos, partMap);
-		const netLinks = computeMstLinks(pins, net);
-		links.push(...netLinks);
+		links.push(...computeMstLinks(pins, net));
 	}
 	return links;
 }
@@ -224,51 +250,48 @@ function pointInPart(x, y, part) {
 	return Math.abs(lx) <= rect.w / 2 && Math.abs(ly) <= rect.h / 2;
 }
 
-function distToSegment(px, py, s, e) {
-	const dx = e[0] - s[0];
-	const dy = e[1] - s[1];
-	const lenSq = dx * dx + dy * dy;
-	if (lenSq === 0) return Math.hypot(px - s[0], py - s[1]);
-	const t = Math.max(
-		0,
-		Math.min(1, ((px - s[0]) * dx + (py - s[1]) * dy) / lenSq),
-	);
-	return Math.hypot(px - (s[0] + t * dx), py - (s[1] + t * dy));
+function distToSegment(px, py, start, end) {
+	const [sx, sy] = start;
+	const [ex, ey] = end;
+	const segX = ex - sx;
+	const segY = ey - sy;
+	const sqLen = segX ** 2 + segY ** 2;
+	if (!sqLen) return Math.hypot(px - sx, py - sy);
+	const dot = (px - sx) * segX + (py - sy) * segY;
+	const frac = Math.max(0, Math.min(1, dot / sqLen));
+	const projX = sx + frac * segX;
+	const projY = sy + frac * segY;
+	return Math.hypot(px - projX, py - projY);
+}
+
+function checkPartHit(p, x, y) {
+	return Boolean(p.placement && pointInPart(x, y, p));
+}
+
+function checkViaHit(v, x, y) {
+	const [vx, vy] = ptCoords(v.at);
+	const radius = Math.max(0.6, (v.sizeMm ?? 0.8) / 2);
+	return Math.hypot(x - vx, y - vy) <= radius;
+}
+
+function checkTrackHit(t, x, y) {
+	const tol = Math.max(0.5, (t.widthMm ?? 0.25) / 2 + 0.3);
+	return distToSegment(x, y, ptCoords(t.start), ptCoords(t.end)) <= tol;
 }
 
 function hitTestParts(parts, x, y) {
-	for (let i = 0; i < parts.length; i++) {
-		const p = parts[i];
-		if (p.placement && pointInPart(x, y, p)) {
-			return { kind: "part", id: p.id, index: i };
-		}
-	}
-	return null;
+	const idx = parts.findIndex((p) => checkPartHit(p, x, y));
+	return idx >= 0 ? { kind: "part", id: parts[idx].id, index: idx } : null;
 }
 
 function hitTestVias(vias, x, y) {
-	for (let i = 0; i < vias.length; i++) {
-		const v = vias[i];
-		const [vx, vy] = ptCoords(v.at);
-		const radius = Math.max(0.6, (v.sizeMm ?? 0.8) / 2);
-		if (Math.hypot(x - vx, y - vy) <= radius) {
-			return { kind: "via", index: i, id: v.netId };
-		}
-	}
-	return null;
+	const idx = vias.findIndex((v) => checkViaHit(v, x, y));
+	return idx >= 0 ? { kind: "via", index: idx, id: vias[idx].netId } : null;
 }
 
 function hitTestTracks(tracks, x, y) {
-	for (let i = 0; i < tracks.length; i++) {
-		const t = tracks[i];
-		const s = ptCoords(t.start);
-		const e = ptCoords(t.end);
-		const tol = Math.max(0.5, (t.widthMm ?? 0.25) / 2 + 0.3);
-		if (distToSegment(x, y, s, e) <= tol) {
-			return { kind: "track", index: i, id: t.netId };
-		}
-	}
-	return null;
+	const idx = tracks.findIndex((t) => checkTrackHit(t, x, y));
+	return idx >= 0 ? { kind: "track", index: idx, id: tracks[idx].netId } : null;
 }
 
 export function hitTest(ir, board, pt) {
@@ -280,6 +303,10 @@ export function hitTest(ir, board, pt) {
 	return hitTestTracks(board?.tracks ?? [], x, y);
 }
 
+function isDirect45(absX, absY) {
+	return absX === 0 || absY === 0 || absX === absY;
+}
+
 export function constrain45(from, to) {
 	const [x0, y0] = ptCoords(from);
 	const [x1, y1] = ptCoords(to);
@@ -287,7 +314,7 @@ export function constrain45(from, to) {
 	const dy = y1 - y0;
 	const absX = Math.abs(dx);
 	const absY = Math.abs(dy);
-	if (absX === 0 || absY === 0 || absX === absY) {
+	if (isDirect45(absX, absY)) {
 		return [[x1, y1]];
 	}
 	if (absX > absY) {
