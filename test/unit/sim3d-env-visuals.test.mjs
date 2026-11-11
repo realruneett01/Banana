@@ -12,11 +12,77 @@ function findPreset(key) {
 	return ENV_PRESETS.find((p) => p.key === key);
 }
 
+function verifyVisualProps(vis, exp) {
+	for (const [key, val] of Object.entries(exp)) {
+		const actual = key in vis ? vis[key] : vis.shake?.[key];
+		assert.equal(actual, val);
+	}
+}
+
+const VISUAL_CASES = [
+	{
+		name: "returns safe defaults when env is null",
+		env: null,
+		expected: {
+			droplets: 0,
+			frost: false,
+			heatShimmer: false,
+			amplitudeMm: 0,
+			frequencyHz: 0,
+		},
+		validate: (vis) => assert.ok(typeof vis.label === "string"),
+	},
+	{
+		name: "maps automotive preset with shake, shimmer, frost and droplets",
+		envKey: "automotive",
+		expected: {
+			frost: true,
+			heatShimmer: true,
+			frequencyHz: 10,
+			label: "Inside a car on a hot day: up to 125 C and constant shaking",
+		},
+		validate: (vis) => {
+			assert.ok(vis.droplets > 0);
+			assert.ok(vis.shake.amplitudeMm > 0);
+		},
+	},
+	{
+		name: "maps office preset with no shake and clear visuals",
+		envKey: "office",
+		expected: {
+			frost: false,
+			heatShimmer: false,
+			droplets: 0,
+			amplitudeMm: 0,
+		},
+	},
+	{
+		name: "maps outdoor preset with high humidity droplets and frost",
+		envKey: "outdoor",
+		expected: {
+			frost: true,
+			heatShimmer: true,
+			droplets: 100,
+			amplitudeMm: 0,
+		},
+	},
+	{
+		name: "caps shake amplitude on extreme vibration",
+		env: {
+			vibration: { psdG2Hz: 20.0, fromHz: 10, toHz: 5000 },
+		},
+		expected: {
+			amplitudeMm: MAX_AMPLITUDE_MM,
+		},
+		validate: (vis) => assert.ok(vis.shake.amplitudeMm <= 1.5),
+	},
+];
+
 describe("envVisuals - worstCaseAmbient", () => {
 	test("defaults to 25 when env is missing", () => {
-		assert.equal(worstCaseAmbient(null), 25);
-		assert.equal(worstCaseAmbient(undefined), 25);
-		assert.equal(worstCaseAmbient({}), 25);
+		for (const input of [null, undefined, {}]) {
+			assert.equal(worstCaseAmbient(input), 25);
+		}
 	});
 
 	test("reads scalar and range ambientC", () => {
@@ -43,9 +109,9 @@ describe("envVisuals - worstCaseAmbient", () => {
 
 describe("envVisuals - envBadges", () => {
 	test("returns empty badges for null or benign environment", () => {
-		assert.deepEqual(envBadges(null), []);
-		const office = findPreset("office");
-		assert.deepEqual(envBadges(office), []);
+		for (const env of [null, findPreset("office")]) {
+			assert.deepEqual(envBadges(env), []);
+		}
 	});
 
 	test("produces short chips for high stress conditions", () => {
@@ -58,70 +124,23 @@ describe("envVisuals - envBadges", () => {
 	});
 
 	test("includes specific badges for presets", () => {
-		const auto = findPreset("automotive");
-		const autoBadges = envBadges(auto);
-		assert.ok(autoBadges.includes("Very hot"));
-		assert.ok(autoBadges.includes("Freezing"));
-		assert.ok(autoBadges.includes("Shaking"));
-		assert.ok(autoBadges.includes("Humid"));
+		const autoBadges = envBadges(findPreset("automotive"));
+		for (const badge of ["Very hot", "Freezing", "Shaking", "Humid"]) {
+			assert.ok(autoBadges.includes(badge));
+		}
 
-		const dc = findPreset("data-center");
-		assert.deepEqual(envBadges(dc), ["Airflow"]);
-
-		const aero = findPreset("aerospace");
-		assert.ok(envBadges(aero).includes("High altitude"));
+		assert.deepEqual(envBadges(findPreset("data-center")), ["Airflow"]);
+		assert.ok(envBadges(findPreset("aerospace")).includes("High altitude"));
 	});
 });
 
 describe("envVisuals - envToVisuals", () => {
-	test("returns safe defaults when env is null", () => {
-		const vis = envToVisuals(null);
-		assert.equal(vis.droplets, 0);
-		assert.equal(vis.frost, false);
-		assert.equal(vis.heatShimmer, false);
-		assert.equal(vis.shake.amplitudeMm, 0);
-		assert.equal(vis.shake.frequencyHz, 0);
-		assert.ok(typeof vis.label === "string");
-	});
-
-	test("maps automotive preset with shake, shimmer, frost and droplets", () => {
-		const auto = findPreset("automotive");
-		const vis = envToVisuals(auto);
-		assert.equal(vis.frost, true);
-		assert.equal(vis.heatShimmer, true);
-		assert.ok(vis.droplets > 0);
-		assert.ok(vis.shake.amplitudeMm > 0);
-		assert.equal(vis.shake.frequencyHz, 10);
-		assert.equal(
-			vis.label,
-			"Inside a car on a hot day: up to 125 C and constant shaking",
-		);
-	});
-
-	test("maps office preset with no shake and clear visuals", () => {
-		const office = findPreset("office");
-		const vis = envToVisuals(office);
-		assert.equal(vis.frost, false);
-		assert.equal(vis.heatShimmer, false);
-		assert.equal(vis.droplets, 0);
-		assert.equal(vis.shake.amplitudeMm, 0);
-	});
-
-	test("maps outdoor preset with high humidity droplets and frost", () => {
-		const outdoor = findPreset("outdoor");
-		const vis = envToVisuals(outdoor);
-		assert.equal(vis.frost, true);
-		assert.equal(vis.heatShimmer, true);
-		assert.equal(vis.droplets, 100);
-		assert.equal(vis.shake.amplitudeMm, 0);
-	});
-
-	test("caps shake amplitude on extreme vibration", () => {
-		const extreme = {
-			vibration: { psdG2Hz: 20.0, fromHz: 10, toHz: 5000 },
-		};
-		const vis = envToVisuals(extreme);
-		assert.equal(vis.shake.amplitudeMm, MAX_AMPLITUDE_MM);
-		assert.ok(vis.shake.amplitudeMm <= 1.5);
-	});
+	for (const tc of VISUAL_CASES) {
+		test(tc.name, () => {
+			const env = "env" in tc ? tc.env : findPreset(tc.envKey);
+			const vis = envToVisuals(env);
+			verifyVisualProps(vis, tc.expected);
+			tc.validate?.(vis);
+		});
+	}
 });
