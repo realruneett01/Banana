@@ -29,6 +29,28 @@ function assertTrackSegments(actualSegments, expectedSegments) {
 	}
 }
 
+function assertBoardSummary(board) {
+	const checks = [
+		[board.metadata.version, "20211014"],
+		[board.metadata.generator, "pcbnew"],
+		[board.metadata.thickness, 1.6],
+		[board.metadata.titleBlock?.title, "Demo Board"],
+		[board.layers.get("F.Cu")?.type, "signal"],
+		[board.nets.get(1), "GND"],
+		[board.netClasses.length, 1],
+		[board.footprints.length, 1],
+		[board.footprints[0].reference.text, "R1"],
+		[board.footprints[0].pads.length, 1],
+		[board.tracks.length, 1],
+		[board.vias.length, 1],
+		[board.zones.length, 1],
+		[board.groups.length, 1],
+	];
+	for (const [actual, expected] of checks) {
+		assert.equal(actual, expected);
+	}
+}
+
 function withTempPcbFile(fileName, content, callback) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
 	const pcbPath = path.join(tmpDir, fileName);
@@ -279,20 +301,7 @@ describe("parseKiCadBoard", () => {
 	test("parses a valid kicad_pcb file into typed board data structure", () => {
 		withTempPcbFile("board.kicad_pcb", sampleBoardText, (pcbPath) => {
 			const board = parseKiCadBoard(pcbPath);
-			assert.equal(board.metadata.version, "20211014");
-			assert.equal(board.metadata.generator, "pcbnew");
-			assert.equal(board.metadata.thickness, 1.6);
-			assert.equal(board.metadata.titleBlock?.title, "Demo Board");
-			assert.equal(board.layers.get("F.Cu")?.type, "signal");
-			assert.equal(board.nets.get(1), "GND");
-			assert.equal(board.netClasses.length, 1);
-			assert.equal(board.footprints.length, 1);
-			assert.equal(board.footprints[0].reference.text, "R1");
-			assert.equal(board.footprints[0].pads.length, 1);
-			assert.equal(board.tracks.length, 1);
-			assert.equal(board.vias.length, 1);
-			assert.equal(board.zones.length, 1);
-			assert.equal(board.groups.length, 1);
+			assertBoardSummary(board);
 		});
 	});
 
