@@ -25,16 +25,17 @@ function createValidTool(overrides = {}) {
 
 describe("module contract", () => {
 	test("exports match the contract exactly", async () => {
-		const mod = await import("../../backend/src/engine/tool-registry.js");
-		const exportedKeys = Object.keys(mod).sort();
-		assert.deepEqual(exportedKeys, ["createRegistry"]);
+		const registryModule = await import(
+			"../../backend/src/engine/tool-registry.js"
+		);
+		assert.deepEqual(Object.keys(registryModule).sort(), ["createRegistry"]);
 	});
 
 	test("createRegistry returns registry with register, list, and call", () => {
 		const reg = createRegistry();
-		assert.equal(typeof reg.register, "function");
-		assert.equal(typeof reg.list, "function");
-		assert.equal(typeof reg.call, "function");
+		for (const method of ["register", "list", "call"]) {
+			assert.equal(typeof reg[method], "function");
+		}
 	});
 });
 
@@ -59,69 +60,46 @@ describe("register: valid definitions", () => {
 });
 
 describe("register: rejects invalid definitions", () => {
-	const INVALID_CASES = [
+	const PRIMITIVE_CASES = [
 		{ label: "null", def: null },
 		{ label: "undefined", def: undefined },
 		{ label: "number", def: 42 },
 		{ label: "string", def: "not-a-tool" },
 		{ label: "array", def: [] },
-		{ label: "missing name", def: createValidTool({ name: undefined }) },
-		{ label: "empty name", def: createValidTool({ name: "" }) },
-		{ label: "non-string name", def: createValidTool({ name: 123 }) },
-		{
-			label: "missing description",
-			def: createValidTool({ description: undefined }),
-		},
-		{
-			label: "non-string description",
-			def: createValidTool({ description: false }),
-		},
-		{
-			label: "missing inputSchema",
-			def: createValidTool({ inputSchema: undefined }),
-		},
-		{
-			label: "non-object inputSchema",
-			def: createValidTool({ inputSchema: "string" }),
-		},
-		{ label: "null inputSchema", def: createValidTool({ inputSchema: null }) },
-		{
-			label: "missing outputSchema",
-			def: createValidTool({ outputSchema: undefined }),
-		},
-		{
-			label: "non-object outputSchema",
-			def: createValidTool({ outputSchema: 123 }),
-		},
-		{
-			label: "null outputSchema",
-			def: createValidTool({ outputSchema: null }),
-		},
-		{
-			label: "missing permission",
-			def: createValidTool({ permission: undefined }),
-		},
-		{
-			label: "invalid permission",
-			def: createValidTool({ permission: "admin" }),
-		},
-		{ label: "missing handler", def: createValidTool({ handler: undefined }) },
-		{
-			label: "non-function handler",
-			def: createValidTool({ handler: "function" }),
-		},
-		{ label: "invalid id format", def: createValidTool({ id: "bad-id" }) },
-		{ label: "invalid id kind", def: createValidTool({ id: newId("part") }) },
-		{
-			label: "unexpected extra property",
-			def: createValidTool({ extraField: true }),
-		},
 	];
 
-	for (const { label, def } of INVALID_CASES) {
+	for (const { label, def } of PRIMITIVE_CASES) {
 		test(`throws when definition has ${label}`, () => {
 			const reg = createRegistry();
 			assert.throws(() => reg.register(def), Error);
+		});
+	}
+
+	const TOOL_OVERRIDE_CASES = [
+		["missing name", { name: undefined }],
+		["empty name", { name: "" }],
+		["non-string name", { name: 123 }],
+		["missing description", { description: undefined }],
+		["non-string description", { description: false }],
+		["missing inputSchema", { inputSchema: undefined }],
+		["non-object inputSchema", { inputSchema: "string" }],
+		["null inputSchema", { inputSchema: null }],
+		["missing outputSchema", { outputSchema: undefined }],
+		["non-object outputSchema", { outputSchema: 123 }],
+		["null outputSchema", { outputSchema: null }],
+		["missing permission", { permission: undefined }],
+		["invalid permission", { permission: "admin" }],
+		["missing handler", { handler: undefined }],
+		["non-function handler", { handler: "function" }],
+		["invalid id format", { id: "bad-id" }],
+		["invalid id kind", { id: newId("part") }],
+		["unexpected extra property", { extraField: true }],
+	];
+
+	for (const [label, overrides] of TOOL_OVERRIDE_CASES) {
+		test(`throws when definition has ${label}`, () => {
+			const reg = createRegistry();
+			assert.throws(() => reg.register(createValidTool(overrides)), Error);
 		});
 	}
 
