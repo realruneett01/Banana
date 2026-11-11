@@ -11,41 +11,60 @@ const COMMIT_HASH = "e4d3c2b1a09876543210fedcba09876543210fed";
 
 function makeEnv(maxAmbientC = 25) {
 	return {
+		altitudeM: 100,
+		ambientC: { max: maxAmbientC, min: 20 },
+		humidityPct: { max: 60, min: 30 },
 		id: newId("env"),
 		name: "Standard Lab",
-		ambientC: { min: 20, max: maxAmbientC },
-		humidityPct: { min: 30, max: 60 },
-		altitudeM: 100,
 	};
 }
 
 function makeTrack(overrides = {}) {
 	return {
-		id: newId("trace"),
-		widthMm: 0.254,
-		thicknessUm: 35,
-		layer: "F.Cu",
 		currentA: 0.5,
+		id: newId("trace"),
+		layer: "F.Cu",
+		thicknessUm: 35,
+		widthMm: 0.254,
 		...overrides,
 	};
+}
+
+function simCurrent(tracks, options = {}) {
+	const { env = makeEnv(25), simRunId, tempRiseC } = options;
+	const runConfig = { commit: COMMIT_HASH, env, tracks };
+	if (simRunId !== undefined) {
+		runConfig.simRunId = simRunId;
+	}
+	if (tempRiseC !== undefined) {
+		runConfig.tempRiseC = tempRiseC;
+	}
+	return runTraceCurrent(runConfig);
+}
+
+function checkFields(item, expectations) {
+	for (const [key, value] of Object.entries(expectations)) {
+		assert.equal(item[key], value);
+	}
 }
 
 describe("maxCurrentA (IPC-2221)", () => {
 	test("known IPC-2221 value: 0.254 mm wide, 35 um, external, dT 10 C gives ~1.0 A with tolerance", () => {
 		const capacity = maxCurrentA({
-			widthMm: 0.254,
-			thicknessUm: 35,
 			external: true,
 			tempRiseC: 10,
+			thicknessUm: 35,
+			widthMm: 0.254,
 		});
+		const withinTolerance = capacity >= 0.8 && capacity <= 1.2;
 		assert.ok(
-			capacity >= 0.8 && capacity <= 1.2,
+			withinTolerance,
 			`expected ~1.0 A with tolerance, got ${capacity}`,
 		);
 	});
 
 	test("internal traces have lower capacity than external traces", () => {
-		const opts = { widthMm: 0.5, thicknessUm: 35, tempRiseC: 10 };
+		const opts = { tempRiseC: 10, thicknessUm: 35, widthMm: 0.5 };
 		const external = maxCurrentA({ ...opts, external: true });
 		const internal = maxCurrentA({ ...opts, external: false });
 		assert.ok(internal < external);
@@ -53,28 +72,23 @@ describe("maxCurrentA (IPC-2221)", () => {
 	});
 
 	test("higher temperature rise and thicker copper increase current capacity", () => {
-		const base = maxCurrentA({ widthMm: 0.5, thicknessUm: 35, tempRiseC: 10 });
-		const higherTemp = maxCurrentA({
-			widthMm: 0.5,
-			thicknessUm: 35,
-			tempRiseC: 20,
-		});
-		const thickerCu = maxCurrentA({
-			widthMm: 0.5,
-			thicknessUm: 70,
-			tempRiseC: 10,
-		});
-		assert.ok(higherTemp > base);
-		assert.ok(thickerCu > base);
+		const base = maxCurrentA({ tempRiseC: 10, thicknessUm: 35, widthMm: 0.5 });
+		const elevatedCases = [
+			{ tempRiseC: 20, thicknessUm: 35, widthMm: 0.5 },
+			{ tempRiseC: 10, thicknessUm: 70, widthMm: 0.5 },
+		];
+		for (const params of elevatedCases) {
+			assert.ok(maxCurrentA(params) > base);
+		}
 	});
 
 	test("returns zero when inputs are non-positive or non-numbers", () => {
 		const cases = [
-			{ widthMm: 0, thicknessUm: 35, tempRiseC: 10 },
-			{ widthMm: -0.5, thicknessUm: 35, tempRiseC: 10 },
-			{ widthMm: 0.5, thicknessUm: 0, tempRiseC: 10 },
-			{ widthMm: 0.5, thicknessUm: 35, tempRiseC: 0 },
-			{ widthMm: 0.5, thicknessUm: 35, tempRiseC: -5 },
+			{ tempRiseC: 10, thicknessUm: 35, widthMm: 0 },
+			{ tempRiseC: 10, thicknessUm: 35, widthMm: -0.5 },
+			{ tempRiseC: 10, thicknessUm: 0, widthMm: 0.5 },
+			{ tempRiseC: 0, thicknessUm: 35, widthMm: 0.5 },
+			{ tempRiseC: -5, thicknessUm: 35, widthMm: 0.5 },
 		];
 		for (const c of cases) {
 			assert.equal(maxCurrentA(c), 0);
@@ -82,29 +96,22 @@ describe("maxCurrentA (IPC-2221)", () => {
 	});
 
 	test("applies default parameter values when omitted", () => {
-		const withDefaults = maxCurrentA({ widthMm: 0.254 });
-		const explicit = maxCurrentA({
-			widthMm: 0.254,
-			thicknessUm: 35,
+		const actual = maxCurrentA({ widthMm: 0.254 });
+		const expected = maxCurrentA({
 			external: true,
 			tempRiseC: 10,
+			thicknessUm: 35,
+			widthMm: 0.254,
 		});
-		assert.equal(withDefaults, explicit);
+		assert.equal(actual, expected);
 	});
 });
 
 describe("runTraceCurrent", () => {
 	test("identifies external vs internal layers", () => {
-		const env = makeEnv(25);
-		const fCuTrack = makeTrack({ layer: "F.Cu" });
-		const bCuTrack = makeTrack({ layer: "B.Cu" });
-		const inTrack = makeTrack({ layer: "In1.Cu" });
-
-		const { results } = runTraceCurrent({
-			tracks: [fCuTrack, bCuTrack, inTrack],
-			env,
-			commit: COMMIT_HASH,
-		});
+		const layers = ["F.Cu", "B.Cu", "In1.Cu"];
+		const tracks = layers.map((layer) => makeTrack({ layer }));
+		const { results } = simCurrent(tracks, { env: makeEnv(25) });
 
 		assert.equal(results.length, 3);
 		assert.equal(results[0].value, results[1].value);
@@ -113,86 +120,70 @@ describe("runTraceCurrent", () => {
 
 	test("hot ambient lowers effective dT and reduces current capacity", () => {
 		const track = makeTrack({ widthMm: 0.5 });
-		const coolEnv = makeEnv(25);
-		const hotEnv = makeEnv(100);
-
-		const coolRun = runTraceCurrent({
-			tracks: [track],
-			env: coolEnv,
-			commit: COMMIT_HASH,
-			tempRiseC: 20,
-		});
-		const hotRun = runTraceCurrent({
-			tracks: [track],
-			env: hotEnv,
-			commit: COMMIT_HASH,
-			tempRiseC: 20,
-		});
+		const coolRun = simCurrent([track], { env: makeEnv(25), tempRiseC: 20 });
+		const hotRun = simCurrent([track], { env: makeEnv(100), tempRiseC: 20 });
 
 		assert.ok(hotRun.results[0].value < coolRun.results[0].value);
 	});
 
 	test("effective dT <= 0 sets limit to 0 and flags currentA > 0 as error", () => {
-		const hotEnv = makeEnv(105);
 		const activeTrack = makeTrack({ currentA: 1.2 });
 		const idleTrack = makeTrack({ currentA: 0 });
-
-		const { results, issues } = runTraceCurrent({
-			tracks: [activeTrack, idleTrack],
-			env: hotEnv,
-			commit: COMMIT_HASH,
+		const { results, issues } = simCurrent([activeTrack, idleTrack], {
+			env: makeEnv(105),
 		});
 
 		assert.equal(results[0].value, 0);
 		assert.equal(results[1].value, 0);
 		assert.equal(issues.length, 1);
-		assert.equal(issues[0].severity, "error");
-		assert.equal(issues[0].limit, 0);
-		assert.equal(issues[0].measured, 1.2);
+		checkFields(issues[0], {
+			limit: 0,
+			measured: 1.2,
+			severity: "error",
+		});
 	});
 
 	test("thresholds: flags errors, warnings, and compliant tracks correctly", () => {
-		const env = makeEnv(25);
-		const simRunId = newId("sim");
 		const safeTrack = makeTrack({ currentA: 0.5 });
 		const warnTrack = makeTrack({ currentA: 0.75 });
 		const errorTrack = makeTrack({ currentA: 1.5 });
 
-		const { issues } = runTraceCurrent({
-			tracks: [safeTrack, warnTrack, errorTrack],
-			env,
-			commit: COMMIT_HASH,
-			simRunId,
+		const { issues } = simCurrent([safeTrack, warnTrack, errorTrack], {
+			env: makeEnv(25),
+			simRunId: newId("sim"),
 		});
 
 		assert.equal(issues.length, 2);
-		assert.equal(issues[0].severity, "warning");
-		assert.equal(issues[0].itemIds[0], warnTrack.id);
-		assert.equal(issues[1].severity, "error");
-		assert.equal(issues[1].itemIds[0], errorTrack.id);
+		const expectedChecks = [
+			{ id: warnTrack.id, severity: "warning" },
+			{ id: errorTrack.id, severity: "error" },
+		];
+		for (const [idx, exp] of expectedChecks.entries()) {
+			assert.equal(issues[idx].severity, exp.severity);
+			assert.equal(issues[idx].itemIds[0], exp.id);
+		}
 	});
 
 	test("all generated issues pass validateIssue and adhere to issue contract", () => {
-		const env = makeEnv(25);
 		const simRunId = newId("sim");
 		const violatingTrack = makeTrack({ currentA: 2.5 });
 
-		const { issues } = runTraceCurrent({
-			tracks: [violatingTrack],
-			env,
-			commit: COMMIT_HASH,
+		const { issues } = simCurrent([violatingTrack], {
+			env: makeEnv(25),
 			simRunId,
 		});
 
 		assert.equal(issues.length, 1);
-		const issue = issues[0];
-		assert.equal(issue.source, "sim");
-		assert.equal(issue.metric, "current");
-		assert.equal(issue.unit, "A");
-		assert.equal(issue.suggestion, "widen the trace or use thicker copper");
-		assert.equal(issue.status, "open");
-		assert.equal(issue.commit, COMMIT_HASH);
-		assert.equal(issue.simRunId, simRunId);
+		const [issue] = issues;
+		checkFields(issue, {
+			commit: COMMIT_HASH,
+			metric: "current",
+			simRunId,
+			source: "sim",
+			status: "open",
+			suggestion: "widen the trace or use thicker copper",
+			unit: "A",
+		});
 
 		const validation = validateIssue(issue);
 		assert.equal(
@@ -203,12 +194,7 @@ describe("runTraceCurrent", () => {
 	});
 
 	test("handles empty tracks gracefully", () => {
-		const env = makeEnv(25);
-		const { results, issues } = runTraceCurrent({
-			tracks: [],
-			env,
-			commit: COMMIT_HASH,
-		});
+		const { results, issues } = simCurrent([], { env: makeEnv(25) });
 		assert.deepEqual(results, []);
 		assert.deepEqual(issues, []);
 	});
