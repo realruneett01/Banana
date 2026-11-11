@@ -5,105 +5,130 @@ import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { createKicadLibrary } from "../../backend/src/engine/kicad-library.js";
 
-const SYMBOL_DEVICE_CONTENT = `(kicad_symbol_lib
-	(version 20211014)
-	(generator "kicad_symbol_editor")
-	(symbol "R"
-		(pin_numbers hide)
-		(pin_names (offset 0))
-		(in_bom yes)
-		(on_board yes)
-		(property "Reference" "R" (at 2.032 0 90))
-		(property "Value" "R" (at 0 0 90))
-		(property "Footprint" "Resistor_SMD:R_0805" (at -1.778 0 90))
-		(property "Description" "Resistor" (at 0 0 0))
-		(property "ki_keywords" "R res resistor" (at 0 0 0))
-		(symbol "R_0_1"
-			(rectangle (start -1.016 -2.54) (end 1.016 2.54))
+function buildSymbol({ name, props, extra = "", gfx, pins }) {
+	const propLines = Object.entries(props)
+		.map(([k, [v, at]]) => `\t\t(property "${k}" "${v}" (at ${at}))`)
+		.join("\n");
+	const pinLines = pins
+		.map(
+			(p) =>
+				`\t\t\t(pin ${p.type} line (at ${p.at}) (length ${p.len})\n\t\t\t\t(name "${p.name}")\n\t\t\t\t(number "${p.num}")\n\t\t\t)`,
 		)
-		(symbol "R_1_1"
-			(pin passive line (at 0 3.81 270) (length 1.27)
-				(name "~")
-				(number "1")
-			)
-			(pin passive line (at 0 -3.81 90) (length 1.27)
-				(name "~")
-				(number "2")
-			)
-		)
-	)
-	(symbol "R_Small"
-		(property "Reference" "R" (at 0 0 90))
-		(property "Value" "R_Small" (at 0 0 90))
-		(property "Footprint" "" (at 0 0 90))
-		(property "Description" "Small resistor" (at 0 0 0))
-		(property "ki_keywords" "resistor" (at 0 0 0))
-		(symbol "R_Small_0_1"
-			(rectangle (start -0.5 -1.5) (end 0.5 1.5))
-		)
-		(symbol "R_Small_1_1"
-			(pin passive line (at 0 2.54 270) (length 1.27)
-				(name "~")
-				(number "1")
-			)
-			(pin passive line (at 0 -2.54 90) (length 1.27)
-				(name "~")
-				(number "2")
-			)
-		)
-	)
-)`;
+		.join("\n");
+	const extraBlock = extra ? `\n${extra}` : "";
+	return `\t(symbol "${name}"${extraBlock}\n${propLines}\n\t\t(symbol "${name}_0_1"\n\t\t\t${gfx}\n\t\t)\n\t\t(symbol "${name}_1_1"\n${pinLines}\n\t\t)\n\t)`;
+}
 
-const SYMBOL_TRANSISTOR_CONTENT = `(kicad_symbol_lib
-	(version 20211014)
-	(generator "kicad_symbol_editor")
-	(symbol "Q_NPN_BCE"
-		(property "Reference" "Q" (at 0 0 90))
-		(property "Value" "Q_NPN_BCE" (at 0 0 90))
-		(property "Footprint" "" (at 0 0 90))
-		(property "Description" "NPN transistor, collector/base/emitter" (at 0 0 0))
-		(property "ki_keywords" "transistor NPN" (at 0 0 0))
-		(symbol "Q_NPN_BCE_0_1"
-			(polyline (pts (xy 0 1) (xy 0 -1)))
-		)
-		(symbol "Q_NPN_BCE_1_1"
-			(pin input line (at -5.08 0 0) (length 2.54)
-				(name "B")
-				(number "1")
-			)
-			(pin passive line (at 2.54 5.08 270) (length 2.54)
-				(name "C")
-				(number "2")
-			)
-			(pin passive line (at 2.54 -5.08 90) (length 2.54)
-				(name "E")
-				(number "3")
-			)
-		)
-	)
-)`;
+function buildSymbolLib(symbols) {
+	const body = Array.isArray(symbols) ? symbols.join("\n") : symbols;
+	return `(kicad_symbol_lib\n\t(version 20211014)\n\t(generator "kicad_symbol_editor")\n${body}\n)`;
+}
 
-const FP_R0805_CONTENT = `(footprint "R_0805"
-	(version 20211014)
-	(generator "pcbnew")
-	(descr "Resistor SMD 0805 metric")
-	(tags "resistor 0805 smd")
-	(property "Reference" "REF**" (at 0 -1.5 0))
-	(property "Value" "R_0805" (at 0 1.5 0))
-	(pad "1" smd roundrect (at -0.95 0) (size 1 1.45) (layers "F.Cu" "F.Paste" "F.Mask"))
-	(pad "2" smd roundrect (at 0.95 0 90) (size 1 1.45) (layers "F.Cu" "F.Paste" "F.Mask"))
-	(fp_line (start -1.7 -1) (end 1.7 -1) (layer "F.SilkS"))
-)`;
+function buildFootprint({ name, descr, tags, props = [], pads, line }) {
+	const propLines = props
+		.map(([k, v, at]) => `\t(property "${k}" "${v}" (at ${at}))`)
+		.join("\n");
+	const padLines = pads
+		.map(
+			(p) =>
+				`\t(pad "${p.num}" smd roundrect (at ${p.at}) (size ${p.size}) (layers "F.Cu" "F.Paste" "F.Mask"))`,
+		)
+		.join("\n");
+	const propBlock = propLines ? `\n${propLines}` : "";
+	return `(footprint "${name}"\n\t(version 20211014)\n\t(generator "pcbnew")\n\t(descr "${descr}")\n\t(tags "${tags}")${propBlock}\n${padLines}\n\t(fp_line (start ${line.start}) (end ${line.end}) (layer "F.SilkS"))\n)`;
+}
 
-const FP_R1206_CONTENT = `(footprint "R_1206"
-	(version 20211014)
-	(generator "pcbnew")
-	(descr "Resistor SMD 1206 metric")
-	(tags "resistor 1206 smd")
-	(pad "1" smd roundrect (at -1.4 0) (size 1.1 1.8) (layers "F.Cu" "F.Paste" "F.Mask"))
-	(pad "2" smd roundrect (at 1.4 0) (size 1.1 1.8) (layers "F.Cu" "F.Paste" "F.Mask"))
-	(fp_line (start -2.2 -1.2) (end 2.2 -1.2) (layer "F.SilkS"))
-)`;
+const SYMBOL_DEVICE_CONTENT = buildSymbolLib([
+	buildSymbol({
+		name: "R",
+		extra:
+			"\t\t(pin_numbers hide)\n\t\t(pin_names (offset 0))\n\t\t(in_bom yes)\n\t\t(on_board yes)",
+		props: {
+			Reference: ["R", "2.032 0 90"],
+			Value: ["R", "0 0 90"],
+			Footprint: ["Resistor_SMD:R_0805", "-1.778 0 90"],
+			Description: ["Resistor", "0 0 0"],
+			ki_keywords: ["R res resistor", "0 0 0"],
+		},
+		gfx: "(rectangle (start -1.016 -2.54) (end 1.016 2.54))",
+		pins: [
+			{ type: "passive", at: "0 3.81 270", len: "1.27", name: "~", num: "1" },
+			{ type: "passive", at: "0 -3.81 90", len: "1.27", name: "~", num: "2" },
+		],
+	}),
+	buildSymbol({
+		name: "R_Small",
+		props: {
+			Reference: ["R", "0 0 90"],
+			Value: ["R_Small", "0 0 90"],
+			Footprint: ["", "0 0 90"],
+			Description: ["Small resistor", "0 0 0"],
+			ki_keywords: ["resistor", "0 0 0"],
+		},
+		gfx: "(rectangle (start -0.5 -1.5) (end 0.5 1.5))",
+		pins: [
+			{ type: "passive", at: "0 2.54 270", len: "1.27", name: "~", num: "1" },
+			{ type: "passive", at: "0 -2.54 90", len: "1.27", name: "~", num: "2" },
+		],
+	}),
+]);
+
+const SYMBOL_TRANSISTOR_CONTENT = buildSymbolLib(
+	buildSymbol({
+		name: "Q_NPN_BCE",
+		props: {
+			Reference: ["Q", "0 0 90"],
+			Value: ["Q_NPN_BCE", "0 0 90"],
+			Footprint: ["", "0 0 90"],
+			Description: ["NPN transistor, collector/base/emitter", "0 0 0"],
+			ki_keywords: ["transistor NPN", "0 0 0"],
+		},
+		gfx: "(polyline (pts (xy 0 1) (xy 0 -1)))",
+		pins: [
+			{ type: "input", at: "-5.08 0 0", len: "2.54", name: "B", num: "1" },
+			{
+				type: "passive",
+				at: "2.54 5.08 270",
+				len: "2.54",
+				name: "C",
+				num: "2",
+			},
+			{
+				type: "passive",
+				at: "2.54 -5.08 90",
+				len: "2.54",
+				name: "E",
+				num: "3",
+			},
+		],
+	}),
+);
+
+const FP_R0805_CONTENT = buildFootprint({
+	name: "R_0805",
+	descr: "Resistor SMD 0805 metric",
+	tags: "resistor 0805 smd",
+	props: [
+		["Reference", "REF**", "0 -1.5 0"],
+		["Value", "R_0805", "0 1.5 0"],
+	],
+	pads: [
+		{ num: "1", at: "-0.95 0", size: "1 1.45" },
+		{ num: "2", at: "0.95 0 90", size: "1 1.45" },
+	],
+	line: { start: "-1.7 -1", end: "1.7 -1" },
+});
+
+const FP_R1206_CONTENT = buildFootprint({
+	name: "R_1206",
+	descr: "Resistor SMD 1206 metric",
+	tags: "resistor 1206 smd",
+	pads: [
+		{ num: "1", at: "-1.4 0", size: "1.1 1.8" },
+		{ num: "2", at: "1.4 0", size: "1.1 1.8" },
+	],
+	line: { start: "-2.2 -1.2", end: "2.2 -1.2" },
+});
 
 const INVALID_LIB_IDS = [
 	"../x:y",
@@ -117,6 +142,85 @@ const INVALID_LIB_IDS = [
 	null,
 	undefined,
 ];
+
+const EXPECTED_R_PROPERTIES = {
+	Reference: "R",
+	Value: "R",
+	Description: "Resistor",
+	Footprint: "Resistor_SMD:R_0805",
+};
+
+const EXPECTED_R_PINS = [
+	{
+		number: "1",
+		name: "~",
+		type: "passive",
+		at: [0, 3.81, 270],
+		length: 1.27,
+	},
+	{
+		number: "2",
+		name: "~",
+		type: "passive",
+		at: [0, -3.81, 90],
+		length: 1.27,
+	},
+];
+
+const EXPECTED_R0805_PADS = [
+	{
+		number: "1",
+		type: "smd",
+		shape: "roundrect",
+		at: [-0.95, 0, 0],
+		size: [1, 1.45],
+		layers: ["F.Cu", "F.Paste", "F.Mask"],
+	},
+	{
+		number: "2",
+		type: "smd",
+		shape: "roundrect",
+		at: [0.95, 0, 90],
+		size: [1, 1.45],
+		layers: ["F.Cu", "F.Paste", "F.Mask"],
+	},
+];
+
+function assertProperties(actual, expected) {
+	for (const [k, v] of Object.entries(expected)) {
+		assert.equal(actual[k], v);
+	}
+}
+
+function assertElements(actual, expected) {
+	assert.equal(actual.length, expected.length);
+	for (let i = 0; i < expected.length; i++) {
+		assert.deepEqual(actual[i], expected[i]);
+	}
+}
+
+function assertEntity(entity, expectedLibId) {
+	assert.ok(entity);
+	assert.equal(entity.libId, expectedLibId);
+	assert.ok(entity.graphics.length > 0);
+}
+
+function assertSearchResults(results, expected, minTotal = null) {
+	if (minTotal !== null) {
+		assert.ok(results.length >= minTotal);
+	} else {
+		assert.equal(results.length, expected.length);
+	}
+	for (let i = 0; i < expected.length; i++) {
+		const target = expected[i];
+		if (target.name !== undefined) {
+			assert.equal(results[i].name, target.name);
+		}
+		if (target.libId !== undefined) {
+			assert.equal(results[i].libId, target.libId);
+		}
+	}
+}
 
 describe("kicad-library", () => {
 	let tempRoot = "";
@@ -133,26 +237,15 @@ describe("kicad-library", () => {
 		await fs.promises.mkdir(symbolDir, { recursive: true });
 		await fs.promises.mkdir(prettyDir, { recursive: true });
 
-		await fs.promises.writeFile(
-			path.join(symbolDir, "Device.kicad_sym"),
-			SYMBOL_DEVICE_CONTENT,
-			"utf8",
-		);
-		await fs.promises.writeFile(
-			path.join(symbolDir, "Transistor.kicad_sym"),
-			SYMBOL_TRANSISTOR_CONTENT,
-			"utf8",
-		);
-		await fs.promises.writeFile(
-			path.join(prettyDir, "R_0805.kicad_mod"),
-			FP_R0805_CONTENT,
-			"utf8",
-		);
-		await fs.promises.writeFile(
-			path.join(prettyDir, "R_1206.kicad_mod"),
-			FP_R1206_CONTENT,
-			"utf8",
-		);
+		const fixtureFiles = [
+			[symbolDir, "Device.kicad_sym", SYMBOL_DEVICE_CONTENT],
+			[symbolDir, "Transistor.kicad_sym", SYMBOL_TRANSISTOR_CONTENT],
+			[prettyDir, "R_0805.kicad_mod", FP_R0805_CONTENT],
+			[prettyDir, "R_1206.kicad_mod", FP_R1206_CONTENT],
+		];
+		for (const [dir, file, content] of fixtureFiles) {
+			await fs.promises.writeFile(path.join(dir, file), content, "utf8");
+		}
 
 		lib = createKicadLibrary({ symbolDir, footprintDir });
 	});
@@ -163,56 +256,47 @@ describe("kicad-library", () => {
 		}
 	});
 
+	function runSearchCases(cases) {
+		for (const tc of cases) {
+			test(tc.title, async () => {
+				const results = await tc.search();
+				assertSearchResults(results, tc.expected, tc.minTotal);
+			});
+		}
+	}
+
 	test("available() returns true when dirs exist", async () => {
 		assert.equal(await lib.available(), true);
 	});
 
-	test("searchSymbols ranks exact name > prefix > contains", async () => {
-		const results = await lib.searchSymbols("R");
-		assert.ok(results.length >= 2);
-		assert.equal(results[0].name, "R");
-		assert.equal(results[0].libId, "Device:R");
-		assert.equal(results[1].name, "R_Small");
-		assert.equal(results[1].libId, "Device:R_Small");
-	});
-
-	test("searchSymbols respects limit parameter", async () => {
-		const results = await lib.searchSymbols("R", { limit: 1 });
-		assert.equal(results.length, 1);
-		assert.equal(results[0].name, "R");
-	});
-
-	test("searchSymbols matches keywords and description", async () => {
-		const results = await lib.searchSymbols("transistor");
-		assert.equal(results.length, 1);
-		assert.equal(results[0].libId, "Transistor:Q_NPN_BCE");
-	});
+	runSearchCases([
+		{
+			title: "searchSymbols ranks exact name > prefix > contains",
+			search: () => lib.searchSymbols("R"),
+			minTotal: 2,
+			expected: [
+				{ name: "R", libId: "Device:R" },
+				{ name: "R_Small", libId: "Device:R_Small" },
+			],
+		},
+		{
+			title: "searchSymbols respects limit parameter",
+			search: () => lib.searchSymbols("R", { limit: 1 }),
+			expected: [{ name: "R" }],
+		},
+		{
+			title: "searchSymbols matches keywords and description",
+			search: () => lib.searchSymbols("transistor"),
+			expected: [{ libId: "Transistor:Q_NPN_BCE" }],
+		},
+	]);
 
 	test("getSymbol extracts properties, pins, and graphics", async () => {
 		const sym = await lib.getSymbol("Device:R");
-		assert.ok(sym);
-		assert.equal(sym.libId, "Device:R");
+		assertEntity(sym, "Device:R");
 		assert.equal(sym.name, "R");
-		assert.equal(sym.properties.Reference, "R");
-		assert.equal(sym.properties.Value, "R");
-		assert.equal(sym.properties.Description, "Resistor");
-		assert.equal(sym.properties.Footprint, "Resistor_SMD:R_0805");
-		assert.equal(sym.pins.length, 2);
-		assert.deepEqual(sym.pins[0], {
-			number: "1",
-			name: "~",
-			type: "passive",
-			at: [0, 3.81, 270],
-			length: 1.27,
-		});
-		assert.deepEqual(sym.pins[1], {
-			number: "2",
-			name: "~",
-			type: "passive",
-			at: [0, -3.81, 90],
-			length: 1.27,
-		});
-		assert.ok(sym.graphics.length > 0);
+		assertProperties(sym.properties, EXPECTED_R_PROPERTIES);
+		assertElements(sym.pins, EXPECTED_R_PINS);
 	});
 
 	test("getSymbol returns null for non-existent symbol", async () => {
@@ -220,41 +304,23 @@ describe("kicad-library", () => {
 		assert.equal(sym, null);
 	});
 
-	test("searchFootprints ranks exact name > prefix > contains", async () => {
-		const results = await lib.searchFootprints("R_0805");
-		assert.equal(results.length, 1);
-		assert.equal(results[0].libId, "Resistor_SMD:R_0805");
-		assert.equal(results[0].name, "R_0805");
-	});
-
-	test("searchFootprints matches description and tags", async () => {
-		const results = await lib.searchFootprints("1206");
-		assert.equal(results.length, 1);
-		assert.equal(results[0].libId, "Resistor_SMD:R_1206");
-	});
+	runSearchCases([
+		{
+			title: "searchFootprints ranks exact name > prefix > contains",
+			search: () => lib.searchFootprints("R_0805"),
+			expected: [{ libId: "Resistor_SMD:R_0805", name: "R_0805" }],
+		},
+		{
+			title: "searchFootprints matches description and tags",
+			search: () => lib.searchFootprints("1206"),
+			expected: [{ libId: "Resistor_SMD:R_1206" }],
+		},
+	]);
 
 	test("getFootprint extracts pads and graphics", async () => {
 		const fp = await lib.getFootprint("Resistor_SMD:R_0805");
-		assert.ok(fp);
-		assert.equal(fp.libId, "Resistor_SMD:R_0805");
-		assert.equal(fp.pads.length, 2);
-		assert.deepEqual(fp.pads[0], {
-			number: "1",
-			type: "smd",
-			shape: "roundrect",
-			at: [-0.95, 0, 0],
-			size: [1, 1.45],
-			layers: ["F.Cu", "F.Paste", "F.Mask"],
-		});
-		assert.deepEqual(fp.pads[1], {
-			number: "2",
-			type: "smd",
-			shape: "roundrect",
-			at: [0.95, 0, 90],
-			size: [1, 1.45],
-			layers: ["F.Cu", "F.Paste", "F.Mask"],
-		});
-		assert.ok(fp.graphics.length > 0);
+		assertEntity(fp, "Resistor_SMD:R_0805");
+		assertElements(fp.pads, EXPECTED_R0805_PADS);
 	});
 
 	test("getFootprint returns null for non-existent footprint", async () => {
