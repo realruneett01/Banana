@@ -25,6 +25,42 @@ const SVG_STYLE = Object.freeze({
 	userSelect: "none",
 });
 
+const PART_TEXT_STYLE = Object.freeze({
+	pointerEvents: "none",
+	userSelect: "none",
+	fontWeight: 600,
+});
+
+const PART_ITEM_STYLE = Object.freeze({
+	cursor: "pointer",
+	outline: "none",
+});
+
+const PART_THEMES = Object.freeze({
+	front: { stroke: "#38bdf8", fill: "rgba(56, 189, 248, 0.22)" },
+	back: { stroke: "#a78bfa", fill: "rgba(167, 139, 250, 0.22)" },
+});
+
+function bindListeners(target, list) {
+	for (const [type, handler, opts] of list) {
+		target.addEventListener(type, handler, opts);
+	}
+	return () => {
+		for (const [type, handler, opts] of list) {
+			target.removeEventListener(type, handler, opts);
+		}
+	};
+}
+
+function resolvePartStyle(isFront, isHighlighted) {
+	const theme = isFront ? PART_THEMES.front : PART_THEMES.back;
+	return {
+		stroke: isHighlighted ? "#fadb14" : theme.stroke,
+		fill: theme.fill,
+		strokeWidth: isHighlighted ? 0.9 : 0.3,
+	};
+}
+
 function computeCentroid(rects, highlightIds, defaultCenter) {
 	if (!highlightIds.size) return defaultCenter;
 	let sumX = 0;
@@ -40,45 +76,56 @@ function computeCentroid(rects, highlightIds, defaultCenter) {
 	return { x: sumX / count, y: sumY / count };
 }
 
+function applyWheelZoom(setZoom, deltaY) {
+	const factor = deltaY < 0 ? 1.15 : 0.87;
+	setZoom((z) => Math.min(50, Math.max(0.05, z * factor)));
+}
+
 function useWheelZoom(svgRef, setZoom) {
 	useEffect(() => {
 		const el = svgRef.current;
 		if (!el) return;
 		const handleWheel = (e) => {
 			e.preventDefault();
-			const factor = e.deltaY < 0 ? 1.15 : 0.87;
-			setZoom((z) => Math.min(50, Math.max(0.05, z * factor)));
+			applyWheelZoom(setZoom, e.deltaY);
 		};
-		el.addEventListener("wheel", handleWheel, { passive: false });
-		return () => el.removeEventListener("wheel", handleWheel);
+		return bindListeners(el, [["wheel", handleWheel, { passive: false }]]);
 	}, [svgRef, setZoom]);
 }
 
-function usePointerPan(svgRef, viewW, viewH, setPan, dragRef) {
+function computePanStep(drag, svgEl, { viewW, viewH }, e) {
+	const dx = e.clientX - drag.x;
+	const dy = e.clientY - drag.y;
+	if (!drag.moved && Math.hypot(dx, dy) < 3) return null;
+	drag.moved = true;
+	const rect = svgEl?.getBoundingClientRect();
+	const sx = rect?.width ? viewW / rect.width : 1;
+	const sy = rect?.height ? viewH / rect.height : 1;
+	return {
+		x: drag.panX + dx * sx,
+		y: drag.panY + dy * sy,
+	};
+}
+
+function usePointerPan({ svgRef, viewW, viewH, setPan, dragRef }) {
 	useEffect(() => {
 		const handleMove = (e) => {
 			if (!dragRef.current) return;
-			const dx = e.clientX - dragRef.current.x;
-			const dy = e.clientY - dragRef.current.y;
-			if (!dragRef.current.moved && Math.hypot(dx, dy) < 3) return;
-			dragRef.current.moved = true;
-			const rect = svgRef.current?.getBoundingClientRect();
-			const sx = rect?.width ? viewW / rect.width : 1;
-			const sy = rect?.height ? viewH / rect.height : 1;
-			setPan({
-				x: dragRef.current.panX + dx * sx,
-				y: dragRef.current.panY + dy * sy,
-			});
+			const next = computePanStep(
+				dragRef.current,
+				svgRef.current,
+				{ viewW, viewH },
+				e,
+			);
+			if (next) setPan(next);
 		};
 		const handleUp = () => {
 			dragRef.current = null;
 		};
-		window.addEventListener("pointermove", handleMove);
-		window.addEventListener("pointerup", handleUp);
-		return () => {
-			window.removeEventListener("pointermove", handleMove);
-			window.removeEventListener("pointerup", handleUp);
-		};
+		return bindListeners(window, [
+			["pointermove", handleMove],
+			["pointerup", handleUp],
+		]);
 	}, [svgRef, viewW, viewH, setPan, dragRef]);
 }
 
@@ -98,7 +145,13 @@ function useBoardPanZoom({ svgRef, data }) {
 	}, [data.centroid]);
 
 	useWheelZoom(svgRef, setZoom);
-	usePointerPan(svgRef, data.vw, data.vh, setPan, dragRef);
+	usePointerPan({
+		svgRef,
+		viewW: data.vw,
+		viewH: data.vh,
+		setPan,
+		dragRef,
+	});
 
 	const onPointerDown = useCallback(
 		(e) => {
@@ -111,32 +164,40 @@ function useBoardPanZoom({ svgRef, data }) {
 	return { transform, onPointerDown, dragRef };
 }
 
+function deriveIrCollections(ir) {
+	return {
+		rects: partRects(ir),
+		lines: ratsnest(ir),
+		partMap: new Map((ir?.parts ?? []).map((p) => [p.id, p])),
+	};
+}
+
+function computeBoardMetrics(rects, bounds, highlights) {
+	const vb = viewBoxFor(rects, bounds);
+	const [vx, vy, vw, vh] = vb.split(" ").map(Number);
+	const cx = vx + vw / 2;
+	const cy = vy + vh / 2;
+	const centroid = computeCentroid(rects, highlights, { x: cx, y: cy });
+	return { vb, vw, vh, cx, cy, centroid };
+}
+
 function useBoardData(ir, boardW, boardH, selectedId) {
-	const rects = useMemo(() => partRects(ir), [ir]);
-	const lines = useMemo(() => ratsnest(ir), [ir]);
+	const { rects, lines, partMap } = useMemo(
+		() => deriveIrCollections(ir),
+		[ir],
+	);
 	const highlights = useMemo(
 		() => highlightSet(ir, selectedId),
 		[ir, selectedId],
 	);
-	const partMap = useMemo(
-		() => new Map((ir?.parts ?? []).map((p) => [p.id, p])),
-		[ir],
+	const metrics = useMemo(
+		() => computeBoardMetrics(rects, { boardW, boardH }, highlights),
+		[rects, boardW, boardH, highlights],
 	);
-	const vb = useMemo(
-		() => viewBoxFor(rects, { boardW, boardH }),
-		[rects, boardW, boardH],
-	);
-	const [vx, vy, vw, vh] = useMemo(() => vb.split(" ").map(Number), [vb]);
-	const cx = vx + vw / 2;
-	const cy = vy + vh / 2;
-	const centroid = useMemo(
-		() => computeCentroid(rects, highlights, { x: cx, y: cy }),
-		[rects, highlights, cx, cy],
-	);
-	return { rects, lines, highlights, partMap, vb, vw, vh, cx, cy, centroid };
+	return { rects, lines, highlights, partMap, ...metrics };
 }
 
-function BoardOutline({ width, height }) {
+function renderBoardOutline(width, height) {
 	return (
 		<rect
 			x={0}
@@ -151,30 +212,23 @@ function BoardOutline({ width, height }) {
 	);
 }
 
-function RatsnestLines({ lines }) {
+function renderRatsnestLine(l) {
 	return (
-		<g className="ratsnest">
-			{lines.map((l) => (
-				<line
-					key={`${l.netId}-${l.from.x}-${l.from.y}-${l.to.x}-${l.to.y}`}
-					x1={l.from.x}
-					y1={l.from.y}
-					x2={l.to.x}
-					y2={l.to.y}
-					stroke="rgba(251, 191, 36, 0.45)"
-					strokeWidth={0.25}
-					strokeDasharray="1,1"
-				/>
-			))}
-		</g>
+		<line
+			key={`${l.netId}-${l.from.x}-${l.from.y}-${l.to.x}-${l.to.y}`}
+			x1={l.from.x}
+			y1={l.from.y}
+			x2={l.to.x}
+			y2={l.to.y}
+			stroke="rgba(251, 191, 36, 0.45)"
+			strokeWidth={0.25}
+			strokeDasharray="1,1"
+		/>
 	);
 }
 
-function PartRect({ rect, isFront, isHighlighted }) {
-	const stroke = isHighlighted ? "#fadb14" : isFront ? "#38bdf8" : "#a78bfa";
-	const fill = isFront
-		? "rgba(56, 189, 248, 0.22)"
-		: "rgba(167, 139, 250, 0.22)";
+function renderPartRect(rect, isFront, isHighlighted) {
+	const style = resolvePartStyle(isFront, isHighlighted);
 	const rot = rect.rot ? `rotate(${rect.rot} ${rect.x} ${rect.y})` : undefined;
 	return (
 		<rect
@@ -183,15 +237,15 @@ function PartRect({ rect, isFront, isHighlighted }) {
 			width={rect.w}
 			height={rect.h}
 			transform={rot}
-			fill={fill}
-			stroke={stroke}
-			strokeWidth={isHighlighted ? 0.9 : 0.3}
+			fill={style.fill}
+			stroke={style.stroke}
+			strokeWidth={style.strokeWidth}
 			rx={0.4}
 		/>
 	);
 }
 
-function PartText({ rect }) {
+function renderPartText(rect) {
 	const fontSize = Math.min(rect.w, rect.h) * 0.38;
 	return (
 		<text
@@ -201,7 +255,7 @@ function PartText({ rect }) {
 			dominantBaseline="central"
 			fill="#f1f5f9"
 			fontSize={fontSize}
-			style={{ pointerEvents: "none", userSelect: "none", fontWeight: 600 }}
+			style={PART_TEXT_STYLE}
 		>
 			{rect.ref}
 		</text>
@@ -226,10 +280,10 @@ function PartItem({ rect, value, isHighlighted, onSelect, dragRef }) {
 			aria-label={label}
 			onClick={() => !dragRef.current?.moved && onSelect?.(rect.id)}
 			onKeyDown={(e) => handlePartKey(e, rect.id, onSelect)}
-			style={{ cursor: "pointer", outline: "none" }}
+			style={PART_ITEM_STYLE}
 		>
-			<PartRect rect={rect} isFront={isFront} isHighlighted={isHighlighted} />
-			<PartText rect={rect} />
+			{renderPartRect(rect, isFront, isHighlighted)}
+			{renderPartText(rect)}
 		</g>
 	);
 }
@@ -237,8 +291,8 @@ function PartItem({ rect, value, isHighlighted, onSelect, dragRef }) {
 function BoardScene({ boardW, boardH, data, onSelect, dragRef }) {
 	return (
 		<>
-			<BoardOutline width={boardW} height={boardH} />
-			<RatsnestLines lines={data.lines} />
+			{renderBoardOutline(boardW, boardH)}
+			<g className="ratsnest">{data.lines.map(renderRatsnestLine)}</g>
 			{data.rects.map((r) => (
 				<PartItem
 					key={r.id}
