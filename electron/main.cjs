@@ -48,34 +48,30 @@ try {
 	);
 }
 
+function validateHostHeader(host) {
+	if (!serverPort) return true;
+	return (
+		host === `127.0.0.1:${serverPort}` || host === `localhost:${serverPort}`
+	);
+}
+
 /**
  * Starts the local Express backend server bound strictly to 127.0.0.1 (T1.2, T2.2)
  */
 async function startLocalBackend() {
 	const staticDir = path.resolve(__dirname, "../frontend/dist");
-
-	// Dynamically import ESM Express app
 	const appModule = await import("../backend/src/app.js");
 	const createApp = appModule.createApp;
 
 	return new Promise((resolve, reject) => {
-		// Port 0 picks any free operating system port automatically
 		const expressApp = createApp({
 			staticDir,
 			apiSecret,
-			// Validate Host header against 127.0.0.1:<port> or localhost:<port> to prevent DNS rebinding (T2.2)
-			validateHost: (host) => {
-				if (!serverPort) return true;
-				return (
-					host === `127.0.0.1:${serverPort}` ||
-					host === `localhost:${serverPort}`
-				);
-			},
+			validateHost: validateHostHeader,
 		});
 
 		const server = expressApp.listen(0, "127.0.0.1", () => {
-			const address = server.address();
-			serverPort = address.port;
+			serverPort = server.address().port;
 			console.log(
 				`[Banana Desktop] Express backend running on http://127.0.0.1:${serverPort}`,
 			);
@@ -112,40 +108,67 @@ function buildWindowOptions(isDev) {
 	};
 }
 
+function isDevMode() {
+	return process.env.NODE_ENV === "development" || !app.isPackaged;
+}
+
+function getAllowedOrigins() {
+	const origins = [];
+	if (serverPort) {
+		origins.push(`http://127.0.0.1:${serverPort}`);
+	}
+	if (isDevMode()) {
+		origins.push("http://localhost:5173");
+	}
+	return origins;
+}
+
+function isAllowedOrigin(origin) {
+	if (!origin) return false;
+	return getAllowedOrigins().includes(origin);
+}
+
+async function openExternalSafe(url) {
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+			await shell.openExternal(url);
+			return true;
+		}
+	} catch (err) {
+		console.debug("[Banana Navigation] Invalid external URL:", err.message);
+	}
+	return false;
+}
+
+function handleWindowOpen({ url }) {
+	openExternalSafe(url);
+	return { action: "deny" };
+}
+
+function handleWillNavigate(event, url) {
+	let parsed;
+	try {
+		parsed = new URL(url);
+	} catch (err) {
+		console.debug(
+			"[Banana Navigation] Blocked malformed navigation URL:",
+			err.message,
+		);
+		event.preventDefault();
+		return;
+	}
+
+	if (isAllowedOrigin(parsed.origin)) return;
+
+	event.preventDefault();
+	openExternalSafe(url);
+}
+
 // Navigation lockdown (T1.6)
 function attachNavigationGuards(win) {
-	win.webContents.setWindowOpenHandler(({ url }) => {
-		try {
-			const parsed = new URL(url);
-			if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-				shell.openExternal(url);
-			}
-		} catch {
-			// Malformed or non-http(s) URL
-		}
-		return { action: "deny" };
-	});
-
-	win.webContents.on("will-navigate", (event, url) => {
-		let parsed;
-		try {
-			parsed = new URL(url);
-		} catch {
-			// Fail closed: malformed URL, prevent navigation before returning
-			event.preventDefault();
-			return;
-		}
-
-		const appOrigin = serverPort ? `http://127.0.0.1:${serverPort}` : null;
-		const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
-		if (appOrigin && parsed.origin === appOrigin) return;
-		if (isDev && parsed.origin === "http://localhost:5173") return;
-
-		event.preventDefault();
-		if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-			shell.openExternal(url);
-		}
-	});
+	win.webContents.setWindowOpenHandler(handleWindowOpen);
+	win.webContents.on("will-navigate", handleWillNavigate);
 }
 
 async function resolveTargetUrl(port, isDev) {
@@ -164,7 +187,7 @@ async function resolveTargetUrl(port, isDev) {
 }
 
 async function createMainWindow(port) {
-	const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
+	const isDev = isDevMode();
 
 	mainWindow = new BrowserWindow(buildWindowOptions(isDev));
 	mainWindow.once("ready-to-show", () => {
@@ -177,6 +200,23 @@ async function createMainWindow(port) {
 	mainWindow.on("closed", () => {
 		mainWindow = null;
 	});
+}
+
+function sendUpdaterEvent(channel, info) {
+	if (mainWindow && !mainWindow.isDestroyed()) {
+		mainWindow.webContents.send(channel, info);
+	}
+}
+
+function scheduleUpdateCheck() {
+	setTimeout(() => {
+		autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+			console.debug(
+				"[Banana Updater] Check for updates failed:",
+				err?.message || err,
+			);
+		});
+	}, 10000);
 }
 
 /**
@@ -192,30 +232,19 @@ function setupAutoUpdater() {
 
 	autoUpdater.on("update-available", (info) => {
 		console.log("[Banana Updater] Update available:", info?.version);
-		if (mainWindow && !mainWindow.isDestroyed()) {
-			mainWindow.webContents.send("banana:update-available", info);
-		}
+		sendUpdaterEvent("banana:update-available", info);
 	});
 
 	autoUpdater.on("update-downloaded", (info) => {
 		console.log("[Banana Updater] Update downloaded:", info?.version);
-		if (mainWindow && !mainWindow.isDestroyed()) {
-			mainWindow.webContents.send("banana:update-downloaded", info);
-		}
+		sendUpdaterEvent("banana:update-downloaded", info);
 	});
 
 	autoUpdater.on("error", (err) => {
 		console.debug("[Banana Updater] Update check error:", err?.message || err);
 	});
 
-	setTimeout(() => {
-		autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-			console.debug(
-				"[Banana Updater] Check for updates failed:",
-				err?.message || err,
-			);
-		});
-	}, 10000);
+	scheduleUpdateCheck();
 }
 
 // Second instance focus (T1.5)
@@ -265,37 +294,40 @@ app.on("before-quit", () => {
 // ==========================================
 // IPC Handlers: GitHub Connect & Local Tools
 // ==========================================
+function getSenderOrigin(event) {
+	const frameUrl = event?.senderFrame?.url;
+	if (!frameUrl) return null;
+	try {
+		return new URL(frameUrl).origin;
+	} catch (err) {
+		console.debug("[Banana IPC] Invalid sender frame URL:", err.message);
+		return null;
+	}
+}
+
 /**
  * Validates that an IPC event originated from the trusted application origin.
  */
 function isTrustedSender(event) {
-	try {
-		if (!event?.senderFrame?.url) return false;
-		const origin = new URL(event.senderFrame.url).origin;
-		const appOrigin = serverPort ? `http://127.0.0.1:${serverPort}` : null;
-		const isDev = process.env.NODE_ENV === "development" || !app.isPackaged;
-		if (appOrigin && origin === appOrigin) return true;
-		if (isDev && origin === "http://localhost:5173") return true;
-		return false;
-	} catch {
-		// Invalid sender frame URL or malformed origin
-		return false;
-	}
+	const origin = getSenderOrigin(event);
+	return isAllowedOrigin(origin);
 }
 
-function registerIpcHandlers() {
+async function handleSelectFolder() {
+	const result = await dialog.showOpenDialog(mainWindow, {
+		title: "Select KiCad Git Project Folder",
+		properties: ["openDirectory"],
+	});
+	if (!result.canceled && result.filePaths.length > 0) {
+		return result.filePaths[0];
+	}
+	return null;
+}
+
+function registerAppIpcHandlers() {
 	// Safe External URL Opener (T1.6)
 	ipcMain.handle("banana:open-external", async (_, url) => {
-		try {
-			const parsed = new URL(url);
-			if (parsed.protocol === "https:" || parsed.protocol === "http:") {
-				await shell.openExternal(url);
-				return true;
-			}
-		} catch {
-			// Malformed or non-http(s) external URL
-		}
-		return false;
+		return openExternalSafe(url);
 	});
 
 	// Per-launch API token (T2.1)
@@ -305,17 +337,10 @@ function registerIpcHandlers() {
 	});
 
 	// Native Folder Selector Dialog (T3.6)
-	ipcMain.handle("banana:select-folder", async () => {
-		const result = await dialog.showOpenDialog(mainWindow, {
-			title: "Select KiCad Git Project Folder",
-			properties: ["openDirectory"],
-		});
-		if (!result.canceled && result.filePaths.length > 0) {
-			return result.filePaths[0];
-		}
-		return null;
-	});
+	ipcMain.handle("banana:select-folder", handleSelectFolder);
+}
 
+function registerGitHubDeviceFlowHandlers() {
 	// GitHub System Detection (T3.1)
 	ipcMain.handle("banana:gh-detect", async (event) => {
 		if (!isTrustedSender(event)) return null;
@@ -334,7 +359,9 @@ function registerIpcHandlers() {
 			return pollDeviceFlow(deviceCode, clientId);
 		},
 	);
+}
 
+function registerGitHubTokenHandlers() {
 	// Secure Token Storage via OS Keychain (T3.4)
 	ipcMain.handle("banana:gh-save-token", async (event, token) => {
 		if (!isTrustedSender(event)) return false;
@@ -350,7 +377,9 @@ function registerIpcHandlers() {
 		if (!isTrustedSender(event)) return false;
 		return clearEncryptedToken(tokenFilePath);
 	});
+}
 
+function registerUpdaterIpcHandlers() {
 	// Auto-updater manual trigger (T6.3)
 	ipcMain.handle("banana:check-for-updates", async () => {
 		if (app.isPackaged) {
@@ -365,4 +394,11 @@ function registerIpcHandlers() {
 			autoUpdater.quitAndInstall();
 		}
 	});
+}
+
+function registerIpcHandlers() {
+	registerAppIpcHandlers();
+	registerGitHubDeviceFlowHandlers();
+	registerGitHubTokenHandlers();
+	registerUpdaterIpcHandlers();
 }
