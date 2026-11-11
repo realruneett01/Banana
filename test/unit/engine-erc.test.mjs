@@ -18,6 +18,10 @@ function createPart(overrides = {}) {
 	};
 }
 
+function createPair(ref1 = "R1", ref2 = "R2") {
+	return [createPart({ ref: ref1 }), createPart({ ref: ref2 })];
+}
+
 function createNet(name, pins, overrides = {}) {
 	return {
 		id: newId("net"),
@@ -60,8 +64,16 @@ function connectPins(name, [partA, pinA], [partB, pinB]) {
 	]);
 }
 
+function createSimpleBoard(name, netName, parts) {
+	return createIR({
+		name,
+		parts,
+		nets: [connectPins(netName, [parts[0], "1"], [parts[1], "1"])],
+	});
+}
+
 function createCleanIR() {
-	const [part1, part2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+	const [part1, part2] = createPair();
 	return createIR({
 		name: "CleanBoard",
 		parts: [part1, part2],
@@ -91,6 +103,11 @@ function assertIssue(issue, expected) {
 	}
 }
 
+function assertNoIssues(ir) {
+	const issues = runErc(ir, { commit: DEFAULT_COMMIT });
+	assert.deepEqual(issues, []);
+}
+
 function runAndCheckIssues(ir, expectedCount) {
 	const issues = runErc(ir, { commit: DEFAULT_COMMIT });
 	assert.equal(issues.length, expectedCount);
@@ -98,13 +115,29 @@ function runAndCheckIssues(ir, expectedCount) {
 	return issues;
 }
 
+function runAndCheckSingleIssue(ir, expected) {
+	const issues = runAndCheckIssues(ir, 1);
+	assertIssue(issues[0], expected);
+}
+
+function assertIssuesByItemId(issues, expectedList) {
+	for (const { itemId, ...expected } of expectedList) {
+		const issue = issues.find((i) => i.itemIds.includes(itemId));
+		assertIssue(issue, expected);
+	}
+}
+
+function assertIssueSequence(issues, sequence) {
+	for (const [i, expected] of sequence.entries()) {
+		assertIssue(issues[i], expected);
+	}
+}
+
 const CASES = [
 	{
 		name: "clean IR returns zero issues",
 		run() {
-			const ir = createCleanIR();
-			const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-			assert.deepEqual(issues, []);
+			assertNoIssues(createCleanIR());
 		},
 	},
 	{
@@ -120,7 +153,7 @@ const CASES = [
 			});
 
 			const issues = runAndCheckIssues(ir, 2);
-			const expectedList = [
+			assertIssuesByItemId(issues, [
 				{
 					itemId: netSingle.id,
 					severity: "error",
@@ -134,26 +167,17 @@ const CASES = [
 					message: "net UNUSED has only 0 pin(s)",
 					suggestion: "connect it or delete the net",
 				},
-			];
-			for (const { itemId, ...expected } of expectedList) {
-				const issue = issues.find((i) => i.itemIds.includes(itemId));
-				assertIssue(issue, expected);
-			}
+			]);
 		},
 	},
 	{
 		name: "flags part not connected to any net as warning",
 		run() {
-			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+			const [r1, r2] = createPair();
 			const u1 = createPart({ ref: "U1" });
-			const ir = createIR({
-				name: "FloatingPartBoard",
-				parts: [r1, r2, u1],
-				nets: [connectPins("NET1", [r1, "1"], [r2, "1"])],
-			});
+			const ir = createSimpleBoard("FloatingPartBoard", "NET1", [r1, r2, u1]);
 
-			const issues = runAndCheckIssues(ir, 1);
-			assertIssue(issues[0], {
+			runAndCheckSingleIssue(ir, {
 				severity: "warning",
 				itemIds: [u1.id],
 				message: "U1 is not connected to any net",
@@ -164,7 +188,7 @@ const CASES = [
 	{
 		name: "flags same part pin on two different nets as error",
 		run() {
-			const [u1, u2] = [createPart({ ref: "U1" }), createPart({ ref: "U2" })];
+			const [u1, u2] = createPair("U1", "U2");
 			const netA = connectPins("NET_A", [u1, "4"], [u2, "1"]);
 			const netB = connectPins("NET_B", [u1, "4"], [u2, "2"]);
 			const ir = createIR({
@@ -173,8 +197,7 @@ const CASES = [
 				nets: [netA, netB],
 			});
 
-			const issues = runAndCheckIssues(ir, 1);
-			assertIssue(issues[0], {
+			runAndCheckSingleIssue(ir, {
 				severity: "error",
 				itemIds: [u1.id, netA.id, netB.id],
 				message: "U1 pin 4 is on nets NET_A and NET_B",
@@ -184,18 +207,12 @@ const CASES = [
 	{
 		name: "flags power rail net without rail constraint as info",
 		run() {
-			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
-			const netVdd = connectPins("VDD", [r1, "1"], [r2, "1"]);
-			const ir = createIR({
-				name: "PowerNoConstraintBoard",
-				parts: [r1, r2],
-				nets: [netVdd],
-			});
+			const [r1, r2] = createPair();
+			const ir = createSimpleBoard("PowerNoConstraintBoard", "VDD", [r1, r2]);
 
-			const issues = runAndCheckIssues(ir, 1);
-			assertIssue(issues[0], {
+			runAndCheckSingleIssue(ir, {
 				severity: "info",
-				itemIds: [netVdd.id],
+				itemIds: [ir.nets[0].id],
 				message: "power net VDD has no rail constraint",
 				suggestion: "add a rail constraint so the simulator can check IR drop",
 			});
@@ -204,7 +221,7 @@ const CASES = [
 	{
 		name: "accepts power rail constraint by net name or net id",
 		run() {
-			const [r1, r2] = [createPart({ ref: "R1" }), createPart({ ref: "R2" })];
+			const [r1, r2] = createPair();
 			const net3v3 = connectPins("3V3", [r1, "1"], [r2, "1"]);
 			const net5v = connectPins("5V", [r1, "2"], [r2, "2"]);
 			const ir = createIR({
@@ -217,8 +234,7 @@ const CASES = [
 				],
 			});
 
-			const issues = runErc(ir, { commit: DEFAULT_COMMIT });
-			assert.deepEqual(issues, []);
+			assertNoIssues(ir);
 		},
 	},
 	{
@@ -228,21 +244,13 @@ const CASES = [
 				createPart({ ref: "U1", footprint: "" }),
 				createPart({ ref: "U2", footprint: undefined }),
 			];
-			const ir = createIR({
-				name: "MissingFootprintBoard",
-				parts: [u1, u2],
-				nets: [connectPins("NET1", [u1, "1"], [u2, "1"])],
-			});
+			const ir = createSimpleBoard("MissingFootprintBoard", "NET1", [u1, u2]);
 
 			const issues = runAndCheckIssues(ir, 2);
-			const expectedList = [
-				{ itemId: u1.id, message: "U1 has no footprint" },
-				{ itemId: u2.id, message: "U2 has no footprint" },
-			];
-			for (const { itemId, message } of expectedList) {
-				const issue = issues.find((i) => i.itemIds.includes(itemId));
-				assertIssue(issue, { severity: "error", message });
-			}
+			assertIssuesByItemId(issues, [
+				{ itemId: u1.id, severity: "error", message: "U1 has no footprint" },
+				{ itemId: u2.id, severity: "error", message: "U2 has no footprint" },
+			]);
 		},
 	},
 	{
@@ -272,9 +280,7 @@ const CASES = [
 				{ severity: "warning", message: "C1 is not connected to any net" },
 				{ severity: "info", message: "power net VIN has no rail constraint" },
 			];
-			for (const [i, expected] of expectedSequence.entries()) {
-				assertIssue(issues[i], expected);
-			}
+			assertIssueSequence(issues, expectedSequence);
 		},
 	},
 ];
