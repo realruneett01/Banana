@@ -9,26 +9,20 @@ const PART_ID_3 = "part_33333333-3333-3333-3333-333333333333";
 const NET_ID_1 = "net_aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const NET_ID_2 = "net_bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 
+function createSmdPad(number, x) {
+	return {
+		number,
+		type: "smd",
+		shape: "roundrect",
+		at: [x, 0],
+		size: [1, 1],
+		layers: ["F.Cu", "F.Paste", "F.Mask"],
+	};
+}
+
 const SAMPLE_FOOTPRINTS = {
 	"Resistor_SMD:R_0805": {
-		pads: [
-			{
-				number: "1",
-				type: "smd",
-				shape: "roundrect",
-				at: [-1, 0],
-				size: [1, 1],
-				layers: ["F.Cu", "F.Paste", "F.Mask"],
-			},
-			{
-				number: "2",
-				type: "smd",
-				shape: "roundrect",
-				at: [1, 0],
-				size: [1, 1],
-				layers: ["F.Cu", "F.Paste", "F.Mask"],
-			},
-		],
+		pads: [createSmdPad("1", -1), createSmdPad("2", 1)],
 	},
 	"Package_TO_SOT_THT:TO-92": [
 		{
@@ -84,30 +78,43 @@ function findNodesByTag(ast, tag) {
 	return ast.filter((child) => Array.isArray(child) && child[0]?.sym === tag);
 }
 
+function buildPcbAst(ir = createValidBaseIr(), options) {
+	const result = irToKicadPcb(ir, options);
+	return { ...result, ast: parse(result.text) };
+}
+
+function assertTaggedChildren(node, expectations) {
+	for (const [tag, ...expectedValues] of expectations) {
+		assert.deepEqual(findNodeByTag(node, tag), [
+			{ sym: tag },
+			...expectedValues,
+		]);
+	}
+}
+
+function assertProperties(props, expected) {
+	assert.equal(props.length, expected.length);
+	for (let i = 0; i < expected.length; i++) {
+		assert.equal(props[i][1], expected[i][0]);
+		assert.equal(props[i][2], expected[i][1]);
+	}
+}
+
 describe("irToKicadPcb validation and roundtrip", () => {
 	test("output parses back with parse() and includes root header elements", () => {
-		const ir = createValidBaseIr();
-		const { text, warnings } = irToKicadPcb(ir, {
+		const { warnings, ast } = buildPcbAst(createValidBaseIr(), {
 			boardW: 80,
 			boardH: 60,
 			footprints: SAMPLE_FOOTPRINTS,
 		});
 		assert.equal(warnings.length, 0);
-		const ast = parse(text);
 		assert.equal(ast[0]?.sym, "kicad_pcb");
-		assert.deepEqual(findNodeByTag(ast, "version"), [
-			{ sym: "version" },
-			20241229,
+		assertTaggedChildren(ast, [
+			["version", 20241229],
+			["generator", "banana"],
+			["generator_version", "0.1"],
+			["paper", "A4"],
 		]);
-		assert.deepEqual(findNodeByTag(ast, "generator"), [
-			{ sym: "generator" },
-			"banana",
-		]);
-		assert.deepEqual(findNodeByTag(ast, "generator_version"), [
-			{ sym: "generator_version" },
-			"0.1",
-		]);
-		assert.deepEqual(findNodeByTag(ast, "paper"), [{ sym: "paper" }, "A4"]);
 	});
 
 	test("throws on invalid IR schemas", () => {
@@ -125,34 +132,27 @@ describe("irToKicadPcb validation and roundtrip", () => {
 
 describe("irToKicadPcb layers and board outline", () => {
 	test("contains all 13 standard layers and setup clearance", () => {
-		const ir = createValidBaseIr();
-		const { text } = irToKicadPcb(ir);
-		const ast = parse(text);
+		const { ast } = buildPcbAst();
 		const layersNode = findNodeByTag(ast, "layers");
 		assert.ok(layersNode);
 		assert.equal(layersNode.length, 14);
-		const setupNode = findNodeByTag(ast, "setup");
-		assert.deepEqual(setupNode, [
-			{ sym: "setup" },
-			[{ sym: "pad_to_mask_clearance" }, 0],
+		assertTaggedChildren(ast, [
+			["setup", [{ sym: "pad_to_mask_clearance" }, 0]],
 		]);
 	});
 
 	test("contains Edge.Cuts outline with stroke, fill, and dimensions", () => {
-		const ir = createValidBaseIr();
-		const { text } = irToKicadPcb(ir, { boardW: 120, boardH: 90 });
-		const ast = parse(text);
+		const { ast } = buildPcbAst(createValidBaseIr(), {
+			boardW: 120,
+			boardH: 90,
+		});
 		const rect = findNodeByTag(ast, "gr_rect");
 		assert.ok(rect);
-		assert.deepEqual(findNodeByTag(rect, "start"), [{ sym: "start" }, 0, 0]);
-		assert.deepEqual(findNodeByTag(rect, "end"), [{ sym: "end" }, 120, 90]);
-		assert.deepEqual(findNodeByTag(rect, "fill"), [
-			{ sym: "fill" },
-			{ sym: "no" },
-		]);
-		assert.deepEqual(findNodeByTag(rect, "layer"), [
-			{ sym: "layer" },
-			"Edge.Cuts",
+		assertTaggedChildren(rect, [
+			["start", 0, 0],
+			["end", 120, 90],
+			["fill", { sym: "no" }],
+			["layer", "Edge.Cuts"],
 		]);
 	});
 });
@@ -167,29 +167,26 @@ describe("irToKicadPcb footprints and placements", () => {
 		test(`places footprint on ${expectedLayer} for side ${side}`, () => {
 			const ir = createValidBaseIr();
 			ir.parts[0].placement.side = side;
-			const { text } = irToKicadPcb(ir, { footprints: SAMPLE_FOOTPRINTS });
-			const ast = parse(text);
+			const { ast } = buildPcbAst(ir, { footprints: SAMPLE_FOOTPRINTS });
 			const fp = findNodeByTag(ast, "footprint");
 			assert.ok(fp);
-			assert.deepEqual(findNodeByTag(fp, "layer"), [
-				{ sym: "layer" },
-				expectedLayer,
+			assertTaggedChildren(fp, [
+				["layer", expectedLayer],
+				["at", 50, 30, 90],
 			]);
-			assert.deepEqual(findNodeByTag(fp, "at"), [{ sym: "at" }, 50, 30, 90]);
 		});
 	}
 
 	test("emits Reference and Value properties inside footprint", () => {
-		const ir = createValidBaseIr();
-		const { text } = irToKicadPcb(ir, { footprints: SAMPLE_FOOTPRINTS });
-		const ast = parse(text);
+		const { ast } = buildPcbAst(createValidBaseIr(), {
+			footprints: SAMPLE_FOOTPRINTS,
+		});
 		const fp = findNodeByTag(ast, "footprint");
 		const props = findNodesByTag(fp, "property");
-		assert.equal(props.length, 2);
-		assert.equal(props[0][1], "Reference");
-		assert.equal(props[0][2], "R1");
-		assert.equal(props[1][1], "Value");
-		assert.equal(props[1][2], "10k");
+		assertProperties(props, [
+			["Reference", "R1"],
+			["Value", "10k"],
+		]);
 	});
 });
 
@@ -206,14 +203,15 @@ describe("irToKicadPcb pads and net mapping", () => {
 			placement: { x: 20, y: 15, rot: 0, side: "F" },
 		});
 		ir.nets[0].pins.push({ partId: PART_ID_2, pin: "1" });
-		const { text } = irToKicadPcb(ir, { footprints: SAMPLE_FOOTPRINTS });
-		const ast = parse(text);
+		const { ast } = buildPcbAst(ir, { footprints: SAMPLE_FOOTPRINTS });
 		const fps = findNodesByTag(ast, "footprint");
 		const q1Fp = fps.find((f) => f[1] === "Package_TO_SOT_THT:TO-92");
 		const padNode = findNodeByTag(q1Fp, "pad");
 		assert.ok(padNode);
-		assert.deepEqual(findNodeByTag(padNode, "drill"), [{ sym: "drill" }, 0.8]);
-		assert.deepEqual(findNodeByTag(padNode, "net"), [{ sym: "net" }, 1, "GND"]);
+		assertTaggedChildren(padNode, [
+			["drill", 0.8],
+			["net", 1, "GND"],
+		]);
 	});
 });
 
@@ -228,9 +226,8 @@ describe("irToKicadPcb warnings and edge cases", () => {
 			footprint: "Capacitor_SMD:C_0603",
 			props: {},
 		});
-		const { text, warnings } = irToKicadPcb(ir);
+		const { warnings, ast } = buildPcbAst(ir);
 		assert.ok(warnings.includes("unplaced part C1"));
-		const ast = parse(text);
 		const fps = findNodesByTag(ast, "footprint");
 		assert.equal(fps.length, 1);
 		assert.equal(fps[0][1], "Resistor_SMD:R_0805");
@@ -257,25 +254,18 @@ describe("irToKicadPcb warnings and edge cases", () => {
 describe("irToKicadPcb determinism and thickness option", () => {
 	test("generates byte-identical text and deterministic UUIDs across runs", () => {
 		const ir = createValidBaseIr();
-		const run1 = irToKicadPcb(ir, {
+		const renderOptions = {
 			boardW: 100,
 			boardH: 80,
 			footprints: SAMPLE_FOOTPRINTS,
 			thicknessMm: 2.4,
-		});
-		const run2 = irToKicadPcb(ir, {
-			boardW: 100,
-			boardH: 80,
-			footprints: SAMPLE_FOOTPRINTS,
-			thicknessMm: 2.4,
-		});
+		};
+		const run1 = irToKicadPcb(ir, renderOptions);
+		const run2 = irToKicadPcb(ir, renderOptions);
 		assert.equal(run1.text, run2.text);
 		assert.deepEqual(run1.warnings, run2.warnings);
 		const ast = parse(run1.text);
 		const general = findNodeByTag(ast, "general");
-		assert.deepEqual(findNodeByTag(general, "thickness"), [
-			{ sym: "thickness" },
-			2.4,
-		]);
+		assertTaggedChildren(general, [["thickness", 2.4]]);
 	});
 });
