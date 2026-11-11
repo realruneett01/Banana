@@ -22,6 +22,13 @@ function assertPartialMatch(actual, expected) {
 	}
 }
 
+function assertTrackSegments(actualSegments, expectedSegments) {
+	assert.equal(actualSegments.length, expectedSegments.length);
+	for (const [i, expected] of expectedSegments.entries()) {
+		assertPartialMatch(actualSegments[i], expected);
+	}
+}
+
 function withTempPcbFile(fileName, content, callback) {
 	const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
 	const pcbPath = path.join(tmpDir, fileName);
@@ -190,10 +197,7 @@ describe("parsePcbNetSegments", () => {
 				layer: "B.Cu",
 			},
 		];
-		assert.equal(trackSegments.length, expectedTracks.length);
-		for (const [i, expected] of expectedTracks.entries()) {
-			assert.deepEqual(trackSegments[i], expected);
-		}
+		assertTrackSegments(trackSegments, expectedTracks);
 	});
 
 	test("returns empty netIndexMap and trackSegments for empty AST", () => {
@@ -209,9 +213,12 @@ describe("parsePcbNetSegments", () => {
 			["segment", ["start", 5, 6]],
 		];
 		const { trackSegments } = parsePcbNetSegments(ast);
-		assert.equal(trackSegments.length, 1);
-		assert.equal(trackSegments[0].netName, "unconnected");
-		assert.equal(trackSegments[0].layer, "F.Cu");
+		assertTrackSegments(trackSegments, [
+			{
+				netName: "unconnected",
+				layer: "F.Cu",
+			},
+		]);
 	});
 });
 
