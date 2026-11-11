@@ -18,27 +18,86 @@ function createFakeFetch(handler) {
 	return fake;
 }
 
-function mockJsonResponse(status, data, statusText = "OK") {
+function createMockResponse(status, statusText, textFn, jsonFn) {
 	return {
 		ok: status >= 200 && status < 300,
 		status,
 		statusText,
-		text: async () => JSON.stringify(data),
-		json: async () => data,
+		text: textFn,
+		json: jsonFn,
 	};
 }
 
-function mockTextResponse(status, text, statusText = "Error") {
-	return {
-		ok: status >= 200 && status < 300,
+function mockJsonResponse(status, data, statusText = "OK") {
+	return createMockResponse(
 		status,
 		statusText,
-		text: async () => text,
-		json: async () => {
+		async () => JSON.stringify(data),
+		async () => data,
+	);
+}
+
+function mockTextResponse(status, text, statusText = "Error") {
+	return createMockResponse(
+		status,
+		statusText,
+		async () => text,
+		async () => {
 			throw new SyntaxError("Unexpected token in JSON");
 		},
-	};
+	);
 }
+
+const mockOkHandler = async () => mockJsonResponse(200, {});
+
+function createClient(handler, options = {}) {
+	const fakeFetch = createFakeFetch(handler);
+	const api = createSimApi({ ...options, fetchImpl: fakeFetch });
+	return { api, fakeFetch };
+}
+
+function assertFailure(res, expected) {
+	assert.equal(res.ok, false);
+	assert.equal(res.status, expected.status);
+	assert.equal(res.error, expected.error);
+	if ("data" in expected) {
+		assert.deepEqual(res.data, expected.data);
+	}
+}
+
+function assertCall(fakeFetch, expectedUrl, expectedMethod, expectedBody) {
+	assert.equal(fakeFetch.calls.length, 1);
+	assert.equal(fakeFetch.calls[0].url, expectedUrl);
+	assert.equal(fakeFetch.calls[0].method, expectedMethod);
+	if (expectedBody !== undefined) {
+		assert.deepEqual(JSON.parse(fakeFetch.calls[0].body), expectedBody);
+	}
+}
+
+const SIM_RUN_INPUT = {
+	kind: "thermal",
+	env: { ambientC: 25 },
+	commit: "a1b2c3d",
+	inputs: { ir: {} },
+};
+
+const ERC_RUN_INPUT = {
+	ir: { parts: [] },
+	commit: "a1b2c3d",
+};
+
+const AGENT_RUN_INPUT = {
+	message: "check design",
+	approved: true,
+	maxSteps: 3,
+};
+
+const COMPARE_INPUT = {
+	before: "c1",
+	after: "c2",
+	envId: "env-1",
+	kind: "ir-drop",
+};
 
 const SUCCESS_CASES = [
 	{
@@ -51,53 +110,26 @@ const SUCCESS_CASES = [
 	},
 	{
 		name: "runSim",
-		call: (api) =>
-			api.runSim({
-				kind: "thermal",
-				env: { ambientC: 25 },
-				commit: "a1b2c3d",
-				inputs: { ir: {} },
-			}),
+		call: (api) => api.runSim(SIM_RUN_INPUT),
 		expectedUrl: "/api/sim/run",
 		expectedMethod: "POST",
-		expectedBody: {
-			kind: "thermal",
-			env: { ambientC: 25 },
-			commit: "a1b2c3d",
-			inputs: { ir: {} },
-		},
+		expectedBody: SIM_RUN_INPUT,
 		responseData: { run: { id: "sim-1" }, issues: [] },
 	},
 	{
 		name: "runErc",
-		call: (api) =>
-			api.runErc({
-				ir: { parts: [] },
-				commit: "a1b2c3d",
-			}),
+		call: (api) => api.runErc(ERC_RUN_INPUT),
 		expectedUrl: "/api/erc/run",
 		expectedMethod: "POST",
-		expectedBody: {
-			ir: { parts: [] },
-			commit: "a1b2c3d",
-		},
+		expectedBody: ERC_RUN_INPUT,
 		responseData: { issues: [] },
 	},
 	{
 		name: "runAgent",
-		call: (api) =>
-			api.runAgent({
-				message: "check design",
-				approved: true,
-				maxSteps: 3,
-			}),
+		call: (api) => api.runAgent(AGENT_RUN_INPUT),
 		expectedUrl: "/api/agent/run",
 		expectedMethod: "POST",
-		expectedBody: {
-			message: "check design",
-			approved: true,
-			maxSteps: 3,
-		},
+		expectedBody: AGENT_RUN_INPUT,
 		responseData: { text: "done", steps: [] },
 	},
 	{
@@ -123,21 +155,10 @@ const SUCCESS_CASES = [
 	},
 	{
 		name: "compareCommits",
-		call: (api) =>
-			api.compareCommits({
-				before: "c1",
-				after: "c2",
-				envId: "env-1",
-				kind: "ir-drop",
-			}),
+		call: (api) => api.compareCommits(COMPARE_INPUT),
 		expectedUrl: "/api/sim/compare",
 		expectedMethod: "POST",
-		expectedBody: {
-			before: "c1",
-			after: "c2",
-			envId: "env-1",
-			kind: "ir-drop",
-		},
+		expectedBody: COMPARE_INPUT,
 		responseData: { fixed: [], stillOpen: [], new: [] },
 	},
 	{
@@ -215,22 +236,64 @@ const ENCODING_CASES = [
 	},
 ];
 
+const JSON_ERROR_PAYLOAD = { error: "Invalid parameters" };
+
+const ERROR_BRANCH_CASES = [
+	{
+		suffix: "handles HTTP 400 JSON error",
+		handler: async () =>
+			mockJsonResponse(400, JSON_ERROR_PAYLOAD, "Bad Request"),
+		expected: {
+			status: 400,
+			error: "Invalid parameters",
+			data: JSON_ERROR_PAYLOAD,
+		},
+	},
+	{
+		suffix: "handles HTTP 500 non-JSON error",
+		handler: async () =>
+			mockTextResponse(500, "Internal Server Error", "Server Error"),
+		expected: {
+			status: 500,
+			error: "Internal Server Error",
+			data: undefined,
+		},
+	},
+	{
+		suffix: "handles network failure without throwing",
+		handler: async () => {
+			throw new Error("Connection refused");
+		},
+		expected: {
+			status: 0,
+			error: "Network error: Connection refused",
+		},
+	},
+	{
+		suffix: "handles abort error without throwing",
+		handler: async () => {
+			const err = new Error("The operation was aborted");
+			err.name = "AbortError";
+			throw err;
+		},
+		withSignal: true,
+		expected: {
+			status: 0,
+			error: "aborted",
+		},
+	},
+];
+
 describe("createSimApi success cases", () => {
 	for (const tc of SUCCESS_CASES) {
 		test(`success: ${tc.name}`, async () => {
-			const fakeFetch = createFakeFetch(async () =>
+			const { api, fakeFetch } = createClient(async () =>
 				mockJsonResponse(200, tc.responseData),
 			);
-			const api = createSimApi({ fetchImpl: fakeFetch });
 			const res = await tc.call(api);
 			assert.equal(res.ok, true);
 			assert.deepEqual(res.data, tc.responseData);
-			assert.equal(fakeFetch.calls.length, 1);
-			assert.equal(fakeFetch.calls[0].url, tc.expectedUrl);
-			assert.equal(fakeFetch.calls[0].method, tc.expectedMethod);
-			if (tc.expectedBody !== undefined) {
-				assert.deepEqual(JSON.parse(fakeFetch.calls[0].body), tc.expectedBody);
-			}
+			assertCall(fakeFetch, tc.expectedUrl, tc.expectedMethod, tc.expectedBody);
 		});
 	}
 });
@@ -238,75 +301,36 @@ describe("createSimApi success cases", () => {
 describe("createSimApi encoding and method verification", () => {
 	for (const tc of ENCODING_CASES) {
 		test(tc.name, async () => {
-			const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
-			const api = createSimApi({ fetchImpl: fakeFetch });
+			const { api, fakeFetch } = createClient(mockOkHandler);
 			await tc.call(api);
-			assert.equal(fakeFetch.calls.length, 1);
-			assert.equal(fakeFetch.calls[0].url, tc.expectedUrl);
-			assert.equal(fakeFetch.calls[0].method, tc.expectedMethod);
+			assertCall(fakeFetch, tc.expectedUrl, tc.expectedMethod);
 		});
 	}
 });
 
+function registerMethodErrorTests(name, invoke) {
+	for (const ec of ERROR_BRANCH_CASES) {
+		test(`${name} ${ec.suffix}`, async () => {
+			const { api } = createClient(ec.handler);
+			const opt = ec.withSignal
+				? { signal: new AbortController().signal }
+				: undefined;
+			const res = await invoke(api, opt);
+			assertFailure(res, ec.expected);
+		});
+	}
+
+	test(`${name} passes abort signal through to fetch`, async () => {
+		const controller = new AbortController();
+		const { api, fakeFetch } = createClient(mockOkHandler);
+		await invoke(api, { signal: controller.signal });
+		assert.equal(fakeFetch.calls[0].signal, controller.signal);
+	});
+}
+
 describe("createSimApi error branches", () => {
 	for (const { name, invoke } of METHOD_CALLERS) {
-		test(`${name} handles HTTP 400 JSON error`, async () => {
-			const payload = { error: "Invalid parameters" };
-			const fakeFetch = createFakeFetch(async () =>
-				mockJsonResponse(400, payload, "Bad Request"),
-			);
-			const api = createSimApi({ fetchImpl: fakeFetch });
-			const res = await invoke(api);
-			assert.equal(res.ok, false);
-			assert.equal(res.status, 400);
-			assert.equal(res.error, "Invalid parameters");
-			assert.deepEqual(res.data, payload);
-		});
-
-		test(`${name} handles HTTP 500 non-JSON error`, async () => {
-			const fakeFetch = createFakeFetch(async () =>
-				mockTextResponse(500, "Internal Server Error", "Server Error"),
-			);
-			const api = createSimApi({ fetchImpl: fakeFetch });
-			const res = await invoke(api);
-			assert.equal(res.ok, false);
-			assert.equal(res.status, 500);
-			assert.equal(res.error, "Internal Server Error");
-			assert.equal(res.data, undefined);
-		});
-
-		test(`${name} handles network failure without throwing`, async () => {
-			const fakeFetch = createFakeFetch(async () => {
-				throw new Error("Connection refused");
-			});
-			const api = createSimApi({ fetchImpl: fakeFetch });
-			const res = await invoke(api);
-			assert.equal(res.ok, false);
-			assert.equal(res.status, 0);
-			assert.equal(res.error, "Network error: Connection refused");
-		});
-
-		test(`${name} handles abort error without throwing`, async () => {
-			const fakeFetch = createFakeFetch(async () => {
-				const err = new Error("The operation was aborted");
-				err.name = "AbortError";
-				throw err;
-			});
-			const controller = new AbortController();
-			const api = createSimApi({ fetchImpl: fakeFetch });
-			const res = await invoke(api, { signal: controller.signal });
-			assert.equal(res.ok, false);
-			assert.equal(res.status, 0);
-			assert.equal(res.error, "aborted");
-		});
-
-		test(`${name} passes abort signal through to fetch`, async () => {
-			const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
-			const controller = new AbortController();
-			const api = createSimApi({ fetchImpl: fakeFetch });
-			await invoke(api, { signal: controller.signal });
-			assert.equal(fakeFetch.calls[0].signal, controller.signal);
-		});
+		registerMethodErrorTests(name, invoke);
 	}
 
 	test("runSim handles HTTP 422 with failure run data", async () => {
@@ -314,29 +338,27 @@ describe("createSimApi error branches", () => {
 			error: "Simulation thermal runaway",
 			run: { id: "sim-fail", status: "failed" },
 		};
-		const fakeFetch = createFakeFetch(async () =>
+		const { api } = createClient(async () =>
 			mockJsonResponse(422, body, "Unprocessable Entity"),
 		);
-		const api = createSimApi({ fetchImpl: fakeFetch });
 		const res = await api.runSim({
 			kind: "thermal",
 			env: {},
 			commit: "c1",
 			inputs: {},
 		});
-		assert.equal(res.ok, false);
-		assert.equal(res.status, 422);
-		assert.equal(res.error, "Simulation thermal runaway");
-		assert.deepEqual(res.data, body);
+		assertFailure(res, {
+			status: 422,
+			error: "Simulation thermal runaway",
+			data: body,
+		});
 	});
 });
 
 describe("createSimApi configuration and options", () => {
 	test("strips trailing slashes from baseUrl", async () => {
-		const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
-		const api = createSimApi({
+		const { api, fakeFetch } = createClient(mockOkHandler, {
 			baseUrl: "https://banana.local:8080///",
-			fetchImpl: fakeFetch,
 		});
 		await api.getKinds();
 		assert.equal(
@@ -346,10 +368,8 @@ describe("createSimApi configuration and options", () => {
 	});
 
 	test("sends custom headers and Content-Type: application/json", async () => {
-		const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
-		const api = createSimApi({
+		const { api, fakeFetch } = createClient(mockOkHandler, {
 			headers: { "x-banana-auth": "secret-token" },
-			fetchImpl: fakeFetch,
 		});
 		await api.getKinds();
 		assert.deepEqual(fakeFetch.calls[0].headers, {
@@ -359,8 +379,7 @@ describe("createSimApi configuration and options", () => {
 	});
 
 	test("runAgent handles optional approved and maxSteps fields", async () => {
-		const fakeFetch = createFakeFetch(async () => mockJsonResponse(200, {}));
-		const api = createSimApi({ fetchImpl: fakeFetch });
+		const { api, fakeFetch } = createClient(mockOkHandler);
 		await api.runAgent({ message: "step1" });
 		assert.deepEqual(JSON.parse(fakeFetch.calls[0].body), {
 			message: "step1",
@@ -375,24 +394,18 @@ describe("createSimApi configuration and options", () => {
 	});
 
 	test("handles non-JSON body on 200 response", async () => {
-		const fakeFetch = createFakeFetch(async () =>
+		const { api } = createClient(async () =>
 			mockTextResponse(200, "Not a JSON object", "OK"),
 		);
-		const api = createSimApi({ fetchImpl: fakeFetch });
 		const res = await api.getKinds();
-		assert.equal(res.ok, false);
-		assert.equal(res.status, 200);
-		assert.equal(res.error, "Not a JSON object");
+		assertFailure(res, { status: 200, error: "Not a JSON object" });
 	});
 
 	test("uses data.message when data.error is missing", async () => {
-		const fakeFetch = createFakeFetch(async () =>
+		const { api } = createClient(async () =>
 			mockJsonResponse(500, { message: "Internal crash" }),
 		);
-		const api = createSimApi({ fetchImpl: fakeFetch });
 		const res = await api.getKinds();
-		assert.equal(res.ok, false);
-		assert.equal(res.status, 500);
-		assert.equal(res.error, "Internal crash");
+		assertFailure(res, { status: 500, error: "Internal crash" });
 	});
 });
