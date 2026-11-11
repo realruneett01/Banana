@@ -2,118 +2,122 @@ import { Button, Collapse, Form, Input, InputNumber, Select } from "antd";
 import { useEffect, useState } from "react";
 import { ENV_PRESETS, validateEnvDraft, withNewId } from "./envPresets.js";
 
-const CONTAINER_STYLE = Object.freeze({
-	width: "100%",
-	height: "100%",
-	background: "#0f121d",
-	color: "#e2e8f0",
+const makeFlex = (direction, extra = {}) => ({
 	display: "flex",
-	flexDirection: "column",
-	overflow: "hidden",
+	flexDirection: direction,
+	...extra,
 });
 
-const HEADER_STYLE = Object.freeze({
-	padding: "12px 14px",
-	borderBottom: "1px solid #1e2438",
-	background: "#121520",
-	display: "flex",
-	flexDirection: "column",
-	gap: "8px",
-	flexShrink: 0,
-});
-
-const HEADER_TOP_ROW_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-});
-
-const STATUS_DOT_STYLE = Object.freeze({
-	width: 8,
-	height: 8,
-	borderRadius: "50%",
-	background: "#10b981",
-	boxShadow: "0 0 8px #10b981",
-	display: "inline-block",
-});
-
-const TITLE_TEXT_STYLE = Object.freeze({
-	margin: 0,
-	fontSize: "12px",
-	fontWeight: 700,
-	textTransform: "uppercase",
-	letterSpacing: "0.06em",
-	color: "#e2e8f0",
-});
-
-const FORM_CONTAINER_STYLE = Object.freeze({
-	flex: 1,
-	overflowY: "auto",
-	padding: "12px 14px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "8px",
-});
-
-const ROW_STYLE = Object.freeze({
-	display: "flex",
-	gap: "10px",
-	width: "100%",
-});
-
-const FLEX_ITEM_STYLE = Object.freeze({
-	flex: 1,
-	marginBottom: "10px",
-});
-
-const ITEM_STYLE = Object.freeze({
-	marginBottom: "10px",
-	width: "100%",
-});
-
-const INPUT_STYLE = Object.freeze({
+const darkInput = {
 	background: "#161821",
 	borderColor: "#283250",
 	color: "#f1f5f9",
 	borderRadius: "6px",
+};
+
+const STYLES = Object.freeze({
+	container: makeFlex("column", {
+		width: "100%",
+		height: "100%",
+		background: "#0f121d",
+		color: "#e2e8f0",
+		overflow: "hidden",
+	}),
+	header: makeFlex("column", {
+		padding: "12px 14px",
+		borderBottom: "1px solid #1e2438",
+		background: "#121520",
+		gap: "8px",
+		flexShrink: 0,
+	}),
+	headerTop: {
+		display: "flex",
+		alignItems: "center",
+		gap: "8px",
+	},
+	statusDot: {
+		width: 8,
+		height: 8,
+		borderRadius: "50%",
+		background: "#10b981",
+		boxShadow: "0 0 8px #10b981",
+		display: "inline-block",
+	},
+	titleText: {
+		margin: 0,
+		fontSize: "12px",
+		fontWeight: 700,
+		textTransform: "uppercase",
+		letterSpacing: "0.06em",
+		color: "#e2e8f0",
+	},
+	form: makeFlex("column", {
+		flex: 1,
+		overflowY: "auto",
+		padding: "12px 14px",
+		gap: "8px",
+	}),
+	row: {
+		display: "flex",
+		gap: "10px",
+		width: "100%",
+	},
+	flexItem: {
+		flex: 1,
+		marginBottom: "10px",
+	},
+	item: {
+		marginBottom: "10px",
+		width: "100%",
+	},
+	input: darkInput,
+	numberInput: {
+		width: "100%",
+		...darkInput,
+	},
+	collapse: {
+		background: "rgba(22, 26, 42, 0.8)",
+		border: "1px solid #23283e",
+		borderRadius: "6px",
+		marginBottom: "12px",
+	},
+	collapseLabel: {
+		fontSize: "12px",
+		fontWeight: 600,
+		color: "#cbd5e1",
+	},
+	footer: {
+		padding: "12px 14px",
+		borderTop: "1px solid #1e2438",
+		background: "#121520",
+		display: "flex",
+		alignItems: "center",
+		justifyContent: "flex-end",
+		flexShrink: 0,
+	},
+	saveBtn: {
+		background: "#fadb14",
+		borderColor: "#fadb14",
+		color: "#0f1015",
+		fontWeight: 700,
+	},
 });
 
-const NUMBER_INPUT_STYLE = Object.freeze({
-	width: "100%",
-	background: "#161821",
-	borderColor: "#283250",
-	color: "#f1f5f9",
-	borderRadius: "6px",
-});
-
-const COLLAPSE_STYLE = Object.freeze({
-	background: "rgba(22, 26, 42, 0.8)",
-	border: "1px solid #23283e",
-	borderRadius: "6px",
-	marginBottom: "12px",
-});
-
-const COLLAPSE_LABEL_STYLE = Object.freeze({
-	fontSize: "12px",
-	fontWeight: 600,
-	color: "#cbd5e1",
-});
-
-const FOOTER_STYLE = Object.freeze({
-	padding: "12px 14px",
-	borderTop: "1px solid #1e2438",
-	background: "#121520",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "flex-end",
-	flexShrink: 0,
-});
-
-const SAVE_BTN_STYLE = Object.freeze({
-	background: "#fadb14",
-	borderColor: "#fadb14",
-	color: "#0f1015",
-	fontWeight: 700,
+const RANGE_CONFIGS = Object.freeze({
+	ambient: Object.freeze({
+		key: "ambientC",
+		idPrefix: "ambient",
+		label: "Ambient",
+		unit: "°C",
+	}),
+	humidity: Object.freeze({
+		key: "humidityPct",
+		idPrefix: "humidity",
+		label: "Humidity",
+		unit: "%",
+		min: 0,
+		max: 100,
+	}),
 });
 
 function useDraftState(value) {
@@ -132,14 +136,14 @@ function PresetPicker({ onSelectPreset }) {
 		label: `${p.label} - ${p.description}`,
 	}));
 	return (
-		<Form.Item label="Preset" htmlFor="env-preset-select" style={ITEM_STYLE}>
+		<Form.Item label="Preset" htmlFor="env-preset-select" style={STYLES.item}>
 			<Select
 				id="env-preset-select"
 				aria-label="Preset"
 				placeholder="Load a preset..."
 				options={options}
 				onChange={onSelectPreset}
-				style={INPUT_STYLE}
+				style={STYLES.input}
 			/>
 		</Form.Item>
 	);
@@ -147,10 +151,10 @@ function PresetPicker({ onSelectPreset }) {
 
 function EditorHeader({ onSelectPreset }) {
 	return (
-		<header style={HEADER_STYLE}>
-			<div style={HEADER_TOP_ROW_STYLE}>
-				<span style={STATUS_DOT_STYLE} />
-				<h3 style={TITLE_TEXT_STYLE}>Environment Editor</h3>
+		<header style={STYLES.header}>
+			<div style={STYLES.headerTop}>
+				<span style={STYLES.statusDot} />
+				<h3 style={STYLES.titleText}>Environment Editor</h3>
 			</div>
 			<PresetPicker onSelectPreset={onSelectPreset} />
 		</header>
@@ -165,7 +169,7 @@ function NameField({ name, error, onUpdate }) {
 			htmlFor="env-name"
 			validateStatus={error ? "error" : ""}
 			help={error}
-			style={ITEM_STYLE}
+			style={STYLES.item}
 		>
 			<Input
 				id="env-name"
@@ -173,20 +177,21 @@ function NameField({ name, error, onUpdate }) {
 				value={name ?? ""}
 				onChange={handleChange}
 				placeholder="e.g. Automotive Cabin"
-				style={INPUT_STYLE}
+				style={STYLES.input}
 			/>
 		</Form.Item>
 	);
 }
 
-function NumberField({ id, label, value, onChange, error, min, max, step }) {
+function NumberField(props) {
+	const { id, label, value, onChange, error, min, max, step } = props;
 	return (
 		<Form.Item
 			label={label}
 			htmlFor={id}
 			validateStatus={error ? "error" : ""}
 			help={error}
-			style={FLEX_ITEM_STYLE}
+			style={STYLES.flexItem}
 		>
 			<InputNumber
 				id={id}
@@ -196,59 +201,68 @@ function NumberField({ id, label, value, onChange, error, min, max, step }) {
 				min={min}
 				max={max}
 				step={step}
-				style={NUMBER_INPUT_STYLE}
+				style={STYLES.numberInput}
 			/>
 		</Form.Item>
 	);
 }
 
-function AmbientFields({ ambientC, errors, onUpdate }) {
-	const setMin = (min) => onUpdate({ ambientC: { ...ambientC, min } });
-	const setMax = (max) => onUpdate({ ambientC: { ...ambientC, max } });
+function FieldRow({ fields }) {
 	return (
-		<div style={ROW_STYLE}>
-			<NumberField
-				id="ambient-min"
-				label="Ambient Min (°C)"
-				value={ambientC?.min}
-				onChange={setMin}
-				error={errors["ambientC.min"]}
-			/>
-			<NumberField
-				id="ambient-max"
-				label="Ambient Max (°C)"
-				value={ambientC?.max}
-				onChange={setMax}
-				error={errors["ambientC.max"] || errors.ambientC}
-			/>
+		<div style={STYLES.row}>
+			{fields.map((f) => (
+				<NumberField key={f.id} {...f} />
+			))}
 		</div>
 	);
 }
 
-function HumidityFields({ humidityPct, errors, onUpdate }) {
-	const setMin = (min) => onUpdate({ humidityPct: { ...humidityPct, min } });
-	const setMax = (max) => onUpdate({ humidityPct: { ...humidityPct, max } });
+function MinMaxRow({ config, value, errors, onUpdate }) {
+	const { key, idPrefix, label, unit, min, max } = config;
+	const setBound = (bound, val) =>
+		onUpdate({ [key]: { ...value, [bound]: val } });
+	const fields = [
+		{
+			id: `${idPrefix}-min`,
+			label: `${label} Min (${unit})`,
+			value: value?.min,
+			onChange: (v) => setBound("min", v),
+			error: errors[`${key}.min`],
+			min,
+			max,
+		},
+		{
+			id: `${idPrefix}-max`,
+			label: `${label} Max (${unit})`,
+			value: value?.max,
+			onChange: (v) => setBound("max", v),
+			error: errors[`${key}.max`] || errors[key],
+			min,
+			max,
+		},
+	];
+	return <FieldRow fields={fields} />;
+}
+
+function AmbientFields({ ambientC, errors, onUpdate }) {
 	return (
-		<div style={ROW_STYLE}>
-			<NumberField
-				id="humidity-min"
-				label="Humidity Min (%)"
-				value={humidityPct?.min}
-				onChange={setMin}
-				error={errors["humidityPct.min"]}
-				min={0}
-				max={100}
-			/>
-			<NumberField
-				id="humidity-max"
-				label="Humidity Max (%)"
-				value={humidityPct?.max}
-				onChange={setMax}
-				error={errors["humidityPct.max"] || errors.humidityPct}
-				min={0}
-				max={100}
-			/>
-		</div>
+		<MinMaxRow
+			config={RANGE_CONFIGS.ambient}
+			value={ambientC}
+			errors={errors}
+			onUpdate={onUpdate}
+		/>
+	);
+}
+
+function HumidityFields({ humidityPct, errors, onUpdate }) {
+	return (
+		<MinMaxRow
+			config={RANGE_CONFIGS.humidity}
+			value={humidityPct}
+			errors={errors}
+			onUpdate={onUpdate}
+		/>
 	);
 }
 
@@ -270,84 +284,78 @@ function RangeFields({ draft, errors, onUpdate }) {
 }
 
 function GeneralFields({ altitudeM, airflowMs, errors, onUpdate }) {
-	return (
-		<div style={ROW_STYLE}>
-			<NumberField
-				id="altitude-m"
-				label="Altitude (m)"
-				value={altitudeM}
-				onChange={(v) => onUpdate({ altitudeM: v })}
-				error={errors.altitudeM}
-			/>
-			<NumberField
-				id="airflow-ms"
-				label="Airflow (m/s)"
-				value={airflowMs}
-				onChange={(v) => onUpdate({ airflowMs: v })}
-				error={errors.airflowMs}
-				min={0}
-			/>
-		</div>
-	);
+	const fields = [
+		{
+			id: "altitude-m",
+			label: "Altitude (m)",
+			value: altitudeM,
+			onChange: (v) => onUpdate({ altitudeM: v }),
+			error: errors.altitudeM,
+		},
+		{
+			id: "airflow-ms",
+			label: "Airflow (m/s)",
+			value: airflowMs,
+			onChange: (v) => onUpdate({ airflowMs: v }),
+			error: errors.airflowMs,
+			min: 0,
+		},
+	];
+	return <FieldRow fields={fields} />;
 }
 
 function VibrationPsdRow({ psdG2Hz, shockG, errors, onUpdate }) {
-	const handlePsd = (v) => onUpdate({ psdG2Hz: v });
-	const handleShock = (v) => onUpdate({ shockG: v });
-	return (
-		<div style={ROW_STYLE}>
-			<NumberField
-				id="vib-psd"
-				label="PSD (g²/Hz)"
-				value={psdG2Hz}
-				onChange={handlePsd}
-				error={errors["vibration.psdG2Hz"]}
-				min={0}
-				step={0.01}
-			/>
-			<NumberField
-				id="shock-g"
-				label="Shock (g)"
-				value={shockG}
-				onChange={handleShock}
-				error={errors.shockG}
-				min={0}
-			/>
-		</div>
-	);
+	const fields = [
+		{
+			id: "vib-psd",
+			label: "PSD (g²/Hz)",
+			value: psdG2Hz,
+			onChange: (v) => onUpdate({ psdG2Hz: v }),
+			error: errors["vibration.psdG2Hz"],
+			min: 0,
+			step: 0.01,
+		},
+		{
+			id: "shock-g",
+			label: "Shock (g)",
+			value: shockG,
+			onChange: (v) => onUpdate({ shockG: v }),
+			error: errors.shockG,
+			min: 0,
+		},
+	];
+	return <FieldRow fields={fields} />;
 }
 
 function VibrationFreqRow({ fromHz, toHz, errors, onUpdate }) {
-	const toErr = errors["vibration.toHz"] || errors.vibration;
-	return (
-		<div style={ROW_STYLE}>
-			<NumberField
-				id="vib-from"
-				label="From Frequency (Hz)"
-				value={fromHz}
-				onChange={(v) => onUpdate({ fromHz: v })}
-				error={errors["vibration.fromHz"]}
-				min={0}
-			/>
-			<NumberField
-				id="vib-to"
-				label="To Frequency (Hz)"
-				value={toHz}
-				onChange={(v) => onUpdate({ toHz: v })}
-				error={toErr}
-				min={0}
-			/>
-		</div>
-	);
+	const fields = [
+		{
+			id: "vib-from",
+			label: "From Frequency (Hz)",
+			value: fromHz,
+			onChange: (v) => onUpdate({ fromHz: v }),
+			error: errors["vibration.fromHz"],
+			min: 0,
+		},
+		{
+			id: "vib-to",
+			label: "To Frequency (Hz)",
+			value: toHz,
+			onChange: (v) => onUpdate({ toHz: v }),
+			error: errors["vibration.toHz"] || errors.vibration,
+			min: 0,
+		},
+	];
+	return <FieldRow fields={fields} />;
 }
 
 function VibrationInputs({ vibration, shockG, errors, onUpdate }) {
 	const handlePsdRow = (patch) => {
 		if (patch.shockG !== undefined) {
 			onUpdate({ shockG: patch.shockG });
-		} else {
-			onUpdate({ vibration: { ...vibration, ...patch } });
+			return;
 		}
+		onUpdate({ vibration: { ...vibration, ...patch } });
 	};
 	const handleFreqRow = (patch) =>
 		onUpdate({ vibration: { ...vibration, ...patch } });
@@ -373,7 +381,7 @@ function VibrationSection({ vibration, shockG, errors, onUpdate }) {
 	const items = [
 		{
 			key: "vib-shock",
-			label: <span style={COLLAPSE_LABEL_STYLE}>Vibration and shock</span>,
+			label: <span style={STYLES.collapseLabel}>Vibration and shock</span>,
 			children: (
 				<VibrationInputs
 					vibration={vibration}
@@ -384,12 +392,12 @@ function VibrationSection({ vibration, shockG, errors, onUpdate }) {
 			),
 		},
 	];
-	return <Collapse items={items} style={COLLAPSE_STYLE} />;
+	return <Collapse items={items} style={STYLES.collapse} />;
 }
 
 function EditorForm({ draft, errors, onUpdate }) {
 	return (
-		<Form layout="vertical" style={FORM_CONTAINER_STYLE}>
+		<Form layout="vertical" style={STYLES.form}>
 			<NameField name={draft.name} error={errors.name} onUpdate={onUpdate} />
 			<RangeFields draft={draft} errors={errors} onUpdate={onUpdate} />
 			<GeneralFields
@@ -410,12 +418,12 @@ function EditorForm({ draft, errors, onUpdate }) {
 
 function EditorFooter({ isValid, onSave }) {
 	return (
-		<footer style={FOOTER_STYLE}>
+		<footer style={STYLES.footer}>
 			<Button
 				type="primary"
 				disabled={!isValid}
 				onClick={onSave}
-				style={SAVE_BTN_STYLE}
+				style={STYLES.saveBtn}
 				aria-label="Save Environment"
 			>
 				Save Environment
@@ -451,7 +459,7 @@ export default function EnvironmentEditor(props) {
 	const { draft, validation, updateDraft, handlePreset, handleSave } =
 		useEditorController(props);
 	return (
-		<section style={CONTAINER_STYLE}>
+		<section style={STYLES.container}>
 			<EditorHeader onSelectPreset={handlePreset} />
 			<EditorForm
 				draft={draft}
