@@ -21,141 +21,140 @@ const SEVERITY_CONFIG = Object.freeze({
 	info: { label: "Info", color: "#38bdf8" },
 });
 
-const PANEL_STYLE = Object.freeze({
-	width: "100%",
-	height: "100%",
-	background: "#0f121d",
-	display: "flex",
-	flexDirection: "column",
-	userSelect: "none",
-	overflow: "hidden",
-});
+const SUMMARY_TAG_CONFIG = [
+	{
+		key: "error",
+		color: "red",
+		format: (count) => `${count} ${count === 1 ? "error" : "errors"}`,
+	},
+	{
+		key: "warning",
+		color: "orange",
+		format: (count) => `${count} ${count === 1 ? "warning" : "warnings"}`,
+	},
+	{
+		key: "info",
+		color: "blue",
+		format: (count) => `${count} info`,
+	},
+];
 
-const HEADER_STYLE = Object.freeze({
-	padding: "12px 14px",
-	borderBottom: "1px solid #1e2438",
-	background: "#121520",
-	display: "flex",
-	flexDirection: "column",
-	gap: "10px",
-	flexShrink: 0,
-});
+function makeFlex(direction, align, extra = {}) {
+	const style = { display: "flex", flexDirection: direction, ...extra };
+	if (align) {
+		style.alignItems = align;
+	}
+	return Object.freeze(style);
+}
 
-const HEADER_TOP_ROW_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	gap: "8px",
-});
+function makeDot(size, color) {
+	return Object.freeze({
+		width: size,
+		height: size,
+		borderRadius: "50%",
+		background: color,
+		boxShadow: `0 0 ${size}px ${color}`,
+		display: "inline-block",
+	});
+}
 
-const TITLE_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-});
+function makeHeading(color) {
+	return Object.freeze({
+		margin: 0,
+		fontSize: "12px",
+		fontWeight: 700,
+		textTransform: "uppercase",
+		letterSpacing: "0.06em",
+		color,
+	});
+}
 
-const TITLE_DOT_STYLE = Object.freeze({
-	width: 8,
-	height: 8,
-	borderRadius: "50%",
-	background: "#10b981",
-	boxShadow: "0 0 8px #10b981",
-	display: "inline-block",
-});
-
-const TITLE_STYLE = Object.freeze({
-	margin: 0,
-	fontSize: "12px",
-	fontWeight: 700,
-	textTransform: "uppercase",
-	letterSpacing: "0.06em",
-	color: "#e2e8f0",
-});
-
-const TAGS_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "4px",
-	flexWrap: "wrap",
-});
-
-const BODY_STYLE = Object.freeze({
-	flex: 1,
-	overflowY: "auto",
-	padding: "10px 12px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "8px",
-});
-
-const EMPTY_CONTAINER_STYLE = Object.freeze({
-	padding: "32px 16px",
-	display: "flex",
-	justifyContent: "center",
-	alignItems: "center",
-});
-
-const ROW_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "flex-start",
-	justifyContent: "space-between",
-	gap: "8px",
-	padding: "8px 10px",
-	borderRadius: "6px",
-	border: "1px solid #23283e",
-	background: "rgba(22, 26, 42, 0.8)",
-	marginBottom: "6px",
-});
-
-const ROW_BTN_STYLE = Object.freeze({
-	flex: 1,
-	display: "flex",
-	flexDirection: "column",
-	alignItems: "flex-start",
-	gap: "4px",
-	background: "transparent",
-	border: "none",
-	padding: 0,
-	margin: 0,
-	cursor: "pointer",
-	textAlign: "left",
-	color: "inherit",
-	font: "inherit",
-});
-
-const MESSAGE_STYLE = Object.freeze({
-	fontSize: "12px",
-	fontWeight: 600,
-	color: "#f1f5f9",
-	lineHeight: "1.35",
-	wordBreak: "break-word",
-});
-
-const MEASURED_STYLE = Object.freeze({
-	fontSize: "11px",
-	fontFamily: "monospace",
-	color: "#fbbf24",
-	background: "#181d2f",
-	border: "1px solid #28304c",
-	borderRadius: "4px",
-	padding: "1px 6px",
-});
-
-const SUGGESTION_STYLE = Object.freeze({
-	fontSize: "11px",
-	color: "#94a3b8",
-	lineHeight: "1.4",
-	wordBreak: "break-word",
-});
-
-const SELECT_STYLE = Object.freeze({
-	width: 96,
-	flexShrink: 0,
-});
-
-const GROUP_LIST_STYLE = Object.freeze({
-	display: "flex",
-	flexDirection: "column",
+const panelStyles = Object.freeze({
+	panel: makeFlex("column", null, {
+		width: "100%",
+		height: "100%",
+		background: "#0f121d",
+		userSelect: "none",
+		overflow: "hidden",
+	}),
+	header: makeFlex("column", null, {
+		padding: "12px 14px",
+		borderBottom: "1px solid #1e2438",
+		background: "#121520",
+		gap: "10px",
+		flexShrink: 0,
+	}),
+	headerTopRow: makeFlex("row", "center", {
+		justifyContent: "space-between",
+		gap: "8px",
+	}),
+	titleContainer: makeFlex("row", "center", {
+		gap: "8px",
+	}),
+	titleDot: makeDot(8, "#10b981"),
+	title: makeHeading("#e2e8f0"),
+	tagsContainer: makeFlex("row", "center", {
+		gap: "4px",
+		flexWrap: "wrap",
+	}),
+	body: makeFlex("column", null, {
+		flex: 1,
+		overflowY: "auto",
+		padding: "10px 12px",
+		gap: "8px",
+	}),
+	emptyContainer: makeFlex("row", "center", {
+		padding: "32px 16px",
+		justifyContent: "center",
+	}),
+	rowContainer: makeFlex("row", "flex-start", {
+		justifyContent: "space-between",
+		gap: "8px",
+		padding: "8px 10px",
+		borderRadius: "6px",
+		border: "1px solid #23283e",
+		background: "rgba(22, 26, 42, 0.8)",
+		marginBottom: "6px",
+	}),
+	rowBtn: makeFlex("column", "flex-start", {
+		flex: 1,
+		gap: "4px",
+		background: "transparent",
+		border: "none",
+		padding: 0,
+		margin: 0,
+		cursor: "pointer",
+		textAlign: "left",
+		color: "inherit",
+		font: "inherit",
+	}),
+	message: Object.freeze({
+		fontSize: "12px",
+		fontWeight: 600,
+		color: "#f1f5f9",
+		lineHeight: "1.35",
+		wordBreak: "break-word",
+	}),
+	measured: Object.freeze({
+		fontSize: "11px",
+		fontFamily: "monospace",
+		color: "#fbbf24",
+		background: "#181d2f",
+		border: "1px solid #28304c",
+		borderRadius: "4px",
+		padding: "1px 6px",
+	}),
+	suggestion: Object.freeze({
+		fontSize: "11px",
+		color: "#94a3b8",
+		lineHeight: "1.4",
+		wordBreak: "break-word",
+	}),
+	select: Object.freeze({
+		width: 96,
+		flexShrink: 0,
+	}),
+	groupList: makeFlex("column", null),
 });
 
 function normalizeSource(val) {
@@ -166,26 +165,32 @@ function normalizeSource(val) {
 	return match ?? val;
 }
 
+function OptionalDetail({ text, style }) {
+	if (!text) return null;
+	return <span style={style}>{text}</span>;
+}
+
 function IssueRow({ issue, onSelectItem, onChangeStatus }) {
 	const measured = formatMeasured(issue);
 	const handleSelect = () => onSelectItem?.(issue?.itemIds?.[0], issue);
 	const handleStatus = (val) => onChangeStatus?.(issue?.id, val);
 
 	return (
-		<div style={ROW_CONTAINER_STYLE}>
-			<button type="button" onClick={handleSelect} style={ROW_BTN_STYLE}>
-				<span style={MESSAGE_STYLE}>{issue?.message}</span>
-				{measured ? <span style={MEASURED_STYLE}>{measured}</span> : null}
-				{issue?.suggestion ? (
-					<span style={SUGGESTION_STYLE}>{issue.suggestion}</span>
-				) : null}
+		<div style={panelStyles.rowContainer}>
+			<button type="button" onClick={handleSelect} style={panelStyles.rowBtn}>
+				<span style={panelStyles.message}>{issue?.message}</span>
+				<OptionalDetail text={measured} style={panelStyles.measured} />
+				<OptionalDetail
+					text={issue?.suggestion}
+					style={panelStyles.suggestion}
+				/>
 			</button>
 			<Select
 				size="small"
 				value={issue?.status ?? "open"}
 				onChange={handleStatus}
 				options={STATUS_OPTIONS}
-				style={SELECT_STYLE}
+				style={panelStyles.select}
 			/>
 		</div>
 	);
@@ -193,7 +198,7 @@ function IssueRow({ issue, onSelectItem, onChangeStatus }) {
 
 function IssueGroupList({ items, onSelectItem, onChangeStatus }) {
 	return (
-		<div style={GROUP_LIST_STYLE}>
+		<div style={panelStyles.groupList}>
 			{items.map((issue) => (
 				<IssueRow
 					key={issue.id}
@@ -232,28 +237,36 @@ function buildCollapseItems(groups, onSelectItem, onChangeStatus) {
 	}));
 }
 
+function renderSummaryTag({ key, color, format }, summary) {
+	return (
+		<Tag key={key} color={color}>
+			{format(summary[key])}
+		</Tag>
+	);
+}
+
 function IssueHeaderTags({ summary }) {
 	return (
-		<div style={TAGS_CONTAINER_STYLE}>
-			<Tag color="red">
-				{summary.error} {summary.error === 1 ? "error" : "errors"}
-			</Tag>
-			<Tag color="orange">
-				{summary.warning} {summary.warning === 1 ? "warning" : "warnings"}
-			</Tag>
-			<Tag color="blue">{summary.info} info</Tag>
+		<div style={panelStyles.tagsContainer}>
+			{SUMMARY_TAG_CONFIG.map((cfg) => renderSummaryTag(cfg, summary))}
+		</div>
+	);
+}
+
+function PanelHeading({ title }) {
+	return (
+		<div style={panelStyles.titleContainer}>
+			<span style={panelStyles.titleDot} />
+			<h3 style={panelStyles.title}>{title}</h3>
 		</div>
 	);
 }
 
 function IssuesHeader({ summary, source, onSourceChange }) {
 	return (
-		<div style={HEADER_STYLE}>
-			<div style={HEADER_TOP_ROW_STYLE}>
-				<div style={TITLE_CONTAINER_STYLE}>
-					<span style={TITLE_DOT_STYLE} />
-					<h3 style={TITLE_STYLE}>Issues</h3>
-				</div>
+		<div style={panelStyles.header}>
+			<div style={panelStyles.headerTopRow}>
+				<PanelHeading title="Issues" />
 				<IssueHeaderTags summary={summary} />
 			</div>
 			<Segmented
@@ -269,7 +282,7 @@ function IssuesHeader({ summary, source, onSourceChange }) {
 function IssuesBody({ groups, collapseItems }) {
 	if (groups.length === 0) {
 		return (
-			<div style={EMPTY_CONTAINER_STYLE}>
+			<div style={panelStyles.emptyContainer}>
 				<Empty
 					image={Empty.PRESENTED_IMAGE_SIMPLE}
 					description="No open issues"
@@ -314,13 +327,13 @@ export default function IssuesPanel({
 	);
 
 	return (
-		<aside style={PANEL_STYLE}>
+		<aside style={panelStyles.panel}>
 			<IssuesHeader
 				summary={summary}
 				source={activeSource}
 				onSourceChange={handleSourceChange}
 			/>
-			<div style={BODY_STYLE}>
+			<div style={panelStyles.body}>
 				<IssuesBody groups={groups} collapseItems={collapseItems} />
 			</div>
 		</aside>
