@@ -101,15 +101,34 @@ function calculateMedian(values) {
 	return (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+const LED_FIELDS = ["symbol", "value", "type"];
+
+function extractPartRef(part, partId) {
+	if (part?.ref) return String(part.ref);
+	if (part?.id) return String(part.id);
+	if (partId) return String(partId);
+	return "";
+}
+
+function matchesLedRef(part, partId) {
+	const ref = extractPartRef(part, partId).toUpperCase();
+	return ref.startsWith("LED") || ref.startsWith("D");
+}
+
+function hasLedKeyword(part) {
+	if (!part) return false;
+	return LED_FIELDS.some((key) =>
+		String(part[key] || "")
+			.toLowerCase()
+			.includes("led"),
+	);
+}
+
 function isLedPart(part, partId) {
-	const ref = String(part?.ref || part?.id || partId || "").toUpperCase();
-	const sym = String(part?.symbol || "").toLowerCase();
-	const val = String(part?.value || "").toLowerCase();
-	const type = String(part?.type || "").toLowerCase();
-	if (sym.includes("led") || val.includes("led") || type.includes("led")) {
+	if (hasLedKeyword(part)) {
 		return true;
 	}
-	return ref.startsWith("LED") || ref.startsWith("D");
+	return matchesLedRef(part, partId);
 }
 
 function resolvePartLabel(part, partId, isLed) {

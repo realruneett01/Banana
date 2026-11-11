@@ -141,68 +141,97 @@ function StatusBar({ doc, activeTab, dirty, problems }) {
 	);
 }
 
+function ToolButton({
+	title,
+	icon,
+	disabled,
+	onClick,
+	ariaLabel,
+	type,
+	danger,
+	loading,
+	text,
+}) {
+	return (
+		<Tooltip title={title}>
+			<Button
+				icon={icon}
+				disabled={disabled}
+				onClick={onClick}
+				size="small"
+				aria-label={ariaLabel || title}
+				type={type}
+				danger={danger}
+				loading={loading}
+			>
+				{text}
+			</Button>
+		</Tooltip>
+	);
+}
+
 function HistoryButtons({ canUndo, canRedo, undo, redo }) {
+	const items = [
+		{
+			title: "Undo (Ctrl+Z)",
+			icon: <UndoOutlined />,
+			disabled: !canUndo,
+			onClick: undo,
+			ariaLabel: "Undo",
+		},
+		{
+			title: "Redo (Ctrl+Y)",
+			icon: <RedoOutlined />,
+			disabled: !canRedo,
+			onClick: redo,
+			ariaLabel: "Redo",
+		},
+	];
 	return (
 		<Space size={4}>
-			<Tooltip title="Undo (Ctrl+Z)">
-				<Button
-					icon={<UndoOutlined />}
-					disabled={!canUndo}
-					onClick={undo}
-					size="small"
-					aria-label="Undo"
-				/>
-			</Tooltip>
-			<Tooltip title="Redo (Ctrl+Y)">
-				<Button
-					icon={<RedoOutlined />}
-					disabled={!canRedo}
-					onClick={redo}
-					size="small"
-					aria-label="Redo"
-				/>
-			</Tooltip>
+			{items.map((it) => (
+				<ToolButton key={it.title} {...it} />
+			))}
 		</Space>
 	);
 }
 
 function TransformButtons({ hasSelection, rotate, flip }) {
+	const items = [
+		{
+			title: "Rotate 90° (R)",
+			icon: <RotateRightOutlined />,
+			disabled: !hasSelection,
+			onClick: rotate,
+			ariaLabel: "Rotate",
+		},
+		{
+			title: "Flip Side (F)",
+			icon: <SwapOutlined />,
+			disabled: !hasSelection,
+			onClick: flip,
+			ariaLabel: "Flip",
+		},
+	];
 	return (
 		<>
-			<Tooltip title="Rotate 90° (R)">
-				<Button
-					icon={<RotateRightOutlined />}
-					disabled={!hasSelection}
-					onClick={rotate}
-					size="small"
-					aria-label="Rotate"
-				/>
-			</Tooltip>
-			<Tooltip title="Flip Side (F)">
-				<Button
-					icon={<SwapOutlined />}
-					disabled={!hasSelection}
-					onClick={flip}
-					size="small"
-					aria-label="Flip"
-				/>
-			</Tooltip>
+			{items.map((it) => (
+				<ToolButton key={it.title} {...it} />
+			))}
 		</>
 	);
 }
 
 function DeleteButton({ hasSelection, remove }) {
 	return (
-		<Tooltip title="Delete (Del)">
-			<Button
-				danger
-				icon={<DeleteOutlined />}
-				disabled={!hasSelection}
-				onClick={remove}
-				size="small"
-				aria-label="Delete"
-			/>
-		</Tooltip>
+		<ToolButton
+			title="Delete (Del)"
+			icon={<DeleteOutlined />}
+			disabled={!hasSelection}
+			onClick={remove}
+			ariaLabel="Delete"
+			danger
+		/>
 	);
 }
 
@@ -220,59 +249,54 @@ function EditActionButtons({ hasSelection, rotate, flip, remove }) {
 }
 
 function ModeButtons({ activeTab, dirty, route, save }) {
+	const items = [
+		{
+			title: "Route Track (X) - PCB tab",
+			icon: <ForkOutlined />,
+			disabled: activeTab !== "pcb",
+			onClick: route,
+			ariaLabel: "Route Track",
+		},
+		{
+			title: "Save (Ctrl+S)",
+			icon: <SaveOutlined />,
+			disabled: !dirty,
+			onClick: save,
+			ariaLabel: "Save",
+			type: "primary",
+		},
+	];
 	return (
 		<Space size={4}>
-			<Tooltip title="Route Track (X) - PCB tab">
-				<Button
-					icon={<ForkOutlined />}
-					disabled={activeTab !== "pcb"}
-					onClick={route}
-					size="small"
-					aria-label="Route Track"
-				/>
-			</Tooltip>
-			<Tooltip title="Save (Ctrl+S)">
-				<Button
-					type="primary"
-					icon={<SaveOutlined />}
-					disabled={!dirty}
-					onClick={save}
-					size="small"
-					aria-label="Save"
-				/>
-			</Tooltip>
+			{items.map((it) => (
+				<ToolButton key={it.title} {...it} />
+			))}
 		</Space>
 	);
 }
 
 function AddPartButton({ onAddPart }) {
 	return (
-		<Tooltip title="Add part (A)">
-			<Button
-				icon={<PlusOutlined />}
-				onClick={onAddPart}
-				size="small"
-				aria-label="Add part (A)"
-			>
-				Add part
-			</Button>
-		</Tooltip>
+		<ToolButton
+			title="Add part (A)"
+			icon={<PlusOutlined />}
+			onClick={onAddPart}
+			ariaLabel="Add part (A)"
+			text="Add part"
+		/>
 	);
 }
 
 function ExportButton({ onExport, loading }) {
 	return (
-		<Tooltip title="Export KiCad files">
-			<Button
-				icon={<DownloadOutlined />}
-				loading={loading}
-				onClick={onExport}
-				size="small"
-				aria-label="Export KiCad files"
-			>
-				Export KiCad files
-			</Button>
-		</Tooltip>
+		<ToolButton
+			title="Export KiCad files"
+			icon={<DownloadOutlined />}
+			loading={loading}
+			onClick={onExport}
+			ariaLabel="Export KiCad files"
+			text="Export KiCad files"
+		/>
 	);
 }
 
@@ -307,24 +331,29 @@ function EditorToolbar({ state, actions }) {
 	);
 }
 
+function dispatchSelectionActions(selection, dispatch, actionBuilder) {
+	for (const id of selection ?? []) {
+		dispatch(actionBuilder(id));
+	}
+}
+
 function useEditorActions({ doc, dispatch, board, onSave, markSaved }) {
+	const applySelection = useCallback(
+		(builder) => dispatchSelectionActions(doc?.selection, dispatch, builder),
+		[doc?.selection, dispatch],
+	);
+
 	const rotate = useCallback(() => {
-		for (const id of doc?.selection ?? []) {
-			dispatch({ type: "rotatePart", partId: id, deltaDeg: 90 });
-		}
-	}, [doc?.selection, dispatch]);
+		applySelection((partId) => ({ type: "rotatePart", partId, deltaDeg: 90 }));
+	}, [applySelection]);
 
 	const flip = useCallback(() => {
-		for (const id of doc?.selection ?? []) {
-			dispatch({ type: "flipPart", partId: id });
-		}
-	}, [doc?.selection, dispatch]);
+		applySelection((partId) => ({ type: "flipPart", partId }));
+	}, [applySelection]);
 
 	const remove = useCallback(() => {
-		for (const id of doc?.selection ?? []) {
-			dispatch({ type: "deletePart", partId: id });
-		}
-	}, [doc?.selection, dispatch]);
+		applySelection((partId) => ({ type: "deletePart", partId }));
+	}, [applySelection]);
 
 	const save = useCallback(() => {
 		onSave?.({ ir: doc.ir, board });
@@ -334,10 +363,16 @@ function useEditorActions({ doc, dispatch, board, onSave, markSaved }) {
 	return { rotate, flip, remove, save };
 }
 
+function isSaveShortcut(e) {
+	const isModifier = Boolean(e.ctrlKey || e.metaKey);
+	const isKeyS = e.key === "s" || e.key === "S";
+	return isModifier && isKeyS;
+}
+
 function useSaveShortcut(save) {
 	useEffect(() => {
 		const onKeyDown = (e) => {
-			if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+			if (isSaveShortcut(e)) {
 				e.preventDefault();
 				save();
 			}
@@ -347,21 +382,37 @@ function useSaveShortcut(save) {
 	}, [save]);
 }
 
+const MODIFIER_PROPS = ["ctrlKey", "metaKey", "altKey"];
+const EDITABLE_INPUT_TAGS = new Set(["INPUT", "TEXTAREA"]);
+
+function hasActiveModifiers(e) {
+	return MODIFIER_PROPS.some((prop) => Boolean(e[prop]));
+}
+
+function isEditableElement(target) {
+	if (!target) return false;
+	return (
+		EDITABLE_INPUT_TAGS.has(target.tagName) || Boolean(target.isContentEditable)
+	);
+}
+
+function isKeyA(e) {
+	return e.key === "a" || e.key === "A";
+}
+
+function isAddShortcut(e) {
+	if (hasActiveModifiers(e)) return false;
+	if (!isKeyA(e)) return false;
+	return !isEditableElement(e.target);
+}
+
 function useAddPartShortcut(openLibrary) {
 	useEffect(() => {
 		const onKeyDown = (e) => {
-			if (e.ctrlKey || e.metaKey || e.altKey) return;
-			if (e.key !== "a" && e.key !== "A") return;
-			const tag = e.target?.tagName;
-			if (
-				tag === "INPUT" ||
-				tag === "TEXTAREA" ||
-				e.target?.isContentEditable
-			) {
-				return;
+			if (isAddShortcut(e)) {
+				e.preventDefault();
+				openLibrary();
 			}
-			e.preventDefault();
-			openLibrary();
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
@@ -412,39 +463,44 @@ function useExportAction({ api, ir, board }) {
 	return { exportKiCad, exporting };
 }
 
-function getNextRef(parts, rawPrefix) {
-	const prefix = (rawPrefix || "U").replace(/[?#]+$/, "") || "U";
-	const usedNumbers = new Set();
-	const regex = new RegExp(`^${prefix}(\\d+)$`, "i");
+function extractUsedRefNumbers(parts, regex) {
+	const numbers = new Set();
 	for (const p of parts ?? []) {
 		const match = p.ref?.match(regex);
-		if (match) {
-			usedNumbers.add(Number(match[1]));
-		}
+		if (match) numbers.add(Number(match[1]));
 	}
-	let nextNum = 1;
-	while (usedNumbers.has(nextNum)) {
-		nextNum++;
-	}
+	return numbers;
+}
+
+function findLowestAvailableIndex(usedSet) {
+	let num = 1;
+	while (usedSet.has(num)) num++;
+	return num;
+}
+
+function getNextRef(parts, rawPrefix) {
+	const sanitized = (rawPrefix || "U").replace(/[?#]+$/, "");
+	const prefix = sanitized || "U";
+	const regex = new RegExp(`^${prefix}(\\d+)$`, "i");
+	const usedNumbers = extractUsedRefNumbers(parts, regex);
+	const nextNum = findLowestAvailableIndex(usedNumbers);
 	return `${prefix}${nextNum}`;
+}
+
+async function fetchEntity(api, method, dataKey, id) {
+	if (typeof api?.[method] !== "function") return null;
+	const res = await api[method](id);
+	return res?.ok ? (res.data?.[dataKey] ?? null) : null;
 }
 
 function useCanvasFetchers(api) {
 	const fetchSymbol = useCallback(
-		async (libId) => {
-			if (typeof api?.getSymbol !== "function") return null;
-			const res = await api.getSymbol(libId);
-			return res.ok ? (res.data?.symbol ?? null) : null;
-		},
+		(libId) => fetchEntity(api, "getSymbol", "symbol", libId),
 		[api],
 	);
 
 	const fetchFootprint = useCallback(
-		async (libId) => {
-			if (typeof api?.getFootprint !== "function") return null;
-			const res = await api.getFootprint(libId);
-			return res.ok ? (res.data?.footprint ?? null) : null;
-		},
+		(libId) => fetchEntity(api, "getFootprint", "footprint", libId),
 		[api],
 	);
 

@@ -7,14 +7,11 @@ function roundGrid(num, grid) {
 }
 
 export function snapToGrid(v, grid = 1.27) {
-	if (typeof v === "number") {
-		return roundGrid(v, grid);
-	}
-	if (Array.isArray(v)) {
-		return [roundGrid(v[0], grid), roundGrid(v[1], grid)];
-	}
+	const snap = (n) => roundGrid(n, grid);
+	if (typeof v === "number") return snap(v);
+	if (Array.isArray(v)) return v.map(snap);
 	if (v && typeof v === "object") {
-		return { x: roundGrid(v.x, grid), y: roundGrid(v.y, grid) };
+		return { x: snap(v.x), y: snap(v.y) };
 	}
 	return v;
 }
@@ -74,6 +71,18 @@ function rotatePin(lx, ly, rot, side) {
 	return [rx, ry];
 }
 
+function storePinPosition(map, pin, coord) {
+	const pos = [
+		Math.round(coord[0] * 1e6) / 1e6,
+		Math.round(coord[1] * 1e6) / 1e6,
+	];
+	const sPin = String(pin);
+	map.set(pin, pos);
+	map.set(sPin, pos);
+	map[pin] = pos;
+	map[sPin] = pos;
+}
+
 export function pinPositions(part, pinNumbers) {
 	const pins = resolvePinList(pinNumbers, part);
 	const numList = pins
@@ -89,16 +98,17 @@ export function pinPositions(part, pinNumbers) {
 	for (const p of pins) {
 		const { lx, ly } = computeLocalPin(p, totalRows, halfW);
 		const [rx, ry] = rotatePin(lx, ly, rot, side);
-		const pos = [
-			Math.round((px + rx) * 1e6) / 1e6,
-			Math.round((py + ry) * 1e6) / 1e6,
-		];
-		map.set(p, pos);
-		map.set(String(p), pos);
-		map[p] = pos;
-		map[String(p)] = pos;
+		storePinPosition(map, p, [px + rx, py + ry]);
 	}
 	return map;
+}
+
+function lookupPinPos(pinPos, partId, pin) {
+	const key = `${partId}:${pin}`;
+	if (pinPos instanceof Map) {
+		return pinPos.get(key) ?? pinPos.get(partId)?.[pin] ?? null;
+	}
+	return pinPos[key] ?? pinPos[partId]?.[pin] ?? null;
 }
 
 function resolvePinCoord(pinRef, pinPos) {
@@ -107,12 +117,7 @@ function resolvePinCoord(pinRef, pinPos) {
 	const partId = pinRef.partId ?? pinRef.part;
 	const pin = pinRef.pin ?? pinRef.number;
 	if (typeof pinPos === "function") return pinPos(partId, pin);
-	if (!pinPos) return null;
-	const key = `${partId}:${pin}`;
-	if (pinPos instanceof Map) {
-		return pinPos.get(key) ?? pinPos.get(partId)?.[pin] ?? null;
-	}
-	return pinPos[key] ?? pinPos[partId]?.[pin] ?? null;
+	return pinPos ? lookupPinPos(pinPos, partId, pin) : null;
 }
 
 function createLPolyline(p1, p2) {
@@ -124,22 +129,27 @@ function createLPolyline(p1, p2) {
 	return [p1, [x2, y1], p2];
 }
 
-function findClosestUnvisited(visited, points) {
-	let bestDist = Infinity;
-	let bestPair = null;
-	for (const u of visited) {
-		for (let v = 0; v < points.length; v++) {
-			if (visited.has(v)) continue;
-			const dist =
-				Math.abs(points[u][0] - points[v][0]) +
-				Math.abs(points[u][1] - points[v][1]);
-			if (dist < bestDist) {
-				bestDist = dist;
-				bestPair = [u, v];
-			}
+function findBestPointForVisited(u, points, visited, currentBest) {
+	let { bestDist, bestPair } = currentBest;
+	for (let v = 0; v < points.length; v++) {
+		if (visited.has(v)) continue;
+		const dist =
+			Math.abs(points[u][0] - points[v][0]) +
+			Math.abs(points[u][1] - points[v][1]);
+		if (dist < bestDist) {
+			bestDist = dist;
+			bestPair = [u, v];
 		}
 	}
-	return bestPair;
+	return { bestDist, bestPair };
+}
+
+function findClosestUnvisited(visited, points) {
+	let best = { bestDist: Infinity, bestPair: null };
+	for (const u of visited) {
+		best = findBestPointForVisited(u, points, visited, best);
+	}
+	return best.bestPair;
 }
 
 function buildSpanningTree(points) {
@@ -166,21 +176,32 @@ export function wireForNet(net, pinPos) {
 	return buildSpanningTree(points);
 }
 
+function addDeclaredPins(pins, partPins) {
+	if (!Array.isArray(partPins)) return;
+	for (const p of partPins) {
+		pins.add(typeof p === "object" && p !== null ? (p.number ?? p.pin) : p);
+	}
+}
+
+function addNetPins(pins, nets, partId) {
+	const pinList = nets.flatMap((n) => n?.pins ?? []);
+	for (const p of pinList) {
+		if (p.partId === partId) pins.add(p.pin);
+	}
+}
+
+function addDefaultPins(pins, count) {
+	for (let i = 1; i <= count; i++) {
+		pins.add(String(i));
+	}
+}
+
 function collectPartPins(part, nets) {
 	const pins = new Set();
-	if (Array.isArray(part?.pins)) {
-		for (const p of part.pins) {
-			pins.add(typeof p === "object" ? (p.number ?? p.pin) : p);
-		}
-	}
-	for (const net of nets) {
-		for (const p of net?.pins ?? []) {
-			if (p.partId === part?.id) pins.add(p.pin);
-		}
-	}
+	addDeclaredPins(pins, part?.pins);
+	addNetPins(pins, nets, part?.id);
 	if (pins.size === 0) {
-		const count = part?.props?.pinCount ?? 2;
-		for (let i = 1; i <= count; i++) pins.add(String(i));
+		addDefaultPins(pins, part?.props?.pinCount ?? 2);
 	}
 	return Array.from(pins);
 }
@@ -197,24 +218,32 @@ function testPinHit(part, nets, pt, pinRadius) {
 }
 
 function distToSegment(pt, p1, p2) {
-	const dx = p2[0] - p1[0];
-	const dy = p2[1] - p1[1];
-	const lenSq = dx * dx + dy * dy;
-	if (lenSq === 0) return Math.hypot(pt[0] - p1[0], pt[1] - p1[1]);
-	const t = Math.max(
-		0,
-		Math.min(1, ((pt[0] - p1[0]) * dx + (pt[1] - p1[1]) * dy) / lenSq),
-	);
-	return Math.hypot(pt[0] - (p1[0] + t * dx), pt[1] - (p1[1] + t * dy));
+	const [px, py] = pt;
+	const [x1, y1] = p1;
+	const [x2, y2] = p2;
+	const segX = x2 - x1;
+	const segY = y2 - y1;
+	const segLenSq = segX ** 2 + segY ** 2;
+	if (segLenSq === 0) return Math.hypot(px - x1, py - y1);
+	const proj = ((px - x1) * segX + (py - y1) * segY) / segLenSq;
+	const clampT = Math.max(0, Math.min(1, proj));
+	return Math.hypot(px - (x1 + clampT * segX), py - (y1 + clampT * segY));
+}
+
+function testPolylineHit(poly, pt, wireTol) {
+	for (let i = 0; i < poly.length - 1; i++) {
+		if (distToSegment(pt, poly[i], poly[i + 1]) <= wireTol) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function testWireHit(net, allPinPos, pt, wireTol) {
 	const polylines = wireForNet(net, allPinPos);
 	for (const poly of polylines) {
-		for (let i = 0; i < poly.length - 1; i++) {
-			if (distToSegment(pt, poly[i], poly[i + 1]) <= wireTol) {
-				return { kind: "wire", id: net.id };
-			}
+		if (testPolylineHit(poly, pt, wireTol)) {
+			return { kind: "wire", id: net.id };
 		}
 	}
 	return null;
@@ -222,27 +251,39 @@ function testWireHit(net, allPinPos, pt, wireTol) {
 
 function testPartHit(part, pt) {
 	const box = partBox(part);
-	const dx = pt[0] - box.cx;
-	const dy = pt[1] - box.cy;
-	const rad = (-box.rot * Math.PI) / 180;
-	const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
-	const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+	const angle = (-box.rot * Math.PI) / 180;
+	const ox = pt[0] - box.cx;
+	const oy = pt[1] - box.cy;
+	const lx = ox * Math.cos(angle) - oy * Math.sin(angle);
+	const ly = ox * Math.sin(angle) + oy * Math.cos(angle);
 	if (Math.abs(lx) <= box.width / 2 && Math.abs(ly) <= box.height / 2) {
 		return { kind: "part", id: part.id };
 	}
 	return null;
 }
 
+function addPartPinPositions(map, part, nets) {
+	const pins = collectPartPins(part, nets);
+	const positions = pinPositions(part, pins);
+	for (const [pin, pos] of positions.entries()) {
+		map.set(`${part.id}:${pin}`, pos);
+	}
+}
+
 function buildAllPinPos(parts, nets) {
 	const map = new Map();
 	for (const part of parts) {
-		const pins = collectPartPins(part, nets);
-		const positions = pinPositions(part, pins);
-		for (const [pin, pos] of positions.entries()) {
-			map.set(`${part.id}:${pin}`, pos);
-		}
+		addPartPinPositions(map, part, nets);
 	}
 	return map;
+}
+
+function findFirstHit(items, testFn) {
+	for (const item of items) {
+		const hit = testFn(item);
+		if (hit) return hit;
+	}
+	return null;
 }
 
 export function hitTest(doc, pt, options = {}) {
@@ -252,18 +293,14 @@ export function hitTest(doc, pt, options = {}) {
 	const parts = ir.parts ?? [];
 	const nets = ir.nets ?? [];
 
-	for (const part of parts) {
-		const hit = testPinHit(part, nets, pt, pinRadius);
-		if (hit) return hit;
-	}
+	const pinHit = findFirstHit(parts, (p) => testPinHit(p, nets, pt, pinRadius));
+	if (pinHit) return pinHit;
+
 	const allPinPos = buildAllPinPos(parts, nets);
-	for (const net of nets) {
-		const hit = testWireHit(net, allPinPos, pt, wireTol);
-		if (hit) return hit;
-	}
-	for (const part of parts) {
-		const hit = testPartHit(part, pt);
-		if (hit) return hit;
-	}
-	return null;
+	const wireHit = findFirstHit(nets, (n) =>
+		testWireHit(n, allPinPos, pt, wireTol),
+	);
+	if (wireHit) return wireHit;
+
+	return findFirstHit(parts, (p) => testPartHit(p, pt));
 }

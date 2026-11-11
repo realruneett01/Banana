@@ -40,27 +40,32 @@ function isPathSafe(baseDir, targetPath) {
 	return !path.isAbsolute(rel);
 }
 
-function resolveSymbolPath(symbolDir, libId) {
-	if (!symbolDir || typeof symbolDir !== "string") return null;
+function parseLibId(libId) {
 	if (!isValidLibId(libId)) return null;
 	const colonIdx = libId.indexOf(":");
-	const fileBase = libId.slice(0, colonIdx);
-	const targetPath = path.join(symbolDir, `${fileBase}.kicad_sym`);
-	return isPathSafe(symbolDir, targetPath) ? targetPath : null;
+	return {
+		lib: libId.slice(0, colonIdx),
+		name: libId.slice(colonIdx + 1),
+	};
+}
+
+function resolveItemPath(baseDir, libId, getSegments) {
+	if (!baseDir || typeof baseDir !== "string") return null;
+	const parsed = parseLibId(libId);
+	if (!parsed) return null;
+	const targetPath = path.join(baseDir, ...getSegments(parsed));
+	return isPathSafe(baseDir, targetPath) ? targetPath : null;
+}
+
+function resolveSymbolPath(symbolDir, libId) {
+	return resolveItemPath(symbolDir, libId, ({ lib }) => [`${lib}.kicad_sym`]);
 }
 
 function resolveFootprintPath(footprintDir, libId) {
-	if (!footprintDir || typeof footprintDir !== "string") return null;
-	if (!isValidLibId(libId)) return null;
-	const colonIdx = libId.indexOf(":");
-	const lib = libId.slice(0, colonIdx);
-	const name = libId.slice(colonIdx + 1);
-	const targetPath = path.join(
-		footprintDir,
+	return resolveItemPath(footprintDir, libId, ({ lib, name }) => [
 		`${lib}.pretty`,
 		`${name}.kicad_mod`,
-	);
-	return isPathSafe(footprintDir, targetPath) ? targetPath : null;
+	]);
 }
 
 async function isDirectory(dirPath, fsImpl) {
@@ -115,14 +120,15 @@ function parsePinNode(pinNode) {
 	};
 }
 
+function filterAndMapChildren(node, head, parseFn) {
+	if (!Array.isArray(node)) return [];
+	return node
+		.filter((child) => Array.isArray(child) && nodeSym(child[0]) === head)
+		.map(parseFn);
+}
+
 function collectUnitPins(unitNode) {
-	const pins = [];
-	for (const child of unitNode) {
-		if (Array.isArray(child) && nodeSym(child[0]) === "pin") {
-			pins.push(parsePinNode(child));
-		}
-	}
-	return pins;
+	return filterAndMapChildren(unitNode, "pin", parsePinNode);
 }
 
 function collectSymbolPins(symbolNode) {
@@ -204,25 +210,18 @@ function parsePadNode(padNode) {
 }
 
 function collectFootprintPads(fpNode) {
-	const pads = [];
-	for (const child of fpNode) {
-		if (Array.isArray(child) && nodeSym(child[0]) === "pad") {
-			pads.push(parsePadNode(child));
-		}
-	}
-	return pads;
+	return filterAndMapChildren(fpNode, "pad", parsePadNode);
+}
+
+function filterChildGraphics(node, excludedHeads) {
+	if (!Array.isArray(node)) return [];
+	return node.filter(
+		(child) => Array.isArray(child) && !excludedHeads.has(nodeSym(child[0])),
+	);
 }
 
 function collectFootprintGraphics(fpNode) {
-	const graphics = [];
-	for (const child of fpNode) {
-		if (!Array.isArray(child)) continue;
-		const head = nodeSym(child[0]);
-		if (!FP_METADATA_HEADS.has(head)) {
-			graphics.push(child);
-		}
-	}
-	return graphics;
+	return filterChildGraphics(fpNode, FP_METADATA_HEADS);
 }
 
 async function loadSexprFile(filePath, fsImpl, fileCache) {
@@ -240,15 +239,37 @@ async function loadSexprFile(filePath, fsImpl, fileCache) {
 	}
 }
 
-function getMatchTier(item, q) {
-	const name = (item.name || "").toLowerCase();
+async function loadAstArray(filePath, ctx) {
+	const ast = await loadSexprFile(filePath, ctx.fsImpl, ctx.fileCache);
+	return Array.isArray(ast) ? ast : null;
+}
+
+function getNameMatchTier(name, q) {
 	if (name === q) return 1;
 	if (name.startsWith(q)) return 2;
 	if (name.includes(q)) return 3;
-	const keywords = (item.keywords || "").toLowerCase();
-	const desc = (item.description || "").toLowerCase();
-	if (keywords.includes(q) || desc.includes(q)) return 4;
 	return 0;
+}
+
+function matchesAnyText(values, q) {
+	return values.some((v) =>
+		String(v ?? "")
+			.toLowerCase()
+			.includes(q),
+	);
+}
+
+function getMatchTier(item, q) {
+	const name = String(item.name ?? "").toLowerCase();
+	const nameTier = getNameMatchTier(name, q);
+	if (nameTier > 0) return nameTier;
+	if (matchesAnyText([item.keywords, item.description], q)) return 4;
+	return 0;
+}
+
+function compareSearchResults(a, b) {
+	if (a.tier !== b.tier) return a.tier - b.tier;
+	return a.item.name.localeCompare(b.item.name);
 }
 
 function searchItems(items, query, limit = 50) {
@@ -265,10 +286,7 @@ function searchItems(items, query, limit = 50) {
 			scored.push({ item, tier });
 		}
 	}
-	scored.sort((a, b) => {
-		if (a.tier !== b.tier) return a.tier - b.tier;
-		return a.item.name.localeCompare(b.item.name);
-	});
+	scored.sort(compareSearchResults);
 	return scored.slice(0, limit).map((s) => s.item);
 }
 
@@ -289,10 +307,23 @@ function addSymbolToIndex(symbolNode, fileBase, index) {
 	});
 }
 
+async function listDirFiles(dirPath, fsImpl, ext) {
+	if (!dirPath || typeof dirPath !== "string") return [];
+	try {
+		const entries = await fsImpl.readdir(dirPath);
+		return entries
+			.map((e) => (typeof e === "string" ? e : e.name))
+			.filter((name) => name.endsWith(ext));
+	} catch {
+		// Directory read failure returns empty list
+		return [];
+	}
+}
+
 async function indexSymbolFile(ctx, fileName, index) {
 	const filePath = path.join(ctx.symbolDir, fileName);
-	const ast = await loadSexprFile(filePath, ctx.fsImpl, ctx.fileCache);
-	if (!ast || !Array.isArray(ast)) return;
+	const ast = await loadAstArray(filePath, ctx);
+	if (!ast) return;
 	const fileBase = path.basename(fileName, ".kicad_sym");
 	for (const child of ast) {
 		if (Array.isArray(child) && nodeSym(child[0]) === "symbol") {
@@ -303,17 +334,9 @@ async function indexSymbolFile(ctx, fileName, index) {
 
 async function buildSymbolIndex(ctx) {
 	const index = [];
-	if (!ctx.symbolDir) return index;
-	try {
-		const files = await ctx.fsImpl.readdir(ctx.symbolDir);
-		for (const file of files) {
-			const fileName = typeof file === "string" ? file : file.name;
-			if (fileName.endsWith(".kicad_sym")) {
-				await indexSymbolFile(ctx, fileName, index);
-			}
-		}
-	} catch {
-		// Directory read failure returns empty index
+	const files = await listDirFiles(ctx.symbolDir, ctx.fsImpl, ".kicad_sym");
+	for (const fileName of files) {
+		await indexSymbolFile(ctx, fileName, index);
 	}
 	return index;
 }
@@ -321,69 +344,60 @@ async function buildSymbolIndex(ctx) {
 async function indexFootprintFile(ctx, fileInfo, index) {
 	const { dirPath, libName, fileName } = fileInfo;
 	const filePath = path.join(dirPath, fileName);
-	const ast = await loadSexprFile(filePath, ctx.fsImpl, ctx.fileCache);
-	if (!ast || !Array.isArray(ast)) return;
+	const ast = await loadAstArray(filePath, ctx);
+	if (!ast) return;
 	const modName = path.basename(fileName, ".kicad_mod");
-	const descr = extractSubProp(ast, "descr");
 	const tags = extractSubProp(ast, "tags");
 	index.push({
 		libId: `${libName}:${modName}`,
 		name: modName,
-		description: descr,
+		description: extractSubProp(ast, "descr"),
 		keywords: tags,
 		tags,
 	});
 }
 
-async function indexFootprintDir(ctx, prettyName, index) {
-	if (!prettyName.endsWith(".pretty")) return;
+async function indexFootprintPrettyDir(ctx, prettyName, index) {
 	const libName = path.basename(prettyName, ".pretty");
 	const dirPath = path.join(ctx.footprintDir, prettyName);
-	try {
-		const files = await ctx.fsImpl.readdir(dirPath);
-		for (const file of files) {
-			const fileName = typeof file === "string" ? file : file.name;
-			if (fileName.endsWith(".kicad_mod")) {
-				await indexFootprintFile(ctx, { dirPath, libName, fileName }, index);
-			}
-		}
-	} catch {
-		// Directory read failure skipped for this library
+	const files = await listDirFiles(dirPath, ctx.fsImpl, ".kicad_mod");
+	for (const fileName of files) {
+		await indexFootprintFile(ctx, { dirPath, libName, fileName }, index);
 	}
 }
 
 async function buildFootprintIndex(ctx) {
 	const index = [];
-	if (!ctx.footprintDir) return index;
-	try {
-		const entries = await ctx.fsImpl.readdir(ctx.footprintDir);
-		for (const entry of entries) {
-			const entryName = typeof entry === "string" ? entry : entry.name;
-			await indexFootprintDir(ctx, entryName, index);
-		}
-	} catch {
-		// Directory read failure returns empty index
+	const prettyDirs = await listDirFiles(
+		ctx.footprintDir,
+		ctx.fsImpl,
+		".pretty",
+	);
+	for (const prettyName of prettyDirs) {
+		await indexFootprintPrettyDir(ctx, prettyName, index);
 	}
 	return index;
 }
 
+function isMatchingSymbol(child, name) {
+	if (!Array.isArray(child)) return false;
+	return nodeSym(child[0]) === "symbol" && nodeSym(child[1]) === name;
+}
+
 function findSymbolInLib(ast, symbolName) {
-	for (const child of ast) {
-		if (Array.isArray(child) && nodeSym(child[0]) === "symbol") {
-			if (nodeSym(child[1]) === symbolName) {
-				return child;
-			}
-		}
-	}
-	return null;
+	return ast.find((child) => isMatchingSymbol(child, symbolName)) ?? null;
+}
+
+async function loadTargetAst(dir, libId, resolver, ctx) {
+	if (!isValidLibId(libId)) return null;
+	const filePath = resolver(dir, libId);
+	if (!filePath) return null;
+	return loadAstArray(filePath, ctx);
 }
 
 async function getSymbolFromDisk(ctx, libId) {
-	if (!isValidLibId(libId)) return null;
-	const filePath = resolveSymbolPath(ctx.symbolDir, libId);
-	if (!filePath) return null;
-	const ast = await loadSexprFile(filePath, ctx.fsImpl, ctx.fileCache);
-	if (!ast || !Array.isArray(ast)) return null;
+	const ast = await loadTargetAst(ctx.symbolDir, libId, resolveSymbolPath, ctx);
+	if (!ast) return null;
 	const colonIdx = libId.indexOf(":");
 	const symbolName = libId.slice(colonIdx + 1);
 	const symbolNode = findSymbolInLib(ast, symbolName);
@@ -398,11 +412,13 @@ async function getSymbolFromDisk(ctx, libId) {
 }
 
 async function getFootprintFromDisk(ctx, libId) {
-	if (!isValidLibId(libId)) return null;
-	const filePath = resolveFootprintPath(ctx.footprintDir, libId);
-	if (!filePath) return null;
-	const ast = await loadSexprFile(filePath, ctx.fsImpl, ctx.fileCache);
-	if (!ast || !Array.isArray(ast)) return null;
+	const ast = await loadTargetAst(
+		ctx.footprintDir,
+		libId,
+		resolveFootprintPath,
+		ctx,
+	);
+	if (!ast) return null;
 	return {
 		libId,
 		pads: collectFootprintPads(ast),
@@ -410,70 +426,38 @@ async function getFootprintFromDisk(ctx, libId) {
 	};
 }
 
-function createIndexLoaders(ctx) {
-	let symPromise = null;
-	let fpPromise = null;
-	return {
-		getSymIndex: () => {
-			if (!symPromise) symPromise = buildSymbolIndex(ctx);
-			return symPromise;
-		},
-		getFpIndex: () => {
-			if (!fpPromise) fpPromise = buildFootprintIndex(ctx);
-			return fpPromise;
-		},
+function lazyLoader(factory) {
+	let promise = null;
+	return () => {
+		if (!promise) promise = factory();
+		return promise;
 	};
 }
 
-async function checkAvailable(symbolDir, footprintDir, fsImpl) {
+function createIndexLoaders(ctx) {
+	return {
+		getSymIndex: lazyLoader(() => buildSymbolIndex(ctx)),
+		getFpIndex: lazyLoader(() => buildFootprintIndex(ctx)),
+	};
+}
+
+async function safeExecute(action, fallback) {
 	try {
+		return await action();
+	} catch {
+		// Public method must not throw
+		return fallback;
+	}
+}
+
+async function checkAvailable(symbolDir, footprintDir, fsImpl) {
+	return safeExecute(async () => {
 		const [sOk, fOk] = await Promise.all([
 			isDirectory(symbolDir, fsImpl),
 			isDirectory(footprintDir, fsImpl),
 		]);
 		return sOk && fOk;
-	} catch {
-		// Suppress unexpected stat errors
-		return false;
-	}
-}
-
-async function runSearchSymbols(loaders, query, limit) {
-	try {
-		const idx = await loaders.getSymIndex();
-		return searchItems(idx, query, limit);
-	} catch {
-		// Public method must not throw
-		return [];
-	}
-}
-
-async function runSearchFootprints(loaders, query, limit) {
-	try {
-		const idx = await loaders.getFpIndex();
-		return searchItems(idx, query, limit);
-	} catch {
-		// Public method must not throw
-		return [];
-	}
-}
-
-async function safeGetSymbol(ctx, libId) {
-	try {
-		return await getSymbolFromDisk(ctx, libId);
-	} catch {
-		// Public method must not throw
-		return null;
-	}
-}
-
-async function safeGetFootprint(ctx, libId) {
-	try {
-		return await getFootprintFromDisk(ctx, libId);
-	} catch {
-		// Public method must not throw
-		return null;
-	}
+	}, false);
 }
 
 export function createKicadLibrary({
@@ -486,10 +470,19 @@ export function createKicadLibrary({
 
 	return {
 		available: () => checkAvailable(symbolDir, footprintDir, fsImpl),
-		searchSymbols: (q, opt = {}) => runSearchSymbols(loaders, q, opt.limit),
-		getSymbol: (libId) => safeGetSymbol(ctx, libId),
+		searchSymbols: (q, opt = {}) =>
+			safeExecute(
+				async () => searchItems(await loaders.getSymIndex(), q, opt.limit),
+				[],
+			),
+		getSymbol: (libId) =>
+			safeExecute(() => getSymbolFromDisk(ctx, libId), null),
 		searchFootprints: (q, opt = {}) =>
-			runSearchFootprints(loaders, q, opt.limit),
-		getFootprint: (libId) => safeGetFootprint(ctx, libId),
+			safeExecute(
+				async () => searchItems(await loaders.getFpIndex(), q, opt.limit),
+				[],
+			),
+		getFootprint: (libId) =>
+			safeExecute(() => getFootprintFromDisk(ctx, libId), null),
 	};
 }

@@ -170,15 +170,25 @@ function TourContent({ isSummary, summary, onRestart, stepProps }) {
 	return <StepSection {...stepProps} />;
 }
 
+const ALERT_LEVELS = new Set(["danger", "warning"]);
+
+function collectCardPartIds(cards) {
+	if (!Array.isArray(cards)) return [];
+	const ids = [];
+	for (const card of cards) {
+		if (ALERT_LEVELS.has(card?.level)) {
+			ids.push(...(card.partIds || []));
+		}
+	}
+	return ids;
+}
+
 function highlightAffected(step, result, onHighlight) {
 	if (typeof onHighlight !== "function") return;
 	const partIds = new Set();
 	if (step?.fault?.partId) partIds.add(step.fault.partId);
-	const cards = result?.explanation?.cards || [];
-	for (const card of cards) {
-		if (card.level === "danger" || card.level === "warning") {
-			for (const id of card.partIds || []) partIds.add(id);
-		}
+	for (const id of collectCardPartIds(result?.explanation?.cards)) {
+		partIds.add(id);
 	}
 	onHighlight(Array.from(partIds));
 }
