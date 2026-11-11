@@ -20,6 +20,69 @@ import {
 	validateRepoSlug,
 } from "../../backend/src/github-service.js";
 
+const INVALID_GITHUB_PATH = /invalid GitHub path/;
+const DESTINATION_OUTSIDE_DATA_DIR = /destination outside data dir/;
+const SEGMENT_VALIDATORS = [validateRepoSegment, validateOwner, validateRepo];
+
+function assertValidSegment(segment) {
+	for (const validate of SEGMENT_VALIDATORS) {
+		assert.doesNotThrow(() => validate(segment));
+	}
+}
+
+function assertInvalidSegment(segment) {
+	for (const validate of SEGMENT_VALIDATORS) {
+		assert.throws(() => validate(segment), INVALID_GITHUB_PATH);
+	}
+}
+
+function assertThrowsAll(callers, expected = INVALID_GITHUB_PATH) {
+	for (const fn of callers) {
+		assert.throws(fn, expected);
+	}
+}
+
+async function assertRejectsAll(callers, expected = INVALID_GITHUB_PATH) {
+	for (const fn of callers) {
+		await assert.rejects(fn, expected);
+	}
+}
+
+function makeDownloadOptions(overrides = {}) {
+	return {
+		owner: "owner",
+		repo: "repo",
+		filePath: "board.kicad_pcb",
+		commitSha: "sha123",
+		destinationPath: path.join(BANANA_DATA_DIR, "safe.kicad_pcb"),
+		...overrides,
+	};
+}
+
+function mockFetch(response) {
+	const calls = [];
+	globalThis.fetch = async (url) => {
+		calls.push(url);
+		return {
+			ok: true,
+			status: 200,
+			...response,
+		};
+	};
+	return calls;
+}
+
+async function cleanupTestFile(filePath) {
+	try {
+		await fs.promises.unlink(filePath);
+	} catch (err) {
+		// Ignore if test file was not created or already removed
+		if (err?.code !== "ENOENT") {
+			throw err;
+		}
+	}
+}
+
 describe("GitHub service path validation and URL encoding", () => {
 	describe("owner and repo validation", () => {
 		const validSegments = [
@@ -31,9 +94,7 @@ describe("GitHub service path validation and URL encoding", () => {
 		];
 		for (const segment of validSegments) {
 			it(`accepts valid segment: ${segment}`, () => {
-				assert.doesNotThrow(() => validateRepoSegment(segment));
-				assert.doesNotThrow(() => validateOwner(segment));
-				assert.doesNotThrow(() => validateRepo(segment));
+				assertValidSegment(segment);
 			});
 		}
 
@@ -55,24 +116,15 @@ describe("GitHub service path validation and URL encoding", () => {
 		];
 		for (const segment of invalidSegments) {
 			it(`rejects invalid segment: ${JSON.stringify(segment)}`, () => {
-				assert.throws(
-					() => validateRepoSegment(segment),
-					/invalid GitHub path/,
-				);
-				assert.throws(() => validateOwner(segment), /invalid GitHub path/);
-				assert.throws(() => validateRepo(segment), /invalid GitHub path/);
+				assertInvalidSegment(segment);
 			});
 		}
 
 		it("rejects invalid pair if either owner or repo is invalid", () => {
-			assert.throws(
+			assertThrowsAll([
 				() => validateRepoSlug(".", "valid-repo"),
-				/invalid GitHub path/,
-			);
-			assert.throws(
 				() => validateRepoSlug("valid-owner", ".."),
-				/invalid GitHub path/,
-			);
+			]);
 		});
 	});
 
@@ -89,45 +141,34 @@ describe("GitHub service path validation and URL encoding", () => {
 			});
 		}
 
-		const traversalPaths = [
-			"../board.kicad_pcb",
-			"nested/../board.kicad_pcb",
-			"nested/dir/../../board.kicad_pcb",
-			"..",
+		const invalidPathCases = [
+			...[
+				"../board.kicad_pcb",
+				"nested/../board.kicad_pcb",
+				"nested/dir/../../board.kicad_pcb",
+				"..",
+			].map((tp) => ({ name: `rejects traversal path: ${tp}`, path: tp })),
+			...[
+				"/board.kicad_pcb",
+				"/etc/passwd",
+				"C:/Windows/system32",
+				"D:/data/board.kicad_pcb",
+			].map((ap) => ({ name: `rejects absolute path: ${ap}`, path: ap })),
+			...["hardware\\board.kicad_pcb", "\\board.kicad_pcb", "a\\b\\c"].map(
+				(bp) => ({ name: `rejects backslash path: ${bp}`, path: bp }),
+			),
+			...["", null, undefined, 42, {}].map((val) => ({
+				name: `rejects non-string or empty path: ${JSON.stringify(val)}`,
+				path: val,
+			})),
 		];
-		for (const tp of traversalPaths) {
-			it(`rejects traversal path: ${tp}`, () => {
-				assert.throws(() => validateFilePath(tp), /invalid GitHub path/);
-			});
-		}
 
-		const absolutePaths = [
-			"/board.kicad_pcb",
-			"/etc/passwd",
-			"C:/Windows/system32",
-			"D:/data/board.kicad_pcb",
-		];
-		for (const ap of absolutePaths) {
-			it(`rejects absolute path: ${ap}`, () => {
-				assert.throws(() => validateFilePath(ap), /invalid GitHub path/);
-			});
-		}
-
-		const backslashPaths = [
-			"hardware\\board.kicad_pcb",
-			"\\board.kicad_pcb",
-			"a\\b\\c",
-		];
-		for (const bp of backslashPaths) {
-			it(`rejects backslash path: ${bp}`, () => {
-				assert.throws(() => validateFilePath(bp), /invalid GitHub path/);
-			});
-		}
-
-		const invalidTypes = ["", null, undefined, 42, {}];
-		for (const val of invalidTypes) {
-			it(`rejects non-string or empty path: ${JSON.stringify(val)}`, () => {
-				assert.throws(() => validateFilePath(val), /invalid GitHub path/);
+		for (const { name, path: candidatePath } of invalidPathCases) {
+			it(name, () => {
+				assert.throws(
+					() => validateFilePath(candidatePath),
+					INVALID_GITHUB_PATH,
+				);
 			});
 		}
 	});
@@ -143,10 +184,7 @@ describe("GitHub service path validation and URL encoding", () => {
 		});
 
 		it("throws when encoding invalid path with traversal", () => {
-			assert.throws(
-				() => encodeFilePath("../secret.txt"),
-				/invalid GitHub path/,
-			);
+			assert.throws(() => encodeFilePath("../secret.txt"), INVALID_GITHUB_PATH);
 		});
 	});
 
@@ -178,14 +216,10 @@ describe("GitHub service path validation and URL encoding", () => {
 		});
 
 		it("throws on invalid owner or repo in URL builders", () => {
-			assert.throws(
+			assertThrowsAll([
 				() => buildContentsApiUrl("..", "repo", "board.kicad_pcb", "sha"),
-				/invalid GitHub path/,
-			);
-			assert.throws(
 				() => buildRawFileUrl("owner", "..", "sha", "board.kicad_pcb"),
-				/invalid GitHub path/,
-			);
+			]);
 		});
 	});
 
@@ -210,7 +244,7 @@ describe("GitHub service path validation and URL encoding", () => {
 			it(`rejects destination outside data dir: ${JSON.stringify(badDest)}`, () => {
 				assert.throws(
 					() => validateDestinationPath(badDest),
-					/destination outside data dir/,
+					DESTINATION_OUTSIDE_DATA_DIR,
 				);
 			});
 		}
@@ -218,86 +252,62 @@ describe("GitHub service path validation and URL encoding", () => {
 
 	describe("high-level methods input rejection", () => {
 		it("getRepoBranches rejects invalid owner/repo", async () => {
-			await assert.rejects(
+			await assertRejectsAll([
 				() => getRepoBranches("token", ".", "valid-repo"),
-				/invalid GitHub path/,
-			);
-			await assert.rejects(
 				() => getRepoBranches("token", "valid-owner", ".."),
-				/invalid GitHub path/,
-			);
+			]);
 		});
 
 		it("getRepoPullRequests rejects invalid owner/repo", async () => {
 			await assert.rejects(
 				() => getRepoPullRequests("token", "bad/owner", "valid-repo"),
-				/invalid GitHub path/,
+				INVALID_GITHUB_PATH,
 			);
 		});
 
 		it("getRepoHardwareFiles rejects invalid owner/repo", async () => {
 			await assert.rejects(
 				() => getRepoHardwareFiles("token", "owner", ".."),
-				/invalid GitHub path/,
+				INVALID_GITHUB_PATH,
 			);
 		});
 
 		it("getRepoCommits rejects invalid owner/repo or pathFilter traversal", async () => {
-			await assert.rejects(
+			await assertRejectsAll([
 				() => getRepoCommits("token", "..", "valid-repo"),
-				/invalid GitHub path/,
-			);
-			await assert.rejects(
 				() =>
 					getRepoCommits("token", "owner", "repo", {
 						filePath: "../traversal",
 					}),
-				/invalid GitHub path/,
-			);
+			]);
 		});
 
 		it("downloadRepoFile rejects destination outside data dir", async () => {
 			await assert.rejects(
 				() =>
-					downloadRepoFile("token", {
-						owner: "owner",
-						repo: "repo",
-						filePath: "board.kicad_pcb",
-						commitSha: "sha123",
-						destinationPath: path.join(
-							BANANA_DATA_DIR,
-							"..",
-							"escape.kicad_pcb",
-						),
-					}),
-				/destination outside data dir/,
+					downloadRepoFile(
+						"token",
+						makeDownloadOptions({
+							destinationPath: path.join(
+								BANANA_DATA_DIR,
+								"..",
+								"escape.kicad_pcb",
+							),
+						}),
+					),
+				DESTINATION_OUTSIDE_DATA_DIR,
 			);
 		});
 
 		it("downloadRepoFile rejects invalid owner/repo or traversal filePath", async () => {
-			const safeDest = path.join(BANANA_DATA_DIR, "safe.kicad_pcb");
-			await assert.rejects(
+			await assertRejectsAll([
+				() => downloadRepoFile("token", makeDownloadOptions({ owner: ".." })),
 				() =>
-					downloadRepoFile("token", {
-						owner: "..",
-						repo: "repo",
-						filePath: "board.kicad_pcb",
-						commitSha: "sha123",
-						destinationPath: safeDest,
-					}),
-				/invalid GitHub path/,
-			);
-			await assert.rejects(
-				() =>
-					downloadRepoFile("token", {
-						owner: "owner",
-						repo: "repo",
-						filePath: "../secret.kicad_pcb",
-						commitSha: "sha123",
-						destinationPath: safeDest,
-					}),
-				/invalid GitHub path/,
-			);
+					downloadRepoFile(
+						"token",
+						makeDownloadOptions({ filePath: "../secret.kicad_pcb" }),
+					),
+			]);
 		});
 	});
 
@@ -311,24 +321,14 @@ describe("GitHub service path validation and URL encoding", () => {
 
 		after(async () => {
 			globalThis.fetch = originalFetch;
-			for (const file of createdFiles) {
-				try {
-					await fs.promises.unlink(file);
-				} catch {}
-			}
+			await Promise.all(createdFiles.map(cleanupTestFile));
 		});
 
 		it("downloadRepoFile fetches and saves file with encoded URL", async () => {
-			const calls = [];
 			const fileContent = "kicad_pcb file dummy content";
-			globalThis.fetch = async (url) => {
-				calls.push(url);
-				return {
-					ok: true,
-					status: 200,
-					arrayBuffer: async () => Buffer.from(fileContent),
-				};
-			};
+			const calls = mockFetch({
+				arrayBuffer: async () => Buffer.from(fileContent),
+			});
 
 			const testDest = path.join(
 				BANANA_DATA_DIR,
@@ -337,13 +337,16 @@ describe("GitHub service path validation and URL encoding", () => {
 			);
 			createdFiles.push(testDest);
 
-			const saved = await downloadRepoFile("mock-token", {
-				owner: "test-owner",
-				repo: "test-repo",
-				filePath: "sub dir/board rev1.kicad_pcb",
-				commitSha: "commit-sha",
-				destinationPath: testDest,
-			});
+			const saved = await downloadRepoFile(
+				"mock-token",
+				makeDownloadOptions({
+					owner: "test-owner",
+					repo: "test-repo",
+					filePath: "sub dir/board rev1.kicad_pcb",
+					commitSha: "commit-sha",
+					destinationPath: testDest,
+				}),
+			);
 
 			assert.equal(saved, testDest);
 			assert.equal(calls.length, 1);
@@ -356,15 +359,9 @@ describe("GitHub service path validation and URL encoding", () => {
 		});
 
 		it("getRepoBranches fetches with encoded owner and repo", async () => {
-			const calls = [];
-			globalThis.fetch = async (url) => {
-				calls.push(url);
-				return {
-					ok: true,
-					status: 200,
-					json: async () => [{ name: "main", commit: { sha: "abc" } }],
-				};
-			};
+			const calls = mockFetch({
+				json: async () => [{ name: "main", commit: { sha: "abc" } }],
+			});
 
 			const branches = await getRepoBranches("token", "owner.1", "repo_2");
 			assert.equal(branches.length, 1);
