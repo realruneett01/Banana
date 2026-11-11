@@ -32,214 +32,217 @@ function makeValidIssue(overrides = {}) {
 	};
 }
 
+function createRunIssue(overrides) {
+	return makeValidIssue({
+		id: newId("issue"),
+		...overrides,
+	});
+}
+
+function omitKey(base, key) {
+	const copy = { ...base };
+	delete copy[key];
+	return copy;
+}
+
+function buildViolationCase([desc, action, field, valOrMatch, match]) {
+	const mutate =
+		action === "missing"
+			? (base) => omitKey(base, field)
+			: (base) => ({ ...base, [field]: valOrMatch });
+	return {
+		desc,
+		mutate,
+		match: match ?? valOrMatch,
+	};
+}
+
 describe("issue contract exports", () => {
 	test("exports expected schema and functions", () => {
-		assert.equal(typeof ISSUE_SCHEMA, "object");
-		assert.equal(typeof validateIssue, "function");
-		assert.equal(typeof issuesForItem, "function");
-		assert.equal(typeof compareRuns, "function");
+		const expectedTypes = [
+			[ISSUE_SCHEMA, "object"],
+			[validateIssue, "function"],
+			[issuesForItem, "function"],
+			[compareRuns, "function"],
+		];
+		for (const [target, expectedType] of expectedTypes) {
+			assert.equal(typeof target, expectedType);
+		}
 	});
 });
 
 describe("validateIssue: valid cases", () => {
-	test("accepts fully populated valid issue", () => {
-		const issue = makeValidIssue();
-		const result = validateIssue(issue);
-		assert.equal(result.ok, true);
-		assert.deepEqual(result.errors, []);
-	});
+	const VALID_CASES = [
+		{
+			desc: "fully populated valid issue",
+			issue: makeValidIssue(),
+		},
+		{
+			desc: "minimal valid issue without optional fields",
+			issue: {
+				id: newId("issue"),
+				source: "erc",
+				severity: "warning",
+				itemIds: [newId("pin")],
+				message: "Floating input pin",
+				commit: "0123456789abcdef",
+				status: "open",
+			},
+		},
+	];
 
-	test("accepts minimal valid issue without optional fields", () => {
-		const issue = {
-			id: newId("issue"),
-			source: "erc",
-			severity: "warning",
-			itemIds: [newId("pin")],
-			message: "Floating input pin",
-			commit: "0123456789abcdef",
-			status: "open",
-		};
-		const result = validateIssue(issue);
-		assert.equal(result.ok, true);
-		assert.deepEqual(result.errors, []);
-	});
+	for (const { desc, issue } of VALID_CASES) {
+		test(`accepts ${desc}`, () => {
+			const result = validateIssue(issue);
+			assert.deepEqual(result, { ok: true, errors: [] });
+		});
+	}
 
 	test("accepts all valid enum combinations", () => {
-		const sources = ["drc", "erc", "sim"];
-		const severities = ["error", "warning", "info"];
-		const statuses = ["open", "fixed", "wontfix"];
-
-		for (const source of sources) {
-			for (const severity of severities) {
-				for (const status of statuses) {
-					const issue = makeValidIssue({ source, severity, status });
-					const res = validateIssue(issue);
-					assert.equal(res.ok, true);
-				}
-			}
+		const combos = ["drc", "erc", "sim"].flatMap((source) =>
+			["error", "warning", "info"].flatMap((severity) =>
+				["open", "fixed", "wontfix"].map((status) => ({
+					source,
+					severity,
+					status,
+				})),
+			),
+		);
+		for (const combo of combos) {
+			const res = validateIssue(makeValidIssue(combo));
+			assert.equal(res.ok, true);
 		}
 	});
 });
 
 describe("validateIssue: rule violations", () => {
-	const RULE_VIOLATIONS = [
-		{
-			desc: "missing id",
-			mutate: (base) => {
-				const { id, ...rest } = base;
-				return rest;
-			},
-			match: "$.id: missing",
-		},
-		{
-			desc: "non-string id",
-			mutate: (base) => ({ ...base, id: 12345 }),
-			match: "$.id: expected string",
-		},
-		{
-			desc: "invalid issue id kind",
-			mutate: (base) => ({ ...base, id: newId("part") }),
-			match: "$.id: invalid issue id",
-		},
-		{
-			desc: "malformed issue id uuid",
-			mutate: (base) => ({ ...base, id: "issue_not-a-valid-uuid" }),
-			match: "$.id: invalid issue id",
-		},
-		{
-			desc: "missing source",
-			mutate: (base) => {
-				const { source, ...rest } = base;
-				return rest;
-			},
-			match: "$.source: missing",
-		},
-		{
-			desc: "invalid source enum",
-			mutate: (base) => ({ ...base, source: "unknown_source" }),
-			match: "$.source: must be one of drc, erc, sim",
-		},
-		{
-			desc: "missing severity",
-			mutate: (base) => {
-				const { severity, ...rest } = base;
-				return rest;
-			},
-			match: "$.severity: missing",
-		},
-		{
-			desc: "invalid severity enum",
-			mutate: (base) => ({ ...base, severity: "critical" }),
-			match: "$.severity: must be one of error, warning, info",
-		},
-		{
-			desc: "missing itemIds",
-			mutate: (base) => {
-				const { itemIds, ...rest } = base;
-				return rest;
-			},
-			match: "$.itemIds: missing",
-		},
-		{
-			desc: "non-array itemIds",
-			mutate: (base) => ({ ...base, itemIds: "part_1" }),
-			match: "$.itemIds: expected array",
-		},
-		{
-			desc: "empty itemIds array",
-			mutate: (base) => ({ ...base, itemIds: [] }),
-			match: "$.itemIds: must contain at least 1 item",
-		},
-		{
-			desc: "invalid item id inside itemIds",
-			mutate: (base) => ({ ...base, itemIds: [newId("part"), "invalid_id"] }),
-			match: "$.itemIds[1]: invalid id",
-		},
-		{
-			desc: "non-string item inside itemIds",
-			mutate: (base) => ({ ...base, itemIds: [999] }),
-			match: "$.itemIds[0]: expected string",
-		},
-		{
-			desc: "missing message",
-			mutate: (base) => {
-				const { message, ...rest } = base;
-				return rest;
-			},
-			match: "$.message: missing",
-		},
-		{
-			desc: "non-string message",
-			mutate: (base) => ({ ...base, message: 404 }),
-			match: "$.message: expected string",
-		},
-		{
-			desc: "missing commit",
-			mutate: (base) => {
-				const { commit, ...rest } = base;
-				return rest;
-			},
-			match: "$.commit: missing",
-		},
-		{
-			desc: "non-string commit",
-			mutate: (base) => ({ ...base, commit: 12345 }),
-			match: "$.commit: expected string",
-		},
-		{
-			desc: "missing status",
-			mutate: (base) => {
-				const { status, ...rest } = base;
-				return rest;
-			},
-			match: "$.status: missing",
-		},
-		{
-			desc: "invalid status enum",
-			mutate: (base) => ({ ...base, status: "resolved" }),
-			match: "$.status: must be one of open, fixed, wontfix",
-		},
-		{
-			desc: "invalid optional simRunId kind",
-			mutate: (base) => ({ ...base, simRunId: newId("part") }),
-			match: "$.simRunId: invalid sim id",
-		},
-		{
-			desc: "non-string optional simRunId",
-			mutate: (base) => ({ ...base, simRunId: false }),
-			match: "$.simRunId: expected string",
-		},
-		{
-			desc: "non-string optional metric",
-			mutate: (base) => ({ ...base, metric: 42 }),
-			match: "$.metric: expected string",
-		},
-		{
-			desc: "non-number optional measured",
-			mutate: (base) => ({ ...base, measured: "0.12" }),
-			match: "$.measured: expected number",
-		},
-		{
-			desc: "non-number optional limit",
-			mutate: (base) => ({ ...base, limit: "0.2" }),
-			match: "$.limit: expected number",
-		},
-		{
-			desc: "non-string optional unit",
-			mutate: (base) => ({ ...base, unit: 100 }),
-			match: "$.unit: expected string",
-		},
-		{
-			desc: "non-string optional suggestion",
-			mutate: (base) => ({ ...base, suggestion: ["fix"] }),
-			match: "$.suggestion: expected string",
-		},
-		{
-			desc: "unexpected extra property",
-			mutate: (base) => ({ ...base, extraField: "disallowed" }),
-			match: "$.extraField: unexpected property",
-		},
+	const VIOLATION_SPECS = [
+		["missing id", "missing", "id", "$.id: missing"],
+		["non-string id", "set", "id", 12345, "$.id: expected string"],
+		[
+			"invalid issue id kind",
+			"set",
+			"id",
+			newId("part"),
+			"$.id: invalid issue id",
+		],
+		[
+			"malformed issue id uuid",
+			"set",
+			"id",
+			"issue_not-a-valid-uuid",
+			"$.id: invalid issue id",
+		],
+		["missing source", "missing", "source", "$.source: missing"],
+		[
+			"invalid source enum",
+			"set",
+			"source",
+			"unknown_source",
+			"$.source: must be one of drc, erc, sim",
+		],
+		["missing severity", "missing", "severity", "$.severity: missing"],
+		[
+			"invalid severity enum",
+			"set",
+			"severity",
+			"critical",
+			"$.severity: must be one of error, warning, info",
+		],
+		["missing itemIds", "missing", "itemIds", "$.itemIds: missing"],
+		[
+			"non-array itemIds",
+			"set",
+			"itemIds",
+			"part_1",
+			"$.itemIds: expected array",
+		],
+		[
+			"empty itemIds array",
+			"set",
+			"itemIds",
+			[],
+			"$.itemIds: must contain at least 1 item",
+		],
+		[
+			"invalid item id inside itemIds",
+			"set",
+			"itemIds",
+			[newId("part"), "invalid_id"],
+			"$.itemIds[1]: invalid id",
+		],
+		[
+			"non-string item inside itemIds",
+			"set",
+			"itemIds",
+			[999],
+			"$.itemIds[0]: expected string",
+		],
+		["missing message", "missing", "message", "$.message: missing"],
+		["non-string message", "set", "message", 404, "$.message: expected string"],
+		["missing commit", "missing", "commit", "$.commit: missing"],
+		["non-string commit", "set", "commit", 12345, "$.commit: expected string"],
+		["missing status", "missing", "status", "$.status: missing"],
+		[
+			"invalid status enum",
+			"set",
+			"status",
+			"resolved",
+			"$.status: must be one of open, fixed, wontfix",
+		],
+		[
+			"invalid optional simRunId kind",
+			"set",
+			"simRunId",
+			newId("part"),
+			"$.simRunId: invalid sim id",
+		],
+		[
+			"non-string optional simRunId",
+			"set",
+			"simRunId",
+			false,
+			"$.simRunId: expected string",
+		],
+		[
+			"non-string optional metric",
+			"set",
+			"metric",
+			42,
+			"$.metric: expected string",
+		],
+		[
+			"non-number optional measured",
+			"set",
+			"measured",
+			"0.12",
+			"$.measured: expected number",
+		],
+		[
+			"non-number optional limit",
+			"set",
+			"limit",
+			"0.2",
+			"$.limit: expected number",
+		],
+		["non-string optional unit", "set", "unit", 100, "$.unit: expected string"],
+		[
+			"non-string optional suggestion",
+			"set",
+			"suggestion",
+			["fix"],
+			"$.suggestion: expected string",
+		],
+		[
+			"unexpected extra property",
+			"set",
+			"extraField",
+			"disallowed",
+			"$.extraField: unexpected property",
+		],
 	];
+
+	const RULE_VIOLATIONS = VIOLATION_SPECS.map(buildViolationCase);
 
 	for (const { desc, mutate, match } of RULE_VIOLATIONS) {
 		test(`detects error: ${desc}`, () => {
@@ -304,12 +307,17 @@ describe("issuesForItem", () => {
 	});
 
 	test("handles garbage and non-array inputs safely", () => {
-		assert.deepEqual(issuesForItem(null, part1), []);
-		assert.deepEqual(issuesForItem(undefined, part1), []);
-		assert.deepEqual(issuesForItem(123, part1), []);
-		assert.deepEqual(issuesForItem([issueA], null), []);
-		assert.deepEqual(issuesForItem([issueA], undefined), []);
-		assert.deepEqual(issuesForItem([issueA], 123), []);
+		const emptyCases = [
+			[null, part1],
+			[undefined, part1],
+			[123, part1],
+			[[issueA], null],
+			[[issueA], undefined],
+			[[issueA], 123],
+		];
+		for (const [issues, itemId] of emptyCases) {
+			assert.deepEqual(issuesForItem(issues, itemId), []);
+		}
 		assert.deepEqual(issuesForItem([null, undefined, {}, issueA], part1), [
 			issueA,
 		]);
@@ -322,119 +330,96 @@ describe("compareRuns", () => {
 	const net1 = newId("net");
 
 	test("categorizes fixed, stillOpen, and new issues by source+metric+sorted itemIds", () => {
-		const stillOpenBefore = makeValidIssue({
-			id: newId("issue"),
+		const stillOpenBefore = createRunIssue({
 			source: "drc",
 			metric: "clearance",
 			itemIds: [part1, part2],
 			commit: "c111111",
 		});
-		const stillOpenAfter = makeValidIssue({
-			id: newId("issue"),
+		const stillOpenAfter = createRunIssue({
 			source: "drc",
 			metric: "clearance",
 			itemIds: [part2, part1], // reversed order should still match!
 			commit: "c222222",
 		});
-
-		const fixedIssue = makeValidIssue({
-			id: newId("issue"),
+		const fixedIssue = createRunIssue({
 			source: "erc",
 			metric: "floating-pin",
 			itemIds: [part1],
 			commit: "c111111",
 		});
-
-		const newIssue = makeValidIssue({
-			id: newId("issue"),
+		const newIssue = createRunIssue({
 			source: "sim",
 			metric: "thermal",
 			itemIds: [net1],
 			commit: "c222222",
 		});
 
-		const before = [stillOpenBefore, fixedIssue];
-		const after = [stillOpenAfter, newIssue];
-
-		const result = compareRuns(before, after);
-
-		assert.equal(result.fixed.length, 1);
-		assert.equal(result.fixed[0], fixedIssue);
-
-		assert.equal(result.stillOpen.length, 1);
-		assert.equal(result.stillOpen[0], stillOpenAfter);
-
-		assert.equal(result.new.length, 1);
-		assert.equal(result.new[0], newIssue);
+		const result = compareRuns(
+			[stillOpenBefore, fixedIssue],
+			[stillOpenAfter, newIssue],
+		);
+		assert.deepEqual(result, {
+			fixed: [fixedIssue],
+			stillOpen: [stillOpenAfter],
+			new: [newIssue],
+		});
 	});
 
 	test("handles matching when metric is omitted", () => {
-		const beforeIssue = makeValidIssue({
-			id: newId("issue"),
+		const beforeIssue = createRunIssue({
 			source: "drc",
 			metric: undefined,
 			itemIds: [part1],
 		});
-		const afterIssue = makeValidIssue({
-			id: newId("issue"),
+		const afterIssue = createRunIssue({
 			source: "drc",
 			metric: undefined,
 			itemIds: [part1],
 		});
 
 		const result = compareRuns([beforeIssue], [afterIssue]);
-		assert.equal(result.fixed.length, 0);
-		assert.equal(result.stillOpen.length, 1);
-		assert.equal(result.new.length, 0);
+		assert.deepEqual(result, {
+			fixed: [],
+			stillOpen: [afterIssue],
+			new: [],
+		});
 	});
 
 	test("distinguishes issues with different sources or metrics", () => {
-		const issue1 = makeValidIssue({
-			id: newId("issue"),
+		const issue1 = createRunIssue({
 			source: "drc",
 			metric: "clearance",
 			itemIds: [part1],
 		});
-		const issue2 = makeValidIssue({
-			id: newId("issue"),
+		const issue2 = createRunIssue({
 			source: "erc",
 			metric: "clearance",
 			itemIds: [part1],
 		});
 
 		const result = compareRuns([issue1], [issue2]);
-		assert.equal(result.fixed.length, 1);
-		assert.equal(result.fixed[0], issue1);
-		assert.equal(result.stillOpen.length, 0);
-		assert.equal(result.new.length, 1);
-		assert.equal(result.new[0], issue2);
+		assert.deepEqual(result, {
+			fixed: [issue1],
+			stillOpen: [],
+			new: [issue2],
+		});
 	});
 
 	test("handles empty and garbage runs safely without throwing", () => {
-		assert.deepEqual(compareRuns([], []), {
-			fixed: [],
-			stillOpen: [],
-			new: [],
-		});
-		assert.deepEqual(compareRuns(null, null), {
-			fixed: [],
-			stillOpen: [],
-			new: [],
-		});
-		assert.deepEqual(compareRuns(undefined, undefined), {
-			fixed: [],
-			stillOpen: [],
-			new: [],
-		});
-		assert.deepEqual(compareRuns("garbage", 456), {
-			fixed: [],
-			stillOpen: [],
-			new: [],
-		});
-		assert.deepEqual(compareRuns([null, undefined], [123, "abc"]), {
-			fixed: [],
-			stillOpen: [],
-			new: [],
-		});
+		const emptyResult = { fixed: [], stillOpen: [], new: [] };
+		const emptyCases = [
+			[[], []],
+			[null, null],
+			[undefined, undefined],
+			["garbage", 456],
+			[
+				[null, undefined],
+				[123, "abc"],
+			],
+		];
+		for (const [before, after] of emptyCases) {
+			assert.deepEqual(compareRuns(before, after), emptyResult);
+		}
 	});
 });
