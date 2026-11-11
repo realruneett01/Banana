@@ -29,71 +29,71 @@ const { Text } = Typography;
 const { TextArea } = Input;
 
 const PROMPT_ENTRIES = [
-	[
-		AimOutlined,
-		"Explain detected diffs",
-		"Analyze all detected changes on this PCB: explain what was done, what the electrical and physical changes are, and how I can make the layout better.",
-	],
-	[
-		SafetyCertificateOutlined,
-		"Check DRC & clearance risks",
-		"Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts, and how should I fix them?",
-	],
-	[
-		BulbOutlined,
-		"Optimize layout & routing",
-		"Review the current routing and component changes. What are the top 3 concrete improvements I can make to reduce noise, improve return paths, and optimize thermals?",
-	],
-	[
-		FileSearchOutlined,
-		"Trace width & current rules",
-		"What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?",
-	],
-	[
-		CompassOutlined,
-		"Differential pairs & SI",
-		"What are the best practices for differential pair length matching, via stitching, and continuous ground return paths in KiCad?",
-	],
+	{
+		Icon: AimOutlined,
+		label: "Explain detected diffs",
+		prompt:
+			"Analyze all detected changes on this PCB: explain what was done, what the electrical and physical changes are, and how I can make the layout better.",
+	},
+	{
+		Icon: SafetyCertificateOutlined,
+		label: "Check DRC & clearance risks",
+		prompt:
+			"Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts, and how should I fix them?",
+	},
+	{
+		Icon: BulbOutlined,
+		label: "Optimize layout & routing",
+		prompt:
+			"Review the current routing and component changes. What are the top 3 concrete improvements I can make to reduce noise, improve return paths, and optimize thermals?",
+	},
+	{
+		Icon: FileSearchOutlined,
+		label: "Trace width & current rules",
+		prompt:
+			"What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?",
+	},
+	{
+		Icon: CompassOutlined,
+		label: "Differential pairs & SI",
+		prompt:
+			"What are the best practices for differential pair length matching, via stitching, and continuous ground return paths in KiCad?",
+	},
 ];
 
-const QUICK_PROMPTS = PROMPT_ENTRIES.map(([Icon, label, prompt]) => ({
+const QUICK_PROMPTS = PROMPT_ENTRIES.map(({ Icon, label, prompt }) => ({
 	icon: <Icon />,
 	label,
 	prompt,
 }));
 
-const makeTheme = (align, bg, border, radius, shadow, author) => ({
-	align,
-	bg,
-	border,
-	radius,
-	shadow,
-	author,
+const makeTheme = (opts) => ({
+	align: opts.align,
+	bg: opts.bg,
+	border: opts.border,
+	radius: opts.radius,
+	shadow: opts.shadow,
+	author: opts.author,
 });
 
 const MSG_THEMES = {
-	user: makeTheme(
-		"flex-end",
-		"#1f2430",
-		"#3b4252",
-		"12px 12px 2px 12px",
-		"none",
-		"You",
-	),
-	model: makeTheme(
-		"flex-start",
-		"#161821",
-		"#232738",
-		"12px 12px 12px 2px",
-		"0 2px 8px rgba(0,0,0,0.2)",
-		"Banana Copilot",
-	),
+	user: makeTheme({
+		align: "flex-end",
+		bg: "#1f2430",
+		border: "#3b4252",
+		radius: "12px 12px 2px 12px",
+		shadow: "none",
+		author: "You",
+	}),
+	model: makeTheme({
+		align: "flex-start",
+		bg: "#161821",
+		border: "#232738",
+		radius: "12px 12px 12px 2px",
+		shadow: "0 2px 8px rgba(0,0,0,0.2)",
+		author: "Banana Copilot",
+	}),
 };
-
-const FLEX_ROW = { display: "flex", alignItems: "center" };
-const FLEX_COL = { display: "flex", flexDirection: "column" };
-const SURFACE_DARK = { background: "#161821", border: "1px solid #232738" };
-const TEXT_MUTED_11 = { fontSize: "11px", color: "#a6adbb" };
 
 const DRAWER_STYLES = {
 	header: {
@@ -102,7 +102,8 @@ const DRAWER_STYLES = {
 		padding: "12px 16px",
 	},
 	body: {
-		...FLEX_COL,
+		display: "flex",
+		flexDirection: "column",
 		background: "#0f1015",
 		padding: "12px",
 		overflow: "hidden",
@@ -111,7 +112,8 @@ const DRAWER_STYLES = {
 
 const UI_STYLES = {
 	avatar: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		justifyContent: "center",
 		width: 28,
 		height: 28,
@@ -128,28 +130,34 @@ const UI_STYLES = {
 		padding: "0 5px",
 	},
 	headerBox: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		justifyContent: "space-between",
 		width: "100%",
 	},
 	contextBar: {
-		...SURFACE_DARK,
-		...FLEX_ROW,
-		...TEXT_MUTED_11,
+		background: "#161821",
+		border: "1px solid #232738",
+		display: "flex",
+		alignItems: "center",
+		fontSize: "11px",
+		color: "#a6adbb",
 		borderRadius: "6px",
 		padding: "8px 12px",
 		marginBottom: "10px",
 		justifyContent: "space-between",
 	},
 	contextContent: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		gap: "6px",
 		overflow: "hidden",
 		textOverflow: "ellipsis",
 		whiteSpace: "nowrap",
 	},
 	banner: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		background: "rgba(22, 119, 255, 0.08)",
 		border: "1px solid rgba(22, 119, 255, 0.25)",
 		borderRadius: "6px",
@@ -165,14 +173,16 @@ const UI_STYLES = {
 		borderColor: "#d48806",
 	},
 	msgList: {
-		...FLEX_COL,
+		display: "flex",
+		flexDirection: "column",
 		flex: 1,
 		overflowY: "auto",
 		paddingRight: "4px",
 		gap: "12px",
 	},
 	promptBtn: {
-		...TEXT_MUTED_11,
+		fontSize: "11px",
+		color: "#a6adbb",
 		borderColor: "#232738",
 		borderRadius: "12px",
 		background: "#161821",
@@ -201,7 +211,8 @@ const UI_STYLES = {
 		fontSize: "13px",
 	},
 	sendBtn: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		justifyContent: "center",
 		height: "38px",
 		width: "38px",
@@ -230,7 +241,8 @@ const UI_STYLES = {
 		background: "#fadb14",
 	},
 	thinkingBox: {
-		...FLEX_ROW,
+		display: "flex",
+		alignItems: "center",
 		marginTop: "6px",
 		gap: "4px",
 	},
@@ -354,25 +366,17 @@ function ChatMessageItem({ msg, onSelectModification }) {
 }
 
 function HeaderTags({ activeModel }) {
-	const tags = [
-		{ color: "cyan", ml: 0, text: "💬 Hardware Copilot" },
-		{ color: "gold", ml: 4, text: activeModel },
-		{ color: "green", ml: 4, text: "Unlimited Free" },
-	];
 	return (
 		<div>
-			{tags.map((t) => (
-				<Tag
-					key={t.color}
-					color={t.color}
-					style={{
-						...UI_STYLES.headerTag,
-						...(t.ml ? { marginLeft: t.ml } : { margin: 0 }),
-					}}
-				>
-					{t.text}
-				</Tag>
-			))}
+			<Tag color="cyan" style={UI_STYLES.headerTag}>
+				💬 Hardware Copilot
+			</Tag>
+			<Tag color="gold" style={{ ...UI_STYLES.headerTag, marginLeft: 4 }}>
+				{activeModel}
+			</Tag>
+			<Tag color="green" style={{ ...UI_STYLES.headerTag, marginLeft: 4 }}>
+				Unlimited Free
+			</Tag>
 		</div>
 	);
 }
@@ -391,34 +395,31 @@ function HeaderBrand({ activeModel }) {
 	);
 }
 
-function ActionButton({ title, icon, onClick, color }) {
-	const btn = (
-		<Button type="text" icon={icon} onClick={onClick} style={{ color }} />
-	);
-	return title ? <Tooltip title={title}>{btn}</Tooltip> : btn;
-}
-
 function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
-	const actions = [
-		{
-			title: "Copilot Settings (API Key & Model)",
-			icon: <SettingOutlined />,
-			onClick: onOpenSettings,
-			color: hasKey ? "#52c41a" : "#faad14",
-		},
-		{
-			title: "Clear chat history",
-			icon: <DeleteOutlined />,
-			onClick: onClearHistory,
-			color: "#a6adbb",
-		},
-		{ icon: <CloseOutlined />, onClick: onClose, color: "#a6adbb" },
-	];
 	return (
 		<Space size="small">
-			{actions.map((act, i) => (
-				<ActionButton key={act.title || `btn-${i}`} {...act} />
-			))}
+			<Tooltip title="Copilot Settings (API Key & Model)">
+				<Button
+					type="text"
+					icon={<SettingOutlined />}
+					onClick={onOpenSettings}
+					style={{ color: hasKey ? "#52c41a" : "#faad14" }}
+				/>
+			</Tooltip>
+			<Tooltip title="Clear chat history">
+				<Button
+					type="text"
+					icon={<DeleteOutlined />}
+					onClick={onClearHistory}
+					style={{ color: "#a6adbb" }}
+				/>
+			</Tooltip>
+			<Button
+				type="text"
+				icon={<CloseOutlined />}
+				onClick={onClose}
+				style={{ color: "#a6adbb" }}
+			/>
 		</Space>
 	);
 }
@@ -596,47 +597,6 @@ function ChatInputBar(props) {
 	);
 }
 
-function ChatDrawerTop(props) {
-	return (
-		<>
-			<HardwareCopilotBanner />
-			<ChatContextBar
-				isGrounded={props.isGrounded}
-				fileName={props.fileName}
-				modsCount={props.modsCount}
-				diffMode={props.diffMode}
-			/>
-			{props.needsKey && (
-				<MissingApiKeyAlert onConfigure={props.onConfigureKey} />
-			)}
-		</>
-	);
-}
-
-function ChatDrawerBody(props) {
-	return (
-		<>
-			<ChatDrawerTop {...props} />
-			<ChatMessagesList
-				messages={props.messages}
-				onSelectModification={props.onSelectModification}
-				messagesEndRef={props.messagesEndRef}
-			/>
-			<QuickPromptsScroll
-				isStreaming={props.isStreaming}
-				onSelectPrompt={props.onSelectPrompt}
-			/>
-			<ChatInputBar
-				inputRef={props.inputRef}
-				inputMessage={props.inputMessage}
-				onChange={props.setInputMessage}
-				onSend={props.onSendMessage}
-				isStreaming={props.isStreaming}
-			/>
-		</>
-	);
-}
-
 function useAutoScrollToBottom(open) {
 	const ref = useRef(null);
 	useEffect(() => {
@@ -647,41 +607,47 @@ function useAutoScrollToBottom(open) {
 	return ref;
 }
 
-function buildDrawerState(opts) {
-	const { boardContext, ai, onSelectModification, messagesEndRef, inputRef } =
-		opts;
-	const hasKey = checkKeyConfigured(ai.apiKey, ai.serverKeyAvailable);
+function extractContextSummary(boardContext) {
 	const filePath = boardContext.relativeFilePath;
 	return {
-		modsCount: (boardContext.modifications || []).length,
 		isGrounded: Boolean(filePath),
 		fileName: filePath ? filePath.split(/[/\\]/).pop() : undefined,
-		needsKey: !hasKey,
+		modsCount: (boardContext.modifications || []).length,
 		diffMode: boardContext.diffMode,
-		onConfigureKey: () => ai.setIsSettingsOpen(true),
-		messages: ai.messages,
-		onSelectModification,
-		messagesEndRef,
-		isStreaming: ai.isStreaming,
-		onSelectPrompt: ai.handleSendMessage,
-		inputRef,
-		inputMessage: ai.inputMessage,
-		setInputMessage: ai.setInputMessage,
-		onSendMessage: ai.handleSendMessage,
 	};
 }
 
-function useChatDrawerState({ open, boardContext, ai, onSelectModification }) {
+function ChatDrawerBody({ ai, boardContext, onSelectModification, open }) {
 	const messagesEndRef = useAutoScrollToBottom(open);
 	const inputRef = useRef(null);
-	return buildDrawerState({
-		open,
-		boardContext,
-		ai,
-		onSelectModification,
-		messagesEndRef,
-		inputRef,
-	});
+	const summary = extractContextSummary(boardContext);
+	const hasKey = checkKeyConfigured(ai.apiKey, ai.serverKeyAvailable);
+
+	return (
+		<>
+			<HardwareCopilotBanner />
+			<ChatContextBar {...summary} />
+			{!hasKey && (
+				<MissingApiKeyAlert onConfigure={() => ai.setIsSettingsOpen(true)} />
+			)}
+			<ChatMessagesList
+				messages={ai.messages}
+				onSelectModification={onSelectModification}
+				messagesEndRef={messagesEndRef}
+			/>
+			<QuickPromptsScroll
+				isStreaming={ai.isStreaming}
+				onSelectPrompt={ai.handleSendMessage}
+			/>
+			<ChatInputBar
+				inputRef={inputRef}
+				inputMessage={ai.inputMessage}
+				onChange={ai.setInputMessage}
+				onSend={ai.handleSendMessage}
+				isStreaming={ai.isStreaming}
+			/>
+		</>
+	);
 }
 
 function CopilotSettingsDialog({ ai }) {
@@ -704,12 +670,6 @@ export default function ChatbotDrawer({
 	onSelectModification,
 }) {
 	const ai = useChatbotAi(boardContext);
-	const drawerState = useChatDrawerState({
-		open,
-		boardContext,
-		ai,
-		onSelectModification,
-	});
 
 	return (
 		<>
@@ -722,7 +682,12 @@ export default function ChatbotDrawer({
 				closable={false}
 				styles={DRAWER_STYLES}
 			>
-				<ChatDrawerBody {...drawerState} />
+				<ChatDrawerBody
+					ai={ai}
+					boardContext={boardContext}
+					onSelectModification={onSelectModification}
+					open={open}
+				/>
 			</Drawer>
 			<CopilotSettingsDialog ai={ai} />
 		</>
