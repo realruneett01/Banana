@@ -196,6 +196,19 @@ function buildRunMethods(send, h) {
 	};
 }
 
+function buildCircuitMethods(send, h) {
+	return {
+		simulateCircuit: ({ ir, fault, analysis } = {}, { signal } = {}) =>
+			send(
+				"/api/circuit/simulate",
+				postOptions(h, { ir, fault, analysis }),
+				signal,
+			),
+		suggestFaults: ({ ir } = {}, { signal } = {}) =>
+			send("/api/circuit/suggest-faults", postOptions(h, { ir }), signal),
+	};
+}
+
 export function createSimApi({
 	baseUrl = "",
 	fetchImpl = globalThis.fetch,
@@ -209,5 +222,6 @@ export function createSimApi({
 	return {
 		...buildBaseMethods(send, h),
 		...buildRunMethods(send, h),
+		...buildCircuitMethods(send, h),
 	};
 }
