@@ -52,32 +52,98 @@ const WEIRD_INPUTS = [
 	Symbol("sym"),
 ];
 
+function assertValid(res) {
+	assert.equal(res.ok, true);
+	assert.deepEqual(res.errors, []);
+}
+
+function assertInvalid(res, expectedPath) {
+	assert.equal(res.ok, false);
+	assert.equal(res.errors.length > 0, true);
+	const matched = res.errors.some((err) => err.startsWith(expectedPath));
+	assert.equal(
+		matched,
+		true,
+		`Expected error for path ${expectedPath}, got: ${res.errors.join(", ")}`,
+	);
+}
+
+function assertResilient(validate, input) {
+	assert.doesNotThrow(() => {
+		const res = validate(input);
+		assert.equal(typeof res.ok, "boolean");
+		assert.equal(Array.isArray(res.errors), true);
+		assert.equal(res.ok, false);
+	});
+}
+
+function runGarbageInputCases(validate) {
+	for (const input of WEIRD_INPUTS) {
+		test(`never throws on: ${String(input)}`, () => {
+			assertResilient(validate, input);
+		});
+	}
+}
+
+function runEnumCases(field, values) {
+	for (const val of values) {
+		test(`accepts ${field} ${val}`, () => {
+			const run = { ...makeValidSimRun(), [field]: val };
+			assert.equal(validateSimRun(run).ok, true);
+		});
+	}
+}
+
+function testFieldRejections({
+	missingFields,
+	mutations,
+	makeValid,
+	validate,
+}) {
+	for (const prop of missingFields) {
+		test(`rejects missing ${prop}`, () => {
+			const entity = makeValid();
+			delete entity[prop];
+			assertInvalid(validate(entity), `$.${prop}`);
+		});
+	}
+	for (const [label, mutate, expectedPath] of mutations) {
+		test(`rejects ${label}`, () => {
+			const entity = makeValid();
+			mutate(entity);
+			assertInvalid(validate(entity), expectedPath);
+		});
+	}
+}
+
 describe("module contract", () => {
 	test("exports match the contract exactly", async () => {
 		const mod = await import("../../backend/src/engine/environment-sim.js");
-		const exportedKeys = Object.keys(mod).sort();
-		assert.deepEqual(exportedKeys, [
+		const expected = [
 			"ENVIRONMENT_SCHEMA",
 			"SIM_RUN_SCHEMA",
 			"validateEnvironment",
 			"validateSimRun",
-		]);
+		];
+		assert.deepEqual(Object.keys(mod).sort(), expected);
 	});
 
 	test("exported schemas define expected root types", () => {
-		assert.equal(ENVIRONMENT_SCHEMA.type, "object");
-		assert.equal(ENVIRONMENT_SCHEMA.additionalProperties, false);
-		assert.equal(SIM_RUN_SCHEMA.type, "object");
-		assert.equal(SIM_RUN_SCHEMA.additionalProperties, false);
+		for (const schema of [ENVIRONMENT_SCHEMA, SIM_RUN_SCHEMA]) {
+			assert.deepEqual(
+				{
+					type: schema.type,
+					additionalProperties: schema.additionalProperties,
+				},
+				{ type: "object", additionalProperties: false },
+			);
+		}
 	});
 });
 
 describe("validateEnvironment: valid cases", () => {
 	test("accepts minimal valid environment", () => {
-		const env = makeValidEnv();
-		const res = validateEnvironment(env);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateEnvironment(makeValidEnv()));
 	});
 
 	test("accepts complete valid environment with optional fields", () => {
@@ -87,9 +153,7 @@ describe("validateEnvironment: valid cases", () => {
 			shockG: 40,
 			airflowMs: 2.5,
 		};
-		const res = validateEnvironment(env);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateEnvironment(env));
 	});
 
 	test("accepts boundary when min equals max", () => {
@@ -99,322 +163,216 @@ describe("validateEnvironment: valid cases", () => {
 			humidityPct: { min: 50, max: 50 },
 			vibration: { psdG2Hz: 0.01, fromHz: 100, toHz: 100 },
 		};
-		const res = validateEnvironment(env);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateEnvironment(env));
 	});
 });
 
 describe("validateEnvironment: invalid rule cases", () => {
-	const ENV_INVALID_CASES = [
-		{
-			label: "missing id",
-			patch: (e) => delete e.id,
-			expectedPath: "$.id",
-		},
-		{
-			label: "invalid id kind (part_* instead of env_*)",
-			patch: (e) => {
+	const MISSING_ENV_FIELDS = [
+		"id",
+		"name",
+		"ambientC",
+		"humidityPct",
+		"altitudeM",
+	];
+	const ENV_MUTATIONS = [
+		[
+			"invalid id kind (part_* instead of env_*)",
+			(e) => {
 				e.id = newId("part");
 			},
-			expectedPath: "$.id",
-		},
-		{
-			label: "malformed id string",
-			patch: (e) => {
+			"$.id",
+		],
+		[
+			"malformed id string",
+			(e) => {
 				e.id = "invalid-id";
 			},
-			expectedPath: "$.id",
-		},
-		{
-			label: "missing name",
-			patch: (e) => delete e.name,
-			expectedPath: "$.name",
-		},
-		{
-			label: "wrong name type",
-			patch: (e) => {
+			"$.id",
+		],
+		[
+			"wrong name type",
+			(e) => {
 				e.name = 42;
 			},
-			expectedPath: "$.name",
-		},
-		{
-			label: "missing ambientC",
-			patch: (e) => delete e.ambientC,
-			expectedPath: "$.ambientC",
-		},
-		{
-			label: "ambientC min > max",
-			patch: (e) => {
+			"$.name",
+		],
+		[
+			"ambientC min > max",
+			(e) => {
 				e.ambientC = { min: 40, max: 20 };
 			},
-			expectedPath: "$.ambientC",
-		},
-		{
-			label: "ambientC missing max",
-			patch: (e) => {
+			"$.ambientC",
+		],
+		[
+			"ambientC missing max",
+			(e) => {
 				e.ambientC = { min: 20 };
 			},
-			expectedPath: "$.ambientC.max",
-		},
-		{
-			label: "missing humidityPct",
-			patch: (e) => delete e.humidityPct,
-			expectedPath: "$.humidityPct",
-		},
-		{
-			label: "humidityPct min > max",
-			patch: (e) => {
+			"$.ambientC.max",
+		],
+		[
+			"humidityPct min > max",
+			(e) => {
 				e.humidityPct = { min: 80, max: 40 };
 			},
-			expectedPath: "$.humidityPct",
-		},
-		{
-			label: "missing altitudeM",
-			patch: (e) => delete e.altitudeM,
-			expectedPath: "$.altitudeM",
-		},
-		{
-			label: "vibration fromHz > toHz",
-			patch: (e) => {
+			"$.humidityPct",
+		],
+		[
+			"vibration fromHz > toHz",
+			(e) => {
 				e.vibration = { psdG2Hz: 0.04, fromHz: 2000, toHz: 20 };
 			},
-			expectedPath: "$.vibration",
-		},
-		{
-			label: "vibration missing toHz",
-			patch: (e) => {
+			"$.vibration",
+		],
+		[
+			"vibration missing toHz",
+			(e) => {
 				e.vibration = { psdG2Hz: 0.04, fromHz: 20 };
 			},
-			expectedPath: "$.vibration.toHz",
-		},
-		{
-			label: "unexpected extra property",
-			patch: (e) => {
+			"$.vibration.toHz",
+		],
+		[
+			"unexpected extra property",
+			(e) => {
 				e.extraField = "not-allowed";
 			},
-			expectedPath: "$.extraField",
-		},
+			"$.extraField",
+		],
 	];
 
-	for (const { label, patch, expectedPath } of ENV_INVALID_CASES) {
-		test(`rejects ${label}`, () => {
-			const env = makeValidEnv();
-			patch(env);
-			const res = validateEnvironment(env);
-			assert.equal(res.ok, false);
-			assert.equal(res.errors.length > 0, true);
-			const matched = res.errors.some((err) => err.startsWith(expectedPath));
-			assert.equal(
-				matched,
-				true,
-				`Expected error for path ${expectedPath}, got: ${res.errors.join(", ")}`,
-			);
-		});
-	}
+	testFieldRejections({
+		missingFields: MISSING_ENV_FIELDS,
+		mutations: ENV_MUTATIONS,
+		makeValid: makeValidEnv,
+		validate: validateEnvironment,
+	});
 });
 
 describe("validateEnvironment: garbage input resilience", () => {
-	for (const input of WEIRD_INPUTS) {
-		test(`never throws on: ${String(input)}`, () => {
-			assert.doesNotThrow(() => {
-				const res = validateEnvironment(input);
-				assert.equal(typeof res.ok, "boolean");
-				assert.equal(Array.isArray(res.errors), true);
-				assert.equal(res.ok, false);
-			});
-		});
-	}
+	runGarbageInputCases(validateEnvironment);
 });
 
 describe("validateSimRun: valid cases", () => {
 	test("accepts valid full simulation run", () => {
-		const run = makeValidSimRun();
-		const res = validateSimRun(run);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateSimRun(makeValidSimRun()));
 	});
 
 	test("accepts short 7-hex commit", () => {
-		const run = {
-			...makeValidSimRun(),
-			commit: "34b1983",
-		};
-		const res = validateSimRun(run);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateSimRun({ ...makeValidSimRun(), commit: "34b1983" }));
 	});
 
 	test("accepts run without optional finishedAt", () => {
 		const run = makeValidSimRun();
 		delete run.finishedAt;
-		const res = validateSimRun(run);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(validateSimRun(run));
 	});
 
 	test("accepts run with empty results array", () => {
-		const run = {
-			...makeValidSimRun(),
-			status: "queued",
-			results: [],
-		};
-		const res = validateSimRun(run);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
+		assertValid(
+			validateSimRun({ ...makeValidSimRun(), status: "queued", results: [] }),
+		);
 	});
 
 	const KINDS = ["trace-current", "ir-drop", "impedance", "spice", "thermal"];
-	for (const kind of KINDS) {
-		test(`accepts kind ${kind}`, () => {
-			const run = { ...makeValidSimRun(), kind };
-			assert.equal(validateSimRun(run).ok, true);
-		});
-	}
+	runEnumCases("kind", KINDS);
 
 	const STATUSES = ["queued", "running", "done", "failed"];
-	for (const status of STATUSES) {
-		test(`accepts status ${status}`, () => {
-			const run = { ...makeValidSimRun(), status };
-			assert.equal(validateSimRun(run).ok, true);
-		});
-	}
+	runEnumCases("status", STATUSES);
 });
 
 describe("validateSimRun: invalid rule cases", () => {
-	const SIM_INVALID_CASES = [
-		{
-			label: "missing id",
-			patch: (r) => delete r.id,
-			expectedPath: "$.id",
-		},
-		{
-			label: "invalid id kind (env_* instead of sim_*)",
-			patch: (r) => {
+	const MISSING_SIM_FIELDS = ["id", "commit", "envId", "startedAt", "results"];
+	const SIM_MUTATIONS = [
+		[
+			"invalid id kind (env_* instead of sim_*)",
+			(r) => {
 				r.id = newId("env");
 			},
-			expectedPath: "$.id",
-		},
-		{
-			label: "malformed id string",
-			patch: (r) => {
+			"$.id",
+		],
+		[
+			"malformed id string",
+			(r) => {
 				r.id = "bad-id";
 			},
-			expectedPath: "$.id",
-		},
-		{
-			label: "missing commit",
-			patch: (r) => delete r.commit,
-			expectedPath: "$.commit",
-		},
-		{
-			label: "commit too short (< 7 hex)",
-			patch: (r) => {
+			"$.id",
+		],
+		[
+			"commit too short (< 7 hex)",
+			(r) => {
 				r.commit = "123456";
 			},
-			expectedPath: "$.commit",
-		},
-		{
-			label: "commit too long (> 40 hex)",
-			patch: (r) => {
+			"$.commit",
+		],
+		[
+			"commit too long (> 40 hex)",
+			(r) => {
 				r.commit = "a".repeat(41);
 			},
-			expectedPath: "$.commit",
-		},
-		{
-			label: "commit non-hex character",
-			patch: (r) => {
+			"$.commit",
+		],
+		[
+			"commit non-hex character",
+			(r) => {
 				r.commit = "123456g";
 			},
-			expectedPath: "$.commit",
-		},
-		{
-			label: "missing envId",
-			patch: (r) => delete r.envId,
-			expectedPath: "$.envId",
-		},
-		{
-			label: "invalid envId kind (sim_* instead of env_*)",
-			patch: (r) => {
+			"$.commit",
+		],
+		[
+			"invalid envId kind (sim_* instead of env_*)",
+			(r) => {
 				r.envId = newId("sim");
 			},
-			expectedPath: "$.envId",
-		},
-		{
-			label: "invalid kind enum",
-			patch: (r) => {
+			"$.envId",
+		],
+		[
+			"invalid kind enum",
+			(r) => {
 				r.kind = "magic-sim";
 			},
-			expectedPath: "$.kind",
-		},
-		{
-			label: "invalid status enum",
-			patch: (r) => {
+			"$.kind",
+		],
+		[
+			"invalid status enum",
+			(r) => {
 				r.status = "paused";
 			},
-			expectedPath: "$.status",
-		},
-		{
-			label: "missing startedAt",
-			patch: (r) => delete r.startedAt,
-			expectedPath: "$.startedAt",
-		},
-		{
-			label: "missing results",
-			patch: (r) => delete r.results,
-			expectedPath: "$.results",
-		},
-		{
-			label: "result missing unit",
-			patch: (r) => {
+			"$.status",
+		],
+		[
+			"result missing unit",
+			(r) => {
 				r.results = [{ itemId: "part_1", metric: "temp", value: 50 }];
 			},
-			expectedPath: "$.results[0].unit",
-		},
-		{
-			label: "result non-number value",
-			patch: (r) => {
+			"$.results[0].unit",
+		],
+		[
+			"result non-number value",
+			(r) => {
 				r.results = [
 					{ itemId: "part_1", metric: "temp", value: "high", unit: "C" },
 				];
 			},
-			expectedPath: "$.results[0].value",
-		},
-		{
-			label: "unexpected extra property",
-			patch: (r) => {
+			"$.results[0].value",
+		],
+		[
+			"unexpected extra property",
+			(r) => {
 				r.extraProp = 123;
 			},
-			expectedPath: "$.extraProp",
-		},
+			"$.extraProp",
+		],
 	];
 
-	for (const { label, patch, expectedPath } of SIM_INVALID_CASES) {
-		test(`rejects ${label}`, () => {
-			const run = makeValidSimRun();
-			patch(run);
-			const res = validateSimRun(run);
-			assert.equal(res.ok, false);
-			assert.equal(res.errors.length > 0, true);
-			const matched = res.errors.some((err) => err.startsWith(expectedPath));
-			assert.equal(
-				matched,
-				true,
-				`Expected error for path ${expectedPath}, got: ${res.errors.join(", ")}`,
-			);
-		});
-	}
+	testFieldRejections({
+		missingFields: MISSING_SIM_FIELDS,
+		mutations: SIM_MUTATIONS,
+		makeValid: makeValidSimRun,
+		validate: validateSimRun,
+	});
 });
 
 describe("validateSimRun: garbage input resilience", () => {
-	for (const input of WEIRD_INPUTS) {
-		test(`never throws on: ${String(input)}`, () => {
-			assert.doesNotThrow(() => {
-				const res = validateSimRun(input);
-				assert.equal(typeof res.ok, "boolean");
-				assert.equal(Array.isArray(res.errors), true);
-				assert.equal(res.ok, false);
-			});
-		});
-	}
+	runGarbageInputCases(validateSimRun);
 });
