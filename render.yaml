@@ -11,6 +11,10 @@ services:
         value: production
       - key: KICAD_CLI_PATH
         value: /usr/bin/kicad-cli
+      - key: FREEROUTING_JAR
+        value: /opt/freerouting/freerouting.jar
+      - key: OAUTH_STATE_DB
+        value: /app/temp_storage/oauth-states.db
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL

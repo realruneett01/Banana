@@ -38,13 +38,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     build-essential \
     python3 \
+    default-jre-headless \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Download Freerouting routing engine
+ARG FREEROUTING_VERSION=2.1.0
+RUN mkdir -p /opt/freerouting && \
+    curl -fsSL "https://github.com/freerouting/freerouting/releases/download/v${FREEROUTING_VERSION}/freerouting-${FREEROUTING_VERSION}.jar" -o /opt/freerouting/freerouting.jar
+
 # Verify system installations
-RUN kicad-cli --version && node -v && npm -v && git --version
+RUN kicad-cli --version && node -v && npm -v && git --version && java -version
 
 WORKDIR /app
 
@@ -52,6 +58,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=5000
 ENV KICAD_CLI_PATH=/usr/bin/kicad-cli
+ENV FREEROUTING_JAR=/opt/freerouting/freerouting.jar
+ENV OAUTH_STATE_DB=/app/temp_storage/oauth-states.db
 
 # Copy package manifests for workspace resolution
 COPY package*.json ./
