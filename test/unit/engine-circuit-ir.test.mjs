@@ -65,6 +65,39 @@ const WEIRD_INPUTS = [
 	Symbol("sym"),
 ];
 
+function runValidCase(createIR, name) {
+	const res = validateCircuitIR(createIR());
+	assert.strictEqual(res.ok, true, `${name} should have ok === true`);
+	assert.deepStrictEqual(res.errors, [], `${name} should have no errors`);
+}
+
+function runRejectionCase(mutate, predicate, failMessage) {
+	const ir = makeValidCircuitIR();
+	mutate(ir);
+	const res = validateCircuitIR(ir);
+	assert.strictEqual(res.ok, false, "validation should fail");
+	assert.ok(res.errors.length >= 1, "expected at least one error");
+	assert.ok(
+		res.errors.some(predicate),
+		`${failMessage}, got: ${JSON.stringify(res.errors)}`,
+	);
+}
+
+function runGarbageInputCase(input) {
+	assert.doesNotThrow(() => {
+		const res = validateCircuitIR(input);
+		assert.strictEqual(
+			res.ok,
+			false,
+			`garbage input ${String(input)} must fail validation`,
+		);
+		assert.ok(
+			Array.isArray(res.errors),
+			`garbage input ${String(input)} must have errors array`,
+		);
+	});
+}
+
 describe("circuit-ir module contract", () => {
 	test("exports match the contract exactly", async () => {
 		const mod = await import("../../backend/src/engine/circuit-ir.js");
@@ -80,60 +113,71 @@ describe("circuit-ir module contract", () => {
 });
 
 describe("validateCircuitIR: valid cases", () => {
-	test("accepts minimal valid circuit IR", () => {
-		const ir = {
-			schemaVersion: 1,
-			name: "MinimalBoard",
-			parts: [],
-			nets: [],
-			constraints: [],
-		};
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
-	});
+	const VALID_CASES = [
+		{
+			name: "accepts minimal valid circuit IR",
+			createIR: () => ({
+				schemaVersion: 1,
+				name: "MinimalBoard",
+				parts: [],
+				nets: [],
+				constraints: [],
+			}),
+		},
+		{
+			name: "accepts complete valid circuit IR with placement",
+			createIR: () => {
+				const part = {
+					...makeValidPart({ ref: "U1", value: "STM32F401" }),
+					placement: { x: 50.0, y: 30.5, rot: 90, side: "F" },
+				};
+				const net = makeValidNet(part.id);
+				const constraint = makeValidConstraint();
+				return {
+					schemaVersion: 1,
+					name: "MainBoard",
+					parts: [part],
+					nets: [net],
+					constraints: [constraint],
+				};
+			},
+		},
+		{
+			name: "accepts all constraint kinds",
+			createIR: () => {
+				const kinds = [
+					"rail",
+					"current",
+					"impedance",
+					"keepout",
+					"size",
+					"layers",
+				];
+				const part = makeValidPart();
+				const net = makeValidNet(part.id);
+				const constraints = kinds.map((kind, index) => ({
+					id: `c_${kind}_${index}`,
+					kind,
+					target: "NET1",
+					value: 50,
+					unit: "ohm",
+				}));
+				return {
+					schemaVersion: 1,
+					name: "ConstraintTest",
+					parts: [part],
+					nets: [net],
+					constraints,
+				};
+			},
+		},
+	];
 
-	test("accepts complete valid circuit IR with placement", () => {
-		const part = {
-			...makeValidPart({ ref: "U1", value: "STM32F401" }),
-			placement: { x: 50.0, y: 30.5, rot: 90, side: "F" },
-		};
-		const net = makeValidNet(part.id);
-		const constraint = makeValidConstraint();
-		const ir = {
-			schemaVersion: 1,
-			name: "MainBoard",
-			parts: [part],
-			nets: [net],
-			constraints: [constraint],
-		};
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
-	});
-
-	test("accepts all constraint kinds", () => {
-		const kinds = ["rail", "current", "impedance", "keepout", "size", "layers"];
-		const part = makeValidPart();
-		const net = makeValidNet(part.id);
-		const constraints = kinds.map((kind, index) => ({
-			id: `c_${kind}_${index}`,
-			kind,
-			target: "NET1",
-			value: 50,
-			unit: "ohm",
-		}));
-		const ir = {
-			schemaVersion: 1,
-			name: "ConstraintTest",
-			parts: [part],
-			nets: [net],
-			constraints,
-		};
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.errors, []);
-	});
+	for (const { name, createIR } of VALID_CASES) {
+		test(name, () => {
+			runValidCase(createIR, name);
+		});
+	}
 });
 
 describe("validateCircuitIR: schema rule violations", () => {
@@ -324,151 +368,106 @@ describe("validateCircuitIR: schema rule violations", () => {
 
 	for (const { label, mutate, expectedPath } of SCHEMA_FAILURES) {
 		test(`rejects ${label}`, () => {
-			const ir = makeValidCircuitIR();
-			mutate(ir);
-			const res = validateCircuitIR(ir);
-			assert.equal(res.ok, false);
-			assert.equal(res.errors.length >= 1, true);
-			const hasMatchingError = res.errors.some((err) =>
-				err.startsWith(expectedPath),
-			);
-			assert.equal(
-				hasMatchingError,
-				true,
-				`Expected error starting with "${expectedPath}", got: ${JSON.stringify(res.errors)}`,
+			runRejectionCase(
+				mutate,
+				(err) => err.startsWith(expectedPath),
+				`Expected error starting with "${expectedPath}"`,
 			);
 		});
 	}
 });
 
 describe("validateCircuitIR: semantic rule violations", () => {
-	test("rejects invalid part id kind", () => {
-		const ir = makeValidCircuitIR();
-		ir.parts[0].id = newId("net");
-		ir.nets[0].pins[0].partId = ir.parts[0].id;
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) =>
-				err.includes("$.parts[0].id: must be a part id"),
-			),
-			true,
-		);
-	});
+	const SEMANTIC_FAILURES = [
+		{
+			label: "invalid part id kind",
+			mutate: (ir) => {
+				ir.parts[0].id = newId("net");
+				ir.nets[0].pins[0].partId = ir.parts[0].id;
+			},
+			expectedError: "$.parts[0].id: must be a part id",
+		},
+		{
+			label: "invalid net id kind",
+			mutate: (ir) => {
+				ir.nets[0].id = newId("part");
+			},
+			expectedError: "$.nets[0].id: must be a net id",
+		},
+		{
+			label: "duplicate ref values in parts",
+			mutate: (ir) => {
+				ir.parts.push(makeValidPart({ ref: "R1" }));
+			},
+			expectedError: "$.parts[1].ref: duplicate ref",
+		},
+		{
+			label: "net pin pointing at nonexistent partId",
+			mutate: (ir) => {
+				ir.nets[0].pins.push({ partId: newId("part"), pin: "2" });
+			},
+			expectedError: "$.nets[0].pins[1].partId: partId",
+		},
+		{
+			label: "duplicate part IDs",
+			mutate: (ir) => {
+				ir.parts.push(makeValidPart({ id: ir.parts[0].id, ref: "R2" }));
+			},
+			expectedError: "$.parts[1].id: duplicate id",
+		},
+		{
+			label: "duplicate net IDs",
+			mutate: (ir) => {
+				ir.nets.push(
+					makeValidNet(ir.parts[0].id, {
+						id: ir.nets[0].id,
+						name: "GND",
+					}),
+				);
+			},
+			expectedError: "$.nets[1].id: duplicate id",
+		},
+		{
+			label: "duplicate constraint IDs",
+			mutate: (ir) => {
+				ir.constraints.push(makeValidConstraint({ id: ir.constraints[0].id }));
+			},
+			expectedError: "$.constraints[1].id: duplicate id",
+		},
+		{
+			label: "duplicate ID across part and net",
+			mutate: (ir) => {
+				const sharedId = newId("part");
+				ir.parts[0].id = sharedId;
+				ir.nets[0].id = sharedId;
+				ir.nets[0].pins[0].partId = sharedId;
+			},
+			expectedError: "$.nets[0].id: duplicate id",
+		},
+		{
+			label: "duplicate ID across part and constraint",
+			mutate: (ir) => {
+				ir.constraints[0].id = ir.parts[0].id;
+			},
+			expectedError: "$.constraints[0].id: duplicate id",
+		},
+	];
 
-	test("rejects invalid net id kind", () => {
-		const ir = makeValidCircuitIR();
-		ir.nets[0].id = newId("part");
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) => err.includes("$.nets[0].id: must be a net id")),
-			true,
-		);
-	});
-
-	test("rejects duplicate ref values in parts", () => {
-		const ir = makeValidCircuitIR();
-		const part2 = makeValidPart({ ref: "R1" });
-		ir.parts.push(part2);
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) => err.includes("$.parts[1].ref: duplicate ref")),
-			true,
-		);
-	});
-
-	test("rejects net pin pointing at nonexistent partId", () => {
-		const ir = makeValidCircuitIR();
-		const nonExistentPartId = newId("part");
-		ir.nets[0].pins.push({ partId: nonExistentPartId, pin: "2" });
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) =>
-				err.includes("$.nets[0].pins[1].partId: partId"),
-			),
-			true,
-		);
-	});
-
-	test("rejects duplicate part IDs", () => {
-		const ir = makeValidCircuitIR();
-		const duplicateId = ir.parts[0].id;
-		const part2 = makeValidPart({ id: duplicateId, ref: "R2" });
-		ir.parts.push(part2);
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) => err.includes("$.parts[1].id: duplicate id")),
-			true,
-		);
-	});
-
-	test("rejects duplicate net IDs", () => {
-		const ir = makeValidCircuitIR();
-		const duplicateId = ir.nets[0].id;
-		const net2 = makeValidNet(ir.parts[0].id, { id: duplicateId, name: "GND" });
-		ir.nets.push(net2);
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) => err.includes("$.nets[1].id: duplicate id")),
-			true,
-		);
-	});
-
-	test("rejects duplicate constraint IDs", () => {
-		const ir = makeValidCircuitIR();
-		const c2 = makeValidConstraint({ id: ir.constraints[0].id });
-		ir.constraints.push(c2);
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) =>
-				err.includes("$.constraints[1].id: duplicate id"),
-			),
-			true,
-		);
-	});
-
-	test("rejects duplicate ID across part and net", () => {
-		const ir = makeValidCircuitIR();
-		const sharedId = newId("part");
-		ir.parts[0].id = sharedId;
-		ir.nets[0].id = sharedId;
-		ir.nets[0].pins[0].partId = sharedId;
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) => err.includes("$.nets[0].id: duplicate id")),
-			true,
-		);
-	});
-
-	test("rejects duplicate ID across part and constraint", () => {
-		const ir = makeValidCircuitIR();
-		ir.constraints[0].id = ir.parts[0].id;
-		const res = validateCircuitIR(ir);
-		assert.equal(res.ok, false);
-		assert.equal(
-			res.errors.some((err) =>
-				err.includes("$.constraints[0].id: duplicate id"),
-			),
-			true,
-		);
-	});
+	for (const { label, mutate, expectedError } of SEMANTIC_FAILURES) {
+		test(`rejects ${label}`, () => {
+			runRejectionCase(
+				mutate,
+				(err) => err.includes(expectedError),
+				`Expected error containing "${expectedError}"`,
+			);
+		});
+	}
 });
 
 describe("validateCircuitIR: garbage input resilience", () => {
 	for (const input of WEIRD_INPUTS) {
 		test(`never throws on: ${String(input)}`, () => {
-			assert.doesNotThrow(() => {
-				const res = validateCircuitIR(input);
-				assert.equal(res.ok, false);
-				assert.equal(Array.isArray(res.errors), true);
-			});
+			runGarbageInputCase(input);
 		});
 	}
 });
