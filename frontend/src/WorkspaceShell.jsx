@@ -1,8 +1,10 @@
 import {
+	ExperimentOutlined,
 	FileSearchOutlined,
 	GithubOutlined,
 	MenuOutlined,
 	RobotOutlined,
+	ThunderboltOutlined,
 	UnorderedListOutlined,
 } from "@ant-design/icons";
 import { Avatar, Button, Space, Tooltip } from "antd";
@@ -94,8 +96,44 @@ function CopilotButton({ onOpenCopilot, compact }) {
 	);
 }
 
+function AgentButton({ onOpenAgent, compact }) {
+	return (
+		<Tooltip title="Design with AI">
+			<Button
+				type="primary"
+				icon={<ExperimentOutlined />}
+				onClick={() => onOpenAgent?.()}
+				className="bn-copilot-btn"
+				style={{ height: BUTTON_HEIGHT }}
+				aria-label="Design with AI"
+			>
+				{!compact && "Design with AI"}
+			</Button>
+		</Tooltip>
+	);
+}
+
+function SimulationButton({ onOpenSimulation, compact }) {
+	return (
+		<Tooltip title="Simulate">
+			<Button
+				type="primary"
+				icon={<ThunderboltOutlined />}
+				onClick={() => onOpenSimulation?.()}
+				className="bn-copilot-btn"
+				style={{ height: BUTTON_HEIGHT }}
+				aria-label="Simulate"
+			>
+				{!compact && "Simulate"}
+			</Button>
+		</Tooltip>
+	);
+}
+
 export default function WorkspaceShell({
 	onOpenCopilot,
+	onOpenAgent,
+	onOpenSimulation,
 	backendStatus,
 	githubUser,
 	onOpenGithubModal,
@@ -126,6 +164,11 @@ export default function WorkspaceShell({
 				/>
 				<BackendStatusBadge backendStatus={backendStatus} compact={compact} />
 				<CopilotButton onOpenCopilot={onOpenCopilot} compact={compact} />
+				<AgentButton onOpenAgent={onOpenAgent} compact={compact} />
+				<SimulationButton
+					onOpenSimulation={onOpenSimulation}
+					compact={compact}
+				/>
 				{compact && (
 					<Button
 						type="text"

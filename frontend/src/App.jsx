@@ -1,12 +1,15 @@
-import { ConfigProvider, Grid, Layout, theme } from "antd";
+import { ConfigProvider, Drawer, Grid, Layout, theme } from "antd";
 import { useEffect } from "react";
 import "./harness.css";
 import ChatbotDrawer from "./ChatbotDrawer";
+import AgentDesignPanel from "./components/AgentDesignPanel.jsx";
 import { DiffViewport } from "./components/DiffViewport";
 import { EdgeCollapseTabs } from "./components/EdgeCollapseTabs";
 import GithubConnectModal from "./components/GithubConnectModal";
+import SimulationDrawer from "./components/SimulationDrawer.jsx";
 import { WorkspaceAuditSidebar } from "./components/WorkspaceAuditSidebar";
 import { WorkspaceControlSidebar } from "./components/WorkspaceControlSidebar";
+import { useDesignLoop } from "./useDesignLoop.js";
 import { useWorkspaceState } from "./useWorkspaceState.js";
 import WorkspaceShell from "./WorkspaceShell";
 
@@ -78,7 +81,38 @@ function useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed) {
 	}, [compact, setLeftCollapsed, setRightCollapsed]);
 }
 
+function DesignDrawers({ loop, commit }) {
+	const handleSimulate = (ir) => {
+		loop.closeAgent();
+		loop.openSimulation(ir);
+	};
+
+	return (
+		<>
+			<Drawer
+				placement="left"
+				width={560}
+				title="Design with AI"
+				open={loop.agentOpen}
+				onClose={loop.closeAgent}
+				destroyOnHidden={false}
+				className="bn-drawer"
+			>
+				<AgentDesignPanel api={loop.api} onOpenSimulation={handleSimulate} />
+			</Drawer>
+			<SimulationDrawer
+				open={loop.simOpen}
+				onClose={loop.closeSimulation}
+				ir={loop.ir}
+				commit={commit}
+				api={loop.api}
+			/>
+		</>
+	);
+}
+
 function AppLayout({ ws, compact }) {
+	const loop = useDesignLoop();
 	const { setLeftCollapsed, setRightCollapsed } = ws.edgeTabsProps;
 
 	return (
@@ -88,8 +122,9 @@ function AppLayout({ ws, compact }) {
 				compact={compact}
 				onOpenControls={() => setLeftCollapsed(false)}
 				onOpenAudit={() => setRightCollapsed(false)}
+				onOpenAgent={loop.openAgent}
+				onOpenSimulation={() => loop.openSimulation()}
 			/>
-
 			<Layout>
 				<WorkspaceControlSidebar {...ws.sidebarProps} compact={compact} />
 				<MainViewport
@@ -99,9 +134,9 @@ function AppLayout({ ws, compact }) {
 				/>
 				<WorkspaceAuditSidebar {...ws.auditProps} compact={compact} />
 			</Layout>
-
 			<ChatbotDrawer {...ws.copilotProps} />
 			<GithubConnectModal {...ws.githubModalProps} />
+			<DesignDrawers loop={loop} commit={ws.viewportProps?.targetCommit} />
 		</Layout>
 	);
 }
