@@ -38,6 +38,23 @@ const MALFORMED_VALUES = [
 
 const BAD_KINDS = ["foo", "PART", "", 123, null, undefined, {}, []];
 
+function assertAllEqual(items, fn, expected) {
+	for (const item of items) {
+		assert.equal(fn(item), expected);
+	}
+}
+
+function assertKindFilterCases(id, kind) {
+	const CASES = [
+		{ filter: undefined, expected: true },
+		{ filter: kind, expected: true },
+		{ filter: "other", expected: false },
+	];
+	for (const { filter, expected } of CASES) {
+		assert.equal(isId(id, filter), expected);
+	}
+}
+
 describe("newId", () => {
 	test("generates valid id for every allowed kind", () => {
 		for (const kind of ALLOWED_KINDS) {
@@ -50,53 +67,43 @@ describe("newId", () => {
 	});
 
 	test("generates distinct ids on subsequent calls", () => {
-		const id1 = newId("part");
-		const id2 = newId("part");
-		assert.notEqual(id1, id2);
+		assert.notEqual(newId("part"), newId("part"));
 	});
 
 	test("returns null for invalid kind inputs", () => {
-		for (const badKind of BAD_KINDS) {
-			assert.equal(newId(badKind), null);
-		}
+		assertAllEqual(BAD_KINDS, newId, null);
 	});
 });
 
 describe("isId", () => {
 	test("validates id with and without matching kind filter", () => {
 		for (const kind of ALLOWED_KINDS) {
-			const id = newId(kind);
-			assert.equal(isId(id), true);
-			assert.equal(isId(id, kind), true);
-			assert.equal(isId(id, "other"), false);
+			assertKindFilterCases(newId(kind), kind);
 		}
 	});
 
 	test("rejects mismatched kinds across allowed kinds", () => {
 		const partId = newId("part");
-		assert.equal(isId(partId, "net"), false);
-		assert.equal(isId(partId, "pin"), false);
+		const CASES = ["net", "pin"];
+		for (const otherKind of CASES) {
+			assert.equal(isId(partId, otherKind), false);
+		}
 	});
 
 	test("returns false for malformed id inputs", () => {
-		for (const val of MALFORMED_VALUES) {
-			assert.equal(isId(val), false);
-		}
+		assertAllEqual(MALFORMED_VALUES, isId, false);
 	});
 });
 
 describe("kindOf", () => {
 	test("extracts correct kind for every allowed kind", () => {
 		for (const kind of ALLOWED_KINDS) {
-			const id = newId(kind);
-			assert.equal(kindOf(id), kind);
+			assert.equal(kindOf(newId(kind)), kind);
 		}
 	});
 
 	test("returns null for malformed and invalid id inputs", () => {
-		for (const val of MALFORMED_VALUES) {
-			assert.equal(kindOf(val), null);
-		}
+		assertAllEqual(MALFORMED_VALUES, kindOf, null);
 	});
 });
 
