@@ -8,6 +8,7 @@ import {
 } from "../engine/sim/fault-inject.js";
 import { irToSpice } from "../engine/spice/ir-to-spice.js";
 import { createNgspice } from "../engine/spice/ngspice-runner.js";
+import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
 let lazyNgspice = null;
 let explainFn = null;
@@ -398,15 +399,25 @@ function handleSuggestFaults(req, res) {
 	}
 }
 
-export function createCircuitRouter() {
+const passThrough = (_req, _res, next) => next();
+
+export function createCircuitRouter({ limiter } = {}) {
 	const router = express.Router();
-	router.post(["/circuit/simulate", "/api/circuit/simulate"], handleSimulate);
+	const routeLimiter = limiter ?? passThrough;
+	router.post(
+		["/circuit/simulate", "/api/circuit/simulate"],
+		routeLimiter,
+		handleSimulate,
+	);
 	router.post(
 		["/circuit/suggest-faults", "/api/circuit/suggest-faults"],
+		routeLimiter,
 		handleSuggestFaults,
 	);
 	return router;
 }
 
-const defaultRouter = createCircuitRouter();
+const defaultRouter = createCircuitRouter({
+	limiter: skipWhenLocal(createRateLimiter({ windowMs: 60000, max: 30 })),
+});
 export default defaultRouter;
