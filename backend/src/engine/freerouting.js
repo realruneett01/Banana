@@ -157,13 +157,20 @@ export function irToDsn(
 	return serialize(ast);
 }
 
+function isQuoted(val) {
+	if (val.length < 2) {
+		return false;
+	}
+	const first = val[0];
+	if (first !== val[val.length - 1]) {
+		return false;
+	}
+	return first === '"' || first === "'";
+}
+
 function stripQuotes(val) {
-	if (val.length >= 2) {
-		const first = val[0];
-		const last = val[val.length - 1];
-		if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-			return val.slice(1, -1);
-		}
+	if (isQuoted(val)) {
+		return val.slice(1, -1);
 	}
 	return val;
 }
