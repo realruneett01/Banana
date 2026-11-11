@@ -5,6 +5,7 @@ import { createSimApi } from "../simApi.js";
 import CompareRunsPanel from "./CompareRunsPanel.jsx";
 import EnvironmentEditor from "./EnvironmentEditor.jsx";
 import IssuesPanel from "./IssuesPanel.jsx";
+import { useRunCommits } from "./runCommits.js";
 import { useSimulation } from "./useSimulation.js";
 
 const DRAWER_STYLES = Object.freeze({
@@ -367,6 +368,13 @@ function buildTabItems({ sim, commit, commits, onSelectItem, api }) {
 	];
 }
 
+function resolveCommits(commits, fallback) {
+	if (Array.isArray(commits) && commits.length > 0) {
+		return commits;
+	}
+	return fallback;
+}
+
 export default function SimulationDrawer({
 	open,
 	onClose,
@@ -381,7 +389,15 @@ export default function SimulationDrawer({
 		[apiProp],
 	);
 	const sim = useSimulation({ api, ir, commit });
-	const items = buildTabItems({ sim, commit, commits, onSelectItem, api });
+	const fetched = useRunCommits({ api, open });
+	const activeCommits = resolveCommits(commits, fetched);
+	const items = buildTabItems({
+		sim,
+		commit,
+		commits: activeCommits,
+		onSelectItem,
+		api,
+	});
 
 	return (
 		<Drawer
