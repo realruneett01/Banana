@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import BoardPreview from "../BoardPreview.jsx";
+import Board3DScene from "./Board3DScene.jsx";
 import { useCircuitSim } from "./useCircuitSim.js";
 
 const SPEEDS = Object.freeze([0.25, 0.5, 1, 2, 4]);
@@ -462,7 +463,56 @@ function StudioStoryPanel({ sim, selectedCardId, onSelectCard }) {
 	);
 }
 
-function StudioBoardView({ ir, selectedId, onSelect }) {
+function ViewToggle({ viewMode, onToggle }) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				gap: "4px",
+				marginBottom: "8px",
+				alignSelf: "flex-start",
+			}}
+		>
+			<button
+				type="button"
+				onClick={() => onToggle("3d")}
+				aria-pressed={viewMode === "3d"}
+				style={{
+					padding: "4px 10px",
+					fontSize: "12px",
+					fontWeight: 600,
+					borderRadius: "4px",
+					border: "1px solid #28304c",
+					background: viewMode === "3d" ? "rgba(56, 189, 248, 0.2)" : "#181d2f",
+					color: viewMode === "3d" ? "#38bdf8" : "#94a3b8",
+					cursor: "pointer",
+				}}
+			>
+				3D
+			</button>
+			<button
+				type="button"
+				onClick={() => onToggle("2d")}
+				aria-pressed={viewMode === "2d"}
+				style={{
+					padding: "4px 10px",
+					fontSize: "12px",
+					fontWeight: 600,
+					borderRadius: "4px",
+					border: "1px solid #28304c",
+					background: viewMode === "2d" ? "rgba(56, 189, 248, 0.2)" : "#181d2f",
+					color: viewMode === "2d" ? "#38bdf8" : "#94a3b8",
+					cursor: "pointer",
+				}}
+			>
+				2D
+			</button>
+		</div>
+	);
+}
+
+function StudioBoardView({ ir, board, sim, selectedId, onSelect }) {
+	const [viewMode, setViewMode] = useState("3d");
 	return (
 		<div
 			style={{
@@ -474,7 +524,20 @@ function StudioBoardView({ ir, selectedId, onSelect }) {
 				padding: "12px",
 			}}
 		>
-			<BoardPreview ir={ir} selectedId={selectedId} onSelect={onSelect} />
+			<ViewToggle viewMode={viewMode} onToggle={setViewMode} />
+			{viewMode === "3d" ? (
+				<Board3DScene
+					ir={ir}
+					board={board}
+					result={sim?.result}
+					fault={sim?.selectedFault}
+					playing={sim?.playing}
+					speed={sim?.speed}
+					highlightIds={selectedId ? [selectedId] : []}
+				/>
+			) : (
+				<BoardPreview ir={ir} selectedId={selectedId} onSelect={onSelect} />
+			)}
 		</div>
 	);
 }
@@ -485,7 +548,7 @@ function resolveHighlightId(selectedPartId, selectedCard) {
 	return selectedCard.partIds?.[0] || selectedCard.netIds?.[0] || null;
 }
 
-export default function SimulationStudio({ api, ir }) {
+export default function SimulationStudio({ api, ir, board }) {
 	const sim = useCircuitSim({ api, ir });
 	const [selectedCard, setSelectedCard] = useState(null);
 	const [selectedPartId, setSelectedPartId] = useState(null);
@@ -513,6 +576,8 @@ export default function SimulationStudio({ api, ir }) {
 		>
 			<StudioBoardView
 				ir={ir}
+				board={board}
+				sim={sim}
 				selectedId={highlightId}
 				onSelect={setSelectedPartId}
 			/>
