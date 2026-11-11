@@ -54,50 +54,84 @@ function makePrimitive(overrides = {}) {
 	};
 }
 
+function runPairMatchTest({
+	passFn,
+	baseElement,
+	targetElement,
+	otherElement,
+	displacement,
+}) {
+	const ctx = makeTestContext({
+		baseElements: [baseElement],
+		targetElements: [targetElement, otherElement],
+	});
+	passFn(ctx);
+	const classification = ctx.targetClassifications.get(targetElement);
+	assert.deepEqual(
+		{
+			matched: ctx.matchedTarget.has(targetElement),
+			unmatched: ctx.matchedTarget.has(otherElement),
+			diffClass: classification?.diffClass,
+			displacement: classification?.displacement,
+		},
+		{
+			matched: true,
+			unmatched: false,
+			diffClass: "diff-changed",
+			displacement,
+		},
+	);
+}
+
+const CLEANER_CASES = [
+	{
+		name: "cleanNetName normalizes nets and falls back to signal",
+		fn: cleanNetName,
+		cases: [
+			["/GND", "gnd"],
+			["Net-(R1-Pad1)", "r1-pad1"],
+			["", "signal"],
+			[null, "signal"],
+			["unconnected", "signal"],
+			["0", "signal"],
+			["unconnected-(CLK)", "clk"],
+		],
+	},
+	{
+		name: "cleanLayerName strips svg extension and prefix, defaulting to F.Cu",
+		fn: cleanLayerName,
+		cases: [
+			["board-F_Cu.svg", "F.Cu"],
+			["myproj-B_Cu.svg", "B.Cu"],
+			["", "F.Cu"],
+			[null, "F.Cu"],
+			["In1_Cu", "In1.Cu"],
+			["board-B_Silkscreen.svg", "B.Silkscreen"],
+		],
+	},
+	{
+		name: "isCopperLayerFilename detects copper layers and rejects others",
+		fn: isCopperLayerFilename,
+		cases: [
+			["board-F_Cu.svg", true],
+			["board-B_Cu.svg", true],
+			["board-In1_Cu.svg", true],
+			["", false],
+			[null, false],
+			["board-F_Silkscreen.svg", false],
+			["board-Edge_Cuts.svg", false],
+		],
+	},
+];
+
 describe("SVG Diff Processor Unit Tests", () => {
-	test("cleanNetName normalizes nets and falls back to signal", () => {
-		const cases = [
-			{ input: "/GND", expected: "gnd" },
-			{ input: "Net-(R1-Pad1)", expected: "r1-pad1" },
-			{ input: "", expected: "signal" },
-			{ input: null, expected: "signal" },
-			{ input: "unconnected", expected: "signal" },
-			{ input: "0", expected: "signal" },
-			{ input: "unconnected-(CLK)", expected: "clk" },
-		];
-		for (const { input, expected } of cases) {
-			assert.equal(cleanNetName(input), expected);
-		}
-	});
-
-	test("cleanLayerName strips svg extension and prefix, defaulting to F.Cu", () => {
-		const cases = [
-			{ input: "board-F_Cu.svg", expected: "F.Cu" },
-			{ input: "myproj-B_Cu.svg", expected: "B.Cu" },
-			{ input: "", expected: "F.Cu" },
-			{ input: null, expected: "F.Cu" },
-			{ input: "In1_Cu", expected: "In1.Cu" },
-			{ input: "board-B_Silkscreen.svg", expected: "B.Silkscreen" },
-		];
-		for (const { input, expected } of cases) {
-			assert.equal(cleanLayerName(input), expected);
-		}
-	});
-
-	test("isCopperLayerFilename detects copper layers and rejects others", () => {
-		const cases = [
-			{ input: "board-F_Cu.svg", expected: true },
-			{ input: "board-B_Cu.svg", expected: true },
-			{ input: "board-In1_Cu.svg", expected: true },
-			{ input: "", expected: false },
-			{ input: null, expected: false },
-			{ input: "board-F_Silkscreen.svg", expected: false },
-			{ input: "board-Edge_Cuts.svg", expected: false },
-		];
-		for (const { input, expected } of cases) {
-			assert.equal(isCopperLayerFilename(input), expected);
-		}
-	});
+	for (const { name, fn, cases } of CLEANER_CASES) {
+		test(name, () => {
+			for (const [input, expected] of cases) {
+				assert.equal(fn(input), expected);
+			}
+		});
+	}
 
 	test("extractElements extracts primitives, components, and detects frames", () => {
 		const svg = [
@@ -129,12 +163,20 @@ describe("SVG Diff Processor Unit Tests", () => {
 			fullMatch: '<line x1="10" y1="0" x2="20" y2="0" />',
 		});
 		const chains = assembleTrackChains([el1, el2], "board-F_Cu.svg");
-		assert.equal(chains.length, 1);
-		assert.equal(chains[0].subSegments.length, 2);
-		assert.equal(chains[0].totalLength, 20);
+		assert.deepEqual(
+			chains.map((chain) => ({
+				subSegmentsCount: chain.subSegments.length,
+				totalLength: chain.totalLength,
+			})),
+			[{ subSegmentsCount: 2, totalLength: 20 }],
+		);
 
-		assert.deepEqual(assembleTrackChains([], "board-F_Cu.svg"), []);
-		assert.deepEqual(assembleTrackChains([el1, el2], "board-F_Mask.svg"), []);
+		for (const [items, layer] of [
+			[[], "board-F_Cu.svg"],
+			[[el1, el2], "board-F_Mask.svg"],
+		]) {
+			assert.deepEqual(assembleTrackChains(items, layer), []);
+		}
 	});
 
 	test("matchExactPrimitivesPass matches identical primitives and marks unchanged", () => {
@@ -150,57 +192,48 @@ describe("SVG Diff Processor Unit Tests", () => {
 		});
 
 		matchExactPrimitivesPass(ctx);
-		assert.equal(ctx.matchedBase.has(baseEl), true);
-		assert.equal(ctx.matchedTarget.has(targetEl), true);
-		assert.equal(ctx.matchedTarget.has(frameEl), false);
-		assert.equal(
-			ctx.targetClassifications.get(targetEl)?.diffClass,
-			"diff-unchanged",
+		assert.deepEqual(
+			{
+				matchedBase: ctx.matchedBase.has(baseEl),
+				matchedTarget: ctx.matchedTarget.has(targetEl),
+				matchedFrame: ctx.matchedTarget.has(frameEl),
+				diffClass: ctx.targetClassifications.get(targetEl)?.diffClass,
+			},
+			{
+				matchedBase: true,
+				matchedTarget: true,
+				matchedFrame: false,
+				diffClass: "diff-unchanged",
+			},
 		);
 	});
 
 	test("matchRefDesComponentsPass matches components by refDes and computes displacement", () => {
-		const baseEl = makePrimitive({
-			isComponent: true,
-			refDes: "R1",
-			center: { x: 10, y: 10 },
+		runPairMatchTest({
+			passFn: matchRefDesComponentsPass,
+			baseElement: makePrimitive({
+				isComponent: true,
+				refDes: "R1",
+				center: { x: 10, y: 10 },
+			}),
+			targetElement: makePrimitive({
+				isComponent: true,
+				refDes: "R1",
+				center: { x: 10, y: 14 },
+			}),
+			otherElement: makePrimitive({ isComponent: true, refDes: "C1" }),
+			displacement: 4,
 		});
-		const targetEl = makePrimitive({
-			isComponent: true,
-			refDes: "R1",
-			center: { x: 10, y: 14 },
-		});
-		const unmatchedEl = makePrimitive({ isComponent: true, refDes: "C1" });
-		const ctx = makeTestContext({
-			baseElements: [baseEl],
-			targetElements: [targetEl, unmatchedEl],
-		});
-
-		matchRefDesComponentsPass(ctx);
-		assert.equal(ctx.matchedTarget.has(targetEl), true);
-		assert.equal(ctx.matchedTarget.has(unmatchedEl), false);
-		const classification = ctx.targetClassifications.get(targetEl);
-		assert.equal(classification?.diffClass, "diff-changed");
-		assert.equal(classification?.displacement, 4);
 	});
 
 	test("matchProximityPrimitivesPass matches primitives within threshold", () => {
-		const baseNear = makePrimitive({ center: { x: 10, y: 10 } });
-		const targetNear = makePrimitive({ center: { x: 10, y: 12 } });
-		const targetFar = makePrimitive({ center: { x: 10, y: 50 } });
-		const ctx = makeTestContext({
-			baseElements: [baseNear],
-			targetElements: [targetNear, targetFar],
+		runPairMatchTest({
+			passFn: matchProximityPrimitivesPass,
+			baseElement: makePrimitive({ center: { x: 10, y: 10 } }),
+			targetElement: makePrimitive({ center: { x: 10, y: 12 } }),
+			otherElement: makePrimitive({ center: { x: 10, y: 50 } }),
+			displacement: 2,
 		});
-
-		matchProximityPrimitivesPass(ctx);
-		assert.equal(ctx.matchedTarget.has(targetNear), true);
-		assert.equal(ctx.matchedTarget.has(targetFar), false);
-		assert.equal(
-			ctx.targetClassifications.get(targetNear)?.diffClass,
-			"diff-changed",
-		);
-		assert.equal(ctx.targetClassifications.get(targetNear)?.displacement, 2);
 	});
 
 	test("classifyDeletedBaseElements marks unclassified base elements as deleted", () => {
@@ -209,12 +242,23 @@ describe("SVG Diff Processor Unit Tests", () => {
 		const ctx = makeTestContext({ baseElements: [bEl1, bEl2] });
 
 		const nextIdx = classifyDeletedBaseElements(ctx, 3);
-		assert.equal(nextIdx, 4);
-		assert.equal(ctx.baseClassifications.has(bEl2), false);
 		const c1 = ctx.baseClassifications.get(bEl1);
-		assert.equal(c1?.diffClass, "diff-deleted");
-		assert.equal(c1?.diffIdx, 3);
-		assert.deepEqual(c1?.baseCoords, { x: 10, y: 10 });
+		assert.deepEqual(
+			{
+				nextIdx,
+				hasFrame: ctx.baseClassifications.has(bEl2),
+				diffClass: c1?.diffClass,
+				diffIdx: c1?.diffIdx,
+				baseCoords: c1?.baseCoords,
+			},
+			{
+				nextIdx: 4,
+				hasFrame: false,
+				diffClass: "diff-deleted",
+				diffIdx: 3,
+				baseCoords: { x: 10, y: 10 },
+			},
+		);
 	});
 
 	test("classifyAddedTargetElement marks target element as added with coordinates", () => {
@@ -223,31 +267,45 @@ describe("SVG Diff Processor Unit Tests", () => {
 
 		classifyAddedTargetElement(tEl, ctx, 7);
 		const c = ctx.targetClassifications.get(tEl);
-		assert.equal(c?.diffClass, "diff-added");
-		assert.equal(c?.diffIdx, 7);
-		assert.deepEqual(c?.targetCoords, { x: 5, y: 8 });
-		assert.deepEqual(c?.bbox, { x1: 4, y1: 7, x2: 6, y2: 9 });
+		assert.deepEqual(
+			{
+				diffClass: c?.diffClass,
+				diffIdx: c?.diffIdx,
+				targetCoords: c?.targetCoords,
+				bbox: c?.bbox,
+			},
+			{
+				diffClass: "diff-added",
+				diffIdx: 7,
+				targetCoords: { x: 5, y: 8 },
+				bbox: { x1: 4, y1: 7, x2: 6, y2: 9 },
+			},
+		);
 	});
 
 	test("linkChangedElementPair joins changed target and base with shared properties", () => {
 		const bEl = makePrimitive({ center: { x: 10, y: 10 } });
 		const tEl = makePrimitive({ center: { x: 14, y: 10 } });
 		const ctx = makeTestContext();
-		ctx.targetClassifications.set(tEl, {
-			diffClass: "diff-changed",
-			displacement: 4,
-		});
-		ctx.baseClassifications.set(bEl, {
-			diffClass: "diff-changed",
-			displacement: 4,
-		});
+		const initClass = { diffClass: "diff-changed", displacement: 4 };
+		ctx.targetClassifications.set(tEl, { ...initClass });
+		ctx.baseClassifications.set(bEl, { ...initClass });
 
 		linkChangedElementPair(tEl, bEl, ctx, 42);
 		const tClass = ctx.targetClassifications.get(tEl);
 		const bClass = ctx.baseClassifications.get(bEl);
-		assert.equal(tClass?.diffIdx, 42);
-		assert.equal(bClass?.diffIdx, 42);
-		assert.deepEqual(tClass?.bbox, { x1: 9, y1: 9, x2: 15, y2: 11 });
+		assert.deepEqual(
+			{
+				tDiffIdx: tClass?.diffIdx,
+				bDiffIdx: bClass?.diffIdx,
+				bbox: tClass?.bbox,
+			},
+			{
+				tDiffIdx: 42,
+				bDiffIdx: 42,
+				bbox: { x1: 9, y1: 9, x2: 15, y2: 11 },
+			},
+		);
 	});
 
 	test("classifyResidualElementsPass processes deleted base, added target, and changed pairs", () => {
@@ -265,13 +323,20 @@ describe("SVG Diff Processor Unit Tests", () => {
 		ctx.targetClassifications.set(tChanged, { diffClass: "diff-changed" });
 
 		const nextIdx = classifyResidualElementsPass(ctx, 1);
-		assert.equal(nextIdx, 4);
-		assert.equal(ctx.baseClassifications.get(bDel)?.diffClass, "diff-deleted");
-		assert.equal(
-			ctx.targetClassifications.get(tAdded)?.diffClass,
-			"diff-added",
+		assert.deepEqual(
+			{
+				nextIdx,
+				delClass: ctx.baseClassifications.get(bDel)?.diffClass,
+				addedClass: ctx.targetClassifications.get(tAdded)?.diffClass,
+				changedIdx: ctx.targetClassifications.get(tChanged)?.diffIdx,
+			},
+			{
+				nextIdx: 4,
+				delClass: "diff-deleted",
+				addedClass: "diff-added",
+				changedIdx: 3,
+			},
 		);
-		assert.equal(ctx.targetClassifications.get(tChanged)?.diffIdx, 3);
 	});
 
 	test("processSvgDiff executes complete diff pipeline and returns annotated SVGs", () => {
@@ -288,11 +353,21 @@ describe("SVG Diff Processor Unit Tests", () => {
 		assert.ok(diff.targetSvg.includes("<svg"));
 		assert.ok(diff.nextDiffIdx >= 5);
 		assert.ok(diff.telemetry.tTotalDiff >= 0);
-		assert.equal(diff.telemetry.baseCount, 1);
-		assert.equal(diff.telemetry.targetCount, 1);
+		assert.deepEqual(
+			{
+				baseCount: diff.telemetry.baseCount,
+				targetCount: diff.telemetry.targetCount,
+			},
+			{ baseCount: 1, targetCount: 1 },
+		);
 
 		const emptyDiff = processSvgDiff("<svg></svg>", "<svg></svg>");
-		assert.equal(emptyDiff.modifications.length, 0);
-		assert.equal(emptyDiff.nextDiffIdx, 0);
+		assert.deepEqual(
+			{
+				modificationsCount: emptyDiff.modifications.length,
+				nextDiffIdx: emptyDiff.nextDiffIdx,
+			},
+			{ modificationsCount: 0, nextDiffIdx: 0 },
+		);
 	});
 });
