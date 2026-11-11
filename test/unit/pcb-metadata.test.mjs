@@ -21,13 +21,67 @@ after(() => {
 	}
 });
 
+function assertMatches(checks) {
+	for (const [actual, expected] of checks) {
+		assert.equal(actual, expected);
+	}
+}
+
+function writeTempPcb(fileName, content) {
+	const filePath = path.join(tempDir, fileName);
+	fs.writeFileSync(filePath, content, "utf8");
+	return filePath;
+}
+
+function makeFootprint(val, layer, at) {
+	return {
+		value: { text: val },
+		layer,
+		at,
+	};
+}
+
+function makeBoard(specs) {
+	return {
+		footprints: specs.map(([ref, val, x, y]) => ({
+			reference: { text: ref },
+			value: { text: val },
+			at: { x, y },
+		})),
+	};
+}
+
+function makePad(number, net, x, y = 20.0) {
+	return {
+		number,
+		net,
+		absAt: { x, y },
+		size: { w: 1.2, h: 0.8 },
+		layers: ["F.Cu"],
+	};
+}
+
+function renderKicadPcb({
+	fp = { name: "R_0805", layer: "F.Cu", at: "10 20 0", ref: "R1", val: "10k" },
+	pad = null,
+	segment = null,
+	hasGndNet = true,
+} = {}) {
+	const nets = ['(net 0 "")'];
+	if (hasGndNet) nets.push('(net 1 "GND")');
+	const netLines = nets.map((n) => `  ${n}`).join("\n");
+	const padLine = pad ? `\n    ${pad}` : "";
+	const segLine = segment ? `\n  ${segment}` : "";
+	return `(kicad_pcb\n  (version 20240108)\n  (generator pcbnew)\n${netLines}\n  (footprint "${fp.name}" (layer "${fp.layer}")\n    (at ${fp.at})\n    (property "Reference" "${fp.ref}")\n    (property "Value" "${fp.val}")${padLine}\n  )${segLine}\n)`;
+}
+
 describe("checkFootprintDelta", () => {
 	test("returns ADDED delta when base footprint is missing", () => {
-		const targetFp = {
-			value: { text: "10k" },
-			layer: "F.Cu",
-			at: { x: 12.5, y: 25.0, rotation: 90 },
-		};
+		const targetFp = makeFootprint("10k", "F.Cu", {
+			x: 12.5,
+			y: 25.0,
+			rotation: 90,
+		});
 		const result = checkFootprintDelta("R1", targetFp, null);
 		assert.deepEqual(result, {
 			action: "ADDED",
@@ -40,21 +94,14 @@ describe("checkFootprintDelta", () => {
 	});
 
 	test("returns null when footprint placement and value are unchanged", () => {
-		const fp = {
-			value: { text: "100nF" },
-			layer: "B.Cu",
-			at: { x: 5.0, y: 10.0, rotation: 0 },
-		};
-		const identical = checkFootprintDelta("C1", fp, fp);
-		assert.equal(identical, null);
-
-		const tinyShift = {
-			value: { text: "100nF" },
-			layer: "B.Cu",
-			at: { x: 5.0005, y: 10.0, rotation: 0.005 },
-		};
-		const belowThreshold = checkFootprintDelta("C1", tinyShift, fp);
-		assert.equal(belowThreshold, null);
+		const fp = makeFootprint("100nF", "B.Cu", { x: 5.0, y: 10.0, rotation: 0 });
+		const tinyShift = makeFootprint("100nF", "B.Cu", {
+			x: 5.0005,
+			y: 10.0,
+			rotation: 0.005,
+		});
+		assert.equal(checkFootprintDelta("C1", fp, fp), null);
+		assert.equal(checkFootprintDelta("C1", tinyShift, fp), null);
 	});
 
 	const changeCases = [
@@ -89,25 +136,22 @@ describe("checkFootprintDelta", () => {
 
 	for (const tc of changeCases) {
 		test(`returns CHANGED for ${tc.desc}`, () => {
-			const targetFp = {
-				value: { text: tc.tVal },
-				layer: "F.Cu",
-				at: tc.targetAt,
-			};
-			const baseFp = { value: { text: tc.bVal }, layer: "F.Cu", at: tc.baseAt };
+			const targetFp = makeFootprint(tc.tVal, "F.Cu", tc.targetAt);
+			const baseFp = makeFootprint(tc.bVal, "F.Cu", tc.baseAt);
 			const delta = checkFootprintDelta("R1", targetFp, baseFp);
 
 			assert.ok(delta);
-			assert.equal(delta.action, "CHANGED");
-			assert.equal(delta.refDes, "R1");
-			assert.equal(delta.valChanged, tc.expectedValChanged);
+			assertMatches([
+				[delta.action, "CHANGED"],
+				[delta.refDes, "R1"],
+				[delta.valChanged, tc.expectedValChanged],
+			]);
 			assert.ok(Math.abs(delta.dist - tc.expectedDist) < 1e-6);
 		});
 	}
 
 	test("handles empty or missing footprint fields gracefully", () => {
-		const minimalTarget = {};
-		const delta = checkFootprintDelta("U1", minimalTarget, null);
+		const delta = checkFootprintDelta("U1", {}, null);
 		assert.deepEqual(delta, {
 			action: "ADDED",
 			refDes: "U1",
@@ -121,59 +165,38 @@ describe("checkFootprintDelta", () => {
 
 describe("computeFootprintChanges", () => {
 	test("computes ADDED, CHANGED, and DELETED footprints between boards", () => {
-		const baseBoard = {
-			footprints: [
-				{
-					reference: { text: "R1" },
-					value: { text: "10k" },
-					at: { x: 0, y: 0 },
-				},
-				{
-					reference: { text: "C1" },
-					value: { text: "100nF" },
-					at: { x: 10, y: 10 },
-				},
-				{
-					reference: { text: "D1" },
-					value: { text: "Red" },
-					at: { x: 20, y: 20 },
-				},
-			],
-		};
-		const targetBoard = {
-			footprints: [
-				{
-					reference: { text: "R1" },
-					value: { text: "10k" },
-					at: { x: 0, y: 0 },
-				},
-				{
-					reference: { text: "C1" },
-					value: { text: "100nF" },
-					at: { x: 15, y: 10 },
-				},
-				{
-					reference: { text: "U1" },
-					value: { text: "ATmega" },
-					at: { x: 30, y: 30 },
-				},
-			],
-		};
+		const baseBoard = makeBoard([
+			["R1", "10k", 0, 0],
+			["C1", "100nF", 10, 10],
+			["D1", "Red", 20, 20],
+		]);
+		const targetBoard = makeBoard([
+			["R1", "10k", 0, 0],
+			["C1", "100nF", 15, 10],
+			["U1", "ATmega", 30, 30],
+		]);
 
 		const changes = computeFootprintChanges(baseBoard, targetBoard);
-		assert.equal(changes instanceof Map, true);
-		assert.equal(changes.size, 3);
-		assert.equal(changes.get("C1")?.action, "CHANGED");
-		assert.equal(changes.get("U1")?.action, "ADDED");
-		assert.equal(changes.get("D1")?.action, "DELETED");
-		assert.equal(changes.has("R1"), false);
+		assertMatches([
+			[changes instanceof Map, true],
+			[changes.size, 3],
+			[changes.get("C1")?.action, "CHANGED"],
+			[changes.get("U1")?.action, "ADDED"],
+			[changes.get("D1")?.action, "DELETED"],
+			[changes.has("R1"), false],
+		]);
 	});
 
 	test("returns empty Map when baseBoard or targetBoard is missing or invalid", () => {
 		const validBoard = { footprints: [] };
-		assert.equal(computeFootprintChanges(null, validBoard).size, 0);
-		assert.equal(computeFootprintChanges(validBoard, null).size, 0);
-		assert.equal(computeFootprintChanges(null, null).size, 0);
+		const pairs = [
+			[null, validBoard],
+			[validBoard, null],
+			[null, null],
+		];
+		for (const [base, target] of pairs) {
+			assert.equal(computeFootprintChanges(base, target).size, 0);
+		}
 	});
 
 	test("ignores footprints with missing or empty reference designators", () => {
@@ -196,22 +219,7 @@ describe("extractPadsFromFootprints", () => {
 		const footprints = [
 			{
 				reference: { text: "R1" },
-				pads: [
-					{
-						number: "1",
-						net: "GND",
-						absAt: { x: 10.5, y: 20.0 },
-						size: { w: 1.2, h: 0.8 },
-						layers: ["F.Cu"],
-					},
-					{
-						number: "2",
-						net: "+3V3",
-						absAt: { x: 12.5, y: 20.0 },
-						size: { w: 1.2, h: 0.8 },
-						layers: ["F.Cu"],
-					},
-				],
+				pads: [makePad("1", "GND", 10.5), makePad("2", "+3V3", 12.5)],
 			},
 		];
 
@@ -231,13 +239,13 @@ describe("extractPadsFromFootprints", () => {
 	});
 
 	test("returns empty array when footprints are empty or omitted", () => {
-		assert.deepEqual(extractPadsFromFootprints(), []);
-		assert.deepEqual(extractPadsFromFootprints([]), []);
+		for (const fps of [undefined, []]) {
+			assert.deepEqual(extractPadsFromFootprints(fps), []);
+		}
 	});
 
 	test("applies safe defaults when pad fields or references are omitted", () => {
-		const footprints = [{ pads: [{}] }];
-		const pads = extractPadsFromFootprints(footprints);
+		const pads = extractPadsFromFootprints([{ pads: [{}] }]);
 		assert.equal(pads.length, 1);
 		assert.deepEqual(pads[0], {
 			refDes: "",
@@ -254,120 +262,109 @@ describe("extractPadsFromFootprints", () => {
 
 describe("tryParseBoard", () => {
 	test("returns null when filePath is missing or does not exist", () => {
-		assert.equal(tryParseBoard(null), null);
-		assert.equal(tryParseBoard(""), null);
-		assert.equal(
-			tryParseBoard(path.join(tempDir, "non-existent.kicad_pcb")),
-			null,
-		);
+		const nonExistentPath = path.join(tempDir, "non-existent.kicad_pcb");
+		for (const fp of [null, "", nonExistentPath]) {
+			assert.equal(tryParseBoard(fp), null);
+		}
 	});
 
 	test("returns null and catches error when file contains invalid PCB AST", () => {
-		const invalidFile = path.join(tempDir, "corrupt.kicad_pcb");
-		fs.writeFileSync(invalidFile, "(not_kicad_pcb (unclosed", "utf8");
-
+		const invalidFile = writeTempPcb(
+			"corrupt.kicad_pcb",
+			"(not_kicad_pcb (unclosed",
+		);
 		const parsed = tryParseBoard(invalidFile);
 		assert.equal(parsed, null);
 	});
 
 	test("parses a valid KiCad PCB file into board AST representation", () => {
-		const validFile = path.join(tempDir, "valid.kicad_pcb");
-		const content = `(kicad_pcb
-  (version 20240108)
-  (generator pcbnew)
-  (net 0 "")
-  (net 1 "GND")
-  (footprint "R_0805" (layer "F.Cu")
-    (at 10 20 0)
-    (property "Reference" "R1")
-    (property "Value" "10k")
-    (pad "1" smd rect (at 0 0 0) (size 1 1) (layers "F.Cu") (net 1 "GND"))
-  )
-  (segment (start 0 0) (end 5 5) (width 0.25) (layer "F.Cu") (net 1))
-)`;
-		fs.writeFileSync(validFile, content, "utf8");
+		const validFile = writeTempPcb(
+			"valid.kicad_pcb",
+			renderKicadPcb({
+				pad: '(pad "1" smd rect (at 0 0 0) (size 1 1) (layers "F.Cu") (net 1 "GND"))',
+				segment:
+					'(segment (start 0 0) (end 5 5) (width 0.25) (layer "F.Cu") (net 1))',
+			}),
+		);
 
 		const board = tryParseBoard(validFile);
 		assert.ok(board);
-		assert.equal(board.footprints.length, 1);
-		assert.equal(board.footprints[0].reference.text, "R1");
-		assert.equal(board.footprints[0].value.text, "10k");
-		assert.equal(board.tracks.length, 1);
-		assert.equal(board.nets.get(1), "GND");
+		assertMatches([
+			[board.footprints.length, 1],
+			[board.footprints[0].reference.text, "R1"],
+			[board.footprints[0].value.text, "10k"],
+			[board.tracks.length, 1],
+			[board.nets.get(1), "GND"],
+		]);
 	});
 });
 
 describe("extractPcbMetadata", () => {
 	test("returns null when isPcb is false or target file cannot be parsed", () => {
-		assert.equal(extractPcbMetadata("base.pcb", "target.pcb", false), null);
-		assert.equal(
-			extractPcbMetadata(null, path.join(tempDir, "missing.kicad_pcb"), true),
-			null,
-		);
+		const missingPath = path.join(tempDir, "missing.kicad_pcb");
+		const invalidCases = [
+			["base.pcb", "target.pcb", false],
+			[null, missingPath, true],
+		];
+		for (const [base, target, isPcb] of invalidCases) {
+			assert.equal(extractPcbMetadata(base, target, isPcb), null);
+		}
 	});
 
 	test("extracts comprehensive PCB metadata and footprint deltas between boards", () => {
-		const baseFile = path.join(tempDir, "meta-base.kicad_pcb");
-		const targetFile = path.join(tempDir, "meta-target.kicad_pcb");
-
-		const baseContent = `(kicad_pcb
-  (version 20240108)
-  (generator pcbnew)
-  (net 0 "")
-  (net 1 "GND")
-  (footprint "R_0805" (layer "F.Cu")
-    (at 10 20 0)
-    (property "Reference" "R1")
-    (property "Value" "10k")
-  )
-)`;
-		const targetContent = `(kicad_pcb
-  (version 20240108)
-  (generator pcbnew)
-  (net 0 "")
-  (net 1 "GND")
-  (footprint "R_0805" (layer "F.Cu")
-    (at 15 20 0)
-    (property "Reference" "R1")
-    (property "Value" "10k")
-    (pad "1" smd rect (at 0 0 0) (size 1 1) (layers "F.Cu") (net 1 "GND"))
-  )
-  (segment (start 0 0) (end 10 0) (width 0.2) (layer "F.Cu") (net 1))
-)`;
-		fs.writeFileSync(baseFile, baseContent, "utf8");
-		fs.writeFileSync(targetFile, targetContent, "utf8");
+		const baseFile = writeTempPcb("meta-base.kicad_pcb", renderKicadPcb());
+		const targetFile = writeTempPcb(
+			"meta-target.kicad_pcb",
+			renderKicadPcb({
+				fp: {
+					name: "R_0805",
+					layer: "F.Cu",
+					at: "15 20 0",
+					ref: "R1",
+					val: "10k",
+				},
+				pad: '(pad "1" smd rect (at 0 0 0) (size 1 1) (layers "F.Cu") (net 1 "GND"))',
+				segment:
+					'(segment (start 0 0) (end 10 0) (width 0.2) (layer "F.Cu") (net 1))',
+			}),
+		);
 
 		const metadata = extractPcbMetadata(baseFile, targetFile, true);
 		assert.ok(metadata);
-		assert.equal(metadata.footprints.length, 1);
-		assert.equal(metadata.footprints[0].ref, "R1");
-		assert.equal(metadata.footprints[0].x, 15);
-		assert.equal(metadata.pads.length, 1);
-		assert.equal(metadata.pads[0].refDes, "R1");
-		assert.equal(metadata.segments.length, 1);
-		assert.equal(metadata.segments[0].width, 0.2);
-		assert.equal(metadata.nets.includes("GND"), true);
-		assert.equal(metadata.footprintChanges.get("R1")?.action, "CHANGED");
+		assertMatches([
+			[metadata.footprints.length, 1],
+			[metadata.footprints[0].ref, "R1"],
+			[metadata.footprints[0].x, 15],
+			[metadata.pads.length, 1],
+			[metadata.pads[0].refDes, "R1"],
+			[metadata.segments.length, 1],
+			[metadata.segments[0].width, 0.2],
+			[metadata.nets.includes("GND"), true],
+			[metadata.footprintChanges.get("R1")?.action, "CHANGED"],
+		]);
 	});
 
 	test("extracts metadata when base board is omitted (new target board)", () => {
-		const targetFile = path.join(tempDir, "meta-target-only.kicad_pcb");
-		const targetContent = `(kicad_pcb
-  (version 20240108)
-  (generator pcbnew)
-  (net 0 "")
-  (footprint "C_0603" (layer "B.Cu")
-    (at 30 40 0)
-    (property "Reference" "C1")
-    (property "Value" "22uF")
-  )
-)`;
-		fs.writeFileSync(targetFile, targetContent, "utf8");
+		const targetFile = writeTempPcb(
+			"meta-target-only.kicad_pcb",
+			renderKicadPcb({
+				fp: {
+					name: "C_0603",
+					layer: "B.Cu",
+					at: "30 40 0",
+					ref: "C1",
+					val: "22uF",
+				},
+				hasGndNet: false,
+			}),
+		);
 
 		const metadata = extractPcbMetadata(null, targetFile, true);
 		assert.ok(metadata);
-		assert.equal(metadata.footprints.length, 1);
-		assert.equal(metadata.footprints[0].ref, "C1");
-		assert.equal(metadata.footprintChanges.size, 0);
+		assertMatches([
+			[metadata.footprints.length, 1],
+			[metadata.footprints[0].ref, "C1"],
+			[metadata.footprintChanges.size, 0],
+		]);
 	});
 });
