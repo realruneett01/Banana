@@ -35,13 +35,14 @@ const DIFF_RING_CLASS_MAP = {
 	add: "diff-added",
 };
 
+const FILL_BOX = { width: "100%", height: "100%" };
 const FULL_ABSOLUTE_STYLE = {
 	position: "absolute",
 	top: 0,
 	left: 0,
-	width: "100%",
-	height: "100%",
+	...FILL_BOX,
 };
+const LAYER_STACK_STYLE = { position: "relative", ...FILL_BOX };
 
 const SVG_LAYER_STYLE = {
 	...FULL_ABSOLUTE_STYLE,
@@ -64,17 +65,10 @@ const TARGET_PANE_BASE_STYLE = {
 	backfaceVisibility: "hidden",
 };
 
-const LAYER_STACK_STYLE = {
-	width: "100%",
-	height: "100%",
-	position: "relative",
-};
-
 const SURFACE_WRAPPER_STYLE = {
+	...FILL_BOX,
 	position: "relative",
 	flex: 1,
-	width: "100%",
-	height: "100%",
 	overflow: "hidden",
 	cursor: "grab",
 	userSelect: "none",
@@ -82,9 +76,8 @@ const SURFACE_WRAPPER_STYLE = {
 };
 
 const CANVAS_CONTAINER_STYLE = {
+	...FILL_BOX,
 	position: "relative",
-	width: "100%",
-	height: "100%",
 	minHeight: "450px",
 	overflow: "hidden",
 	background: "#0d0f18",
@@ -121,34 +114,28 @@ const SvgLayer = React.memo(
 	areSvgPropsEqual,
 );
 
-function resolveLayerFilter(isDimmed, isSlider, isBase) {
-	if (isDimmed) return DIMMED_FILTER;
+function selectFilter(dimmed, isSlider, isBase) {
+	if (dimmed) return DIMMED_FILTER;
 	if (isSlider) return "none";
 	return isBase ? RED_FILTER : GREEN_FILTER;
 }
 
-function resolveLayerVisuals({
-	filename,
-	isBase,
-	isSlider,
-	soloLayer,
-	layerOpacities,
-}) {
-	const isSolo = isLayerSolo(filename, soloLayer);
-	const isDimmed = Boolean(soloLayer && !isSolo);
-	const layerOp = getLayerOpacity(filename, layerOpacities);
-	const filterStyle = resolveLayerFilter(isDimmed, isSlider, isBase);
-	const opacity = isDimmed ? 0.12 : layerOp;
-	const mixBlend = isSlider || isDimmed ? "normal" : "difference";
-	return { filterStyle, opacity, mixBlend };
+function computeLayerStyle(filename, config) {
+	const { isBase, isSlider, soloLayer, layerOpacities } = config;
+	const dimmed = Boolean(soloLayer) && !isLayerSolo(filename, soloLayer);
+	return {
+		filterStyle: selectFilter(dimmed, isSlider, isBase),
+		opacity: dimmed ? 0.12 : getLayerOpacity(filename, layerOpacities),
+		mixBlend: isSlider || dimmed ? "normal" : "difference",
+	};
 }
 
 function LayerStack({ svgs, isBase, isSlider, soloLayer, layerOpacities }) {
+	const prefix = isBase ? "base" : "target";
 	return (
 		<div style={LAYER_STACK_STYLE}>
 			{svgs.map((svg) => {
-				const visuals = resolveLayerVisuals({
-					filename: svg.filename,
+				const visuals = computeLayerStyle(svg.filename, {
 					isBase,
 					isSlider,
 					soloLayer,
@@ -156,7 +143,7 @@ function LayerStack({ svgs, isBase, isSlider, soloLayer, layerOpacities }) {
 				});
 				return (
 					<SvgLayer
-						key={`${isBase ? "base" : "target"}-${svg.filename}`}
+						key={`${prefix}-${svg.filename}`}
 						content={svg.content}
 						filterStyle={visuals.filterStyle}
 						opacityStyle={visuals.opacity}
@@ -168,54 +155,50 @@ function LayerStack({ svgs, isBase, isSlider, soloLayer, layerOpacities }) {
 	);
 }
 
-function normalizeToRect(pointOrRect) {
-	if (!pointOrRect) return null;
-	if (pointOrRect.left !== undefined && pointOrRect.width !== undefined) {
-		return pointOrRect;
-	}
-	if (typeof pointOrRect.x === "number" && typeof pointOrRect.y === "number") {
-		return { left: pointOrRect.x, top: pointOrRect.y, width: 0, height: 0 };
+function normalizeToRect(target) {
+	if (!target) return null;
+	if ("left" in target && "width" in target) return target;
+	if ("x" in target && "y" in target) {
+		return { left: target.x, top: target.y, width: 0, height: 0 };
 	}
 	return null;
 }
 
-function resolveCoords(targetCoords, baseCoords, bbox) {
+function resolveCoords({ targetCoords, baseCoords, bbox }) {
 	if (targetCoords) return targetCoords;
 	if (baseCoords) return baseCoords;
-	if (bbox) return { x: (bbox.x1 + bbox.x2) / 2, y: (bbox.y1 + bbox.y2) / 2 };
-	return null;
+	return bbox
+		? { x: (bbox.x1 + bbox.x2) / 2, y: (bbox.y1 + bbox.y2) / 2 }
+		: null;
 }
 
 function findDiffDomElement(root, diffIdx) {
-	return diffIdx != null && root
-		? root.querySelector(`[data-diff-idx="${diffIdx}"]`)
-		: null;
+	if (!root || diffIdx == null) return null;
+	return root.querySelector(`[data-diff-idx="${diffIdx}"]`);
 }
 
 function resolveTargetRect(contentRef, options) {
-	const { diffIdx, baseCoords, targetCoords, bbox } = options;
-	const coords = resolveCoords(targetCoords, baseCoords, bbox);
 	const root = contentRef.current;
+	const coords = resolveCoords(options);
 	// Try coords first, then fall back to DOM lookup — always attempt both
-	const fromCoords = coords
-		? normalizeToRect(getScreenCoordsFromSvg(root, coords))
-		: null;
-	const fromDom = findDiffDomRect(root, diffIdx);
-	const elRect = fromCoords || fromDom;
-	const target = findDiffDomElement(root, diffIdx);
+	const point = coords ? getScreenCoordsFromSvg(root, coords) : null;
+	const elRect =
+		normalizeToRect(point) ?? findDiffDomRect(root, options.diffIdx);
+	const target = findDiffDomElement(root, options.diffIdx);
 	return { elRect, target, coords };
 }
 
-function clearDiffAttr(root, attr, className) {
+function clearMarker(root, attr, className) {
 	if (!root) return;
-	root.querySelectorAll(`[${attr}="true"]`).forEach((el) => {
+	const items = root.querySelectorAll(`[${attr}="true"]`);
+	for (const el of items) {
 		el.removeAttribute(attr);
 		if (className) el.classList.remove(className);
-	});
+	}
 }
 
 function setDiffSelected(root, targetEl) {
-	clearDiffAttr(root, "data-diff-selected", "diff-highlight-active");
+	clearMarker(root, "data-diff-selected", "diff-highlight-active");
 	if (targetEl) {
 		targetEl.setAttribute("data-diff-selected", "true");
 		targetEl.classList.add("diff-highlight-active");
@@ -223,24 +206,24 @@ function setDiffSelected(root, targetEl) {
 }
 
 function updateDiffHovered(root, diffIdx) {
-	clearDiffAttr(root, "data-diff-hovered");
-	if (diffIdx != null && root) {
-		root.querySelectorAll(`[data-diff-idx="${diffIdx}"]`).forEach((el) => {
-			el.setAttribute("data-diff-hovered", "true");
-		});
+	clearMarker(root, "data-diff-hovered");
+	if (diffIdx == null || !root) return;
+	const items = root.querySelectorAll(`[data-diff-idx="${diffIdx}"]`);
+	for (const el of items) {
+		el.setAttribute("data-diff-hovered", "true");
 	}
 }
 
 function computeFocusTransform(elRect, vpRect, current) {
 	const targetScale = 2.4;
-	const elCX = elRect.left + elRect.width / 2 - vpRect.left;
-	const elCY = elRect.top + elRect.height / 2 - vpRect.top;
-	const contentX = (elCX - current.x) / current.scale;
-	const contentY = (elCY - current.y) / current.scale;
+	const midX = elRect.left + elRect.width / 2 - vpRect.left;
+	const midY = elRect.top + elRect.height / 2 - vpRect.top;
+	const originX = (midX - current.x) / current.scale;
+	const originY = (midY - current.y) / current.scale;
 	return {
 		scale: targetScale,
-		x: vpRect.width / 2 - contentX * targetScale,
-		y: vpRect.height / 2 - contentY * targetScale,
+		x: vpRect.width / 2 - originX * targetScale,
+		y: vpRect.height / 2 - originY * targetScale,
 	};
 }
 
@@ -293,14 +276,14 @@ function useDiffCanvasApi(ref, apiOptions) {
 
 function useCanvasEscapeKey(activeAuditIdx, resetView, setActiveAuditIdx) {
 	useEffect(() => {
-		const handleKeyDown = (e) => {
-			if (e.key === "Escape" && activeAuditIdx !== null) {
-				if (setActiveAuditIdx) setActiveAuditIdx(null);
-				resetView();
-			}
+		const onKey = (event) => {
+			const shouldReset = event.key === "Escape" && activeAuditIdx !== null;
+			if (!shouldReset) return;
+			setActiveAuditIdx?.(null);
+			resetView();
 		};
-		window.addEventListener("keydown", handleKeyDown);
-		return () => window.removeEventListener("keydown", handleKeyDown);
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
 	}, [activeAuditIdx, resetView, setActiveAuditIdx]);
 }
 
@@ -317,15 +300,22 @@ function filterActiveSvgs(svgs, activeLayers) {
 	);
 }
 
-function DiffLayerPane(props) {
-	const { isBase, isSlider, soloLayer, layerOpacities, activeLayers } = props;
-	const rawSvgs = isBase ? props.baseSvgs : props.targetSvgs;
+function resolvePaneStyle(isBase, isSlider, sliderValue) {
+	if (isBase) return LAYER_PANE_STYLE;
+	const clipPath = isSlider ? `inset(0 0 0 ${sliderValue}%)` : "none";
+	return { ...TARGET_PANE_BASE_STYLE, clipPath };
+}
+
+function resolvePaneSvgs(props, isBase) {
+	const raw = isBase ? props.baseSvgs : props.targetSvgs;
 	const active = isBase ? props.activeBaseSvgs : props.activeTargetSvgs;
-	const svgs = active || filterActiveSvgs(rawSvgs, activeLayers);
-	const clipPath = isSlider ? `inset(0 0 0 ${props.sliderValue}%)` : "none";
-	const style = isBase
-		? LAYER_PANE_STYLE
-		: { ...TARGET_PANE_BASE_STYLE, clipPath };
+	return active || filterActiveSvgs(raw, props.activeLayers);
+}
+
+function DiffLayerPane(props) {
+	const { isBase, isSlider, sliderValue, soloLayer, layerOpacities } = props;
+	const svgs = resolvePaneSvgs(props, isBase);
+	const style = resolvePaneStyle(isBase, isSlider, sliderValue);
 	return (
 		<div style={style}>
 			<LayerStack
