@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { detectEvents, frameAt, playbackClock } from "./transientModel.js";
 
 const MSG_503 = "The circuit simulator isn't installed on this server yet";
 
@@ -23,9 +24,17 @@ function resolveErrorMessage(res) {
 	return res?.error || "Simulation failed";
 }
 
-async function executeSim({ api, ir, fault, signal, onSuccess, onFailure }) {
+async function executeSim({
+	api,
+	ir,
+	fault,
+	analysis,
+	signal,
+	onSuccess,
+	onFailure,
+}) {
 	const res = await api.simulateCircuit(
-		{ ir, fault: fault || undefined },
+		{ ir, fault: fault || undefined, analysis },
 		{ signal },
 	);
 	if (signal.aborted || !res) return;
@@ -55,29 +64,122 @@ function useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim }) {
 	}, [api, ir, setFaults, setSelectedFault, resetSim]);
 }
 
-export function useCircuitSim({ api, ir }) {
-	const [status, setStatus] = useState("idle");
-	const [error, setError] = useState(null);
-	const [result, setResult] = useState(null);
-	const [faults, setFaults] = useState([]);
-	const [selectedFault, setSelectedFault] = useState(null);
+function usePlaybackAnimation({
+	playing,
+	setPlaying,
+	duration,
+	clockRef,
+	setTime,
+}) {
+	const rafRef = useRef(null);
+
+	useEffect(() => {
+		const canAnimate =
+			playing && duration > 0 && typeof requestAnimationFrame === "function";
+		if (!canAnimate) return;
+
+		let lastNow = performance.now();
+		const tick = (now) => {
+			const dtWallS = Math.max(0, (now - lastNow) / 1000);
+			lastNow = now;
+			const nextT = clockRef.current?.advance(dtWallS) ?? 0;
+			setTime(nextT);
+			if (nextT >= duration) {
+				setPlaying(false);
+				return;
+			}
+			rafRef.current = requestAnimationFrame(tick);
+		};
+		rafRef.current = requestAnimationFrame(tick);
+		return () => {
+			if (rafRef.current) cancelAnimationFrame(rafRef.current);
+		};
+	}, [playing, duration, setPlaying, clockRef, setTime]);
+
+	useEffect(() => {
+		return () => {
+			if (rafRef.current) cancelAnimationFrame(rafRef.current);
+		};
+	}, []);
+}
+
+function useSimPlayback({ result, ir }) {
 	const [playing, setPlaying] = useState(false);
 	const [speed, setSpeed] = useState(1);
-	const runAbortRef = useRef(null);
+	const [time, setTime] = useState(0);
+	const clockRef = useRef(null);
+	const speedRef = useRef(speed);
+	speedRef.current = speed;
 
-	const resetSim = useCallback(() => {
-		setResult(null);
-		setError(null);
-		setStatus("idle");
+	const duration = useMemo(() => {
+		const times = result?.series?.time;
+		return times?.length ? (times[times.length - 1] ?? 0) : 0;
+	}, [result]);
+
+	const events = useMemo(() => {
+		return result?.series ? detectEvents(result.series, ir) : [];
+	}, [result, ir]);
+
+	useEffect(() => {
+		clockRef.current = playbackClock({
+			durationS: duration,
+			speed: speedRef.current,
+		});
+		setTime(0);
+	}, [duration]);
+
+	useEffect(() => {
+		clockRef.current?.setSpeed(speed);
+	}, [speed]);
+
+	usePlaybackAnimation({ playing, setPlaying, duration, clockRef, setTime });
+
+	const seek = useCallback((targetT) => {
+		const clamped = clockRef.current ? clockRef.current.seek(targetT) : 0;
+		setTime(clamped);
 	}, []);
 
-	useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim });
+	const currentFrame = useMemo(() => {
+		if (result?.series) return frameAt(result.series, time);
+		return {
+			nodeVoltages: result?.nodeVoltages ?? {},
+			partCurrents: result?.partCurrents ?? {},
+		};
+	}, [result, time]);
+
+	return {
+		playing,
+		setPlaying,
+		speed,
+		setSpeed,
+		time,
+		duration,
+		seek,
+		events,
+		currentFrame,
+	};
+}
+
+function useSimExecution({
+	api,
+	ir,
+	selectedFault,
+	analysisMode,
+	setResult,
+	setStatus,
+	setError,
+}) {
+	const runAbortRef = useRef(null);
 	useEffect(() => () => stopController(runAbortRef), []);
 
 	const run = useCallback(
 		async (faultOverride) => {
 			if (!api?.simulateCircuit || !ir) return;
 			const fault = faultOverride !== undefined ? faultOverride : selectedFault;
+			const analysis =
+				analysisMode === "over time"
+					? { type: "tran", stepS: 1e-5, stopS: 0.01 }
+					: undefined;
 			setStatus("running");
 			setError(null);
 			const signal = nextSignal(runAbortRef);
@@ -85,6 +187,7 @@ export function useCircuitSim({ api, ir }) {
 				api,
 				ir,
 				fault,
+				analysis,
 				signal,
 				onSuccess: (data) => {
 					setResult(data);
@@ -96,8 +199,37 @@ export function useCircuitSim({ api, ir }) {
 				},
 			});
 		},
-		[api, ir, selectedFault],
+		[api, ir, selectedFault, analysisMode, setResult, setStatus, setError],
 	);
+
+	return run;
+}
+
+export function useCircuitSim({ api, ir }) {
+	const [status, setStatus] = useState("idle");
+	const [error, setError] = useState(null);
+	const [result, setResult] = useState(null);
+	const [faults, setFaults] = useState([]);
+	const [selectedFault, setSelectedFault] = useState(null);
+	const [analysisMode, setAnalysisMode] = useState("snapshot");
+
+	const resetSim = useCallback(() => {
+		setResult(null);
+		setError(null);
+		setStatus("idle");
+	}, []);
+
+	useFaultsLoader({ api, ir, setFaults, setSelectedFault, resetSim });
+	const run = useSimExecution({
+		api,
+		ir,
+		selectedFault,
+		analysisMode,
+		setResult,
+		setStatus,
+		setError,
+	});
+	const playback = useSimPlayback({ result, ir });
 
 	return {
 		status,
@@ -107,9 +239,8 @@ export function useCircuitSim({ api, ir }) {
 		selectedFault,
 		setFault: setSelectedFault,
 		run,
-		playing,
-		setPlaying,
-		speed,
-		setSpeed,
+		analysisMode,
+		setAnalysisMode,
+		...playback,
 	};
 }
