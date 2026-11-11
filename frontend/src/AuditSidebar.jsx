@@ -1,32 +1,41 @@
 import { useEffect, useRef, useState } from "react";
 import { getCleanLayerName } from "./utils/auditLogUtils.js";
 
-const ACTION_CONFIG = Object.freeze({
-	CHANGED: {
-		bg: "rgba(245, 158, 11, 0.18)",
-		border: "rgba(245, 158, 11, 0.45)",
-		color: "#fbbf24",
-		label: "CHANGED",
-	},
-	ADDED: {
-		bg: "rgba(16, 185, 129, 0.18)",
-		border: "rgba(16, 185, 129, 0.45)",
-		color: "#34d399",
-		label: "ADDED",
-	},
-	DELETED: {
-		bg: "rgba(244, 63, 94, 0.18)",
-		border: "rgba(244, 63, 94, 0.45)",
-		color: "#fb7185",
-		label: "DELETED",
-	},
-	DEFAULT: {
-		bg: "rgba(148, 163, 184, 0.18)",
-		border: "rgba(148, 163, 184, 0.35)",
-		color: "#cbd5e1",
-		label: "MODIFIED",
-	},
-});
+const ACTION_DEFS = {
+	CHANGED: [
+		"rgba(245, 158, 11, 0.18)",
+		"rgba(245, 158, 11, 0.45)",
+		"#fbbf24",
+		"CHANGED",
+	],
+	ADDED: [
+		"rgba(16, 185, 129, 0.18)",
+		"rgba(16, 185, 129, 0.45)",
+		"#34d399",
+		"ADDED",
+	],
+	DELETED: [
+		"rgba(244, 63, 94, 0.18)",
+		"rgba(244, 63, 94, 0.45)",
+		"#fb7185",
+		"DELETED",
+	],
+	DEFAULT: [
+		"rgba(148, 163, 184, 0.18)",
+		"rgba(148, 163, 184, 0.35)",
+		"#cbd5e1",
+		"MODIFIED",
+	],
+};
+
+const ACTION_CONFIG = Object.freeze(
+	Object.fromEntries(
+		Object.entries(ACTION_DEFS).map(([key, [bg, border, color, label]]) => [
+			key,
+			{ bg, border, color, label },
+		]),
+	),
+);
 
 function getBadgeStyle(conf) {
 	return {
@@ -80,52 +89,62 @@ function findFocusedIndex(modifications, activeDiffIdx) {
 	return modifications.findIndex((m, i) => isDiffMatch(m, activeDiffIdx, i));
 }
 
-function getCardBorder(isSelected, hovered) {
-	if (isSelected) return "1px solid #fadb14";
-	return hovered ? "1px solid #3b4468" : "1px solid #23283e";
+const CARD_PALETTE = {
+	selected: {
+		border: "1px solid #fadb14",
+		background:
+			"linear-gradient(135deg, rgba(250, 219, 20, 0.16) 0%, rgba(24, 29, 46, 0.98) 100%)",
+		boxShadow:
+			"0 0 14px rgba(250, 219, 20, 0.35), inset 0 0 8px rgba(250, 219, 20, 0.1)",
+	},
+	hovered: {
+		border: "1px solid #3b4468",
+		background: "#1c2238",
+		boxShadow: "0 4px 10px rgba(0, 0, 0, 0.4)",
+	},
+	normal: {
+		border: "1px solid #23283e",
+		background: "rgba(22, 26, 42, 0.8)",
+		boxShadow: "0 2px 6px rgba(0, 0, 0, 0.25)",
+	},
+};
+
+function resolveCardTheme(isSelected, hovered) {
+	if (isSelected) return CARD_PALETTE.selected;
+	return hovered ? CARD_PALETTE.hovered : CARD_PALETTE.normal;
 }
 
-function getCardBackground(isSelected, hovered) {
-	if (isSelected) {
-		return "linear-gradient(135deg, rgba(250, 219, 20, 0.16) 0%, rgba(24, 29, 46, 0.98) 100%)";
-	}
-	return hovered ? "#1c2238" : "rgba(22, 26, 42, 0.8)";
-}
-
-function getCardShadow(isSelected, hovered) {
-	if (isSelected) {
-		return "0 0 14px rgba(250, 219, 20, 0.35), inset 0 0 8px rgba(250, 219, 20, 0.1)";
-	}
-	return hovered
-		? "0 4px 10px rgba(0, 0, 0, 0.4)"
-		: "0 2px 6px rgba(0, 0, 0, 0.25)";
-}
+const CARD_LAYOUT = {
+	padding: "10px 12px",
+	borderRadius: "6px",
+	cursor: "pointer",
+	transition: "all 0.18s ease-in-out",
+	display: "flex",
+	flexDirection: "column",
+	gap: "6px",
+	position: "relative",
+};
 
 function getCardStyle(isSelected, hovered) {
 	return {
-		padding: "10px 12px",
-		borderRadius: "6px",
-		border: getCardBorder(isSelected, hovered),
-		background: getCardBackground(isSelected, hovered),
-		boxShadow: getCardShadow(isSelected, hovered),
-		cursor: "pointer",
-		transition: "all 0.18s ease-in-out",
-		display: "flex",
-		flexDirection: "column",
-		gap: "6px",
-		position: "relative",
+		...CARD_LAYOUT,
+		...resolveCardTheme(isSelected, hovered),
 	};
 }
 
-const LAYER_CHIP_STYLE = {
-	fontSize: "10px",
+const MONO_TAG_BASE = {
 	fontFamily: "monospace",
-	padding: "1px 6px",
 	borderRadius: "4px",
+	letterSpacing: "0.02em",
+};
+
+const LAYER_CHIP_STYLE = {
+	...MONO_TAG_BASE,
+	fontSize: "10px",
+	padding: "1px 6px",
 	background: "#181d2f",
 	border: "1px solid #28304c",
 	color: "#94a3b8",
-	letterSpacing: "0.02em",
 };
 
 function LayerChip({ cleanLayer }) {
@@ -133,6 +152,21 @@ function LayerChip({ cleanLayer }) {
 		return null;
 	}
 	return <span style={LAYER_CHIP_STYLE}>{cleanLayer}</span>;
+}
+
+function IndicatorDot({ size, color, shadow = false }) {
+	return (
+		<span
+			style={{
+				width: size,
+				height: size,
+				borderRadius: "50%",
+				background: color,
+				boxShadow: shadow ? `0 0 ${size}px ${color}` : undefined,
+				display: "inline-block",
+			}}
+		/>
+	);
 }
 
 const FOCUSED_BADGE_STYLE = {
@@ -148,18 +182,10 @@ const FOCUSED_BADGE_STYLE = {
 	color: "#0f1015",
 };
 
-const FOCUSED_DOT_STYLE = {
-	width: 5,
-	height: 5,
-	borderRadius: "50%",
-	background: "#0f1015",
-	display: "inline-block",
-};
-
 function FocusedBadge() {
 	return (
 		<span style={FOCUSED_BADGE_STYLE}>
-			<span style={FOCUSED_DOT_STYLE} />
+			<IndicatorDot size={5} color="#0f1015" />
 			FOCUSED
 		</span>
 	);
@@ -239,6 +265,7 @@ function CardDetail({ detail, isSelected }) {
 
 function CardCoords({ coords }) {
 	if (!coords) return null;
+	const { x, y } = coords;
 	return (
 		<div
 			style={{
@@ -253,7 +280,7 @@ function CardCoords({ coords }) {
 		>
 			<span>📍</span>
 			<span>
-				({coords.x.toFixed(2)}, {coords.y.toFixed(2)}) mm
+				({x.toFixed(2)}, {y.toFixed(2)}) mm
 			</span>
 		</div>
 	);
@@ -270,11 +297,8 @@ function useCardAutoScroll(cardRef, isSelected) {
 	}, [isSelected, cardRef]);
 }
 
-function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
-	const cardRef = useRef(null);
+function useCardInteractions({ item, idx, onSelect, onHover }) {
 	const [hovered, setHovered] = useState(false);
-
-	useCardAutoScroll(cardRef, isSelected);
 
 	const handleMouseEnter = () => {
 		setHovered(true);
@@ -292,6 +316,16 @@ function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
 			onSelect?.(item, idx);
 		}
 	};
+
+	return { hovered, handleMouseEnter, handleMouseLeave, handleKeyDown };
+}
+
+function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
+	const cardRef = useRef(null);
+	const { hovered, handleMouseEnter, handleMouseLeave, handleKeyDown } =
+		useCardInteractions({ item, idx, onSelect, onHover });
+
+	useCardAutoScroll(cardRef, isSelected);
 
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: card holds block layout, which <button> cannot contain; role=button + Enter/Space handler is the ARIA pattern
@@ -321,16 +355,7 @@ function ModificationCard({ item, idx, isSelected, onSelect, onHover }) {
 function HeaderTitle() {
 	return (
 		<div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-			<span
-				style={{
-					width: 8,
-					height: 8,
-					borderRadius: "50%",
-					background: "#10b981",
-					boxShadow: "0 0 8px #10b981",
-					display: "inline-block",
-				}}
-			/>
+			<IndicatorDot size={8} color="#10b981" shadow />
 			<h3
 				style={{
 					margin: 0,
@@ -347,47 +372,52 @@ function HeaderTitle() {
 	);
 }
 
+const HEADER_BADGE_STYLE = {
+	...MONO_TAG_BASE,
+	fontSize: "11px",
+	background: "#1a1f33",
+	border: "1px solid #283250",
+	color: "#94a3b8",
+	padding: "2px 8px",
+	borderRadius: "12px",
+};
+
 function HeaderBadge({ count }) {
 	const label = count === 1 ? "change" : "changes";
 	return (
-		<span
-			style={{
-				fontSize: "11px",
-				fontFamily: "monospace",
-				background: "#1a1f33",
-				border: "1px solid #283250",
-				color: "#94a3b8",
-				padding: "2px 8px",
-				borderRadius: "12px",
-			}}
-		>
+		<span style={HEADER_BADGE_STYLE}>
 			{count} {label}
 		</span>
 	);
 }
 
-const COLLAPSE_BTN_STYLE = {
-	background: "transparent",
-	border: "none",
-	color: "#94a3b8",
+const BASE_BUTTON_STYLE = {
 	cursor: "pointer",
-	padding: "4px",
-	borderRadius: "4px",
 	display: "flex",
 	alignItems: "center",
 	justifyContent: "center",
-	transition: "color 0.15s, background 0.15s",
+	borderRadius: "4px",
 };
 
-function handleCollapseEnter(e) {
-	e.currentTarget.style.color = "#fadb14";
-	e.currentTarget.style.background = "rgba(250, 219, 20, 0.1)";
+function makeHoverProps(hoverStyle, restStyle) {
+	return {
+		onMouseEnter: (e) => Object.assign(e.currentTarget.style, hoverStyle),
+		onMouseLeave: (e) => Object.assign(e.currentTarget.style, restStyle),
+	};
 }
 
-function handleCollapseLeave(e) {
-	e.currentTarget.style.color = "#94a3b8";
-	e.currentTarget.style.background = "transparent";
-}
+const COLLAPSE_REST = { color: "#94a3b8", background: "transparent" };
+const COLLAPSE_HOVER = {
+	color: "#fadb14",
+	background: "rgba(250, 219, 20, 0.1)",
+};
+const COLLAPSE_BTN_STYLE = {
+	...BASE_BUTTON_STYLE,
+	border: "none",
+	padding: "4px",
+	transition: "color 0.15s, background 0.15s",
+	...COLLAPSE_REST,
+};
 
 function CollapseButton({ onCollapse }) {
 	if (!onCollapse) return null;
@@ -397,8 +427,7 @@ function CollapseButton({ onCollapse }) {
 			onClick={onCollapse}
 			title="Collapse audit sidebar"
 			style={COLLAPSE_BTN_STYLE}
-			onMouseEnter={handleCollapseEnter}
-			onMouseLeave={handleCollapseLeave}
+			{...makeHoverProps(COLLAPSE_HOVER, COLLAPSE_REST)}
 		>
 			<svg
 				width="15"
@@ -439,29 +468,17 @@ function SidebarHeader({ count, onCollapse }) {
 	);
 }
 
+const NAV_REST = { color: "#cbd5e1", borderColor: "#283250" };
+const NAV_HOVER = { color: "#fadb14", borderColor: "#fadb14" };
 const NAV_BUTTON_STYLE = {
+	...BASE_BUTTON_STYLE,
 	background: "#1a1f33",
 	border: "1px solid #283250",
-	color: "#cbd5e1",
-	borderRadius: "4px",
 	padding: "2px 7px",
 	fontSize: "11px",
-	cursor: "pointer",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
 	lineHeight: "1.2",
+	...NAV_REST,
 };
-
-function handleNavMouseEnter(e) {
-	e.currentTarget.style.color = "#fadb14";
-	e.currentTarget.style.borderColor = "#fadb14";
-}
-
-function handleNavMouseLeave(e) {
-	e.currentTarget.style.color = "#cbd5e1";
-	e.currentTarget.style.borderColor = "#283250";
-}
 
 function NavButton({ onClick, title, children }) {
 	return (
@@ -470,33 +487,25 @@ function NavButton({ onClick, title, children }) {
 			onClick={onClick}
 			title={title}
 			style={NAV_BUTTON_STYLE}
-			onMouseEnter={handleNavMouseEnter}
-			onMouseLeave={handleNavMouseLeave}
+			{...makeHoverProps(NAV_HOVER, NAV_REST)}
 		>
 			{children}
 		</button>
 	);
 }
 
+const EXIT_FOCUS_REST = { background: "rgba(250, 219, 20, 0.15)" };
+const EXIT_FOCUS_HOVER = { background: "rgba(250, 219, 20, 0.28)" };
 const EXIT_FOCUS_STYLE = {
-	background: "rgba(250, 219, 20, 0.15)",
+	...BASE_BUTTON_STYLE,
 	border: "1px solid #fadb14",
 	color: "#fadb14",
-	borderRadius: "4px",
 	padding: "2px 8px",
 	fontSize: "11px",
 	fontWeight: 600,
-	cursor: "pointer",
 	marginLeft: "4px",
+	...EXIT_FOCUS_REST,
 };
-
-function handleExitFocusEnter(e) {
-	e.currentTarget.style.background = "rgba(250, 219, 20, 0.28)";
-}
-
-function handleExitFocusLeave(e) {
-	e.currentTarget.style.background = "rgba(250, 219, 20, 0.15)";
-}
 
 function ExitFocusButton({ visible, onClearFocus }) {
 	if (!visible || !onClearFocus) return null;
@@ -506,8 +515,7 @@ function ExitFocusButton({ visible, onClearFocus }) {
 			onClick={onClearFocus}
 			title="Exit focus mode and restore full view (Esc)"
 			style={EXIT_FOCUS_STYLE}
-			onMouseEnter={handleExitFocusEnter}
-			onMouseLeave={handleExitFocusLeave}
+			{...makeHoverProps(EXIT_FOCUS_HOVER, EXIT_FOCUS_REST)}
 		>
 			✕ Exit Focus
 		</button>
@@ -533,16 +541,7 @@ function navigateFocus(e, options) {
 function ActiveFocusTag({ current, total }) {
 	return (
 		<>
-			<span
-				style={{
-					width: 6,
-					height: 6,
-					borderRadius: "50%",
-					background: "#fadb14",
-					boxShadow: "0 0 6px #fadb14",
-					display: "inline-block",
-				}}
-			/>
+			<IndicatorDot size={6} color="#fadb14" shadow />
 			<span style={{ color: "#fadb14", fontWeight: 600 }}>
 				Focus: {current} of {total}
 			</span>
@@ -592,6 +591,18 @@ function FocusNavControls({ onPrev, onNext, isAnyFocused, onClearFocus }) {
 	);
 }
 
+function useFocusNavigation({ modifications, focusedIndex, onSelectDiff }) {
+	const handlePrev = (e) => {
+		const targetIdx = getPreviousIndex(focusedIndex, modifications.length);
+		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
+	};
+	const handleNext = (e) => {
+		const targetIdx = getNextIndex(focusedIndex, modifications.length);
+		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
+	};
+	return { handlePrev, handleNext };
+}
+
 function FocusController({
 	modifications,
 	activeDiffIdx,
@@ -601,16 +612,13 @@ function FocusController({
 	const focusedIndex = findFocusedIndex(modifications, activeDiffIdx);
 	const isAnyFocused = focusedIndex !== -1;
 
-	if (modifications.length === 0) return null;
+	const { handlePrev, handleNext } = useFocusNavigation({
+		modifications,
+		focusedIndex,
+		onSelectDiff,
+	});
 
-	const handlePrev = (e) => {
-		const targetIdx = getPreviousIndex(focusedIndex, modifications.length);
-		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
-	};
-	const handleNext = (e) => {
-		const targetIdx = getNextIndex(focusedIndex, modifications.length);
-		navigateFocus(e, { modifications, targetIdx, onSelectDiff });
-	};
+	if (modifications.length === 0) return null;
 
 	return (
 		<div
