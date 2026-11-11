@@ -5,6 +5,7 @@ import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
 import { createApiRouter } from "./routes/index.js";
+import simRouter from "./routes/sim-routes.js";
 
 function setupStaticServing(expressApp, customStaticDir) {
 	const candidateDirs = [
@@ -141,6 +142,7 @@ export function createApp(options = {}) {
 
 	// API routes
 	app.use("/api", createApiRouter());
+	app.use("/api", simRouter);
 
 	// Static files
 	setupStaticServing(app, options.staticDir);
