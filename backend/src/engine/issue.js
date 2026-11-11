@@ -42,16 +42,32 @@ export const ISSUE_SCHEMA = {
 	additionalProperties: false,
 };
 
-function isPlainObject(v) {
-	if (v === null || Array.isArray(v)) {
+const ID_CHECKS = {
+	id: { prop: "id", kind: "issue", error: "$.id: invalid issue id" },
+	simRunId: {
+		prop: "simRunId",
+		kind: "sim",
+		error: "$.simRunId: invalid sim id",
+	},
+};
+
+const RUN_DIFF_SPECS = [
+	{ field: "fixed", from: "prev", against: "next", match: false },
+	{ field: "stillOpen", from: "next", against: "prev", match: true },
+	{ field: "new", from: "next", against: "prev", match: false },
+];
+
+function isPlainObject(target) {
+	if (!target || typeof target !== "object") {
 		return false;
 	}
-	return typeof v === "object";
+	return !Array.isArray(target);
 }
 
-function checkIssueId(id, errors) {
-	if (typeof id === "string" && !isId(id, "issue")) {
-		errors.push("$.id: invalid issue id");
+function checkTypedId(entity, check, errors) {
+	const val = entity[check.prop];
+	if (typeof val === "string" && !isId(val, check.kind)) {
+		errors.push(check.error);
 	}
 }
 
@@ -63,28 +79,23 @@ function checkItemIds(itemIds, errors) {
 		errors.push("$.itemIds: must contain at least 1 item");
 		return;
 	}
-	for (let i = 0; i < itemIds.length; i++) {
-		if (typeof itemIds[i] === "string" && !isId(itemIds[i])) {
-			errors.push(`$.itemIds[${i}]: invalid id`);
+	itemIds.forEach((itemId, idx) => {
+		if (typeof itemId === "string" && !isId(itemId)) {
+			errors.push(`$.itemIds[${idx}]: invalid id`);
 		}
-	}
-}
-
-function checkSimRunId(simRunId, errors) {
-	if (typeof simRunId === "string" && !isId(simRunId, "sim")) {
-		errors.push("$.simRunId: invalid sim id");
-	}
+	});
 }
 
 export function validateIssue(issue) {
-	const res = validate(ISSUE_SCHEMA, issue);
-	const errors = [...res.errors];
+	const report = validate(ISSUE_SCHEMA, issue);
 	if (!isPlainObject(issue)) {
-		return { ok: false, errors };
+		return { ok: false, errors: [...report.errors] };
 	}
-	checkIssueId(issue.id, errors);
-	checkItemIds(issue.itemIds, errors);
-	checkSimRunId(issue.simRunId, errors);
+	const semanticErrors = [];
+	checkTypedId(issue, ID_CHECKS.id, semanticErrors);
+	checkItemIds(issue.itemIds, semanticErrors);
+	checkTypedId(issue, ID_CHECKS.simRunId, semanticErrors);
+	const errors = report.errors.concat(semanticErrors);
 	return {
 		ok: errors.length === 0,
 		errors,
@@ -109,33 +120,24 @@ function issueKey(issue) {
 	return `${source}|${metric}|${itemIds}`;
 }
 
-function buildKeySet(issues) {
-	const set = new Set();
-	for (const issue of issues) {
-		set.add(issueKey(issue));
-	}
-	return set;
+function extractRunEntries(run) {
+	const items = Array.isArray(run) ? run.filter(isPlainObject) : [];
+	return {
+		items,
+		keys: new Set(items.map(issueKey)),
+	};
 }
 
 export function compareRuns(before, after) {
-	const beforeList = (Array.isArray(before) ? before : []).filter(
-		isPlainObject,
-	);
-	const afterList = (Array.isArray(after) ? after : []).filter(isPlainObject);
-	const beforeKeys = buildKeySet(beforeList);
-	const afterKeys = buildKeySet(afterList);
-
-	const fixed = beforeList.filter((issue) => !afterKeys.has(issueKey(issue)));
-	const stillOpen = afterList.filter((issue) =>
-		beforeKeys.has(issueKey(issue)),
-	);
-	const newIssues = afterList.filter(
-		(issue) => !beforeKeys.has(issueKey(issue)),
-	);
-
-	return {
-		fixed,
-		stillOpen,
-		new: newIssues,
+	const runs = {
+		prev: extractRunEntries(before),
+		next: extractRunEntries(after),
 	};
+	const diff = { fixed: [], stillOpen: [], new: [] };
+	for (const { field, from, against, match } of RUN_DIFF_SPECS) {
+		diff[field] = runs[from].items.filter(
+			(issue) => runs[against].keys.has(issueKey(issue)) === match,
+		);
+	}
+	return diff;
 }
