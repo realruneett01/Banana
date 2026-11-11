@@ -4,45 +4,93 @@ import { DIFF_CONFIG } from "../sideBySideStyles.js";
 
 const { Text } = Typography;
 
-const TOOLBAR_STYLES = {
-	container: {
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "space-between",
-		padding: "6px 14px",
-		background: "#0e0f18",
-		borderBottom: "1px solid #232738",
-		flexShrink: 0,
-	},
-	section: {
-		display: "flex",
-		alignItems: "center",
-		gap: "8px",
-	},
-	swapIcon: {
-		color: "#fadb14",
-	},
-	hint: {
-		color: "#a6adbb",
-		fontSize: "12px",
-	},
-	traceContainer: {
-		background: "#161823",
-		border: "1px solid #2e334d",
-		color: "#94a3b8",
-		fontSize: "11px",
-		padding: "2px 8px",
-		borderRadius: "4px",
-		fontFamily: "monospace",
+function makeFlexRow(gap, justify) {
+	const style = { display: "flex", alignItems: "center" };
+	if (gap) style.gap = gap;
+	if (justify) style.justifyContent = justify;
+	return style;
+}
+
+function makePill(bg, border, color, gap = "6px") {
+	return {
 		display: "inline-flex",
 		alignItems: "center",
-		gap: "6px",
-	},
-	traceLabel: {
-		color: "#fadb14",
+		gap,
+		padding: "2px 8px",
+		borderRadius: "4px",
+		background: bg,
+		border: `1px solid ${border}`,
+		color,
+		fontSize: "11px",
+		fontFamily: "monospace",
+	};
+}
+
+const CONTAINER_STYLE = {
+	...makeFlexRow(undefined, "space-between"),
+	padding: "6px 14px",
+	background: "#0e0f18",
+	borderBottom: "1px solid #232738",
+	flexShrink: 0,
+};
+
+const SECTION_STYLE = makeFlexRow("8px");
+
+const SYNC_SECTION_STYLES = {
+	swapIcon: { color: "#fadb14" },
+	hint: { color: "#a6adbb", fontSize: "12px" },
+};
+
+const BUTTON_STYLES = {
+	focus: {
+		background: "rgba(250, 219, 20, 0.15)",
+		border: "1px solid #fadb14",
 		fontWeight: 600,
+		display: "inline-flex",
+		alignItems: "center",
+		gap: "4px",
 	},
-	traceSelect: {
+	reset: {
+		background: "transparent",
+		border: "1px solid #333",
+	},
+};
+
+function getButtonStyle(kind) {
+	return {
+		borderRadius: 4,
+		padding: "2px 10px",
+		fontSize: "11px",
+		cursor: "pointer",
+		color: "#fadb14",
+		...BUTTON_STYLES[kind],
+	};
+}
+
+const SYNC_VIEW_TABLE = {
+	true: { hint: "(Linked Views)", color: "#faad14", switchBg: "#faad14" },
+	false: { hint: "(Independent Views)", color: "#6b7280", switchBg: "#3f3f46" },
+};
+
+function getSyncMode(synced) {
+	const entry = SYNC_VIEW_TABLE[Boolean(synced)];
+	return {
+		hint: entry.hint,
+		labelStyle: {
+			fontSize: "11px",
+			fontWeight: 600,
+			marginLeft: "12px",
+			userSelect: "none",
+			color: entry.color,
+		},
+		switchStyle: { background: entry.switchBg },
+	};
+}
+
+const TRACE_STYLES = {
+	container: makePill("#161823", "#2e334d", "#94a3b8"),
+	label: { color: "#fadb14", fontWeight: 600 },
+	select: {
 		background: "transparent",
 		border: "none",
 		color: "#f1f5f9",
@@ -51,66 +99,16 @@ const TOOLBAR_STYLES = {
 		cursor: "pointer",
 		outline: "none",
 	},
-	traceOption: {
-		background: "#1e2030",
-		color: "#e2e8f0",
-	},
-	focusBtn: {
-		borderRadius: 4,
-		padding: "2px 10px",
-		fontSize: "11px",
-		cursor: "pointer",
-		background: "rgba(250, 219, 20, 0.15)",
-		border: "1px solid #fadb14",
-		color: "#fadb14",
-		fontWeight: 600,
-		display: "inline-flex",
-		alignItems: "center",
-		gap: "4px",
-	},
-	resetBtn: {
-		borderRadius: 4,
-		padding: "2px 10px",
-		fontSize: "11px",
-		cursor: "pointer",
-		background: "transparent",
-		border: "1px solid #333",
-		color: "#fadb14",
-	},
-};
-
-const SYNC_MODES = {
-	true: {
-		hint: "(Linked Views)",
-		labelStyle: {
-			fontSize: "11px",
-			fontWeight: 600,
-			marginLeft: "12px",
-			userSelect: "none",
-			color: "#faad14",
-		},
-		switchStyle: { background: "#faad14" },
-	},
-	false: {
-		hint: "(Independent Views)",
-		labelStyle: {
-			fontSize: "11px",
-			fontWeight: 600,
-			marginLeft: "12px",
-			userSelect: "none",
-			color: "#6b7280",
-		},
-		switchStyle: { background: "#3f3f46" },
-	},
+	option: { background: "#1e2030", color: "#e2e8f0" },
 };
 
 function SyncSection({ synced, setSynced }) {
-	const mode = SYNC_MODES[Boolean(synced)];
+	const mode = getSyncMode(synced);
 
 	return (
-		<div style={TOOLBAR_STYLES.section}>
-			<SwapOutlined style={TOOLBAR_STYLES.swapIcon} />
-			<Text style={TOOLBAR_STYLES.hint}>
+		<div style={SECTION_STYLE}>
+			<SwapOutlined style={SYNC_SECTION_STYLES.swapIcon} />
+			<Text style={SYNC_SECTION_STYLES.hint}>
 				Scroll to zoom · Drag to pan {mode.hint}
 			</Text>
 			<span style={mode.labelStyle}>Sync Views</span>
@@ -126,19 +124,15 @@ function SyncSection({ synced, setSynced }) {
 
 function TraceWidthSelector({ selectedTraceWidth, setSelectedTraceWidth }) {
 	return (
-		<div style={TOOLBAR_STYLES.traceContainer}>
-			<span style={TOOLBAR_STYLES.traceLabel}>Trace:</span>
+		<div style={TRACE_STYLES.container}>
+			<span style={TRACE_STYLES.label}>Trace:</span>
 			<select
 				value={selectedTraceWidth}
 				onChange={(e) => setSelectedTraceWidth(e.target.value)}
-				style={TOOLBAR_STYLES.traceSelect}
+				style={TRACE_STYLES.select}
 			>
 				{DIFF_CONFIG.TRACE_WIDTH_PRESETS.map((p) => (
-					<option
-						key={p.value}
-						value={p.value}
-						style={TOOLBAR_STYLES.traceOption}
-					>
+					<option key={p.value} value={p.value} style={TRACE_STYLES.option}>
 						{p.label}
 					</option>
 				))}
@@ -152,10 +146,18 @@ function ExitFocusButton({ onReset }) {
 		<button
 			type="button"
 			onClick={onReset}
-			style={TOOLBAR_STYLES.focusBtn}
+			style={getButtonStyle("focus")}
 			title="Exit focused modification and restore full view (Esc)"
 		>
 			✕ Exit Focus (Esc)
+		</button>
+	);
+}
+
+function ResetViewButton({ onReset }) {
+	return (
+		<button type="button" onClick={onReset} style={getButtonStyle("reset")}>
+			Reset View
 		</button>
 	);
 }
@@ -167,15 +169,13 @@ function ActionControls({
 	onReset,
 }) {
 	return (
-		<div style={TOOLBAR_STYLES.section}>
+		<div style={SECTION_STYLE}>
 			<TraceWidthSelector
 				selectedTraceWidth={selectedTraceWidth}
 				setSelectedTraceWidth={setSelectedTraceWidth}
 			/>
 			{activeAuditIdx !== null && <ExitFocusButton onReset={onReset} />}
-			<button type="button" onClick={onReset} style={TOOLBAR_STYLES.resetBtn}>
-				Reset View
-			</button>
+			<ResetViewButton onReset={onReset} />
 		</div>
 	);
 }
@@ -189,7 +189,7 @@ export function SideBySideToolbar({
 	onReset,
 }) {
 	return (
-		<div style={TOOLBAR_STYLES.container}>
+		<div style={CONTAINER_STYLE}>
 			<SyncSection synced={synced} setSynced={setSynced} />
 			<ActionControls
 				selectedTraceWidth={selectedTraceWidth}
