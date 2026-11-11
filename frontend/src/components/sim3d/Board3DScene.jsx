@@ -7,6 +7,7 @@ import {
 	netSegments,
 	partPowers,
 } from "./boardGeometry.js";
+import { envBadges, envToVisuals, worstCaseAmbient } from "./envVisuals.js";
 import { createFlowLayer } from "./flowLayer.js";
 import { buildFlowPaths, faultEffects } from "./flowModel.js";
 import { createHeatLayer } from "./heatLayer.js";
@@ -32,11 +33,12 @@ function makeBoardToScene(w, h) {
 	};
 }
 
-function createBoardMesh(w, h) {
+function createBoardMesh(w, h, frost = false) {
 	const geom = new THREE.BoxGeometry(w, 1.6, h);
+	const color = frost ? 0x3b7d80 : 0x164e2e;
 	const mat = new THREE.MeshStandardMaterial({
-		color: 0x164e2e,
-		roughness: 0.8,
+		color,
+		roughness: frost ? 0.9 : 0.8,
 		metalness: 0.1,
 	});
 	const mesh = new THREE.Mesh(geom, mat);
@@ -122,6 +124,36 @@ function disposeHierarchy(node) {
 	node.parent?.remove(node);
 }
 
+function createDroplets(count, w, h) {
+	if (!count || count <= 0) return null;
+	const geom = new THREE.BufferGeometry();
+	const positions = new Float32Array(count * 3);
+	for (let i = 0; i < count; i++) {
+		positions[i * 3] = (Math.random() - 0.5) * (w + 40);
+		positions[i * 3 + 1] = Math.random() * 50;
+		positions[i * 3 + 2] = (Math.random() - 0.5) * (h + 40);
+	}
+	geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+	const mat = new THREE.PointsMaterial({
+		color: 0x93c5fd,
+		size: 1.2,
+		transparent: true,
+		opacity: 0.75,
+	});
+	return new THREE.Points(geom, mat);
+}
+
+function updateDroplets(droplets, dt) {
+	if (!droplets) return;
+	const pos = droplets.geometry.attributes.position.array;
+	const speed = 40;
+	for (let i = 1; i < pos.length; i += 3) {
+		pos[i] -= speed * dt;
+		if (pos[i] < -2) pos[i] = 50;
+	}
+	droplets.geometry.attributes.position.needsUpdate = true;
+}
+
 function buildNetTemps(nets, partTemps) {
 	const netTemps = { ...partTemps };
 	for (const net of nets ?? []) {
@@ -154,11 +186,12 @@ function buildHeatPlacements(parts, partTemps) {
 }
 
 function syncLayers(flowLayer, heatLayer, ctx) {
-	const { ir, board, result, fault, size } = ctx;
+	const { ir, board, result, fault, size, env } = ctx;
 	const segments = netSegments(ir, board);
 	const netCurrents = netCurrentsFromParts(ir, result?.partCurrents);
 	const powers = partPowers(ir, result?.partCurrents, result?.nodeVoltages);
-	const partTemps = partTemperatures({ ir, partPowers: powers });
+	const ambientC = env ? worstCaseAmbient(env) : undefined;
+	const partTemps = partTemperatures({ ir, partPowers: powers, ambientC });
 	const netTemps = buildNetTemps(ir?.nets, partTemps);
 	const paths = buildFlowPaths({ segments, netCurrents, netTemps });
 	flowLayer.setPaths(paths);
@@ -166,7 +199,13 @@ function syncLayers(flowLayer, heatLayer, ctx) {
 	flowLayer.setEffects(faultEffects(faults, paths));
 	const placements = buildHeatPlacements(ir?.parts, partTemps);
 	heatLayer.setGrid(
-		heatGrid({ boardW: size.w, boardH: size.h, cellMm: 2, placements }),
+		heatGrid({
+			boardW: size.w,
+			boardH: size.h,
+			cellMm: 2,
+			placements,
+			ambientC,
+		}),
 	);
 }
 
@@ -187,6 +226,7 @@ function setupLights(scene) {
 	const dir = new THREE.DirectionalLight(0xffffff, 0.8);
 	dir.position.set(30, 60, 40);
 	scene.add(dir);
+	return { ambient, dir };
 }
 
 function initThree(container, toSceneRef) {
@@ -196,14 +236,16 @@ function initThree(container, toSceneRef) {
 	const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
 	const controls = new OrbitControls(camera, renderer.domElement);
 	controls.enableDamping = true;
-	setupLights(scene);
-	const flow = createFlowLayer(scene, {
+	const lights = setupLights(scene);
+	const boardGroup = new THREE.Group();
+	scene.add(boardGroup);
+	const flow = createFlowLayer(boardGroup, {
 		boardToScene: (...a) => toSceneRef.current(...a),
 	});
-	const heat = createHeatLayer(scene, {
+	const heat = createHeatLayer(boardGroup, {
 		boardToScene: (...a) => toSceneRef.current(...a),
 	});
-	return { scene, renderer, camera, controls, flow, heat };
+	return { scene, renderer, camera, controls, flow, heat, lights, boardGroup };
 }
 
 function cleanupThree(three) {
@@ -215,13 +257,13 @@ function cleanupThree(three) {
 }
 
 function handleResize(entries, camera, renderer) {
+	if (!renderer || !camera) return;
 	for (const entry of entries) {
 		const { width, height } = entry.contentRect;
-		if (width > 0 && height > 0 && renderer && camera) {
-			camera.aspect = width / height;
-			camera.updateProjectionMatrix();
-			renderer.setSize(width, height);
-		}
+		if (width <= 0 || height <= 0) continue;
+		camera.aspect = width / height;
+		camera.updateProjectionMatrix();
+		renderer.setSize(width, height);
 	}
 }
 
@@ -254,18 +296,38 @@ function useThreeScene(containerRef, toSceneRef) {
 	return threeRef;
 }
 
-function updateBoardAndParts(scene, toScene, meshes, opts) {
+function applyEnvToScene(three, env) {
+	if (!three) return;
+	if (!env) {
+		three.scene.background = new THREE.Color(0x0a0c14);
+		three.scene.fog = null;
+		three.lights.ambient.color.set(0xffffff);
+		three.lights.ambient.intensity = 0.7;
+		return;
+	}
+	const vis = envToVisuals(env);
+	three.scene.background = new THREE.Color(vis.skyColor);
+	three.scene.fog =
+		vis.fogDensity > 0 ? new THREE.FogExp2(vis.skyColor, vis.fogDensity) : null;
+	three.lights.ambient.color.set(vis.lightColor);
+	three.lights.ambient.intensity = vis.lightIntensity;
+}
+
+function updateBoardAndParts(three, toScene, meshes, opts) {
 	disposeHierarchy(meshes.board);
 	disposeHierarchy(meshes.parts);
+	disposeHierarchy(meshes.droplets);
 	const size = boardSize(opts.ir);
-	meshes.board = createBoardMesh(size.w, size.h);
+	meshes.board = createBoardMesh(size.w, size.h, opts.frost);
 	meshes.parts = createPartsGroup(
 		opts.ir?.parts ?? [],
 		opts.highlightIds,
 		toScene,
 	);
-	scene.add(meshes.board);
-	scene.add(meshes.parts);
+	three.boardGroup.add(meshes.board);
+	three.boardGroup.add(meshes.parts);
+	meshes.droplets = createDroplets(opts.droplets, size.w, size.h);
+	if (meshes.droplets) three.scene.add(meshes.droplets);
 	return size;
 }
 
@@ -276,38 +338,87 @@ function updateCameraTarget(camera, controls, size) {
 	controls?.target.set(0, 0, 0);
 }
 
-function useBoardObjects(threeRef, toSceneRef, props) {
-	const { ir, board, result, fault, highlightIds } = props;
-	const meshesRef = useRef({ board: null, parts: null });
+function syncBoardScene(ctx, three, toSceneRef, meshes) {
+	const { ir, board, result, fault, highlightIds, env } = ctx;
+	const visuals = env ? envToVisuals(env) : null;
+	applyEnvToScene(three, env);
+	const size = boardSize(ir);
+	const toScene = makeBoardToScene(size.w, size.h);
+	toSceneRef.current = toScene;
+	updateBoardAndParts(three, toScene, meshes, {
+		ir,
+		highlightIds,
+		frost: Boolean(visuals?.frost),
+		droplets: visuals?.droplets ?? 0,
+	});
+	updateCameraTarget(three.camera, three.controls, size);
+	syncLayers(three.flow, three.heat, { ir, board, result, fault, size, env });
+}
+
+function useBoardObjects(threeRef, toSceneRef, props, meshesRef) {
+	const { ir, board, result, fault, highlightIds, env } = props;
 
 	useEffect(() => {
 		const three = threeRef.current;
 		if (!three) return;
-		const size = boardSize(ir);
-		const toScene = makeBoardToScene(size.w, size.h);
-		toSceneRef.current = toScene;
-		updateBoardAndParts(three.scene, toScene, meshesRef.current, {
-			ir,
-			highlightIds,
-		});
-		updateCameraTarget(three.camera, three.controls, size);
-		syncLayers(three.flow, three.heat, { ir, board, result, fault, size });
-	}, [threeRef, toSceneRef, ir, board, result, fault, highlightIds]);
+		const ctx = { ir, board, result, fault, highlightIds, env };
+		syncBoardScene(ctx, three, toSceneRef, meshesRef.current);
+	}, [
+		threeRef,
+		toSceneRef,
+		ir,
+		board,
+		result,
+		fault,
+		highlightIds,
+		env,
+		meshesRef,
+	]);
 }
 
-function stepAnimation(three, state, rawDt) {
+function applyBoardShake(boardGroup, shake, heatShimmer, time) {
+	const hasShake = Boolean(shake?.amplitudeMm > 0 && shake?.frequencyHz > 0);
+	if (hasShake) {
+		const offset =
+			Math.sin(time * 2 * Math.PI * shake.frequencyHz) * shake.amplitudeMm;
+		boardGroup.position.y = offset;
+	} else {
+		boardGroup.position.y = 0;
+	}
+	if (heatShimmer) {
+		const wobble = 1 + 0.006 * Math.sin(time * 6.0);
+		boardGroup.scale.set(wobble, 1, 1 / wobble);
+	} else {
+		boardGroup.scale.set(1, 1, 1);
+	}
+}
+
+function stepAnimation(three, state, rawDt, meshes) {
 	if (state.playing) {
 		const dt = rawDt * (state.speed || 1);
+		state.time = (state.time || 0) + dt;
 		three.flow.update(dt);
 		three.heat.update(dt);
+		updateDroplets(meshes.droplets, dt);
+		applyBoardShake(
+			three.boardGroup,
+			state.visuals?.shake,
+			state.visuals?.heatShimmer,
+			state.time,
+		);
+	} else {
+		three.boardGroup.position.set(0, 0, 0);
+		three.boardGroup.scale.set(1, 1, 1);
 	}
 	three.controls.update();
 	three.renderer.render(three.scene, three.camera);
 }
 
-function useAnimationLoop(threeRef, playing, speed) {
-	const stateRef = useRef({ playing, speed });
-	stateRef.current = { playing, speed };
+function useAnimationLoop(threeRef, opts, meshesRef) {
+	const { playing, speed, env } = opts;
+	const visuals = useMemo(() => (env ? envToVisuals(env) : null), [env]);
+	const stateRef = useRef({ playing, speed, visuals, time: 0 });
+	stateRef.current = { playing, speed, visuals, time: stateRef.current.time };
 
 	useEffect(() => {
 		let animId = null;
@@ -317,11 +428,12 @@ function useAnimationLoop(threeRef, playing, speed) {
 			const rawDt = Math.min((now - lastTime) / 1000, 0.1);
 			lastTime = now;
 			const three = threeRef.current;
-			if (three) stepAnimation(three, stateRef.current, rawDt);
+			if (three)
+				stepAnimation(three, stateRef.current, rawDt, meshesRef.current);
 		};
 		animId = requestAnimationFrame(animate);
 		return () => cancelAnimationFrame(animId);
-	}, [threeRef]);
+	}, [threeRef, meshesRef]);
 }
 
 function LegendItem({ stop }) {
@@ -369,10 +481,66 @@ const NOTE_STYLE = Object.freeze({
 	fontWeight: 600,
 });
 
-function LegendOverlay() {
-	const stops = useMemo(() => legendStops(25, 105), []);
+const ENV_SECTION_STYLE = Object.freeze({
+	borderBottom: "1px solid #1e2438",
+	paddingBottom: "6px",
+	marginBottom: "4px",
+	display: "flex",
+	flexDirection: "column",
+	gap: "4px",
+});
+
+const ENV_LABEL_STYLE = Object.freeze({
+	fontWeight: 600,
+	color: "#e2e8f0",
+	fontSize: "11px",
+	lineHeight: "1.3",
+});
+
+const BADGES_ROW_STYLE = Object.freeze({
+	display: "flex",
+	flexWrap: "wrap",
+	gap: "4px",
+	marginTop: "2px",
+});
+
+const BADGE_CHIP_STYLE = Object.freeze({
+	background: "#1e293b",
+	color: "#38bdf8",
+	border: "1px solid #334155",
+	borderRadius: "4px",
+	padding: "1px 5px",
+	fontSize: "10px",
+	fontWeight: 600,
+});
+
+function EnvOverlaySection({ visuals, badges }) {
+	return (
+		<div style={ENV_SECTION_STYLE}>
+			<div style={ENV_LABEL_STYLE}>{visuals.label}</div>
+			{badges.length > 0 && (
+				<div style={BADGES_ROW_STYLE}>
+					{badges.map((b) => (
+						<span key={b} style={BADGE_CHIP_STYLE}>
+							{b}
+						</span>
+					))}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function LegendOverlay({ env }) {
+	const ambient = env ? worstCaseAmbient(env) : 25;
+	const stops = useMemo(() => legendStops(ambient, ambient + 80), [ambient]);
+	const visuals = useMemo(() => (env ? envToVisuals(env) : null), [env]);
+	const badges = useMemo(() => (env ? envBadges(env) : []), [env]);
+	const showEnv = Boolean(env && visuals);
+
 	return (
 		<div style={OVERLAY_STYLE}>
+			{showEnv && <EnvOverlaySection visuals={visuals} badges={badges} />}
 			<div style={{ fontWeight: 700, color: "#94a3b8", marginBottom: "2px" }}>
 				Temperature
 			</div>
@@ -387,13 +555,18 @@ function LegendOverlay() {
 export default function Board3DScene(props) {
 	const containerRef = useRef(null);
 	const toSceneRef = useRef((x, y, z) => [x, y, z]);
+	const meshesRef = useRef({ board: null, parts: null, droplets: null });
 	const threeRef = useThreeScene(containerRef, toSceneRef);
-	useBoardObjects(threeRef, toSceneRef, props);
-	useAnimationLoop(threeRef, props.playing, props.speed);
+	useBoardObjects(threeRef, toSceneRef, props, meshesRef);
+	useAnimationLoop(
+		threeRef,
+		{ playing: props.playing, speed: props.speed, env: props.env },
+		meshesRef,
+	);
 
 	return (
 		<div style={CONTAINER_STYLE} ref={containerRef}>
-			<LegendOverlay />
+			<LegendOverlay env={props.env} />
 		</div>
 	);
 }
