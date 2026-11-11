@@ -5,79 +5,113 @@ import {
 	createModelAdapter,
 } from "../../backend/src/engine/model-adapter.js";
 
-function createMockTransport(responsePayload) {
-	let captured = null;
-	const transport = async (url, body, headers, signal) => {
-		captured = { url, body, headers, signal };
-		return responsePayload;
-	};
-	return { transport, getCaptured: () => captured };
-}
-
-async function withEnv(key, value, fn) {
-	const prev = process.env[key];
+function setOrClearEnv(key, value) {
 	if (value === undefined) {
 		delete process.env[key];
 	} else {
 		process.env[key] = value;
 	}
+}
+
+async function withEnv(key, value, fn) {
+	const prev = process.env[key];
+	setOrClearEnv(key, value);
 	try {
 		return await fn();
 	} finally {
-		if (prev === undefined) {
-			delete process.env[key];
-		} else {
-			process.env[key] = prev;
-		}
+		setOrClearEnv(key, prev);
 	}
 }
 
 async function captureClaudeGenerate(params, options = {}) {
-	const key = options.envKey || "test-claude-key-123";
-	return withEnv("ANTHROPIC_API_KEY", key, async () => {
-		const mock = createMockTransport(options.response || { content: [] });
+	const apiKey = options.envKey ?? "test-claude-key-123";
+	return withEnv("ANTHROPIC_API_KEY", apiKey, async () => {
+		let captured = null;
 		const adapter = createModelAdapter({
 			provider: "claude",
-			transport: mock.transport,
 			model: options.model,
+			transport: async (url, body, headers, signal) => {
+				captured = { url, body, headers, signal };
+				return options.response ?? { content: [] };
+			},
 		});
 		const result = await adapter.generate(params);
-		return { captured: mock.getCaptured(), result };
+		return { captured, result };
 	});
+}
+
+function assertValidClaudeAdapter(adapter) {
+	assert.equal(adapter.provider, "claude");
+	assert.equal(typeof adapter.generate, "function");
+}
+
+function assertSanitizedError(err, secret, requiredSubstr) {
+	assert.ok(!err.message.includes(secret));
+	assert.ok(err.message.includes("[REDACTED]"));
+	if (requiredSubstr) {
+		assert.ok(err.message.includes(requiredSubstr));
+	}
+}
+
+function toolUseBlock(id, name, input = {}) {
+	return {
+		type: "tool_use",
+		id,
+		name,
+		input,
+	};
+}
+
+function toolResultBlock(id, content, isError = false) {
+	const payload =
+		typeof content === "string" ? content : JSON.stringify(content);
+	const block = {
+		type: "tool_result",
+		tool_use_id: id,
+		content: payload,
+	};
+	if (isError) {
+		block.is_error = true;
+	}
+	return block;
 }
 
 describe("claude adapter instantiation and provider registration", () => {
 	test("createModelAdapter({ provider: 'claude' }) returns claude adapter", () => {
-		const adapter = createModelAdapter({ provider: "claude" });
-		assert.equal(adapter.provider, "claude");
-		assert.equal(typeof adapter.generate, "function");
+		assertValidClaudeAdapter(createModelAdapter({ provider: "claude" }));
 	});
 
 	test("createClaudeAdapter direct factory creates claude adapter", () => {
-		const adapter = createClaudeAdapter();
-		assert.equal(adapter.provider, "claude");
-		assert.equal(typeof adapter.generate, "function");
+		assertValidClaudeAdapter(createClaudeAdapter());
 	});
 
-	test("uses default model claude-sonnet-5-5", async () => {
-		const { captured } = await captureClaudeGenerate({});
-		assert.equal(captured.body.model, "claude-sonnet-5-5");
-	});
+	const MODEL_CASES = [
+		{
+			title: "uses default model claude-sonnet-5-5",
+			run: () => captureClaudeGenerate({}),
+			expected: "claude-sonnet-5-5",
+		},
+		{
+			title: "respects ANTHROPIC_MODEL environment variable",
+			run: () =>
+				withEnv("ANTHROPIC_MODEL", "claude-haiku-custom", () =>
+					captureClaudeGenerate({}),
+				),
+			expected: "claude-haiku-custom",
+		},
+		{
+			title: "uses custom model when specified in adapter options",
+			run: () => captureClaudeGenerate({}, { model: "claude-opus-4-0" }),
+			expected: "claude-opus-4-0",
+		},
+	];
 
-	test("respects ANTHROPIC_MODEL environment variable", async () => {
-		await withEnv("ANTHROPIC_MODEL", "claude-haiku-custom", async () => {
-			const { captured } = await captureClaudeGenerate({});
-			assert.equal(captured.body.model, "claude-haiku-custom");
+	for (const { title, run, expected } of MODEL_CASES) {
+		test(title, async () => {
+			const { captured } = await run();
+			assert.equal(captured.body.model, expected);
 		});
-	});
-
-	test("uses custom model when specified in adapter options", async () => {
-		const { captured } = await captureClaudeGenerate(
-			{},
-			{ model: "claude-opus-4-0" },
-		);
-		assert.equal(captured.body.model, "claude-opus-4-0");
-	});
+	}
 });
 
 describe("request shape: endpoint, headers and settings", () => {
@@ -98,12 +132,10 @@ describe("request shape: endpoint, headers and settings", () => {
 	});
 
 	test("maps system instruction when provided and omits when absent", async () => {
-		const withSys = await captureClaudeGenerate({
-			system: "You are a PCB expert",
-		});
-		assert.equal(withSys.captured.body.system, "You are a PCB expert");
-
+		const prompt = "You are a PCB expert";
+		const withSys = await captureClaudeGenerate({ system: prompt });
 		const withoutSys = await captureClaudeGenerate({});
+		assert.equal(withSys.captured.body.system, prompt);
 		assert.equal(withoutSys.captured.body.system, undefined);
 	});
 
@@ -177,11 +209,10 @@ describe("request mapping: tools and name encoding", () => {
 	}
 
 	test("omits tools field when tools array is empty or undefined", async () => {
-		const emptyRes = await captureClaudeGenerate({ tools: [] });
-		assert.equal(emptyRes.captured.body.tools, undefined);
-
-		const undefRes = await captureClaudeGenerate({});
-		assert.equal(undefRes.captured.body.tools, undefined);
+		for (const payload of [{ tools: [] }, {}]) {
+			const { captured } = await captureClaudeGenerate(payload);
+			assert.equal(captured.body.tools, undefined);
+		}
 	});
 });
 
@@ -217,12 +248,9 @@ describe("request mapping: messages and tool results grouping", () => {
 					role: "assistant",
 					content: [
 						{ type: "text", text: "Calling DRC" },
-						{
-							type: "tool_use",
-							id: "call_drc_1",
-							name: "pcb__drc__run",
-							input: { clearanceMm: 0.15 },
-						},
+						toolUseBlock("call_drc_1", "pcb__drc__run", {
+							clearanceMm: 0.15,
+						}),
 					],
 				},
 			],
@@ -256,33 +284,15 @@ describe("request mapping: messages and tool results grouping", () => {
 					role: "assistant",
 					content: [
 						{ type: "text", text: "Checking" },
-						{
-							type: "tool_use",
-							id: "call_ir_1",
-							name: "ir__validate",
-							input: {},
-						},
-						{
-							type: "tool_use",
-							id: "call_drc_2",
-							name: "pcb__drc",
-							input: {},
-						},
+						toolUseBlock("call_ir_1", "ir__validate"),
+						toolUseBlock("call_drc_2", "pcb__drc"),
 					],
 				},
 				{
 					role: "user",
 					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "call_ir_1",
-							content: JSON.stringify({ valid: true }),
-						},
-						{
-							type: "tool_result",
-							tool_use_id: "call_drc_2",
-							content: JSON.stringify({ errors: 0 }),
-						},
+						toolResultBlock("call_ir_1", { valid: true }),
+						toolResultBlock("call_drc_2", { errors: 0 }),
 					],
 				},
 			],
@@ -303,24 +313,16 @@ describe("request mapping: messages and tool results grouping", () => {
 			expected: [
 				{
 					role: "assistant",
-					content: [
-						{
-							type: "tool_use",
-							id: "call_fail_1",
-							name: "ir__parse",
-							input: {},
-						},
-					],
+					content: [toolUseBlock("call_fail_1", "ir__parse")],
 				},
 				{
 					role: "user",
 					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "call_fail_1",
-							content: JSON.stringify({ error: "Syntax error on line 4" }),
-							is_error: true,
-						},
+						toolResultBlock(
+							"call_fail_1",
+							{ error: "Syntax error on line 4" },
+							true,
+						),
 					],
 				},
 			],
@@ -338,13 +340,7 @@ describe("request mapping: messages and tool results grouping", () => {
 			expected: [
 				{
 					role: "user",
-					content: [
-						{
-							type: "tool_result",
-							tool_use_id: "custom_call_99",
-							content: "custom output",
-						},
-					],
+					content: [toolResultBlock("custom_call_99", "custom output")],
 				},
 			],
 		},
@@ -359,6 +355,12 @@ describe("request mapping: messages and tool results grouping", () => {
 });
 
 describe("response mapping: text and tool_use blocks", () => {
+	const ZERO_USAGE = {
+		promptTokens: 0,
+		completionTokens: 0,
+		totalTokens: 0,
+	};
+
 	const RESPONSE_CASES = [
 		{
 			label: "maps text block and token usage",
@@ -394,11 +396,7 @@ describe("response mapping: text and tool_use blocks", () => {
 					input: { netlist: "sample.net" },
 				},
 			],
-			expectedUsage: {
-				promptTokens: 0,
-				completionTokens: 0,
-				totalTokens: 0,
-			},
+			expectedUsage: ZERO_USAGE,
 		},
 		{
 			label: "maps mixed text and multiple tool_use blocks",
@@ -433,11 +431,7 @@ describe("response mapping: text and tool_use blocks", () => {
 					input: { minGap: 0.2 },
 				},
 			],
-			expectedUsage: {
-				promptTokens: 0,
-				completionTokens: 0,
-				totalTokens: 0,
-			},
+			expectedUsage: ZERO_USAGE,
 		},
 	];
 
@@ -450,9 +444,18 @@ describe("response mapping: text and tool_use blocks", () => {
 	} of RESPONSE_CASES) {
 		test(label, async () => {
 			const { result } = await captureClaudeGenerate({}, { response: payload });
-			assert.equal(result.text, expectedText);
-			assert.deepEqual(result.toolCalls, expectedCalls);
-			assert.deepEqual(result.usage, expectedUsage);
+			assert.deepEqual(
+				{
+					text: result.text,
+					calls: result.toolCalls,
+					usage: result.usage,
+				},
+				{
+					text: expectedText,
+					calls: expectedCalls,
+					usage: expectedUsage,
+				},
+			);
 		});
 	}
 });
@@ -460,92 +463,79 @@ describe("response mapping: text and tool_use blocks", () => {
 describe("error handling and security redaction", () => {
 	const SENSITIVE_KEY = "sk-ant-api03-SECRET_KEY_999";
 
-	test("throws when ANTHROPIC_API_KEY environment variable is missing", async () => {
-		await withEnv("ANTHROPIC_API_KEY", undefined, async () => {
-			const adapter = createModelAdapter({ provider: "claude" });
-			await assert.rejects(
-				() => adapter.generate({}),
-				/ANTHROPIC_API_KEY environment variable is required/,
-			);
-		});
-	});
+	const MISSING_KEY_CASES = [
+		{
+			title: "throws when ANTHROPIC_API_KEY environment variable is missing",
+			val: undefined,
+		},
+		{
+			title: "throws when ANTHROPIC_API_KEY is whitespace only",
+			val: "   ",
+		},
+	];
 
-	test("throws when ANTHROPIC_API_KEY is whitespace only", async () => {
-		await withEnv("ANTHROPIC_API_KEY", "   ", async () => {
-			const adapter = createModelAdapter({ provider: "claude" });
-			await assert.rejects(
-				() => adapter.generate({}),
-				/ANTHROPIC_API_KEY environment variable is required/,
-			);
-		});
-	});
-
-	test("redacts api key if transport error message contains it", async () => {
-		await withEnv("ANTHROPIC_API_KEY", SENSITIVE_KEY, async () => {
-			const failingTransport = async () => {
-				throw new Error(`Failed to authenticate with key ${SENSITIVE_KEY}`);
-			};
-			const adapter = createModelAdapter({
-				provider: "claude",
-				transport: failingTransport,
+	for (const { title, val } of MISSING_KEY_CASES) {
+		test(title, async () => {
+			await withEnv("ANTHROPIC_API_KEY", val, async () => {
+				const adapter = createModelAdapter({ provider: "claude" });
+				await assert.rejects(
+					() => adapter.generate({}),
+					/ANTHROPIC_API_KEY environment variable is required/,
+				);
 			});
-			await assert.rejects(
-				() => adapter.generate({}),
-				(err) => {
-					assert.ok(!err.message.includes(SENSITIVE_KEY));
-					assert.ok(err.message.includes("[REDACTED]"));
-					return true;
-				},
-			);
 		});
-	});
+	}
 
-	test("handles Claude API error structure and sanitizes message", async () => {
-		await withEnv("ANTHROPIC_API_KEY", SENSITIVE_KEY, async () => {
-			const mock = createMockTransport({
+	const ERROR_REDACTION_CASES = [
+		{
+			title: "redacts api key if transport error message contains it",
+			transport: async () => {
+				throw new Error(`Failed to authenticate with key ${SENSITIVE_KEY}`);
+			},
+			verify: (err) => assertSanitizedError(err, SENSITIVE_KEY),
+		},
+		{
+			title: "handles Claude API error structure and sanitizes message",
+			transport: async () => ({
 				type: "error",
 				error: {
 					type: "authentication_error",
 					message: `Invalid API key: ${SENSITIVE_KEY}`,
 				},
-			});
-			const adapter = createModelAdapter({
-				provider: "claude",
-				transport: mock.transport,
-			});
-			await assert.rejects(
-				() => adapter.generate({}),
-				(err) => {
-					assert.ok(!err.message.includes(SENSITIVE_KEY));
-					assert.ok(err.message.includes("[REDACTED]"));
-					assert.ok(err.message.includes("authentication_error"));
-					return true;
-				},
-			);
-		});
-	});
-
-	test("handles non-2xx status code from transport", async () => {
-		await withEnv("ANTHROPIC_API_KEY", SENSITIVE_KEY, async () => {
-			const mock = createMockTransport({
+			}),
+			verify: (err) =>
+				assertSanitizedError(err, SENSITIVE_KEY, "authentication_error"),
+		},
+		{
+			title: "handles non-2xx status code from transport",
+			transport: async () => ({
 				status: 429,
 				statusText: `Too Many Requests for ${SENSITIVE_KEY}`,
+			}),
+			verify: (err) => {
+				assert.equal(err.status, 429);
+				assertSanitizedError(err, SENSITIVE_KEY);
+			},
+		},
+	];
+
+	for (const { title, transport, verify } of ERROR_REDACTION_CASES) {
+		test(title, async () => {
+			await withEnv("ANTHROPIC_API_KEY", SENSITIVE_KEY, async () => {
+				const adapter = createModelAdapter({
+					provider: "claude",
+					transport,
+				});
+				await assert.rejects(
+					() => adapter.generate({}),
+					(err) => {
+						verify(err);
+						return true;
+					},
+				);
 			});
-			const adapter = createModelAdapter({
-				provider: "claude",
-				transport: mock.transport,
-			});
-			await assert.rejects(
-				() => adapter.generate({}),
-				(err) => {
-					assert.equal(err.status, 429);
-					assert.ok(!err.message.includes(SENSITIVE_KEY));
-					assert.ok(err.message.includes("[REDACTED]"));
-					return true;
-				},
-			);
 		});
-	});
+	}
 
 	test("never leaks api key on adapter or result object", async () => {
 		const { result } = await captureClaudeGenerate(
