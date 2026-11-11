@@ -1,7 +1,8 @@
-import { Alert, Button, Drawer, Select, Spin, Tag } from "antd";
+import { Alert, Button, Drawer, Empty, Select, Spin, Tabs, Tag } from "antd";
 import { useMemo } from "react";
 import { API_BASE_URL } from "../config.js";
 import { createSimApi } from "../simApi.js";
+import CompareRunsPanel from "./CompareRunsPanel.jsx";
 import EnvironmentEditor from "./EnvironmentEditor.jsx";
 import IssuesPanel from "./IssuesPanel.jsx";
 import { useSimulation } from "./useSimulation.js";
@@ -92,6 +93,12 @@ const PANEL_WRAPPER_STYLE = Object.freeze({
 	display: "flex",
 	flexDirection: "column",
 	flexShrink: 0,
+});
+
+const RUN_TAB_STYLE = Object.freeze({
+	display: "flex",
+	flexDirection: "column",
+	gap: "14px",
 });
 
 function createEnvId() {
@@ -316,11 +323,56 @@ function DrawerBody({ sim, commit, onSelectItem }) {
 	);
 }
 
+function CompareTab({ api, envId, kind, onSelectItem, commits }) {
+	if (!Array.isArray(commits) || commits.length < 2) {
+		return (
+			<Empty description="Run the simulation on at least two commits to compare them" />
+		);
+	}
+	return (
+		<CompareRunsPanel
+			api={api}
+			envId={envId}
+			kind={kind}
+			onSelectItem={onSelectItem}
+			commits={commits}
+		/>
+	);
+}
+
+function buildTabItems({ sim, commit, commits, onSelectItem, api }) {
+	return [
+		{
+			key: "run",
+			label: "Run",
+			children: (
+				<div style={RUN_TAB_STYLE}>
+					<DrawerBody sim={sim} commit={commit} onSelectItem={onSelectItem} />
+				</div>
+			),
+		},
+		{
+			key: "compare",
+			label: "Compare commits",
+			children: (
+				<CompareTab
+					api={api}
+					envId={sim.env?.id}
+					kind={sim.kind}
+					onSelectItem={onSelectItem}
+					commits={commits}
+				/>
+			),
+		},
+	];
+}
+
 export default function SimulationDrawer({
 	open,
 	onClose,
 	ir,
 	commit,
+	commits,
 	onSelectItem,
 	api: apiProp,
 }) {
@@ -329,6 +381,7 @@ export default function SimulationDrawer({
 		[apiProp],
 	);
 	const sim = useSimulation({ api, ir, commit });
+	const items = buildTabItems({ sim, commit, commits, onSelectItem, api });
 
 	return (
 		<Drawer
@@ -340,7 +393,7 @@ export default function SimulationDrawer({
 			styles={DRAWER_STYLES}
 			className="bn-drawer"
 		>
-			<DrawerBody sim={sim} commit={commit} onSelectItem={onSelectItem} />
+			<Tabs defaultActiveKey="run" items={items} />
 		</Drawer>
 	);
 }
