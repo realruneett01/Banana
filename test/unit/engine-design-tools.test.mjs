@@ -7,57 +7,162 @@ import { registerDesignTools } from "../../backend/src/engine/tools/design-tools
 
 const TEST_COMMIT = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9012";
 
+const BASE_PART = {
+	ref: "R1",
+	value: "10k",
+	symbol: "Device:R",
+	footprint: "Resistor_SMD:R_0603_1608Metric",
+};
+
 function makePart(overrides = {}) {
-	return {
-		id: newId("part"),
-		ref: "R1",
-		value: "10k",
-		symbol: "Device:R",
-		footprint: "Resistor_SMD:R_0603_1608Metric",
-		props: {},
-		...overrides,
-	};
+	return { id: newId("part"), props: {}, ...BASE_PART, ...overrides };
 }
 
 function makeCleanIR(partOverrides = {}) {
-	const part1 = makePart({ ref: "R1", ...partOverrides });
-	const part2 = makePart({ ref: "R2" });
-	const net1 = {
+	const parts = ["R1", "R2"].map((ref) =>
+		makePart(ref === "R1" ? { ref, ...partOverrides } : { ref }),
+	);
+	const connect = (name, pin) => ({
 		id: newId("net"),
-		name: "VCC",
-		pins: [
-			{ partId: part1.id, pin: "1" },
-			{ partId: part2.id, pin: "1" },
-		],
-	};
-	const net2 = {
-		id: newId("net"),
-		name: "GND",
-		pins: [
-			{ partId: part1.id, pin: "2" },
-			{ partId: part2.id, pin: "2" },
-		],
-	};
+		name,
+		pins: parts.map((p) => ({ partId: p.id, pin })),
+	});
 	return {
 		schemaVersion: 1,
 		name: "TestDesign",
-		parts: [part1, part2],
-		nets: [net1, net2],
+		parts,
+		nets: [connect("VCC", "1"), connect("GND", "2")],
 		constraints: [
 			{ id: "c1", kind: "rail", target: "VCC", value: 3.3, unit: "V" },
 		],
 	};
 }
 
+const BASE_ENV = {
+	name: "LabEnv",
+	ambientC: { min: 20, max: 25 },
+	humidityPct: { min: 40, max: 60 },
+	altitudeM: 100,
+};
+
 function makeEnv(overrides = {}) {
+	return { id: newId("env"), ...BASE_ENV, ...overrides };
+}
+
+function makeFaultyIR() {
 	return {
-		id: newId("env"),
-		name: "LabEnv",
-		ambientC: { min: 20, max: 25 },
-		humidityPct: { min: 40, max: 60 },
-		altitudeM: 100,
-		...overrides,
+		schemaVersion: 1,
+		name: "FaultyBoard",
+		parts: [makePart({ ref: "U1", footprint: "" })],
+		nets: [],
+		constraints: [],
 	};
+}
+
+async function invokeTool(tool, input, deps) {
+	const registry = createRegistry();
+	registerDesignTools(registry, deps);
+	return registry.call(tool, input);
+}
+
+function assertSuccess(res) {
+	assert.equal(res.ok, true);
+	return res.output;
+}
+
+function assertFailure(res, expectedError) {
+	assert.equal(res.ok, false);
+	if (typeof expectedError === "string") {
+		assert.equal(res.error, expectedError);
+	} else if (expectedError instanceof RegExp) {
+		assert.match(res.error, expectedError);
+	} else {
+		assert.ok(typeof res.error === "string");
+	}
+}
+
+function assertNonEmptyArray(arr) {
+	assert.ok(Array.isArray(arr) && arr.length > 0);
+}
+
+function assertToolMetadata(tool) {
+	assert.equal(tool.permission, "read");
+	assert.ok(
+		typeof tool.description === "string" && tool.description.length > 0,
+	);
+}
+
+function assertValidationSuccess(res) {
+	const out = assertSuccess(res);
+	assert.equal(out.valid, true);
+	assert.deepEqual(out.errors, []);
+}
+
+function assertValidationFailure(res) {
+	const out = assertSuccess(res);
+	assert.equal(out.valid, false);
+	assertNonEmptyArray(out.errors);
+}
+
+function assertInjectedCalled(res, called) {
+	assertSuccess(res);
+	assert.equal(called, true);
+}
+
+function assertZeroIssues(res) {
+	const out = assertSuccess(res);
+	assert.deepEqual(out.issues, []);
+}
+
+function assertDetectedIssues(res) {
+	const out = assertSuccess(res);
+	assertNonEmptyArray(out.issues);
+}
+
+function assertMockIssueResult(res, expectedId) {
+	const out = assertSuccess(res);
+	assert.equal(out.issues.length, 1);
+	assert.equal(out.issues[0]?.id, expectedId);
+}
+
+function assertAutoPlaceSuccess(res) {
+	const out = assertSuccess(res);
+	assert.ok(Array.isArray(out.placed));
+	assert.equal(out.placed.length, 2);
+	assert.ok(out.ir.parts[0]?.placement && out.ir.parts[1]?.placement);
+}
+
+function assertMockPlacedResult(res, expectedPlaced) {
+	const out = assertSuccess(res);
+	assert.deepEqual(out.placed, expectedPlaced);
+}
+
+function assertValidSexprDoc(res, rootSym) {
+	const out = assertSuccess(res);
+	assert.equal(typeof out.text, "string");
+	assert.ok(Array.isArray(out.warnings));
+	const parsed = parse(out.text);
+	assert.ok(parsed);
+	assert.equal(parsed[0]?.sym, rootSym);
+}
+
+function assertInvalidIr(res) {
+	assertFailure(res, /Invalid circuit IR/i);
+}
+
+function assertThermalRunSuccess(res) {
+	const out = assertSuccess(res);
+	assert.deepEqual(
+		{ status: out.run.status, kind: out.run.kind },
+		{ status: "done", kind: "thermal" },
+	);
+	assert.ok(Array.isArray(out.issues));
+}
+
+function assertSimulationFailedOutput(res) {
+	const out = assertSuccess(res);
+	assert.equal(out.run.status, "failed");
+	assert.match(out.error, /.+/);
 }
 
 describe("engine-design-tools registration", () => {
@@ -70,8 +175,7 @@ describe("engine-design-tools registration", () => {
 		registerDesignTools(registry);
 		const tools = registry.list();
 		assert.equal(tools.length, 6);
-		const names = tools.map((t) => t.name).sort();
-		assert.deepEqual(names, [
+		assert.deepEqual(tools.map((t) => t.name).sort(), [
 			"erc.run",
 			"ir.auto_place",
 			"ir.to_kicad_pcb",
@@ -80,202 +184,144 @@ describe("engine-design-tools registration", () => {
 			"sim.run",
 		]);
 		for (const tool of tools) {
-			assert.equal(tool.permission, "read");
-			assert.equal(typeof tool.description, "string");
-			assert.ok(tool.description.length > 0);
+			assertToolMetadata(tool);
 		}
 	});
 });
 
 describe("ir.validate tool", () => {
 	test("returns valid:true and empty errors on valid IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const ir = makeCleanIR();
-		const res = await registry.call("ir.validate", { ir });
-		assert.equal(res.ok, true);
-		assert.equal(res.output.valid, true);
-		assert.deepEqual(res.output.errors, []);
+		const res = await invokeTool("ir.validate", { ir: makeCleanIR() });
+		assertValidationSuccess(res);
 	});
 
 	test("returns valid:false and errors array on invalid IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const invalidIr = { schemaVersion: 999, name: "Broken" };
-		const res = await registry.call("ir.validate", { ir: invalidIr });
-		assert.equal(res.ok, true);
-		assert.equal(res.output.valid, false);
-		assert.ok(Array.isArray(res.output.errors));
-		assert.ok(res.output.errors.length > 0);
+		const res = await invokeTool("ir.validate", {
+			ir: { schemaVersion: 999, name: "Broken" },
+		});
+		assertValidationFailure(res);
 	});
 
 	test("supports injected deps.validateCircuitIR", async () => {
 		let injectedCalled = false;
-		const registry = createRegistry();
-		registerDesignTools(registry, {
-			validateCircuitIR: () => {
-				injectedCalled = true;
-				return { ok: true, errors: [] };
+		const res = await invokeTool(
+			"ir.validate",
+			{ ir: {} },
+			{
+				validateCircuitIR: () => {
+					injectedCalled = true;
+					return { ok: true, errors: [] };
+				},
 			},
-		});
-		const res = await registry.call("ir.validate", { ir: {} });
-		assert.equal(res.ok, true);
-		assert.equal(injectedCalled, true);
+		);
+		assertInjectedCalled(res, injectedCalled);
 	});
 });
 
 describe("erc.run tool", () => {
 	test("returns zero issues for clean IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const ir = makeCleanIR();
-		const res = await registry.call("erc.run", { ir, commit: TEST_COMMIT });
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.output.issues, []);
+		const res = await invokeTool("erc.run", {
+			ir: makeCleanIR(),
+			commit: TEST_COMMIT,
+		});
+		assertZeroIssues(res);
 	});
 
 	test("returns detected issues for faulty IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const part = makePart({ ref: "U1", footprint: "" });
-		const ir = {
-			schemaVersion: 1,
-			name: "FaultyBoard",
-			parts: [part],
-			nets: [],
-			constraints: [],
-		};
-		const res = await registry.call("erc.run", { ir, commit: TEST_COMMIT });
-		assert.equal(res.ok, true);
-		assert.ok(Array.isArray(res.output.issues));
-		assert.ok(res.output.issues.length > 0);
+		const res = await invokeTool("erc.run", {
+			ir: makeFaultyIR(),
+			commit: TEST_COMMIT,
+		});
+		assertDetectedIssues(res);
 	});
 
 	test("supports injected deps.runErc", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry, {
-			runErc: () => [{ id: "mock_issue", severity: "warning" }],
-		});
-		const res = await registry.call("erc.run", { ir: {}, commit: "test" });
-		assert.equal(res.ok, true);
-		assert.equal(res.output.issues.length, 1);
-		assert.equal(res.output.issues[0].id, "mock_issue");
+		const res = await invokeTool(
+			"erc.run",
+			{ ir: {}, commit: "test" },
+			{
+				runErc: () => [{ id: "mock_issue", severity: "warning" }],
+			},
+		);
+		assertMockIssueResult(res, "mock_issue");
 	});
 });
 
 describe("ir.auto_place tool", () => {
 	test("returns placed component IDs and updated IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const ir = makeCleanIR();
-		const res = await registry.call("ir.auto_place", {
-			ir,
+		const res = await invokeTool("ir.auto_place", {
+			ir: makeCleanIR(),
 			boardW: 100,
 			boardH: 80,
 			gridMm: 2.54,
 			marginMm: 5,
 		});
-		assert.equal(res.ok, true);
-		assert.ok(Array.isArray(res.output.placed));
-		assert.equal(res.output.placed.length, 2);
-		assert.ok(res.output.ir.parts[0].placement);
-		assert.ok(res.output.ir.parts[1].placement);
+		assertAutoPlaceSuccess(res);
 	});
 
 	test("reports error when board is too small", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const ir = makeCleanIR();
-		const res = await registry.call("ir.auto_place", {
-			ir,
+		const res = await invokeTool("ir.auto_place", {
+			ir: makeCleanIR(),
 			boardW: 1,
 			boardH: 1,
 		});
-		assert.equal(res.ok, false);
-		assert.match(res.error, /board too small/i);
+		assertFailure(res, /board too small/i);
 	});
 
 	test("supports injected deps.autoPlace", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry, {
-			autoPlace: () => ({ ir: { mock: true }, placed: ["p1"] }),
-		});
-		const res = await registry.call("ir.auto_place", {
-			ir: {},
-			boardW: 50,
-			boardH: 50,
-		});
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.output.placed, ["p1"]);
+		const res = await invokeTool(
+			"ir.auto_place",
+			{ ir: {}, boardW: 50, boardH: 50 },
+			{
+				autoPlace: () => ({ ir: { mock: true }, placed: ["p1"] }),
+			},
+		);
+		assertMockPlacedResult(res, ["p1"]);
 	});
 });
 
 describe("ir.to_kicad_sch tool", () => {
 	test("returns schematic text accepted by sexpr parse", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const ir = makeCleanIR();
-		const res = await registry.call("ir.to_kicad_sch", {
-			ir,
+		const res = await invokeTool("ir.to_kicad_sch", {
+			ir: makeCleanIR(),
 			title: "Custom Schematic",
 		});
-		assert.equal(res.ok, true);
-		assert.equal(typeof res.output.text, "string");
-		assert.ok(Array.isArray(res.output.warnings));
-		const parsed = parse(res.output.text);
-		assert.ok(parsed);
-		assert.equal(parsed[0].sym, "kicad_sch");
+		assertValidSexprDoc(res, "kicad_sch");
 	});
 
 	test("reports engine error on invalid IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const res = await registry.call("ir.to_kicad_sch", {
+		const res = await invokeTool("ir.to_kicad_sch", {
 			ir: { schemaVersion: 999 },
 		});
-		assert.equal(res.ok, false);
-		assert.match(res.error, /Invalid circuit IR/i);
+		assertInvalidIr(res);
 	});
 });
 
 describe("ir.to_kicad_pcb tool", () => {
 	test("returns pcb text accepted by sexpr parse", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
 		const ir = makeCleanIR({
 			placement: { x: 20, y: 20, rot: 0, side: "F" },
 		});
-		const res = await registry.call("ir.to_kicad_pcb", {
+		const res = await invokeTool("ir.to_kicad_pcb", {
 			ir,
 			boardW: 80,
 			boardH: 60,
 		});
-		assert.equal(res.ok, true);
-		assert.equal(typeof res.output.text, "string");
-		assert.ok(Array.isArray(res.output.warnings));
-		const parsed = parse(res.output.text);
-		assert.ok(parsed);
-		assert.equal(parsed[0].sym, "kicad_pcb");
+		assertValidSexprDoc(res, "kicad_pcb");
 	});
 
 	test("reports engine error on invalid IR", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const res = await registry.call("ir.to_kicad_pcb", {
+		const res = await invokeTool("ir.to_kicad_pcb", {
 			ir: { schemaVersion: 999 },
 			boardW: 50,
 			boardH: 50,
 		});
-		assert.equal(res.ok, false);
-		assert.match(res.error, /Invalid circuit IR/i);
+		assertInvalidIr(res);
 	});
 });
 
 describe("sim.run tool", () => {
 	test("runs thermal simulation end-to-end", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const env = makeEnv();
 		const part = {
 			id: newId("part"),
 			ref: "U1",
@@ -285,48 +331,42 @@ describe("sim.run tool", () => {
 			props: { powerW: 2.0, thetaJA: 50, tjMaxC: 125 },
 		};
 		const inputs = { ir: { parts: [part] } };
-		const res = await registry.call("sim.run", {
+		const res = await invokeTool("sim.run", {
 			kind: "thermal",
-			env,
+			env: makeEnv(),
 			commit: TEST_COMMIT,
 			inputs,
 		});
-		assert.equal(res.ok, true);
-		assert.equal(res.output.run.status, "done");
-		assert.equal(res.output.run.kind, "thermal");
-		assert.ok(Array.isArray(res.output.issues));
+		assertThermalRunSuccess(res);
 	});
 
 	test("captures simulation error in output when env is invalid", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
 		const invalidEnv = makeEnv({ ambientC: { min: 40, max: 10 } });
-		const res = await registry.call("sim.run", {
+		const res = await invokeTool("sim.run", {
 			kind: "thermal",
 			env: invalidEnv,
 			commit: TEST_COMMIT,
 			inputs: {},
 		});
-		assert.equal(res.ok, true);
-		assert.equal(res.output.run.status, "failed");
-		assert.ok(typeof res.output.error === "string");
+		assertSimulationFailedOutput(res);
 	});
 
 	test("returns ok:false when handler throws or rejects", async () => {
-		const registry = createRegistry();
-		registerDesignTools(registry, {
-			runSimulation: async () => {
-				throw new Error("Simulation crash");
+		const res = await invokeTool(
+			"sim.run",
+			{
+				kind: "thermal",
+				env: makeEnv(),
+				commit: TEST_COMMIT,
+				inputs: {},
 			},
-		});
-		const res = await registry.call("sim.run", {
-			kind: "thermal",
-			env: makeEnv(),
-			commit: TEST_COMMIT,
-			inputs: {},
-		});
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "Simulation crash");
+			{
+				runSimulation: async () => {
+					throw new Error("Simulation crash");
+				},
+			},
+		);
+		assertFailure(res, "Simulation crash");
 	});
 });
 
@@ -366,11 +406,8 @@ describe("input validation errors", () => {
 
 	for (const { tool, input, label } of BAD_INPUT_CASES) {
 		test(`${tool} rejects input: ${label}`, async () => {
-			const registry = createRegistry();
-			registerDesignTools(registry);
-			const res = await registry.call(tool, input);
-			assert.equal(res.ok, false);
-			assert.ok(typeof res.error === "string");
+			const res = await invokeTool(tool, input);
+			assertFailure(res);
 		});
 	}
 });
