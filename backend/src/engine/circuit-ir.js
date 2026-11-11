@@ -1,6 +1,20 @@
 import { isId } from "./ids.js";
 import { validate } from "./schema-lite.js";
 
+const stringProp = { type: "string" };
+
+function arrayOfObjects(required, properties) {
+	return {
+		type: "array",
+		items: {
+			type: "object",
+			required,
+			additionalProperties: false,
+			properties,
+		},
+	};
+}
+
 export const CIRCUIT_IR_SCHEMA = {
 	type: "object",
 	required: ["schemaVersion", "name", "parts", "nets", "constraints"],
@@ -10,79 +24,50 @@ export const CIRCUIT_IR_SCHEMA = {
 			type: "integer",
 			enum: [1],
 		},
-		name: { type: "string" },
-		parts: {
-			type: "array",
-			items: {
-				type: "object",
-				required: ["id", "ref", "value", "symbol", "footprint", "props"],
-				additionalProperties: false,
-				properties: {
-					id: { type: "string" },
-					ref: { type: "string" },
-					value: { type: "string" },
-					symbol: { type: "string" },
-					footprint: { type: "string" },
-					props: { type: "object" },
-					placement: {
-						type: "object",
-						required: ["x", "y", "rot", "side"],
-						additionalProperties: false,
-						properties: {
-							x: { type: "number" },
-							y: { type: "number" },
-							rot: { type: "number" },
-							side: {
-								type: "string",
-								enum: ["F", "B"],
-							},
+		name: stringProp,
+		parts: arrayOfObjects(
+			["id", "ref", "value", "symbol", "footprint", "props"],
+			{
+				id: stringProp,
+				ref: stringProp,
+				value: stringProp,
+				symbol: stringProp,
+				footprint: stringProp,
+				props: { type: "object" },
+				placement: {
+					type: "object",
+					required: ["x", "y", "rot", "side"],
+					additionalProperties: false,
+					properties: {
+						x: { type: "number" },
+						y: { type: "number" },
+						rot: { type: "number" },
+						side: {
+							type: "string",
+							enum: ["F", "B"],
 						},
 					},
 				},
 			},
-		},
-		nets: {
-			type: "array",
-			items: {
-				type: "object",
-				required: ["id", "name", "pins"],
-				additionalProperties: false,
-				properties: {
-					id: { type: "string" },
-					name: { type: "string" },
-					pins: {
-						type: "array",
-						items: {
-							type: "object",
-							required: ["partId", "pin"],
-							additionalProperties: false,
-							properties: {
-								partId: { type: "string" },
-								pin: { type: "string" },
-							},
-						},
-					},
-				},
+		),
+		nets: arrayOfObjects(["id", "name", "pins"], {
+			id: stringProp,
+			name: stringProp,
+			pins: arrayOfObjects(["partId", "pin"], {
+				partId: stringProp,
+				pin: stringProp,
+			}),
+		}),
+		constraints: arrayOfObjects(["id", "kind", "target", "value", "unit"], {
+			id: stringProp,
+			kind: {
+				type: "string",
+				enum: ["rail", "current", "impedance", "keepout", "size", "layers"],
 			},
-		},
-		constraints: {
-			type: "array",
-			items: {
-				type: "object",
-				required: ["id", "kind", "target", "value", "unit"],
-				additionalProperties: false,
-				properties: {
-					id: { type: "string" },
-					kind: {
-						type: "string",
-						enum: ["rail", "current", "impedance", "keepout", "size", "layers"],
-					},
-					target: { type: "string" },
-					value: {},
-					unit: { type: "string" },
-				},
-			},
-		},
+			target: stringProp,
+			value: {},
+			unit: stringProp,
+		}),
 	},
 };
 
@@ -96,6 +81,33 @@ function joinPath(base, key) {
 	return `${base}.${key}`;
 }
 
+function itemPath(base, section, index) {
+	return joinPath(joinPath(base, section), index);
+}
+
+function isValidObject(val) {
+	return Boolean(val && typeof val === "object");
+}
+
+function startEntityCheck(entity, section, index, path) {
+	if (!isValidObject(entity)) {
+		return null;
+	}
+	return itemPath(path, section, index);
+}
+
+function checkUnique(val, valPath, field, ctx) {
+	if (typeof val !== "string") {
+		return;
+	}
+	const seen = field === "id" ? ctx.seenIds : ctx.seenRefs;
+	if (seen.has(val)) {
+		ctx.errors.push(`${valPath}: duplicate ${field} '${val}'`);
+		return;
+	}
+	seen.add(val);
+}
+
 function checkId(id, idPath, expectedKind, ctx) {
 	if (typeof id !== "string") {
 		return;
@@ -103,29 +115,42 @@ function checkId(id, idPath, expectedKind, ctx) {
 	if (expectedKind && !isId(id, expectedKind)) {
 		ctx.errors.push(`${idPath}: must be a ${expectedKind} id`);
 	}
-	if (ctx.seenIds.has(id)) {
-		ctx.errors.push(`${idPath}: duplicate id '${id}'`);
-		return;
-	}
-	ctx.seenIds.add(id);
+	checkUnique(id, idPath, "id", ctx);
 }
 
 function checkRef(ref, refPath, ctx) {
-	if (typeof ref !== "string") {
+	checkUnique(ref, refPath, "ref", ctx);
+}
+
+function checkNetPin(pin, pinPath, ctx) {
+	if (!isValidObject(pin) || typeof pin.partId !== "string") {
 		return;
 	}
-	if (ctx.seenRefs.has(ref)) {
-		ctx.errors.push(`${refPath}: duplicate ref '${ref}'`);
+	if (!ctx.partIds.has(pin.partId)) {
+		ctx.errors.push(`${pinPath}.partId: partId '${pin.partId}' not found`);
+	}
+}
+
+function forEachItem(list, fn) {
+	if (!Array.isArray(list)) {
 		return;
 	}
-	ctx.seenRefs.add(ref);
+	for (let i = 0; i < list.length; i++) {
+		fn(list[i], i);
+	}
+}
+
+function checkNetPins(pins, netPath, ctx) {
+	forEachItem(pins, (pin, i) =>
+		checkNetPin(pin, itemPath(netPath, "pins", i), ctx),
+	);
 }
 
 function checkPart(part, index, path, ctx) {
-	if (!part || typeof part !== "object") {
+	const partPath = startEntityCheck(part, "parts", index, path);
+	if (!partPath) {
 		return;
 	}
-	const partPath = joinPath(joinPath(path, "parts"), index);
 	checkId(part.id, joinPath(partPath, "id"), "part", ctx);
 	if (typeof part.id === "string") {
 		ctx.partIds.add(part.id);
@@ -133,78 +158,34 @@ function checkPart(part, index, path, ctx) {
 	checkRef(part.ref, joinPath(partPath, "ref"), ctx);
 }
 
-function checkNetPin(pin, pinPath, partIds, errors) {
-	if (!pin || typeof pin !== "object") {
-		return;
-	}
-	if (typeof pin.partId !== "string") {
-		return;
-	}
-	if (!partIds.has(pin.partId)) {
-		errors.push(`${pinPath}.partId: partId '${pin.partId}' not found`);
-	}
-}
-
-function checkNetPins(pins, netPath, partIds, errors) {
-	if (!Array.isArray(pins)) {
-		return;
-	}
-	for (let i = 0; i < pins.length; i++) {
-		checkNetPin(
-			pins[i],
-			joinPath(joinPath(netPath, "pins"), i),
-			partIds,
-			errors,
-		);
-	}
-}
-
 function checkNet(net, index, path, ctx) {
-	if (!net || typeof net !== "object") {
+	const netPath = startEntityCheck(net, "nets", index, path);
+	if (!netPath) {
 		return;
 	}
-	const netPath = joinPath(joinPath(path, "nets"), index);
 	checkId(net.id, joinPath(netPath, "id"), "net", ctx);
-	checkNetPins(net.pins, netPath, ctx.partIds, ctx.errors);
+	checkNetPins(net.pins, netPath, ctx);
 }
 
 function checkConstraint(constraint, index, path, ctx) {
-	if (!constraint || typeof constraint !== "object") {
+	const constraintPath = startEntityCheck(
+		constraint,
+		"constraints",
+		index,
+		path,
+	);
+	if (!constraintPath) {
 		return;
 	}
-	const constraintPath = joinPath(joinPath(path, "constraints"), index);
 	checkId(constraint.id, joinPath(constraintPath, "id"), null, ctx);
 }
 
-function checkParts(parts, path, ctx) {
-	if (!Array.isArray(parts)) {
-		return;
-	}
-	for (let i = 0; i < parts.length; i++) {
-		checkPart(parts[i], i, path, ctx);
-	}
-}
-
-function checkNets(nets, path, ctx) {
-	if (!Array.isArray(nets)) {
-		return;
-	}
-	for (let i = 0; i < nets.length; i++) {
-		checkNet(nets[i], i, path, ctx);
-	}
-}
-
-function checkConstraints(constraints, path, ctx) {
-	if (!Array.isArray(constraints)) {
-		return;
-	}
-	for (let i = 0; i < constraints.length; i++) {
-		checkConstraint(constraints[i], i, path, ctx);
-	}
+function checkItems(items, path, ctx, checkFn) {
+	forEachItem(items, (item, i) => checkFn(item, i, path, ctx));
 }
 
 function checkCircuitIRSemantics(ir, path, errors) {
-	if (!ir || typeof ir !== "object") {
+	if (!isValidObject(ir)) {
 		return;
 	}
 	const ctx = {
@@ -213,9 +194,9 @@ function checkCircuitIRSemantics(ir, path, errors) {
 		seenRefs: new Set(),
 		partIds: new Set(),
 	};
-	checkParts(ir.parts, path, ctx);
-	checkNets(ir.nets, path, ctx);
-	checkConstraints(ir.constraints, path, ctx);
+	checkItems(ir.parts, path, ctx, checkPart);
+	checkItems(ir.nets, path, ctx, checkNet);
+	checkItems(ir.constraints, path, ctx, checkConstraint);
 }
 
 export function validateCircuitIR(ir, path = "$") {
