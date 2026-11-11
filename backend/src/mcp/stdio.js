@@ -14,12 +14,14 @@ export async function runStdioServer() {
 	);
 	const { registerDiffTools } = await import("../engine/tools/diff-tools.js");
 	const { registerKicadTools } = await import("../engine/tools/kicad-tools.js");
+	const { registerRouteTools } = await import("../engine/tools/route-tools.js");
 	const { createMcpServer } = await import("./server.js");
 
 	const registry = createRegistry();
 	registerDiffTools(registry);
 	registerKicadTools(registry);
 	registerDesignTools(registry);
+	registerRouteTools(registry);
 
 	const server = createMcpServer({ registry });
 	const transport = new StdioServerTransport();
