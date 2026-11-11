@@ -9,6 +9,9 @@ export async function runStdioServer() {
 	console.debug = console.error;
 
 	const { createRegistry } = await import("../engine/tool-registry.js");
+	const { registerDesignTools } = await import(
+		"../engine/tools/design-tools.js"
+	);
 	const { registerDiffTools } = await import("../engine/tools/diff-tools.js");
 	const { registerKicadTools } = await import("../engine/tools/kicad-tools.js");
 	const { createMcpServer } = await import("./server.js");
@@ -16,6 +19,7 @@ export async function runStdioServer() {
 	const registry = createRegistry();
 	registerDiffTools(registry);
 	registerKicadTools(registry);
+	registerDesignTools(registry);
 
 	const server = createMcpServer({ registry });
 	const transport = new StdioServerTransport();
