@@ -52,18 +52,24 @@ const WEIRD_INPUTS = [
 	Symbol("sym"),
 ];
 
+function withoutKey(obj, key) {
+	const copy = { ...obj };
+	delete copy[key];
+	return copy;
+}
+
 function assertValid(res) {
-	assert.equal(res.ok, true);
-	assert.deepEqual(res.errors, []);
+	assert.deepEqual(
+		{ ok: res.ok, errors: res.errors },
+		{ ok: true, errors: [] },
+	);
 }
 
 function assertInvalid(res, expectedPath) {
-	assert.equal(res.ok, false);
-	assert.equal(res.errors.length > 0, true);
 	const matched = res.errors.some((err) => err.startsWith(expectedPath));
-	assert.equal(
-		matched,
-		true,
+	assert.deepEqual(
+		{ ok: res.ok, hasErrors: res.errors.length > 0, matched },
+		{ ok: false, hasErrors: true, matched: true },
 		`Expected error for path ${expectedPath}, got: ${res.errors.join(", ")}`,
 	);
 }
@@ -71,9 +77,10 @@ function assertInvalid(res, expectedPath) {
 function assertResilient(validate, input) {
 	assert.doesNotThrow(() => {
 		const res = validate(input);
-		assert.equal(typeof res.ok, "boolean");
-		assert.equal(Array.isArray(res.errors), true);
-		assert.equal(res.ok, false);
+		assert.deepEqual(
+			[typeof res.ok, Array.isArray(res.errors), res.ok],
+			["boolean", true, false],
+		);
 	});
 }
 
@@ -85,36 +92,166 @@ function runGarbageInputCases(validate) {
 	}
 }
 
-function runEnumCases(field, values) {
-	for (const val of values) {
-		test(`accepts ${field} ${val}`, () => {
-			const run = { ...makeValidSimRun(), [field]: val };
-			assert.equal(validateSimRun(run).ok, true);
-		});
-	}
-}
+const ENV_INVALID_CASES = [
+	...["id", "name", "ambientC", "humidityPct", "altitudeM"].map((prop) => [
+		`rejects missing ${prop}`,
+		() => withoutKey(makeValidEnv(), prop),
+		`$.${prop}`,
+	]),
+	[
+		"rejects invalid id kind (part_* instead of env_*)",
+		() => ({ ...makeValidEnv(), id: newId("part") }),
+		"$.id",
+	],
+	[
+		"rejects malformed id string",
+		() => ({ ...makeValidEnv(), id: "invalid-id" }),
+		"$.id",
+	],
+	[
+		"rejects wrong name type",
+		() => ({ ...makeValidEnv(), name: 42 }),
+		"$.name",
+	],
+	[
+		"rejects ambientC min > max",
+		() => ({ ...makeValidEnv(), ambientC: { min: 40, max: 20 } }),
+		"$.ambientC",
+	],
+	[
+		"rejects ambientC missing max",
+		() => ({ ...makeValidEnv(), ambientC: { min: 20 } }),
+		"$.ambientC.max",
+	],
+	[
+		"rejects humidityPct min > max",
+		() => ({ ...makeValidEnv(), humidityPct: { min: 80, max: 40 } }),
+		"$.humidityPct",
+	],
+	[
+		"rejects vibration fromHz > toHz",
+		() => ({
+			...makeValidEnv(),
+			vibration: { psdG2Hz: 0.04, fromHz: 2000, toHz: 20 },
+		}),
+		"$.vibration",
+	],
+	[
+		"rejects vibration missing toHz",
+		() => ({
+			...makeValidEnv(),
+			vibration: { psdG2Hz: 0.04, fromHz: 20 },
+		}),
+		"$.vibration.toHz",
+	],
+	[
+		"rejects unexpected extra property",
+		() => ({ ...makeValidEnv(), extraField: "not-allowed" }),
+		"$.extraField",
+	],
+];
 
-function testFieldRejections({
-	missingFields,
-	mutations,
-	makeValid,
-	validate,
-}) {
-	for (const prop of missingFields) {
-		test(`rejects missing ${prop}`, () => {
-			const entity = makeValid();
-			delete entity[prop];
-			assertInvalid(validate(entity), `$.${prop}`);
-		});
-	}
-	for (const [label, mutate, expectedPath] of mutations) {
-		test(`rejects ${label}`, () => {
-			const entity = makeValid();
-			mutate(entity);
-			assertInvalid(validate(entity), expectedPath);
-		});
-	}
-}
+const SIM_VALID_KINDS = [
+	"trace-current",
+	"ir-drop",
+	"impedance",
+	"spice",
+	"thermal",
+];
+const SIM_VALID_STATUSES = ["queued", "running", "done", "failed"];
+
+const SIM_VALID_CASES = [
+	["accepts valid full simulation run", () => makeValidSimRun()],
+	[
+		"accepts short 7-hex commit",
+		() => ({ ...makeValidSimRun(), commit: "34b1983" }),
+	],
+	[
+		"accepts run without optional finishedAt",
+		() => withoutKey(makeValidSimRun(), "finishedAt"),
+	],
+	[
+		"accepts run with empty results array",
+		() => ({ ...makeValidSimRun(), status: "queued", results: [] }),
+	],
+	...SIM_VALID_KINDS.map((kind) => [
+		`accepts kind ${kind}`,
+		() => ({ ...makeValidSimRun(), kind }),
+	]),
+	...SIM_VALID_STATUSES.map((status) => [
+		`accepts status ${status}`,
+		() => ({ ...makeValidSimRun(), status }),
+	]),
+];
+
+const SIM_INVALID_CASES = [
+	...["id", "commit", "envId", "startedAt", "results"].map((prop) => [
+		`rejects missing ${prop}`,
+		() => withoutKey(makeValidSimRun(), prop),
+		`$.${prop}`,
+	]),
+	[
+		"rejects invalid id kind (env_* instead of sim_*)",
+		() => ({ ...makeValidSimRun(), id: newId("env") }),
+		"$.id",
+	],
+	[
+		"rejects malformed id string",
+		() => ({ ...makeValidSimRun(), id: "bad-id" }),
+		"$.id",
+	],
+	[
+		"rejects commit too short (< 7 hex)",
+		() => ({ ...makeValidSimRun(), commit: "123456" }),
+		"$.commit",
+	],
+	[
+		"rejects commit too long (> 40 hex)",
+		() => ({ ...makeValidSimRun(), commit: "a".repeat(41) }),
+		"$.commit",
+	],
+	[
+		"rejects commit non-hex character",
+		() => ({ ...makeValidSimRun(), commit: "123456g" }),
+		"$.commit",
+	],
+	[
+		"rejects invalid envId kind (sim_* instead of env_*)",
+		() => ({ ...makeValidSimRun(), envId: newId("sim") }),
+		"$.envId",
+	],
+	[
+		"rejects invalid kind enum",
+		() => ({ ...makeValidSimRun(), kind: "magic-sim" }),
+		"$.kind",
+	],
+	[
+		"rejects invalid status enum",
+		() => ({ ...makeValidSimRun(), status: "paused" }),
+		"$.status",
+	],
+	[
+		"rejects result missing unit",
+		() => ({
+			...makeValidSimRun(),
+			results: [{ itemId: "part_1", metric: "temp", value: 50 }],
+		}),
+		"$.results[0].unit",
+	],
+	[
+		"rejects result non-number value",
+		() => ({
+			...makeValidSimRun(),
+			results: [{ itemId: "part_1", metric: "temp", value: "high", unit: "C" }],
+		}),
+		"$.results[0].value",
+	],
+	[
+		"rejects unexpected extra property",
+		() => ({ ...makeValidSimRun(), extraProp: 123 }),
+		"$.extraProp",
+	],
+];
 
 describe("module contract", () => {
 	test("exports match the contract exactly", async () => {
@@ -142,111 +279,42 @@ describe("module contract", () => {
 });
 
 describe("validateEnvironment: valid cases", () => {
-	test("accepts minimal valid environment", () => {
-		assertValid(validateEnvironment(makeValidEnv()));
-	});
+	const CASES = [
+		["accepts minimal valid environment", () => makeValidEnv()],
+		[
+			"accepts complete valid environment with optional fields",
+			() => ({
+				...makeValidEnv(),
+				vibration: { psdG2Hz: 0.04, fromHz: 20, toHz: 2000 },
+				shockG: 40,
+				airflowMs: 2.5,
+			}),
+		],
+		[
+			"accepts boundary when min equals max",
+			() => ({
+				...makeValidEnv(),
+				ambientC: { min: 25, max: 25 },
+				humidityPct: { min: 50, max: 50 },
+				vibration: { psdG2Hz: 0.01, fromHz: 100, toHz: 100 },
+			}),
+		],
+	];
 
-	test("accepts complete valid environment with optional fields", () => {
-		const env = {
-			...makeValidEnv(),
-			vibration: { psdG2Hz: 0.04, fromHz: 20, toHz: 2000 },
-			shockG: 40,
-			airflowMs: 2.5,
-		};
-		assertValid(validateEnvironment(env));
-	});
-
-	test("accepts boundary when min equals max", () => {
-		const env = {
-			...makeValidEnv(),
-			ambientC: { min: 25, max: 25 },
-			humidityPct: { min: 50, max: 50 },
-			vibration: { psdG2Hz: 0.01, fromHz: 100, toHz: 100 },
-		};
-		assertValid(validateEnvironment(env));
-	});
+	for (const [name, createPayload] of CASES) {
+		test(name, () => {
+			assertValid(validateEnvironment(createPayload()));
+		});
+	}
 });
 
 describe("validateEnvironment: invalid rule cases", () => {
-	const MISSING_ENV_FIELDS = [
-		"id",
-		"name",
-		"ambientC",
-		"humidityPct",
-		"altitudeM",
-	];
-	const ENV_MUTATIONS = [
-		[
-			"invalid id kind (part_* instead of env_*)",
-			(e) => {
-				e.id = newId("part");
-			},
-			"$.id",
-		],
-		[
-			"malformed id string",
-			(e) => {
-				e.id = "invalid-id";
-			},
-			"$.id",
-		],
-		[
-			"wrong name type",
-			(e) => {
-				e.name = 42;
-			},
-			"$.name",
-		],
-		[
-			"ambientC min > max",
-			(e) => {
-				e.ambientC = { min: 40, max: 20 };
-			},
-			"$.ambientC",
-		],
-		[
-			"ambientC missing max",
-			(e) => {
-				e.ambientC = { min: 20 };
-			},
-			"$.ambientC.max",
-		],
-		[
-			"humidityPct min > max",
-			(e) => {
-				e.humidityPct = { min: 80, max: 40 };
-			},
-			"$.humidityPct",
-		],
-		[
-			"vibration fromHz > toHz",
-			(e) => {
-				e.vibration = { psdG2Hz: 0.04, fromHz: 2000, toHz: 20 };
-			},
-			"$.vibration",
-		],
-		[
-			"vibration missing toHz",
-			(e) => {
-				e.vibration = { psdG2Hz: 0.04, fromHz: 20 };
-			},
-			"$.vibration.toHz",
-		],
-		[
-			"unexpected extra property",
-			(e) => {
-				e.extraField = "not-allowed";
-			},
-			"$.extraField",
-		],
-	];
-
-	testFieldRejections({
-		missingFields: MISSING_ENV_FIELDS,
-		mutations: ENV_MUTATIONS,
-		makeValid: makeValidEnv,
-		validate: validateEnvironment,
-	});
+	const CASES = ENV_INVALID_CASES;
+	for (const [name, createPayload, path] of CASES) {
+		test(name, () => {
+			assertInvalid(validateEnvironment(createPayload()), path);
+		});
+	}
 });
 
 describe("validateEnvironment: garbage input resilience", () => {
@@ -254,123 +322,21 @@ describe("validateEnvironment: garbage input resilience", () => {
 });
 
 describe("validateSimRun: valid cases", () => {
-	test("accepts valid full simulation run", () => {
-		assertValid(validateSimRun(makeValidSimRun()));
-	});
-
-	test("accepts short 7-hex commit", () => {
-		assertValid(validateSimRun({ ...makeValidSimRun(), commit: "34b1983" }));
-	});
-
-	test("accepts run without optional finishedAt", () => {
-		const run = makeValidSimRun();
-		delete run.finishedAt;
-		assertValid(validateSimRun(run));
-	});
-
-	test("accepts run with empty results array", () => {
-		assertValid(
-			validateSimRun({ ...makeValidSimRun(), status: "queued", results: [] }),
-		);
-	});
-
-	const KINDS = ["trace-current", "ir-drop", "impedance", "spice", "thermal"];
-	runEnumCases("kind", KINDS);
-
-	const STATUSES = ["queued", "running", "done", "failed"];
-	runEnumCases("status", STATUSES);
+	const CASES = SIM_VALID_CASES;
+	for (const [name, createPayload] of CASES) {
+		test(name, () => {
+			assertValid(validateSimRun(createPayload()));
+		});
+	}
 });
 
 describe("validateSimRun: invalid rule cases", () => {
-	const MISSING_SIM_FIELDS = ["id", "commit", "envId", "startedAt", "results"];
-	const SIM_MUTATIONS = [
-		[
-			"invalid id kind (env_* instead of sim_*)",
-			(r) => {
-				r.id = newId("env");
-			},
-			"$.id",
-		],
-		[
-			"malformed id string",
-			(r) => {
-				r.id = "bad-id";
-			},
-			"$.id",
-		],
-		[
-			"commit too short (< 7 hex)",
-			(r) => {
-				r.commit = "123456";
-			},
-			"$.commit",
-		],
-		[
-			"commit too long (> 40 hex)",
-			(r) => {
-				r.commit = "a".repeat(41);
-			},
-			"$.commit",
-		],
-		[
-			"commit non-hex character",
-			(r) => {
-				r.commit = "123456g";
-			},
-			"$.commit",
-		],
-		[
-			"invalid envId kind (sim_* instead of env_*)",
-			(r) => {
-				r.envId = newId("sim");
-			},
-			"$.envId",
-		],
-		[
-			"invalid kind enum",
-			(r) => {
-				r.kind = "magic-sim";
-			},
-			"$.kind",
-		],
-		[
-			"invalid status enum",
-			(r) => {
-				r.status = "paused";
-			},
-			"$.status",
-		],
-		[
-			"result missing unit",
-			(r) => {
-				r.results = [{ itemId: "part_1", metric: "temp", value: 50 }];
-			},
-			"$.results[0].unit",
-		],
-		[
-			"result non-number value",
-			(r) => {
-				r.results = [
-					{ itemId: "part_1", metric: "temp", value: "high", unit: "C" },
-				];
-			},
-			"$.results[0].value",
-		],
-		[
-			"unexpected extra property",
-			(r) => {
-				r.extraProp = 123;
-			},
-			"$.extraProp",
-		],
-	];
-
-	testFieldRejections({
-		missingFields: MISSING_SIM_FIELDS,
-		mutations: SIM_MUTATIONS,
-		makeValid: makeValidSimRun,
-		validate: validateSimRun,
-	});
+	const CASES = SIM_INVALID_CASES;
+	for (const [name, createPayload, path] of CASES) {
+		test(name, () => {
+			assertInvalid(validateSimRun(createPayload()), path);
+		});
+	}
 });
 
 describe("validateSimRun: garbage input resilience", () => {
