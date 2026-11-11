@@ -459,17 +459,18 @@ function getBoardHeights(split) {
 				.map((m) => Math.round(centerY(m) * 1e5) / 1e5),
 		),
 	).sort((a, b) => a - b);
-	return { mid, cu };
+	return { mid, cu, topY: bb.max.y };
 }
 
-function fitHolder(holder, root) {
+function fitHolder(holder, root, bodyTopY) {
 	const full = new THREE.Box3().setFromObject(root);
 	const size = full.getSize(new THREE.Vector3());
 	const ctr = full.getCenter(new THREE.Vector3());
 	const s = FIT_SIZE / Math.max(size.x, size.z);
 	holder.scale.setScalar(s);
 	holder.position.set(-ctr.x * s, -full.min.y * s + 1.2, -ctr.z * s);
-	return size;
+	const topY = (bodyTopY - full.min.y) * s + 1.2;
+	return { size, ctr, s, topY };
 }
 
 function createGroupManager(holder) {
@@ -817,9 +818,10 @@ function updateRendererSize({ container, renderer, composer, camera, pr }) {
 }
 
 class HoloSceneSession {
-	constructor(container, { onHover } = {}) {
+	constructor(container, options = {}) {
 		this.container = container;
-		this.onHover = onHover;
+		this.options = options;
+		this.onHover = options.onHover;
 		this.renderer = initRenderer(container);
 		const { scene, pmrem } = initScene(this.renderer);
 		this.scene = scene;
@@ -848,6 +850,7 @@ class HoloSceneSession {
 	}
 
 	initState() {
+		this.boardTransform = null;
 		this.layers = [];
 		this.parts = [];
 		this.style = "kicad";
@@ -953,15 +956,30 @@ class HoloSceneSession {
 		this.tick.rotation.z = t * 0.35;
 		this.polar.rotation.y = -t * 0.05;
 		this.controls.update();
+		this.options?.onFrame?.(dt);
 		this.draw();
 	}
 
 	clearBoard() {
 		clearBoard(this.holder);
+		this.boardTransform = null;
 		this.layers = [];
 		this.parts = [];
 		this.solo = null;
 		this.hovered = null;
+	}
+
+	boardToScene(x, y, z) {
+		if (!this.boardTransform) return null;
+		const { ctr, s, topY } = this.boardTransform;
+		const px = Array.isArray(x) ? x[0] : (x ?? 0);
+		const py = Array.isArray(x) ? x[1] : (y ?? 0);
+		const pz = Array.isArray(x) ? x[2] : (z ?? 0);
+		return [
+			(px * 0.001 - ctr.x) * s,
+			topY + pz * 0.001 * s,
+			(py * 0.001 - ctr.z) * s,
+		];
 	}
 
 	async loadGlb(arrayBuffer) {
@@ -976,8 +994,9 @@ class HoloSceneSession {
 		const split = boardMeshes.flatMap((m) =>
 			SPLITTABLE_KINDS.has(m.userData.kind) ? splitByHeight(m) : [m],
 		);
-		const { mid, cu } = getBoardHeights(split);
-		const size = fitHolder(this.holder, gltf.scene);
+		const { mid, cu, topY } = getBoardHeights(split);
+		const xf = fitHolder(this.holder, gltf.scene, topY);
+		this.boardTransform = xf;
 		const { groups, groupFor } = createGroupManager(this.holder);
 		const slotOf = createSlotResolver(mid, cu);
 		const buckets = collectMeshBuckets({ split, comps, slotOf, mid, groupFor });
@@ -986,7 +1005,7 @@ class HoloSceneSession {
 		this.applyExplode();
 		this.setStyle(this.style);
 		this.frameStack();
-		return formatLayerSummary(this.layers, comps.length, size);
+		return formatLayerSummary(this.layers, comps.length, xf.size);
 	}
 
 	applyExplode() {
@@ -1092,6 +1111,8 @@ class HoloSceneSession {
 
 	dispose() {
 		this.disposed = true;
+		this.boardTransform = null;
+		this.options = null;
 		this.ro.disconnect();
 		this.timer.dispose();
 		this.renderer.domElement.removeEventListener("pointermove", this.onMove);
@@ -1106,9 +1127,11 @@ class HoloSceneSession {
 	}
 }
 
-export function createHoloScene(container, { onHover } = {}) {
-	const session = new HoloSceneSession(container, { onHover });
+export function createHoloScene(container, options = {}) {
+	const session = new HoloSceneSession(container, options);
 	return {
+		scene: session.scene,
+		boardToScene: (x, y, z) => session.boardToScene(x, y, z),
 		loadGlb: (buf) => session.loadGlb(buf),
 		setExplode: (v) => session.setExplode(v),
 		setSpacing: (v) => session.setSpacing(v),

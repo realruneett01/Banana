@@ -12,6 +12,8 @@ import {
 import { Button, Segmented, Select, Slider, Spin, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../../config.js";
+import { createFlowLayer } from "../sim3d/flowLayer.js";
+import { buildFlowPaths, faultEffects } from "../sim3d/flowModel.js";
 import { createHoloScene } from "./holoScene.js";
 import "./HoloViewer.css";
 
@@ -450,21 +452,51 @@ function HoloViewActions({ disabled, scene, renderProps, layers, meta }) {
 	);
 }
 
-function useHoloScene() {
+export function makeBoardToScene(board) {
+	const sx = board?.sizeMm?.[0] || 100;
+	const sy = board?.sizeMm?.[1] || 100;
+	const maxDim = Math.max(sx, sy) || 100;
+	const s = 10 / maxDim;
+	const cx = sx / 2;
+	const cz = sy / 2;
+	return (x, y = 0, z = 0) => {
+		const px = Array.isArray(x) ? x[0] : (x ?? 0);
+		const py = Array.isArray(x) ? x[1] : (y ?? 0);
+		const pz = Array.isArray(x) ? x[2] : (z ?? 0);
+		return [(px - cx) * s, 1.2 + (pz ?? 0) * s, (py - cz) * s];
+	};
+}
+
+function resolveBoardToScene(sceneRef, board) {
+	return (x, y, z) => {
+		const pt = sceneRef?.current?.boardToScene?.(x, y, z);
+		if (pt != null) return pt;
+		return makeBoardToScene(board)(x, y, z);
+	};
+}
+
+function useHoloScene(onFrameRef) {
 	const mountRef = useRef(null);
 	const sceneRef = useRef(null);
+	const [threeScene, setThreeScene] = useState(null);
 	const [hover, setHover] = useState(null);
 
 	useEffect(() => {
-		const s = createHoloScene(mountRef.current, { onHover: setHover });
+		if (!mountRef.current) return;
+		const s = createHoloScene(mountRef.current, {
+			onHover: setHover,
+			onFrame: (dt) => onFrameRef?.current?.(dt),
+		});
 		sceneRef.current = s;
+		setThreeScene(s.scene);
 		return () => {
 			s.dispose();
 			sceneRef.current = null;
+			setThreeScene(null);
 		};
-	}, []);
+	}, [onFrameRef]);
 
-	return { mountRef, sceneRef, hover };
+	return { mountRef, sceneRef, threeScene, hover };
 }
 
 function useGlbLoader(sceneRef, glb, res, onLoaded) {
@@ -704,40 +736,137 @@ function HoloPanel({ state }) {
 	);
 }
 
+function useFlowLayerLifecycle({ flow, faults, threeScene, board, sceneRef }) {
+	const layerRef = useRef(null);
+	useEffect(() => {
+		if (!flow || !threeScene) {
+			layerRef.current?.dispose();
+			layerRef.current = null;
+			return;
+		}
+		layerRef.current?.dispose();
+		const boardToScene = resolveBoardToScene(sceneRef, board);
+		const layer = createFlowLayer(threeScene, { boardToScene });
+		layerRef.current = layer;
+		const paths = buildFlowPaths(flow);
+		layer.setPaths(paths);
+		layer.setEffects(faultEffects(faults, paths));
+	}, [flow, faults, threeScene, board, sceneRef]);
+
+	useEffect(() => {
+		return () => {
+			layerRef.current?.dispose();
+			layerRef.current = null;
+		};
+	}, []);
+	return layerRef;
+}
+
+function useFlowAnimationLoop(layerRef, playing, onFrameRef) {
+	useEffect(() => {
+		onFrameRef.current = (dt) => {
+			if (playing && layerRef.current) {
+				layerRef.current.update(dt);
+			}
+		};
+		return () => {
+			onFrameRef.current = null;
+		};
+	}, [playing, onFrameRef, layerRef]);
+}
+
+function useFlowSync({
+	flow,
+	faults,
+	playing,
+	threeScene,
+	board,
+	sceneRef,
+	onFrameRef,
+}) {
+	const layerRef = useFlowLayerLifecycle({
+		flow,
+		faults,
+		threeScene,
+		board,
+		sceneRef,
+	});
+	useFlowAnimationLoop(layerRef, playing, onFrameRef);
+}
+
+function useHoloViewState(source, onFrameRef) {
+	const [which, setWhich] = useState("target");
+	const commit = which === "base" ? source?.baseCommit : source?.targetCommit;
+	const glb = useBoardGlb(source, commit);
+	const holo = useHoloScene(onFrameRef);
+	const layers = useLayerVisibility(holo.sceneRef);
+	const styling = useViewerStyle(holo.sceneRef);
+	const render = useRenderSettings(holo.sceneRef);
+	const loader = useGlbLoader(
+		holo.sceneRef,
+		glb,
+		render.res,
+		layers.resetLayers,
+	);
+	const explode = useLayerExplode(holo.sceneRef, loader.board);
+	const status = getStatus(source, glb, loader.parseError);
+	return {
+		which,
+		setWhich,
+		glb,
+		holo,
+		layers,
+		styling,
+		render,
+		loader,
+		explode,
+		status,
+	};
+}
+
+function buildPanelState(source, s) {
+	return {
+		source,
+		which: s.which,
+		setWhich: s.setWhich,
+		loader: s.loader,
+		layers: s.layers,
+		explode: s.explode,
+		styling: s.styling,
+		render: s.render,
+		sceneRef: s.holo.sceneRef,
+	};
+}
+
 /**
  * 3D hologram view of the real board: every copper layer, mask, silkscreen, FR4 core
  * and component model from kicad-cli, stacked so layers can be exploded and inspected.
  */
-export default function HoloViewer({ source }) {
-	const [which, setWhich] = useState("target");
-	const commit = which === "base" ? source?.baseCommit : source?.targetCommit;
-	const glb = useBoardGlb(source, commit);
-	const { mountRef, sceneRef, hover } = useHoloScene();
-	const layers = useLayerVisibility(sceneRef);
-	const styling = useViewerStyle(sceneRef);
-	const render = useRenderSettings(sceneRef);
-	const loader = useGlbLoader(sceneRef, glb, render.res, layers.resetLayers);
-	const explode = useLayerExplode(sceneRef, loader.board);
-	const status = getStatus(source, glb, loader.parseError);
-	const panelState = {
-		source,
-		which,
-		setWhich,
-		loader,
-		layers,
-		explode,
-		styling,
-		render,
-		sceneRef,
-	};
+export default function HoloViewer({
+	source,
+	flow,
+	faults = [],
+	playing = true,
+}) {
+	const onFrameRef = useRef(null);
+	const s = useHoloViewState(source, onFrameRef);
+	useFlowSync({
+		flow,
+		faults,
+		playing,
+		threeScene: s.holo.threeScene,
+		board: s.loader.board,
+		sceneRef: s.holo.sceneRef,
+		onFrameRef,
+	});
 
 	return (
 		<div className="holo-root">
-			<div ref={mountRef} className="holo-canvas" />
-			<HoloStatusOverlay status={status} />
-			<HoloTip hover={hover} />
-			<HoloReadout board={loader.board} bufferSize={loader.bufferSize} />
-			<HoloPanel state={panelState} />
+			<div ref={s.holo.mountRef} className="holo-canvas" />
+			<HoloStatusOverlay status={s.status} />
+			<HoloTip hover={s.holo.hover} />
+			<HoloReadout board={s.loader.board} bufferSize={s.loader.bufferSize} />
+			<HoloPanel state={buildPanelState(source, s)} />
 		</div>
 	);
 }
