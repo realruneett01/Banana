@@ -15,6 +15,12 @@ services:
         value: /opt/freerouting/freerouting.jar
       - key: OAUTH_STATE_DB
         value: /app/temp_storage/oauth-states.db
+      - key: NGSPICE_PATH
+        value: /usr/bin/ngspice
+      - key: KICAD_SYMBOL_DIR
+        value: /usr/share/kicad/symbols
+      - key: KICAD_FOOTPRINT_DIR
+        value: /usr/share/kicad/footprints
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL

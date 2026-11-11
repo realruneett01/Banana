@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3 \
     default-jre-headless \
+    ngspice \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
@@ -50,7 +51,11 @@ RUN mkdir -p /opt/freerouting && \
     curl -fsSL "https://github.com/freerouting/freerouting/releases/download/v${FREEROUTING_VERSION}/freerouting-${FREEROUTING_VERSION}.jar" -o /opt/freerouting/freerouting.jar
 
 # Verify system installations
-RUN kicad-cli --version && node -v && npm -v && git --version && java -version
+RUN kicad-cli --version && node -v && npm -v && git --version && java -version && ngspice --version | head -1
+
+# Warn if KiCad library directories are missing from the base image
+RUN ( [ -d /usr/share/kicad/symbols ] || echo "[WARNING] KiCad symbol directory /usr/share/kicad/symbols not found" ) && \
+    ( [ -d /usr/share/kicad/footprints ] || echo "[WARNING] KiCad footprint directory /usr/share/kicad/footprints not found" )
 
 WORKDIR /app
 
@@ -60,6 +65,9 @@ ENV PORT=5000
 ENV KICAD_CLI_PATH=/usr/bin/kicad-cli
 ENV FREEROUTING_JAR=/opt/freerouting/freerouting.jar
 ENV OAUTH_STATE_DB=/app/temp_storage/oauth-states.db
+ENV NGSPICE_PATH=/usr/bin/ngspice
+ENV KICAD_SYMBOL_DIR=/usr/share/kicad/symbols
+ENV KICAD_FOOTPRINT_DIR=/usr/share/kicad/footprints
 
 # Copy package manifests for workspace resolution
 COPY package*.json ./

@@ -1,13 +1,83 @@
-import { execFile } from "child_process";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
 import express from "express";
 import { config } from "../config.js";
+import { createNgspice } from "../engine/spice/ngspice-runner.js";
 
 const router = express.Router();
+
+const CAPABILITIES_CACHE_TTL_MS = 60 * 1000;
+let cachedCapabilities = null;
+let cacheExpiresAt = 0;
+let pendingCapabilitiesPromise = null;
+
+async function checkNgspice() {
+	try {
+		return Boolean(await createNgspice().available());
+	} catch {
+		// Suppress failure and report ngspice unavailable
+		return false;
+	}
+}
+
+function checkKicadLibraries() {
+	const symDir = process.env.KICAD_SYMBOL_DIR;
+	const fpDir = process.env.KICAD_FOOTPRINT_DIR;
+	if (!symDir || !fpDir) return false;
+	try {
+		return fs.existsSync(symDir) && fs.existsSync(fpDir);
+	} catch {
+		// Suppress fs errors and report libraries unavailable
+		return false;
+	}
+}
+
+function checkFreerouting() {
+	const jar = process.env.FREEROUTING_JAR;
+	if (!jar || typeof jar !== "string") return false;
+	const trimmed = jar.trim();
+	if (!trimmed) return false;
+	try {
+		return fs.existsSync(trimmed);
+	} catch {
+		// Suppress fs errors and report freerouting unavailable
+		return false;
+	}
+}
+
+async function computeCapabilities() {
+	const ngspice = await checkNgspice();
+	const kicadLibraries = checkKicadLibraries();
+	const freerouting = checkFreerouting();
+	return { ngspice, kicadLibraries, freerouting };
+}
+
+async function getCapabilities() {
+	const now = Date.now();
+	if (cachedCapabilities && now < cacheExpiresAt) {
+		return cachedCapabilities;
+	}
+	if (pendingCapabilitiesPromise) {
+		return pendingCapabilitiesPromise;
+	}
+
+	pendingCapabilitiesPromise = (async () => {
+		try {
+			cachedCapabilities = await computeCapabilities();
+			cacheExpiresAt = Date.now() + CAPABILITIES_CACHE_TTL_MS;
+			return cachedCapabilities;
+		} finally {
+			pendingCapabilitiesPromise = null;
+		}
+	})();
+
+	return pendingCapabilitiesPromise;
+}
 
 router.get("/health-check", (_req, res) => {
 	const cliPath = config.kicadCliPath;
 
-	execFile(cliPath, ["--version"], (error, stdout, stderr) => {
+	execFile(cliPath, ["--version"], async (error, stdout, stderr) => {
 		if (error) {
 			return res.status(500).json({
 				status: "unhealthy",
@@ -30,9 +100,12 @@ router.get("/health-check", (_req, res) => {
 			});
 		}
 
+		const capabilities = await getCapabilities();
+
 		res.json({
 			status: "healthy",
 			kicadVersion: version,
+			capabilities,
 		});
 	});
 });
