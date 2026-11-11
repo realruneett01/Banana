@@ -8,6 +8,7 @@ import { createRateLimiter, skipWhenLocal } from "./rate-limit.js";
 import agentRouter from "./routes/agent-routes.js";
 import circuitRouter from "./routes/circuit-routes.js";
 import { createApiRouter } from "./routes/index.js";
+import libraryRouter from "./routes/library-routes.js";
 import simRouter from "./routes/sim-routes.js";
 
 function setupStaticServing(expressApp, customStaticDir) {
@@ -152,6 +153,7 @@ export function createApp(options = {}) {
 		skipWhenLocal(createRateLimiter({ windowMs: 60000, max: 30 })),
 		circuitRouter,
 	);
+	app.use("/api", libraryRouter);
 
 	// Static files
 	setupStaticServing(app, options.staticDir);
