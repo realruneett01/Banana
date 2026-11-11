@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyCommand } from "./editorModel.js";
+import { markerGlyphs } from "./markerRender.js";
 import {
 	hitTest,
 	partBox,
@@ -954,7 +955,104 @@ function SchematicPartsLayer({ parts, selection, wire, symbolCache }) {
 	));
 }
 
-function SchematicSvgScene({ s }) {
+const SEVERITY_RANK = Object.freeze({ error: 2, warning: 1, info: 0 });
+
+function updateProblemGroup(entry, prob) {
+	const currentRank = SEVERITY_RANK[entry.severity] ?? 0;
+	const sev = (prob?.severity ?? "info").toLowerCase();
+	const nextRank = SEVERITY_RANK[sev] ?? 0;
+	if (nextRank > currentRank) {
+		entry.severity = sev;
+	}
+	const msg = prob?.message ?? prob?.title;
+	if (msg) entry.messages.push(String(msg));
+}
+
+function groupProblemsByPart(problems) {
+	const map = new Map();
+	if (!Array.isArray(problems)) return map;
+	for (const prob of problems) {
+		const ids = Array.isArray(prob?.itemIds) ? prob.itemIds : [];
+		for (const id of ids) {
+			const entry = map.get(id) ?? { severity: "info", messages: [] };
+			updateProblemGroup(entry, prob);
+			map.set(id, entry);
+		}
+	}
+	return map;
+}
+
+function getBadgeCoords(part) {
+	const box = partBox(part);
+	if (!box.rot) {
+		return { x: box.x + box.width, y: box.y };
+	}
+	const rad = (box.rot * Math.PI) / 180;
+	const dx = box.width / 2;
+	const dy = -box.height / 2;
+	return {
+		x: box.cx + dx * Math.cos(rad) - dy * Math.sin(rad),
+		y: box.cy + dx * Math.sin(rad) + dy * Math.cos(rad),
+	};
+}
+
+function buildProblemMarkers(parts, grouped) {
+	const markers = [];
+	for (const part of parts ?? []) {
+		const entry = grouped.get(part.id);
+		if (!entry) continue;
+		const { x, y } = getBadgeCoords(part);
+		markers.push({
+			key: `problem-${part.id}`,
+			x,
+			y,
+			severity: entry.severity,
+			message: entry.messages.join("\n"),
+		});
+	}
+	return markers;
+}
+
+function extractProblemGlyphs(parts, problems) {
+	if (!Array.isArray(problems) || problems.length === 0) return [];
+	const grouped = groupProblemsByPart(problems);
+	if (grouped.size === 0) return [];
+	const markers = buildProblemMarkers(parts, grouped);
+	return markerGlyphs(markers);
+}
+
+function SchematicProblemsOverlay({ parts, problems }) {
+	const glyphs = useMemo(
+		() => extractProblemGlyphs(parts, problems),
+		[parts, problems],
+	);
+
+	if (glyphs.length === 0) return null;
+
+	return (
+		<g
+			className="schematic-problem-badges"
+			pointerEvents="none"
+			style={{ pointerEvents: "none" }}
+		>
+			{glyphs.map((g) => (
+				<circle
+					key={g.key}
+					cx={g.x}
+					cy={g.y}
+					r={g.r}
+					fill={g.color}
+					stroke="#ffffff"
+					strokeWidth={0.3}
+				>
+					<title>{g.title}</title>
+				</circle>
+			))}
+		</g>
+	);
+}
+
+function SchematicSvgScene({ s, problems }) {
 	return (
 		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
 			<SchematicGrid />
@@ -974,11 +1072,17 @@ function SchematicSvgScene({ s }) {
 				allPinPos={s.allPinPos}
 				cursorWorld={s.ptr.cursorWorld}
 			/>
+			<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
 		</g>
 	);
 }
 
-export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
+export default function SchematicCanvas({
+	editor,
+	onChange,
+	fetchSymbol,
+	problems = [],
+}) {
 	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
@@ -1001,7 +1105,7 @@ export default function SchematicCanvas({ editor, onChange, fetchSymbol }) {
 				style={{ display: "block", userSelect: "none" }}
 			>
 				<title>Schematic Canvas</title>
-				<SchematicSvgScene s={s} />
+				<SchematicSvgScene s={s} problems={problems} />
 			</svg>
 		</div>
 	);

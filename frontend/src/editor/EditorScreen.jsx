@@ -569,14 +569,21 @@ function CanvasTab({ visible, children }) {
 	);
 }
 
-function CanvasViewport({ activeTab, docState, curBoard, fetchers, markers }) {
+function CanvasViewport({
+	activeTab,
+	docState,
+	curBoard,
+	fetchers,
+	markers,
+	problems,
+}) {
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
 			<CanvasTab visible={activeTab === "schematic"}>
 				<SchematicCanvas
 					editor={docState.editor}
 					fetchSymbol={fetchers.fetchSymbol}
-					markers={markers}
+					problems={problems}
 				/>
 			</CanvasTab>
 			<CanvasTab visible={activeTab === "pcb"}>
@@ -618,7 +625,14 @@ function buildToolState(docState, activeTab, exporting) {
 	};
 }
 
-function EditorBody({ activeTab, docState, curBoard, fetchers, markers }) {
+function EditorBody({
+	activeTab,
+	docState,
+	curBoard,
+	fetchers,
+	markers,
+	problems,
+}) {
 	return (
 		<div style={CONTENT_ROW_STYLE}>
 			<CanvasViewport
@@ -627,6 +641,7 @@ function EditorBody({ activeTab, docState, curBoard, fetchers, markers }) {
 				curBoard={curBoard}
 				fetchers={fetchers}
 				markers={markers}
+				problems={problems}
 			/>
 			<PropertiesPanel doc={docState.doc} dispatch={docState.dispatch} />
 		</div>
@@ -708,6 +723,7 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 				curBoard={ctrl.curBoard}
 				fetchers={ctrl.fetchers}
 				markers={ctrl.liveChecks.markers}
+				problems={ctrl.liveChecks.issues}
 			/>
 		</>
 	);
