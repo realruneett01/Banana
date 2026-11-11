@@ -113,10 +113,19 @@ function createTranPlot() {
 	};
 }
 
+function resolveNgspiceCurrent(state, netlist) {
+	if (state.cannedCurrent !== null) {
+		return state.cannedCurrent;
+	}
+	return netlist.toLowerCase().includes("broken") ? 0 : 0.00315;
+}
+
 function createFakeNgspice(opts = {}) {
 	const state = {
 		available: opts.available ?? true,
 		shouldFail: opts.shouldFail ?? false,
+		failLog: opts.failLog ?? "Fatal error: iteration limit reached",
+		cannedCurrent: opts.cannedCurrent ?? null,
 	};
 	return {
 		setAvailable: (val) => {
@@ -125,20 +134,21 @@ function createFakeNgspice(opts = {}) {
 		setShouldFail: (val) => {
 			state.shouldFail = val;
 		},
+		setFailLog: (val) => {
+			state.failLog = val;
+		},
+		setCannedCurrent: (val) => {
+			state.cannedCurrent = val;
+		},
 		available: async () => state.available,
 		run: async (netlist) => {
 			if (state.shouldFail) {
-				return {
-					ok: false,
-					error: "Convergence failed",
-					log: "Fatal error: iteration limit reached",
-				};
+				return { ok: false, error: "Convergence failed", log: state.failLog };
 			}
 			if (netlist.includes(".tran")) {
 				return { ok: true, plots: [createTranPlot()] };
 			}
-			const isBroken = netlist.toLowerCase().includes("broken");
-			const current = isBroken ? 0 : 0.00315;
+			const current = resolveNgspiceCurrent(state, netlist);
 			return { ok: true, plots: [createOpPlot(current)] };
 		},
 	};
@@ -325,6 +335,64 @@ describe("circuit-routes", () => {
 				assert.ok(json.log.includes("Fatal error"));
 			} finally {
 				fakeNgspice.setShouldFail(false);
+			}
+		});
+	});
+
+	describe("POST /api/circuit/simulate - fixes and log sanitization", () => {
+		test("healthy result returns empty fixes array", async () => {
+			const { status, json } = await postJson(port, "/api/circuit/simulate", {
+				ir,
+			});
+			assert.equal(status, 200);
+			assert.deepEqual(json.fixes, []);
+		});
+
+		test("fixes present for an LED overcurrent canned result", async () => {
+			fakeNgspice.setCannedCurrent(0.08);
+			try {
+				const { status, json } = await postJson(port, "/api/circuit/simulate", {
+					ir,
+				});
+				assert.equal(status, 200);
+				assert.ok(Array.isArray(json.fixes));
+				assert.ok(json.fixes.length > 0);
+				const ledFix = json.fixes.find((f) => f.id.includes("led-overcurrent"));
+				assert.ok(ledFix);
+				assert.equal(ledFix.risk, "low");
+			} finally {
+				fakeNgspice.setCannedCurrent(null);
+			}
+		});
+
+		test("422 log contains no drive letters or /tmp paths and caps at 20 lines", async () => {
+			const noisyLog = [
+				"Error in C:\\Users\\runner\\AppData\\Local\\Temp\\circuit.cir: line 4",
+				"Secondary in C:/projects/banana/temp.cir: syntax error",
+				"Failed reading /tmp/build-1234/netlist.cir: invalid token",
+				"In /app/backend/spice.cir: unable to converge",
+				...Array.from(
+					{ length: 25 },
+					(_, i) => `Extra log detail line ${i + 1}`,
+				),
+			].join("\n");
+
+			fakeNgspice.setShouldFail(true);
+			fakeNgspice.setFailLog(noisyLog);
+			try {
+				const { status, json } = await postJson(port, "/api/circuit/simulate", {
+					ir,
+				});
+				assert.equal(status, 422);
+				assert.ok(!/[a-zA-Z]:[\\/]/.test(json.log));
+				assert.ok(!json.log.includes("/tmp"));
+				assert.ok(!json.log.includes("/app"));
+				assert.ok(json.log.includes("<path>"));
+				const lines = json.log.split("\n");
+				assert.equal(lines.length, 20);
+			} finally {
+				fakeNgspice.setShouldFail(false);
+				fakeNgspice.setFailLog("Fatal error: iteration limit reached");
 			}
 		});
 	});

@@ -1,35 +1,28 @@
 import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
+import { explainCircuitResult } from "../engine/sim/explain.js";
 import {
 	FAULT_INFO,
 	FAULT_KINDS,
 	injectFault,
 	suggestFaults,
 } from "../engine/sim/fault-inject.js";
+import { suggestFixes } from "../engine/sim/fix-suggest.js";
 import { irToSpice } from "../engine/spice/ir-to-spice.js";
 import { createNgspice } from "../engine/spice/ngspice-runner.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
 let lazyNgspice = null;
-let explainFn = null;
-let explainLoaded = false;
 
-async function getExplainFn() {
-	if (explainLoaded) {
-		return explainFn;
+const PATH_REGEX =
+	/(?:["'](?:[a-zA-Z]:[\\/]|(?:\/(?:tmp|app|[\w.-]+(?:\/[\w.-]+)+)))[^"'\r\n]+["']|[a-zA-Z]:[\\/][^\s'"<>:,;)]*|(?:\/(?:tmp|app|[\w.-]+(?:\/[\w.-]+)+))[^\s'"<>:,;)]*)/g;
+
+function sanitizeLog(rawLog) {
+	if (typeof rawLog !== "string") {
+		return "";
 	}
-	explainLoaded = true;
-	try {
-		const mod = await import("../engine/sim/explain.js");
-		explainFn =
-			typeof mod?.explainCircuitResult === "function"
-				? mod.explainCircuitResult
-				: null;
-	} catch {
-		// Optional explanation module not present
-		explainFn = null;
-	}
-	return explainFn;
+	const lines = rawLog.split(/\r?\n/).slice(0, 20);
+	return lines.map((line) => line.replace(PATH_REGEX, "<path>")).join("\n");
 }
 
 function resolveNgspice(req) {
@@ -270,32 +263,32 @@ function buildBaseSimulationData(plots, simIr, spice, fault) {
 	};
 }
 
-async function attachExplanation(out, fault) {
-	const explain = await getExplainFn();
-	if (explain) {
-		out.explanation = explain({
-			nodeVoltages: out.nodeVoltages,
+function attachExplanation(out, simIr, fault) {
+	out.explanation = explainCircuitResult({
+		ir: simIr,
+		nodeVoltages: out.nodeVoltages,
+		partCurrents: out.partCurrents,
+		fault,
+		warnings: out.warnings,
+	});
+	out.fixes =
+		suggestFixes({
+			ir: simIr,
 			partCurrents: out.partCurrents,
+			nodeVoltages: out.nodeVoltages,
+			cards: out.explanation?.cards ?? [],
 			fault,
-			warnings: out.warnings,
-		});
-	}
+		}) ?? [];
 }
 
-async function formatSimulationResponse({
-	plots,
-	simIr,
-	spice,
-	fault,
-	analysis,
-}) {
+function formatSimulationResponse({ plots, simIr, spice, fault, analysis }) {
 	const out = buildBaseSimulationData(plots, simIr, spice, fault);
 	if (analysis?.type === "tran") {
 		const tranPlot =
 			plots.find((p) => /tran/i.test(p.plotname || "")) || plots[0];
 		out.series = buildSeries(tranPlot, simIr, spice.nodeMap, spice.elementMap);
 	}
-	await attachExplanation(out, fault);
+	attachExplanation(out, simIr, fault);
 	return out;
 }
 
@@ -337,7 +330,7 @@ async function runSpiceSimulation(req, netlist) {
 			status: 422,
 			body: {
 				error: runRes.error || "Simulation failed",
-				log: runRes.log ?? "",
+				log: sanitizeLog(runRes.log),
 			},
 		};
 	}
@@ -354,7 +347,7 @@ async function executeSimulation(req, res) {
 	if (!sim.ok) {
 		return res.status(sim.status).json(sim.body);
 	}
-	const data = await formatSimulationResponse({
+	const data = formatSimulationResponse({
 		plots: sim.plots,
 		simIr: prep.simIr,
 		spice: prep.spice,
