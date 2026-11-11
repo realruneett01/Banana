@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-const ALLOWED_KINDS = new Set([
+const KINDS = [
 	"part",
 	"net",
 	"pin",
@@ -12,28 +12,20 @@ const ALLOWED_KINDS = new Set([
 	"sim",
 	"env",
 	"tool",
-]);
+];
 
-const UUID_REGEX =
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ALLOWED_KINDS = new Set(KINDS);
+
+const ID_PATTERN = new RegExp(
+	`^(${KINDS.join("|")})_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$`,
+);
 
 function parseKind(value) {
 	if (typeof value !== "string") {
 		return null;
 	}
-	const sepIndex = value.indexOf("_");
-	if (sepIndex <= 0) {
-		return null;
-	}
-	const kind = value.slice(0, sepIndex);
-	if (!ALLOWED_KINDS.has(kind)) {
-		return null;
-	}
-	const uuid = value.slice(sepIndex + 1);
-	if (!UUID_REGEX.test(uuid)) {
-		return null;
-	}
-	return kind;
+	const match = ID_PATTERN.exec(value);
+	return match ? match[1] : null;
 }
 
 export function newId(kind) {
