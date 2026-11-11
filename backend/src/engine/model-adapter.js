@@ -13,17 +13,24 @@ function sanitizeError(err, apiKey) {
 	return safeErr;
 }
 
+function resolveToolSchema(tool) {
+	return tool.inputSchema || tool.parameters || { type: "object" };
+}
+
+function hasTools(tools) {
+	return Array.isArray(tools) && tools.length > 0;
+}
+
 function mapToolDeclaration(tool) {
-	const schema = tool.inputSchema || tool.parameters || { type: "object" };
 	return {
 		name: tool.name,
 		description: tool.description || "",
-		parameters: schema,
+		parameters: resolveToolSchema(tool),
 	};
 }
 
 function mapTools(tools) {
-	if (!Array.isArray(tools) || tools.length === 0) {
+	if (!hasTools(tools)) {
 		return undefined;
 	}
 	return [
@@ -33,20 +40,22 @@ function mapTools(tools) {
 	];
 }
 
+function mapCallToFunctionPart(call) {
+	return {
+		functionCall: {
+			name: call.name,
+			args: call.input || {},
+		},
+	};
+}
+
 function mapAssistantParts(msg) {
 	const parts = [];
 	if (msg.content) {
 		parts.push({ text: msg.content });
 	}
 	if (Array.isArray(msg.toolCalls)) {
-		for (const call of msg.toolCalls) {
-			parts.push({
-				functionCall: {
-					name: call.name,
-					args: call.input || {},
-				},
-			});
-		}
+		parts.push(...msg.toolCalls.map(mapCallToFunctionPart));
 	}
 	if (parts.length === 0 && msg.text) {
 		parts.push({ text: msg.text });
@@ -69,23 +78,27 @@ function isToolRole(role) {
 	return role === "tool" || role === "function";
 }
 
+function mapFunctionResponseMessage(msg) {
+	const name = msg.toolName || msg.name || "";
+	return {
+		role: "function",
+		parts: [
+			{
+				functionResponse: {
+					name,
+					response: mapToolResponse(msg.content),
+				},
+			},
+		],
+	};
+}
+
 function mapMessage(msg) {
 	if (isModelRole(msg.role)) {
 		return { role: "model", parts: mapAssistantParts(msg) };
 	}
 	if (isToolRole(msg.role)) {
-		const name = msg.toolName || msg.name || "";
-		return {
-			role: "function",
-			parts: [
-				{
-					functionResponse: {
-						name,
-						response: mapToolResponse(msg.content),
-					},
-				},
-			],
-		};
+		return mapFunctionResponseMessage(msg);
 	}
 	return {
 		role: "user",
@@ -109,37 +122,52 @@ function buildRequestBody({ system, messages, tools }) {
 	return body;
 }
 
-function parseCandidateParts(parts) {
-	const textParts = [];
-	const toolCalls = [];
-	for (const part of parts) {
-		if (part.text) {
-			textParts.push(part.text);
-		}
-		if (part.functionCall) {
-			toolCalls.push({
-				name: part.functionCall.name,
-				input: part.functionCall.args || {},
-			});
-		}
+function extractGeminiToolCall(part) {
+	if (!part.functionCall) {
+		return null;
 	}
-	return { text: textParts.join(""), toolCalls };
+	return {
+		name: part.functionCall.name,
+		input: part.functionCall.args || {},
+	};
+}
+
+function parseCandidateParts(parts) {
+	const text = parts
+		.filter((p) => p.text)
+		.map((p) => p.text)
+		.join("");
+	const toolCalls = parts.map(extractGeminiToolCall).filter(Boolean);
+	return { text, toolCalls };
+}
+
+function formatUsage(promptTokens, completionTokens, totalTokens) {
+	return {
+		promptTokens,
+		completionTokens,
+		totalTokens: totalTokens ?? promptTokens + completionTokens,
+	};
+}
+
+function formatModelResponse(parsed, usage) {
+	return {
+		text: parsed.text,
+		toolCalls: parsed.toolCalls,
+		usage,
+	};
 }
 
 function parseGeminiResponse(data) {
 	const candidate = data?.candidates?.[0];
 	const parts = candidate?.content?.parts || [];
 	const parsed = parseCandidateParts(parts);
-	const usage = {
-		promptTokens: data?.usageMetadata?.promptTokenCount ?? 0,
-		completionTokens: data?.usageMetadata?.candidatesTokenCount ?? 0,
-		totalTokens: data?.usageMetadata?.totalTokenCount ?? 0,
-	};
-	return {
-		text: parsed.text,
-		toolCalls: parsed.toolCalls,
-		usage,
-	};
+	const meta = data?.usageMetadata;
+	const usage = formatUsage(
+		meta?.promptTokenCount ?? 0,
+		meta?.candidatesTokenCount ?? 0,
+		meta?.totalTokenCount ?? 0,
+	);
+	return formatModelResponse(parsed, usage);
 }
 
 function checkHttpStatus(status, statusText) {
@@ -188,12 +216,35 @@ async function defaultTransport(url, body, headers, signal) {
 	return response.json();
 }
 
-function getGeminiApiKey() {
-	const key = process.env.GEMINI_API_KEY;
+function requireApiKey(envVarName) {
+	const key = process.env[envVarName];
 	if (!key || key.trim() === "") {
-		throw new Error("GEMINI_API_KEY environment variable is required");
+		throw new Error(`${envVarName} environment variable is required`);
 	}
 	return key.trim();
+}
+
+function getGeminiApiKey() {
+	return requireApiKey("GEMINI_API_KEY");
+}
+
+async function sendModelRequest({
+	transport,
+	url,
+	body,
+	headers,
+	signal,
+	checkStatus,
+	parseResponse,
+	apiKey,
+}) {
+	try {
+		const data = await transport(url, body, headers, signal);
+		checkStatus(data);
+		return parseResponse(data);
+	} catch (err) {
+		throw sanitizeError(err, apiKey);
+	}
 }
 
 async function executeGeminiGenerate({ transport, model, params }) {
@@ -204,13 +255,16 @@ async function executeGeminiGenerate({ transport, model, params }) {
 		"Content-Type": "application/json",
 		"x-goog-api-key": apiKey,
 	};
-	try {
-		const data = await transport(url, body, headers, params.signal);
-		checkResponseStatus(data);
-		return parseGeminiResponse(data);
-	} catch (err) {
-		throw sanitizeError(err, apiKey);
-	}
+	return sendModelRequest({
+		transport,
+		url,
+		body,
+		headers,
+		signal: params.signal,
+		checkStatus: checkResponseStatus,
+		parseResponse: parseGeminiResponse,
+		apiKey,
+	});
 }
 
 function createGeminiAdapter({
@@ -236,16 +290,15 @@ function decodeToolName(name) {
 }
 
 function mapClaudeTool(tool) {
-	const schema = tool.inputSchema || tool.parameters || { type: "object" };
 	return {
 		name: encodeToolName(tool.name),
 		description: tool.description || "",
-		input_schema: schema,
+		input_schema: resolveToolSchema(tool),
 	};
 }
 
 function mapClaudeTools(tools) {
-	if (!Array.isArray(tools) || tools.length === 0) {
+	if (!hasTools(tools)) {
 		return undefined;
 	}
 	return tools.map(mapClaudeTool);
@@ -258,6 +311,13 @@ function formatToolContent(content) {
 	return JSON.stringify(content ?? null);
 }
 
+function hasContentError(content) {
+	if (!content || typeof content !== "object") {
+		return false;
+	}
+	return content.error !== undefined;
+}
+
 function isToolError(msg) {
 	if (typeof msg.is_error === "boolean") {
 		return msg.is_error;
@@ -268,10 +328,7 @@ function isToolError(msg) {
 	if (msg.ok === false) {
 		return true;
 	}
-	const content = msg.content;
-	const hasErr =
-		content && typeof content === "object" && content.error !== undefined;
-	return Boolean(hasErr && msg.ok !== true);
+	return Boolean(hasContentError(msg.content) && msg.ok !== true);
 }
 
 function findMatchingCallId(assistantCalls, name, usedIds) {
@@ -287,21 +344,31 @@ function findMatchingCallId(assistantCalls, name, usedIds) {
 	return firstUnused?.id;
 }
 
-function resolveToolUseId(toolMsg, assistantCalls, index, usedIds) {
-	const directId = toolMsg.tool_use_id || toolMsg.toolCallId || toolMsg.id;
+function getDirectToolId(msg) {
+	return msg.tool_use_id || msg.toolCallId || msg.id;
+}
+
+function getFallbackToolId(call, name, index) {
+	return call?.id || name || `tool_${index + 1}`;
+}
+
+function findToolUseId(toolMsg, assistantCalls, index, usedIds) {
+	const directId = getDirectToolId(toolMsg);
 	if (directId) {
-		usedIds.add(directId);
 		return directId;
 	}
 	const name = toolMsg.toolName || toolMsg.name;
 	const matchedId = findMatchingCallId(assistantCalls, name, usedIds);
 	if (matchedId) {
-		usedIds.add(matchedId);
 		return matchedId;
 	}
-	const fallbackId = assistantCalls[index]?.id || name || `tool_${index + 1}`;
-	usedIds.add(fallbackId);
-	return fallbackId;
+	return getFallbackToolId(assistantCalls[index], name, index);
+}
+
+function resolveToolUseId(toolMsg, assistantCalls, index, usedIds) {
+	const id = findToolUseId(toolMsg, assistantCalls, index, usedIds);
+	usedIds.add(id);
+	return id;
 }
 
 function mapClaudeToolResult(toolMsg, toolUseId) {
@@ -331,35 +398,56 @@ function collectToolGroup(messages, startIndex, assistantCalls) {
 	return { blocks, nextIndex: idx };
 }
 
+function buildToolUseBlock(call) {
+	return {
+		type: "tool_use",
+		id: call.id || `call_${call.name}`,
+		name: encodeToolName(call.name),
+		input: call.input || {},
+	};
+}
+
+function buildAssistantBlocks(content, toolCalls) {
+	const textBlocks = content ? [{ type: "text", text: content }] : [];
+	const callBlocks = toolCalls.map(buildToolUseBlock);
+	return [...textBlocks, ...callBlocks];
+}
+
+function isPreformattedAssistant(msg) {
+	return Array.isArray(msg.content) && !msg.toolCalls;
+}
+
+function resolveAssistantText(msg) {
+	return msg.content || msg.text || "";
+}
+
+function hasToolCalls(msg) {
+	return Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0;
+}
+
 function mapClaudeAssistantMessage(msg) {
-	if (Array.isArray(msg.content) && !msg.toolCalls) {
+	if (isPreformattedAssistant(msg)) {
 		return { role: "assistant", content: msg.content };
 	}
-	const hasCalls = Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0;
-	if (!hasCalls) {
-		return { role: "assistant", content: msg.content || msg.text || "" };
+	if (hasToolCalls(msg)) {
+		return {
+			role: "assistant",
+			content: buildAssistantBlocks(msg.content, msg.toolCalls),
+		};
 	}
-	const blocks = [];
-	if (msg.content) {
-		blocks.push({ type: "text", text: msg.content });
-	}
-	for (const call of msg.toolCalls) {
-		blocks.push({
-			type: "tool_use",
-			id: call.id || `call_${call.name}`,
-			name: encodeToolName(call.name),
-			input: call.input || {},
-		});
-	}
-	return { role: "assistant", content: blocks };
+	return { role: "assistant", content: resolveAssistantText(msg) };
 }
 
 function mapClaudeUserContent(content) {
 	return Array.isArray(content) ? content : content || "";
 }
 
+function getToolCalls(msg) {
+	return Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+}
+
 function mapClaudeMessages(messages) {
-	if (!Array.isArray(messages) || messages.length === 0) {
+	if (!Array.isArray(messages)) {
 		return [];
 	}
 	const result = [];
@@ -369,16 +457,12 @@ function mapClaudeMessages(messages) {
 		const msg = messages[i];
 		if (isModelRole(msg.role)) {
 			result.push(mapClaudeAssistantMessage(msg));
-			lastAssistantCalls = Array.isArray(msg.toolCalls) ? msg.toolCalls : [];
+			lastAssistantCalls = getToolCalls(msg);
 			i++;
 		} else if (isToolRole(msg.role)) {
-			const { blocks, nextIndex } = collectToolGroup(
-				messages,
-				i,
-				lastAssistantCalls,
-			);
-			result.push({ role: "user", content: blocks });
-			i = nextIndex;
+			const group = collectToolGroup(messages, i, lastAssistantCalls);
+			result.push({ role: "user", content: group.blocks });
+			i = group.nextIndex;
 		} else {
 			result.push({ role: "user", content: mapClaudeUserContent(msg.content) });
 			i++;
@@ -403,55 +487,52 @@ function buildClaudeRequestBody({ model, maxTokens, system, messages, tools }) {
 	return body;
 }
 
-function parseClaudeBlocks(blocks) {
-	const textParts = [];
-	const toolCalls = [];
-	for (const block of blocks) {
-		if (block.type === "text" && block.text) {
-			textParts.push(block.text);
-		}
-		if (block.type === "tool_use") {
-			toolCalls.push({
-				id: block.id,
-				name: decodeToolName(block.name),
-				input: block.input || {},
-			});
-		}
+function extractClaudeToolCall(block) {
+	if (block.type !== "tool_use") {
+		return null;
 	}
-	return { text: textParts.join(""), toolCalls };
+	return {
+		id: block.id,
+		name: decodeToolName(block.name),
+		input: block.input || {},
+	};
+}
+
+function parseClaudeBlocks(blocks) {
+	const text = blocks
+		.filter((b) => b.type === "text" && b.text)
+		.map((b) => b.text)
+		.join("");
+	const toolCalls = blocks.map(extractClaudeToolCall).filter(Boolean);
+	return { text, toolCalls };
 }
 
 function parseClaudeResponse(data) {
 	const blocks = Array.isArray(data?.content) ? data.content : [];
 	const parsed = parseClaudeBlocks(blocks);
-	const promptTokens = data?.usage?.input_tokens ?? 0;
-	const completionTokens = data?.usage?.output_tokens ?? 0;
-	const usage = {
-		promptTokens,
-		completionTokens,
-		totalTokens: promptTokens + completionTokens,
-	};
-	return {
-		text: parsed.text,
-		toolCalls: parsed.toolCalls,
-		usage,
-	};
+	const usage = formatUsage(
+		data?.usage?.input_tokens ?? 0,
+		data?.usage?.output_tokens ?? 0,
+	);
+	return formatModelResponse(parsed, usage);
+}
+
+function formatClaudeErrorMessage(data) {
+	const message = data.error.message || String(data.error);
+	if (data.type === "error") {
+		const errType = data.error.type || "api_error";
+		return `Claude API error (${errType}): ${message}`;
+	}
+	return `Claude API error: ${message}`;
 }
 
 function checkClaudeApiError(data) {
-	if (data?.type === "error" && data.error) {
-		const errType = data.error.type || "api_error";
-		const message = data.error.message || String(data.error);
-		const err = new Error(`Claude API error (${errType}): ${message}`);
-		err.status = data.status || 400;
-		throw err;
+	if (!data?.error) {
+		return;
 	}
-	if (data?.error) {
-		const message = data.error.message || String(data.error);
-		const err = new Error(`Claude API error: ${message}`);
-		err.status = data.status || 400;
-		throw err;
-	}
+	const err = new Error(formatClaudeErrorMessage(data));
+	err.status = data.status || 400;
+	throw err;
 }
 
 function checkClaudeResponseStatus(data) {
@@ -463,16 +544,11 @@ function checkClaudeResponseStatus(data) {
 }
 
 function getClaudeApiKey() {
-	const key = process.env.ANTHROPIC_API_KEY;
-	if (!key || key.trim() === "") {
-		throw new Error("ANTHROPIC_API_KEY environment variable is required");
-	}
-	return key.trim();
+	return requireApiKey("ANTHROPIC_API_KEY");
 }
 
 async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
 	const apiKey = getClaudeApiKey();
-	const url = CLAUDE_API_URL;
 	const body = buildClaudeRequestBody({
 		model: params.model || model,
 		maxTokens: params.maxTokens || maxTokens,
@@ -485,13 +561,16 @@ async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
 		"x-api-key": apiKey,
 		"anthropic-version": ANTHROPIC_VERSION,
 	};
-	try {
-		const data = await transport(url, body, headers, params.signal);
-		checkClaudeResponseStatus(data);
-		return parseClaudeResponse(data);
-	} catch (err) {
-		throw sanitizeError(err, apiKey);
-	}
+	return sendModelRequest({
+		transport,
+		url: CLAUDE_API_URL,
+		body,
+		headers,
+		signal: params.signal,
+		checkStatus: checkClaudeResponseStatus,
+		parseResponse: parseClaudeResponse,
+		apiKey,
+	});
 }
 
 export function createClaudeAdapter({
