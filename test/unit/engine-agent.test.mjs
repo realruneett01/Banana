@@ -1,63 +1,71 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { createAgent } from "../../backend/src/engine/agent.js";
 import { createRegistry } from "../../backend/src/engine/tool-registry.js";
 
-function createEchoTool(overrides = {}) {
+function makeToolSchema(requiredProp, propType = "string") {
+	if (!requiredProp) {
+		return { type: "object", properties: {} };
+	}
 	return {
-		name: "echo_tool",
-		description: "Echoes input text",
-		inputSchema: {
-			type: "object",
-			required: ["text"],
-			properties: { text: { type: "string" } },
-		},
-		outputSchema: {
-			type: "object",
-			required: ["echo"],
-			properties: { echo: { type: "string" } },
-		},
-		permission: "read",
-		handler: (input) => ({ echo: input.text }),
+		type: "object",
+		required: [requiredProp],
+		properties: { [requiredProp]: { type: propType } },
+	};
+}
+
+function createToolFixture({
+	name,
+	description,
+	permission = "read",
+	handler,
+	inProp,
+	outProp,
+	outType,
+	overrides = {},
+}) {
+	return {
+		name,
+		description,
+		inputSchema: makeToolSchema(inProp),
+		outputSchema: makeToolSchema(outProp, outType),
+		permission,
+		handler,
 		...overrides,
 	};
 }
 
+function createEchoTool(overrides = {}) {
+	return createToolFixture({
+		name: "echo_tool",
+		description: "Echoes input text",
+		handler: (input) => ({ echo: input.text }),
+		inProp: "text",
+		outProp: "echo",
+		overrides,
+	});
+}
+
 function createDestructiveTool() {
-	return {
+	return createToolFixture({
 		name: "destroy_data",
 		description: "Destroys specified target",
-		inputSchema: {
-			type: "object",
-			required: ["target"],
-			properties: { target: { type: "string" } },
-		},
-		outputSchema: {
-			type: "object",
-			required: ["deleted"],
-			properties: { deleted: { type: "boolean" } },
-		},
 		permission: "destructive",
 		handler: () => ({ deleted: true }),
-	};
+		inProp: "target",
+		outProp: "deleted",
+		outType: "boolean",
+	});
 }
 
 function createFailingTool() {
-	return {
+	return createToolFixture({
 		name: "fail_tool",
 		description: "Always throws an error",
-		inputSchema: {
-			type: "object",
-			properties: {},
-		},
-		outputSchema: {
-			type: "object",
-			properties: {},
-		},
-		permission: "read",
 		handler: () => {
 			throw new Error("handler explosion");
 		},
-	};
+	});
 }
 
 function createScriptedModel(script) {
@@ -65,10 +73,10 @@ function createScriptedModel(script) {
 	const capturedCalls = [];
 	return {
 		generate: async (params) => {
-			capturedCalls.push({
-				...params,
-				messages: Array.isArray(params.messages) ? [...params.messages] : [],
-			});
+			const messages = Array.isArray(params.messages)
+				? [...params.messages]
+				: [];
+			capturedCalls.push({ ...params, messages });
 			if (params.signal?.aborted) {
 				const err = new Error("Aborted");
 				err.name = "AbortError";
@@ -84,66 +92,102 @@ function createScriptedModel(script) {
 	};
 }
 
+function assertResult(res, expected) {
+	if (expected.text instanceof RegExp) {
+		assert.match(res.text, expected.text);
+	} else if (expected.text !== undefined) {
+		assert.equal(res.text, expected.text);
+	}
+	if (expected.steps !== undefined) {
+		assert.equal(res.steps, expected.steps);
+	}
+	if ("pendingApproval" in expected) {
+		assert.deepEqual(res.pendingApproval, expected.pendingApproval);
+	}
+}
+
+function assertDoneEvent(events, expected) {
+	const doneEvent = events.find((e) => e.type === "done");
+	assert.ok(doneEvent);
+	if (expected.steps !== undefined) {
+		assert.equal(doneEvent.steps, expected.steps);
+	}
+	if (expected.text) {
+		assert.match(doneEvent.text, expected.text);
+	}
+	if ("pendingApproval" in expected) {
+		assert.deepEqual(doneEvent.pendingApproval, expected.pendingApproval);
+	}
+	return doneEvent;
+}
+
+function setupAgentHarness(options = {}) {
+	const {
+		script = [],
+		tools = [],
+		system,
+		maxSteps = 8,
+		trackEvents = true,
+	} = options;
+	const events = [];
+	const registry = tools.length > 0 ? createRegistry() : undefined;
+	for (const tool of tools) {
+		registry.register(tool);
+	}
+	const model = createScriptedModel(script);
+	const onEvent = trackEvents ? (ev) => events.push(ev) : undefined;
+	const agent = createAgent({ model, registry, system, maxSteps, onEvent });
+	return { agent, model, registry, events };
+}
+
 describe("module contract", () => {
-	test("exports createAgent as a function", async () => {
-		const mod = await import("../../backend/src/engine/agent.js");
-		assert.equal(typeof mod.createAgent, "function");
+	test("exports createAgent as a function", () => {
+		assert.equal(typeof createAgent, "function");
 	});
 
-	test("throws if model is missing or invalid", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		assert.throws(() => createAgent({}), /model.*required/i);
-		assert.throws(() => createAgent({ model: {} }), /model.*required/i);
+	test("throws if model is missing or invalid", () => {
+		const invalidOptions = [{}, { model: {} }];
+		for (const opt of invalidOptions) {
+			assert.throws(() => createAgent(opt), /model.*required/i);
+		}
 	});
 });
 
 describe("single-step execution", () => {
 	test("returns text and step count when no tools are called", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const events = [];
-		const model = createScriptedModel([
-			{ text: "Hello from agent", toolCalls: [] },
-		]);
-		const agent = createAgent({
-			model,
-			onEvent: (ev) => events.push(ev),
+		const { agent, events } = setupAgentHarness({
+			script: [{ text: "Hello from agent", toolCalls: [] }],
 		});
 
 		const res = await agent.run("Hello");
-		assert.equal(res.text, "Hello from agent");
-		assert.equal(res.steps, 1);
-		assert.equal(res.pendingApproval, undefined);
-		assert.equal(events.length, 2);
-		assert.equal(events[0].type, "step");
-		assert.equal(events[1].type, "done");
+		assertResult(res, {
+			text: "Hello from agent",
+			steps: 1,
+			pendingApproval: undefined,
+		});
+		assert.deepEqual(
+			events.map((e) => e.type),
+			["step", "done"],
+		);
 	});
 });
 
 describe("multi-step tool execution", () => {
 	test("executes tool, feeds output back to model, and completes", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const registry = createRegistry();
-		registry.register(createEchoTool());
-
-		const events = [];
-		const model = createScriptedModel([
-			{
-				text: "Calling echo",
-				toolCalls: [{ name: "echo_tool", input: { text: "banana" } }],
-			},
-			{ text: "Done with echo: banana", toolCalls: [] },
-		]);
-
-		const agent = createAgent({
-			model,
-			registry,
+		const { agent, model, events } = setupAgentHarness({
+			tools: [createEchoTool()],
 			system: "You are a test agent",
-			onEvent: (ev) => events.push(ev),
+			script: [
+				{
+					text: "Calling echo",
+					toolCalls: [{ name: "echo_tool", input: { text: "banana" } }],
+				},
+				{ text: "Done with echo: banana", toolCalls: [] },
+			],
 		});
 
 		const res = await agent.run("Please echo banana");
-		assert.equal(res.text, "Done with echo: banana");
-		assert.equal(res.steps, 2);
+		assertResult(res, { text: "Done with echo: banana", steps: 2 });
 
 		const calls = model.getCalls();
 		assert.equal(calls.length, 2);
@@ -156,133 +200,95 @@ describe("multi-step tool execution", () => {
 		assert.equal(secondStepMessages[2].role, "tool");
 		assert.deepEqual(secondStepMessages[2].content, { echo: "banana" });
 
-		const eventTypes = events.map((e) => e.type);
-		assert.deepEqual(eventTypes, [
-			"step",
-			"tool_call",
-			"tool_result",
-			"step",
-			"done",
-		]);
+		assert.deepEqual(
+			events.map((e) => e.type),
+			["step", "tool_call", "tool_result", "step", "done"],
+		);
 	});
 });
 
 describe("maxSteps cap", () => {
 	test("stops and appends note when maxSteps is hit", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const registry = createRegistry();
-		registry.register(createEchoTool());
-
-		const events = [];
-		const infiniteToolResponse = {
+		const repeatEcho = {
 			text: "looping",
 			toolCalls: [{ name: "echo_tool", input: { text: "repeat" } }],
 		};
-		const model = createScriptedModel([
-			infiniteToolResponse,
-			infiniteToolResponse,
-			infiniteToolResponse,
-		]);
-
-		const agent = createAgent({
-			model,
-			registry,
+		const { agent, events } = setupAgentHarness({
+			tools: [createEchoTool()],
 			maxSteps: 2,
-			onEvent: (ev) => events.push(ev),
+			script: [repeatEcho, repeatEcho, repeatEcho],
 		});
 
 		const res = await agent.run("Loop forever");
-		assert.equal(res.steps, 2);
-		assert.match(res.text, /max steps/i);
-
-		const doneEvent = events.find((e) => e.type === "done");
-		assert.ok(doneEvent);
-		assert.equal(doneEvent.steps, 2);
-		assert.match(doneEvent.text, /max steps/i);
+		assertResult(res, { steps: 2, text: /max steps/i });
+		assertDoneEvent(events, { steps: 2, text: /max steps/i });
 	});
 });
 
 describe("destructive tool approval required", () => {
-	test("stops and returns pendingApproval when approval is missing", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const registry = createRegistry();
-		registry.register(createDestructiveTool());
+	const targetLayer = { target: "layer_1" };
+	const approvalPayload = { name: "destroy_data", input: targetLayer };
+	const deleteCall = {
+		text: "Attempting delete",
+		toolCalls: [{ name: "destroy_data", input: targetLayer }],
+	};
 
-		const events = [];
-		const model = createScriptedModel([
-			{
-				text: "Attempting delete",
-				toolCalls: [{ name: "destroy_data", input: { target: "layer_1" } }],
+	const APPROVAL_CASES = [
+		{
+			title: "stops and returns pendingApproval when approval is missing",
+			approved: false,
+			script: [deleteCall],
+			expected: { steps: 1, pendingApproval: approvalPayload },
+			checkDoneEvent: true,
+		},
+		{
+			title: "executes destructive tool when approved is true",
+			approved: true,
+			script: [deleteCall, { text: "Deleted successfully", toolCalls: [] }],
+			expected: {
+				steps: 2,
+				pendingApproval: undefined,
+				text: "Deleted successfully",
 			},
-		]);
+			checkDoneEvent: false,
+		},
+	];
 
-		const agent = createAgent({
-			model,
-			registry,
-			onEvent: (ev) => events.push(ev),
+	for (const tc of APPROVAL_CASES) {
+		test(tc.title, async () => {
+			const { agent, events } = setupAgentHarness({
+				tools: [createDestructiveTool()],
+				script: tc.script,
+				trackEvents: tc.checkDoneEvent,
+			});
+
+			const res = await agent.run("Delete layer 1", { approved: tc.approved });
+			assertResult(res, tc.expected);
+			if (tc.checkDoneEvent) {
+				assertDoneEvent(events, {
+					pendingApproval: tc.expected.pendingApproval,
+				});
+			}
 		});
-
-		const res = await agent.run("Delete layer 1", { approved: false });
-		assert.equal(res.steps, 1);
-		assert.deepEqual(res.pendingApproval, {
-			name: "destroy_data",
-			input: { target: "layer_1" },
-		});
-
-		const doneEvent = events.find((e) => e.type === "done");
-		assert.ok(doneEvent);
-		assert.deepEqual(doneEvent.pendingApproval, {
-			name: "destroy_data",
-			input: { target: "layer_1" },
-		});
-	});
-
-	test("executes destructive tool when approved is true", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const registry = createRegistry();
-		registry.register(createDestructiveTool());
-
-		const model = createScriptedModel([
-			{
-				text: "Attempting delete",
-				toolCalls: [{ name: "destroy_data", input: { target: "layer_1" } }],
-			},
-			{ text: "Deleted successfully", toolCalls: [] },
-		]);
-
-		const agent = createAgent({ model, registry });
-		const res = await agent.run("Delete layer 1", { approved: true });
-
-		assert.equal(res.steps, 2);
-		assert.equal(res.pendingApproval, undefined);
-		assert.equal(res.text, "Deleted successfully");
-	});
+	}
 });
 
 describe("tool error handling", () => {
 	test("feeds tool error back to model and does not throw", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const registry = createRegistry();
-		registry.register(createFailingTool());
-
-		const events = [];
-		const model = createScriptedModel([
-			{
-				text: "Calling bad tool",
-				toolCalls: [{ name: "fail_tool", input: {} }],
-			},
-			{ text: "Recovered from tool failure", toolCalls: [] },
-		]);
-
-		const agent = createAgent({
-			model,
-			registry,
-			onEvent: (ev) => events.push(ev),
+		const { agent, model } = setupAgentHarness({
+			tools: [createFailingTool()],
+			script: [
+				{
+					text: "Calling bad tool",
+					toolCalls: [{ name: "fail_tool", input: {} }],
+				},
+				{ text: "Recovered from tool failure", toolCalls: [] },
+			],
+			trackEvents: false,
 		});
 
 		const res = await agent.run("Trigger fail");
-		assert.equal(res.steps, 2);
-		assert.equal(res.text, "Recovered from tool failure");
+		assertResult(res, { steps: 2, text: "Recovered from tool failure" });
 
 		const calls = model.getCalls();
 		const toolMsg = calls[1].messages.find((m) => m.role === "tool");
@@ -294,7 +300,6 @@ describe("tool error handling", () => {
 
 describe("abort signal and unhandled errors", () => {
 	test("propagates error when model throws without swallowing", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
 		const failingModel = {
 			generate: async () => {
 				throw new Error("HTTP 500 Network crash");
@@ -305,9 +310,10 @@ describe("abort signal and unhandled errors", () => {
 	});
 
 	test("honors abort signal", async () => {
-		const { createAgent } = await import("../../backend/src/engine/agent.js");
-		const model = createScriptedModel([{ text: "ok", toolCalls: [] }]);
-		const agent = createAgent({ model });
+		const { agent } = setupAgentHarness({
+			script: [{ text: "ok", toolCalls: [] }],
+			trackEvents: false,
+		});
 		const controller = new AbortController();
 		controller.abort();
 
