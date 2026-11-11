@@ -10,6 +10,7 @@ import {
 	getUserRepositories,
 	verifyTokenAndGetUser,
 } from "../github-service.js";
+import { createSqliteStateStore } from "../oauth-state-sqlite.js";
 
 const DEFAULT_MAX_STATES = 1000;
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
@@ -68,7 +69,15 @@ export function createStateStore(options) {
 	return new StateStore(options);
 }
 
-export const stateStore = createStateStore();
+function resolveStateStore() {
+	const dbPath = process.env.OAUTH_STATE_DB;
+	if (typeof dbPath === "string" && dbPath.trim() !== "") {
+		return createSqliteStateStore({ filename: dbPath });
+	}
+	return createStateStore();
+}
+
+export const stateStore = resolveStateStore();
 
 const router = express.Router();
 
