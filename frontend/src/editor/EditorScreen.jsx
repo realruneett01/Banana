@@ -10,7 +10,7 @@ import {
 	UndoOutlined,
 } from "@ant-design/icons";
 import { Button, Space, Tabs, Tooltip } from "antd";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import IssuesPanel from "../components/IssuesPanel.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
@@ -539,6 +539,17 @@ function useIssueSelector(dispatch) {
 	);
 }
 
+function useFocusItem(focusItemId, onSelect) {
+	const lastRef = useRef(null);
+	useEffect(() => {
+		const isString = typeof focusItemId === "string" && focusItemId.length > 0;
+		if (isString && focusItemId !== lastRef.current) {
+			onSelect?.(focusItemId);
+		}
+		lastRef.current = focusItemId;
+	}, [focusItemId, onSelect]);
+}
+
 function triggerPcbRoute() {
 	const btn = document.querySelector('[aria-label="Toggle route track (X)"]');
 	if (btn) btn.click();
@@ -702,18 +713,18 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 	);
 }
 
-export default function EditorScreen({ ir, board, onSave, api }) {
+export default function EditorScreen({ ir, board, onSave, api, focusItemId }) {
 	const [activeTab, setActiveTab] = useState("schematic");
 	const [problemsOpen, setProblemsOpen] = useState(false);
 	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
 	const ctrl = useScreenController({ ir, board, onSave, api });
+	useFocusItem(focusItemId, ctrl.onSelectIssue);
 	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exporting);
 	const problems = {
 		count: ctrl.liveChecks.issues.length,
 		open: problemsOpen,
 		toggle,
 	};
-
 	return (
 		<main style={ROOT_STYLE} aria-label="Editor screen">
 			<EditorMainContent
