@@ -18,40 +18,63 @@ import {
 } from "../../backend/src/svg-diff-processor.js";
 
 function makeTestContext(options = {}) {
-	const {
-		baseElements = [],
-		targetElements = [],
-		layerFilename = "board-F_Cu.svg",
-	} = options;
-	return {
-		baseElements,
-		targetElements,
-		matchedBase: new Set(),
-		matchedTarget: new Set(),
-		matchedTargetToBase: new Map(),
-		matchedBaseToTarget: new Map(),
-		baseClassifications: new Map(),
-		targetClassifications: new Map(),
-		layerFilename,
+	const ctx = {
+		baseElements: options.baseElements ?? [],
+		targetElements: options.targetElements ?? [],
+		layerFilename: options.layerFilename ?? "board-F_Cu.svg",
 	};
+	for (const key of ["matchedBase", "matchedTarget"]) {
+		ctx[key] = new Set();
+	}
+	for (const key of [
+		"matchedTargetToBase",
+		"matchedBaseToTarget",
+		"baseClassifications",
+		"targetClassifications",
+	]) {
+		ctx[key] = new Map();
+	}
+	return ctx;
 }
 
 function makePrimitive(overrides = {}) {
-	return {
+	const elem = {
 		tag: "circle",
 		fullMatch: '<circle cx="10" cy="10" r="2" />',
 		fullKey: "circle||cx=10;cy=10;r=2",
 		idKey: "circle|",
 		geoKey: "cx=10;cy=10;r=2",
-		id: "",
-		label: "",
-		text: "",
-		isClosedPath: false,
-		isComponent: false,
-		isWorksheetFrame: false,
 		center: { x: 10, y: 10 },
-		...overrides,
 	};
+	for (const field of ["id", "label", "text"]) {
+		elem[field] = "";
+	}
+	for (const field of ["isClosedPath", "isComponent", "isWorksheetFrame"]) {
+		elem[field] = false;
+	}
+	return Object.assign(elem, overrides);
+}
+
+function setChangedPair(ctx, targetEl, baseEl, extra = {}) {
+	const classification = { diffClass: "diff-changed", ...extra };
+	ctx.targetClassifications.set(targetEl, { ...classification });
+	ctx.baseClassifications.set(baseEl, { ...classification });
+}
+
+function getPairClassifications(ctx, targetEl, baseEl) {
+	return {
+		tClass: ctx.targetClassifications.get(targetEl),
+		bClass: ctx.baseClassifications.get(baseEl),
+	};
+}
+
+function assertExpectedProperties(items, expectedSpecs) {
+	assert.equal(items.length, expectedSpecs.length);
+	items.forEach((item, idx) => {
+		for (const [key, expectedVal] of Object.entries(expectedSpecs[idx])) {
+			assert.equal(item[key], expectedVal);
+		}
+	});
 }
 
 function runPairMatchTest({
@@ -124,6 +147,33 @@ const CLEANER_CASES = [
 	},
 ];
 
+const PAIR_MATCH_CASES = [
+	{
+		name: "matchRefDesComponentsPass matches components by refDes and computes displacement",
+		passFn: matchRefDesComponentsPass,
+		baseElement: makePrimitive({
+			isComponent: true,
+			refDes: "R1",
+			center: { x: 10, y: 10 },
+		}),
+		targetElement: makePrimitive({
+			isComponent: true,
+			refDes: "R1",
+			center: { x: 10, y: 14 },
+		}),
+		otherElement: makePrimitive({ isComponent: true, refDes: "C1" }),
+		displacement: 4,
+	},
+	{
+		name: "matchProximityPrimitivesPass matches primitives within threshold",
+		passFn: matchProximityPrimitivesPass,
+		baseElement: makePrimitive({ center: { x: 10, y: 10 } }),
+		targetElement: makePrimitive({ center: { x: 10, y: 12 } }),
+		otherElement: makePrimitive({ center: { x: 10, y: 50 } }),
+		displacement: 2,
+	},
+];
+
 describe("SVG Diff Processor Unit Tests", () => {
 	for (const { name, fn, cases } of CLEANER_CASES) {
 		test(name, () => {
@@ -142,14 +192,11 @@ describe("SVG Diff Processor Unit Tests", () => {
 			"</svg>",
 		].join("\n");
 		const elements = extractElements(svg);
-		assert.equal(elements.length, 3);
-		assert.equal(elements[0].isComponent, true);
-		assert.equal(elements[0].refDes, "R1");
-		assert.equal(elements[1].tag, "line");
-		assert.equal(elements[1].isWorksheetFrame, false);
-		assert.equal(elements[2].tag, "rect");
-		assert.equal(elements[2].isWorksheetFrame, true);
-
+		assertExpectedProperties(elements, [
+			{ isComponent: true, refDes: "R1" },
+			{ tag: "line", isWorksheetFrame: false },
+			{ tag: "rect", isWorksheetFrame: true },
+		]);
 		assert.deepEqual(extractElements(""), []);
 	});
 
@@ -208,33 +255,11 @@ describe("SVG Diff Processor Unit Tests", () => {
 		);
 	});
 
-	test("matchRefDesComponentsPass matches components by refDes and computes displacement", () => {
-		runPairMatchTest({
-			passFn: matchRefDesComponentsPass,
-			baseElement: makePrimitive({
-				isComponent: true,
-				refDes: "R1",
-				center: { x: 10, y: 10 },
-			}),
-			targetElement: makePrimitive({
-				isComponent: true,
-				refDes: "R1",
-				center: { x: 10, y: 14 },
-			}),
-			otherElement: makePrimitive({ isComponent: true, refDes: "C1" }),
-			displacement: 4,
+	for (const { name, ...config } of PAIR_MATCH_CASES) {
+		test(name, () => {
+			runPairMatchTest(config);
 		});
-	});
-
-	test("matchProximityPrimitivesPass matches primitives within threshold", () => {
-		runPairMatchTest({
-			passFn: matchProximityPrimitivesPass,
-			baseElement: makePrimitive({ center: { x: 10, y: 10 } }),
-			targetElement: makePrimitive({ center: { x: 10, y: 12 } }),
-			otherElement: makePrimitive({ center: { x: 10, y: 50 } }),
-			displacement: 2,
-		});
-	});
+	}
 
 	test("classifyDeletedBaseElements marks unclassified base elements as deleted", () => {
 		const bEl1 = makePrimitive({ id: "line1" });
@@ -287,13 +312,10 @@ describe("SVG Diff Processor Unit Tests", () => {
 		const bEl = makePrimitive({ center: { x: 10, y: 10 } });
 		const tEl = makePrimitive({ center: { x: 14, y: 10 } });
 		const ctx = makeTestContext();
-		const initClass = { diffClass: "diff-changed", displacement: 4 };
-		ctx.targetClassifications.set(tEl, { ...initClass });
-		ctx.baseClassifications.set(bEl, { ...initClass });
+		setChangedPair(ctx, tEl, bEl, { displacement: 4 });
 
 		linkChangedElementPair(tEl, bEl, ctx, 42);
-		const tClass = ctx.targetClassifications.get(tEl);
-		const bClass = ctx.baseClassifications.get(bEl);
+		const { tClass, bClass } = getPairClassifications(ctx, tEl, bEl);
 		assert.deepEqual(
 			{
 				tDiffIdx: tClass?.diffIdx,
@@ -319,8 +341,7 @@ describe("SVG Diff Processor Unit Tests", () => {
 			targetElements: [tAdded, tChanged],
 		});
 		ctx.matchedTargetToBase.set(tChanged, bChanged);
-		ctx.baseClassifications.set(bChanged, { diffClass: "diff-changed" });
-		ctx.targetClassifications.set(tChanged, { diffClass: "diff-changed" });
+		setChangedPair(ctx, tChanged, bChanged);
 
 		const nextIdx = classifyResidualElementsPass(ctx, 1);
 		assert.deepEqual(
@@ -340,10 +361,9 @@ describe("SVG Diff Processor Unit Tests", () => {
 	});
 
 	test("processSvgDiff executes complete diff pipeline and returns annotated SVGs", () => {
-		const baseSvg =
-			'<svg><circle cx="10" cy="10" r="5" stroke="black" /></svg>';
-		const targetSvg =
-			'<svg><circle cx="10" cy="15" r="5" stroke="black" /></svg>';
+		const [baseSvg, targetSvg] = [10, 15].map(
+			(y) => `<svg><circle cx="10" cy="${y}" r="5" stroke="black" /></svg>`,
+		);
 		const diff = processSvgDiff(baseSvg, targetSvg, {
 			layerFilename: "board-F_Cu.svg",
 			startDiffIdx: 5,
