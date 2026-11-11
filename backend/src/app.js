@@ -4,6 +4,7 @@ import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
+import agentRouter from "./routes/agent-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import simRouter from "./routes/sim-routes.js";
 
@@ -143,6 +144,7 @@ export function createApp(options = {}) {
 	// API routes
 	app.use("/api", createApiRouter());
 	app.use("/api", simRouter);
+	app.use("/api", agentRouter);
 
 	// Static files
 	setupStaticServing(app, options.staticDir);
