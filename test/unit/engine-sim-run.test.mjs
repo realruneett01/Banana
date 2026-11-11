@@ -22,6 +22,15 @@ function makeEnv(overrides = {}) {
 	};
 }
 
+function makeTrack(overrides = {}) {
+	return {
+		id: newId("trace"),
+		widthMm: 0.254,
+		thicknessUm: 35,
+		...overrides,
+	};
+}
+
 function verifyRunAndIssues(res, expectedKind) {
 	assert.equal(res.run.status, "done");
 	assert.equal(res.run.kind, expectedKind);
@@ -35,6 +44,32 @@ function verifyRunAndIssues(res, expectedKind) {
 	}
 }
 
+function verifyFailedRun(res, errorMatch = "") {
+	assert.equal(res.run.status, "failed");
+	assert.deepEqual(res.run.results, []);
+	assert.deepEqual(res.issues, []);
+	assert.equal(typeof res.error, "string");
+	assert.ok(res.error.length > 0);
+	if (errorMatch) {
+		assert.ok(res.error.includes(errorMatch));
+	}
+}
+
+async function executeSim(kind, inputs = {}, options = {}) {
+	return runSimulation({
+		kind,
+		env: makeEnv(),
+		commit: COMMIT,
+		inputs,
+		...options,
+	});
+}
+
+async function runAndVerify(kind, inputs) {
+	const res = await executeSim(kind, inputs);
+	verifyRunAndIssues(res, kind);
+}
+
 describe("SIM_KINDS", () => {
 	test("exports supported simulation kinds", () => {
 		assert.deepEqual(SIM_KINDS, ["thermal", "trace-current", "ir-drop"]);
@@ -43,7 +78,6 @@ describe("SIM_KINDS", () => {
 
 describe("runSimulation - thermal", () => {
 	test("runs thermal simulator and returns valid run and issues", async () => {
-		const env = makeEnv();
 		const part = {
 			id: newId("part"),
 			ref: "U1",
@@ -52,118 +86,66 @@ describe("runSimulation - thermal", () => {
 			footprint: "Pkg:SOT-223",
 			props: { powerW: 3.0, thetaJA: 50, tjMaxC: 125 },
 		};
-		const inputs = { ir: { parts: [part] } };
-		const res = await runSimulation({
-			kind: "thermal",
-			env,
-			commit: COMMIT,
-			inputs,
-		});
-		verifyRunAndIssues(res, "thermal");
+		await runAndVerify("thermal", { ir: { parts: [part] } });
 	});
 });
 
 describe("runSimulation - trace-current", () => {
 	test("runs trace-current simulator and returns valid run and issues", async () => {
-		const env = makeEnv();
-		const track = {
-			id: newId("trace"),
-			widthMm: 0.254,
-			thicknessUm: 35,
-			layer: "F.Cu",
-			currentA: 5.0,
-		};
-		const inputs = { tracks: [track] };
-		const res = await runSimulation({
-			kind: "trace-current",
-			env,
-			commit: COMMIT,
-			inputs,
-		});
-		verifyRunAndIssues(res, "trace-current");
+		const track = makeTrack({ layer: "F.Cu", currentA: 5.0 });
+		await runAndVerify("trace-current", { tracks: [track] });
 	});
 });
 
 describe("runSimulation - ir-drop", () => {
 	test("runs ir-drop simulator and returns valid run and issues", async () => {
-		const env = makeEnv();
 		const netId = newId("net");
-		const track = {
-			id: newId("trace"),
-			netId,
-			lengthMm: 100,
-			widthMm: 0.254,
-			thicknessUm: 35,
-			currentA: 2.0,
-		};
-		const inputs = { tracks: [track], railLimits: { [netId]: 0.05 } };
-		const res = await runSimulation({
-			kind: "ir-drop",
-			env,
-			commit: COMMIT,
-			inputs,
+		const track = makeTrack({ netId, lengthMm: 100, currentA: 2.0 });
+		await runAndVerify("ir-drop", {
+			tracks: [track],
+			railLimits: { [netId]: 0.05 },
 		});
-		verifyRunAndIssues(res, "ir-drop");
 	});
 });
 
 describe("runSimulation - validation failures", () => {
-	test("fails when env is invalid and provides joined errors", async () => {
-		const invalidEnv = makeEnv({ ambientC: { min: 40, max: 20 } });
-		const res = await runSimulation({
+	const VALIDATION_CASES = [
+		{
+			name: "fails when env is invalid and provides joined errors",
 			kind: "thermal",
-			env: invalidEnv,
-			commit: COMMIT,
-		});
-		assert.equal(res.run.status, "failed");
-		assert.deepEqual(res.run.results, []);
-		assert.deepEqual(res.issues, []);
-		assert.ok(typeof res.error === "string");
-		assert.ok(res.error.includes("ambientC"));
-	});
-
-	test("fails when simulation kind is unknown", async () => {
-		const env = makeEnv();
-		const res = await runSimulation({
+			options: { env: makeEnv({ ambientC: { min: 40, max: 20 } }) },
+			match: "ambientC",
+		},
+		{
+			name: "fails when simulation kind is unknown",
 			kind: "unknown-kind",
-			env,
-			commit: COMMIT,
+			options: {},
+			match: "unknown simulation kind",
+		},
+	];
+
+	for (const { name, kind, options, match } of VALIDATION_CASES) {
+		test(name, async () => {
+			const res = await executeSim(kind, {}, options);
+			verifyFailedRun(res, match);
 		});
-		assert.equal(res.run.status, "failed");
-		assert.deepEqual(res.run.results, []);
-		assert.deepEqual(res.issues, []);
-		assert.ok(typeof res.error === "string");
-		assert.ok(res.error.includes("unknown simulation kind"));
-	});
+	}
 });
 
 describe("runSimulation - error handling and timestamps", () => {
 	test("fails gracefully when simulator throws", async () => {
-		const env = makeEnv();
-		const res = await runSimulation({
-			kind: "trace-current",
-			env,
-			commit: COMMIT,
-			inputs: { tracks: [null] },
-		});
-		assert.equal(res.run.status, "failed");
-		assert.deepEqual(res.run.results, []);
-		assert.deepEqual(res.issues, []);
-		assert.ok(typeof res.error === "string");
-		assert.ok(res.error.length > 0);
+		const res = await executeSim("trace-current", { tracks: [null] });
+		verifyFailedRun(res);
 	});
 
 	test("respects injected now() for timestamps", async () => {
-		const env = makeEnv();
 		let tick = 0;
 		const fixedNow = () => `2026-11-11T12:00:0${tick++}.000Z`;
-		const res = await runSimulation({
-			kind: "thermal",
-			env,
-			commit: COMMIT,
-			inputs: { ir: { parts: [] } },
-			now: fixedNow,
-		});
+		const res = await executeSim(
+			"thermal",
+			{ ir: { parts: [] } },
+			{ now: fixedNow },
+		);
 		assert.equal(res.run.status, "done");
 		assert.equal(res.run.startedAt, "2026-11-11T12:00:00.000Z");
 		assert.equal(res.run.finishedAt, "2026-11-11T12:00:01.000Z");
