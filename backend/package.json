@@ -9,6 +9,7 @@
     "dev": "nodemon src/server.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "ai": "^7.0.106",
     "better-sqlite3": "^13.0.3",
     "cors": "^2.8.5",
