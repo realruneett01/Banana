@@ -9,77 +9,96 @@ import {
 	plainHeatSummary,
 } from "../../frontend/src/components/sim3d/heatModel.js";
 
-describe("heatModel - partTemperatures", () => {
-	test("calculates part temperature using ambient + P * thetaJA", () => {
-		const ir = {
-			parts: [
-				{ id: "U1", footprint: "SOIC-8" },
-				{ id: "R1", footprint: "R_0805" },
-			],
-		};
-		const partPowers = { U1: 0.5, R1: 0.1 };
-		const temps = partTemperatures({
-			ir,
-			partPowers,
+function assertPartTemps(temps, expected) {
+	for (const [id, temp] of Object.entries(expected)) {
+		assert.equal(temps[id], temp);
+	}
+}
+
+function makeGrid(options = {}) {
+	return heatGrid({
+		boardW: 50,
+		boardH: 30,
+		cellMm: 1,
+		ambientC: 25,
+		placements: [],
+		...options,
+	});
+}
+
+const PART_TEMP_CASES = [
+	{
+		name: "calculates part temperature using ambient + P * thetaJA",
+		input: {
+			ir: {
+				parts: [
+					{ id: "U1", footprint: "SOIC-8" },
+					{ id: "R1", footprint: "R_0805" },
+				],
+			},
+			partPowers: { U1: 0.5, R1: 0.1 },
 			ambientC: 25,
 			thetaJA: { default: 150 },
-		});
-
-		assert.equal(temps.U1, 100);
-		assert.equal(temps.R1, 40);
-	});
-
-	test("respects per-footprint thetaJA overrides", () => {
-		const ir = {
-			parts: [
-				{ id: "U1", footprint: "Package_TO_SOT_SMD:SOT-223" },
-				{ id: "U2", footprint: "Package_SO:SOIC-8" },
-			],
-		};
-		const partPowers = { U1: 1.0, U2: 1.0 };
-		const thetaJA = {
-			default: 150,
-			"Package_TO_SOT_SMD:SOT-223": 50,
-		};
-		const temps = partTemperatures({ ir, partPowers, ambientC: 25, thetaJA });
-
-		assert.equal(temps.U1, 75);
-		assert.equal(temps.U2, 175);
-	});
-
-	test("supports ambient temperature as object with max field", () => {
-		const ir = { parts: [{ id: "U1", footprint: "SOIC-8" }] };
-		const temps = partTemperatures({
-			ir,
+		},
+		expected: { U1: 100, R1: 40 },
+	},
+	{
+		name: "respects per-footprint thetaJA overrides",
+		input: {
+			ir: {
+				parts: [
+					{ id: "U1", footprint: "Package_TO_SOT_SMD:SOT-223" },
+					{ id: "U2", footprint: "Package_SO:SOIC-8" },
+				],
+			},
+			partPowers: { U1: 1.0, U2: 1.0 },
+			ambientC: 25,
+			thetaJA: {
+				default: 150,
+				"Package_TO_SOT_SMD:SOT-223": 50,
+			},
+		},
+		expected: { U1: 75, U2: 175 },
+	},
+	{
+		name: "supports ambient temperature as object with max field",
+		input: {
+			ir: { parts: [{ id: "U1", footprint: "SOIC-8" }] },
 			partPowers: { U1: 0.2 },
 			ambientC: { min: 10, max: 35 },
 			thetaJA: 100,
+		},
+		expected: { U1: 55 },
+	},
+	{
+		name: "falls back to part.props when partPowers not specified",
+		input: {
+			ir: {
+				parts: [
+					{
+						id: "U1",
+						footprint: "QFN-16",
+						props: { powerW: 0.4, thetaJA: 80 },
+					},
+				],
+			},
+			ambientC: 25,
+		},
+		expected: { U1: 57 },
+	},
+];
+
+describe("heatModel - partTemperatures", () => {
+	for (const { name, input, expected } of PART_TEMP_CASES) {
+		test(name, () => {
+			assertPartTemps(partTemperatures(input), expected);
 		});
-
-		assert.equal(temps.U1, 55);
-	});
-
-	test("falls back to part.props when partPowers not specified", () => {
-		const ir = {
-			parts: [
-				{ id: "U1", footprint: "QFN-16", props: { powerW: 0.4, thetaJA: 80 } },
-			],
-		};
-		const temps = partTemperatures({ ir, ambientC: 25 });
-
-		assert.equal(temps.U1, 57);
-	});
+	}
 });
 
 describe("heatModel - heatGrid", () => {
 	test("creates Float32Array grid with correct dimensions", () => {
-		const grid = heatGrid({
-			boardW: 50,
-			boardH: 30,
-			cellMm: 1,
-			ambientC: 25,
-			placements: [],
-		});
+		const grid = makeGrid();
 
 		assert.equal(grid.cols, 50);
 		assert.equal(grid.rows, 30);
@@ -89,13 +108,8 @@ describe("heatModel - heatGrid", () => {
 	});
 
 	test("produces peak at hot part and monotonic falloff with distance", () => {
-		const placements = [{ x: 25, y: 15, tempC: 95, radiusMm: 5 }];
-		const grid = heatGrid({
-			boardW: 50,
-			boardH: 30,
-			cellMm: 1,
-			ambientC: 25,
-			placements,
+		const grid = makeGrid({
+			placements: [{ x: 25, y: 15, tempC: 95, radiusMm: 5 }],
 		});
 
 		const centerCol = 24;
@@ -119,16 +133,13 @@ describe("heatModel - heatGrid", () => {
 	});
 
 	test("blends multiple hot spots using max blend", () => {
-		const placements = [
-			{ x: 10, y: 10, tempC: 80, radiusMm: 4 },
-			{ x: 12, y: 10, tempC: 85, radiusMm: 4 },
-		];
-		const grid = heatGrid({
+		const grid = makeGrid({
 			boardW: 30,
 			boardH: 20,
-			cellMm: 1,
-			ambientC: 25,
-			placements,
+			placements: [
+				{ x: 10, y: 10, tempC: 80, radiusMm: 4 },
+				{ x: 12, y: 10, tempC: 85, radiusMm: 4 },
+			],
 		});
 
 		for (let i = 0; i < grid.values.length; i++) {
@@ -146,10 +157,15 @@ describe("heatModel - legendStops", () => {
 
 		assert.equal(stops.length, 5);
 		const labels = stops.map((s) => s.label);
-		assert.ok(labels.includes("cool"));
-		assert.ok(labels.includes("warm"));
-		assert.ok(labels.includes("hot - avoid touching"));
-		assert.ok(labels.includes("too hot - parts may fail"));
+		const requiredLabels = [
+			"cool",
+			"warm",
+			"hot - avoid touching",
+			"too hot - parts may fail",
+		];
+		for (const label of requiredLabels) {
+			assert.ok(labels.includes(label));
+		}
 
 		for (let i = 0; i < stops.length - 1; i++) {
 			assert.ok(
@@ -202,15 +218,12 @@ describe("heatLayer - 3D scene layer", () => {
 		const boardToScene = (x, y, z) => [x * 0.1, z * 0.1, y * 0.1];
 		const layer = createHeatLayer(scene, { boardToScene });
 
-		assert.equal(typeof layer.setGrid, "function");
-		assert.equal(typeof layer.setVisible, "function");
-		assert.equal(typeof layer.dispose, "function");
+		for (const fn of ["setGrid", "setVisible", "dispose"]) {
+			assert.equal(typeof layer[fn], "function");
+		}
 
-		const grid = heatGrid({
+		const grid = makeGrid({
 			boardW: 40,
-			boardH: 30,
-			cellMm: 1,
-			ambientC: 25,
 			placements: [
 				{ x: 10, y: 10, tempC: 90, radiusMm: 3 },
 				{ x: 30, y: 20, tempC: 50, radiusMm: 3 },
