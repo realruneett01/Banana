@@ -1,5 +1,6 @@
 import {
 	DeleteOutlined,
+	DownloadOutlined,
 	ForkOutlined,
 	PlusOutlined,
 	RedoOutlined,
@@ -10,11 +11,13 @@ import {
 } from "@ant-design/icons";
 import { Button, Space, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useState } from "react";
+import IssuesPanel from "../components/IssuesPanel.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
 import { useEditorDocument } from "./useEditorDocument.js";
+import { useLiveChecks } from "./useLiveChecks.js";
 
 const ROOT_STYLE = Object.freeze({
 	display: "flex",
@@ -68,6 +71,28 @@ const STATUS_BAR_STYLE = Object.freeze({
 	minHeight: "28px",
 });
 
+const PROBLEMS_PANEL_STYLE = Object.freeze({
+	height: "200px",
+	width: "100%",
+	borderTop: "1px solid #232836",
+	background: "#0f121d",
+	flexShrink: 0,
+	display: "flex",
+	flexDirection: "column",
+});
+
+const PROBLEM_BADGE_STYLE = Object.freeze({
+	background: "transparent",
+	border: "none",
+	cursor: "pointer",
+	display: "flex",
+	alignItems: "center",
+	gap: "6px",
+	fontSize: "12px",
+	padding: "2px 6px",
+	borderRadius: "4px",
+});
+
 const TAB_ITEMS = [
 	{ key: "schematic", label: "Schematic" },
 	{ key: "pcb", label: "PCB" },
@@ -81,7 +106,26 @@ function formatSelection(doc) {
 	return part ? `Selected: ${part.ref || part.id}` : `Selected: ${sel[0]}`;
 }
 
-function StatusBar({ doc, activeTab, dirty }) {
+function ProblemBadge({ problems }) {
+	const { count = 0, open = false, toggle } = problems ?? {};
+	const text = `${count} ${count === 1 ? "problem" : "problems"}`;
+	const dotColor = count > 0 ? "#fb7185" : "#34d399";
+	const textColor = count > 0 ? "#fb7185" : "#8a91a3";
+	return (
+		<button
+			type="button"
+			onClick={toggle}
+			aria-expanded={open}
+			aria-label={`Toggle problems (${text})`}
+			style={{ ...PROBLEM_BADGE_STYLE, color: textColor }}
+		>
+			<span style={{ color: dotColor }}>●</span>
+			<span>{text}</span>
+		</button>
+	);
+}
+
+function StatusBar({ doc, activeTab, dirty, problems }) {
 	const gridText = activeTab === "pcb" ? "Grid: 0.25 mm" : "Grid: 1.27 mm";
 	const dirtyText = dirty ? "Unsaved changes" : "Saved";
 	const dirtyColor = dirty ? "#fbbf24" : "#34d399";
@@ -89,6 +133,7 @@ function StatusBar({ doc, activeTab, dirty }) {
 		<footer role="status" aria-label="Editor status" style={STATUS_BAR_STYLE}>
 			<span style={{ color: "#8a91a3" }}>{formatSelection(doc)}</span>
 			<div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+				{problems && <ProblemBadge problems={problems} />}
 				<span style={{ color: dirtyColor }}>● {dirtyText}</span>
 				<span style={{ color: "#5d6476" }}>{gridText}</span>
 			</div>
@@ -215,6 +260,22 @@ function AddPartButton({ onAddPart }) {
 	);
 }
 
+function ExportButton({ onExport, loading }) {
+	return (
+		<Tooltip title="Export KiCad files">
+			<Button
+				icon={<DownloadOutlined />}
+				loading={loading}
+				onClick={onExport}
+				size="small"
+				aria-label="Export KiCad files"
+			>
+				Export KiCad files
+			</Button>
+		</Tooltip>
+	);
+}
+
 function EditorToolbar({ state, actions }) {
 	return (
 		<div
@@ -241,6 +302,7 @@ function EditorToolbar({ state, actions }) {
 				route={actions.route}
 				save={actions.save}
 			/>
+			<ExportButton onExport={actions.exportKiCad} loading={state.exporting} />
 		</div>
 	);
 }
@@ -306,6 +368,50 @@ function useAddPartShortcut(openLibrary) {
 	}, [openLibrary]);
 }
 
+function useLibraryState() {
+	const [libraryOpen, setLibraryOpen] = useState(false);
+	const openLibrary = useCallback(() => setLibraryOpen(true), []);
+	const closeLibrary = useCallback(() => setLibraryOpen(false), []);
+	useAddPartShortcut(openLibrary);
+	return { libraryOpen, openLibrary, closeLibrary };
+}
+
+function downloadFile(filename, text) {
+	const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = filename;
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+	URL.revokeObjectURL(url);
+}
+
+function downloadFiles(files) {
+	if (!files || typeof files !== "object") return;
+	for (const [name, content] of Object.entries(files)) {
+		downloadFile(name, content);
+	}
+}
+
+function useExportAction({ api, ir, board }) {
+	const [exporting, setExporting] = useState(false);
+	const exportKiCad = useCallback(async () => {
+		if (typeof api?.editorExport !== "function") return;
+		setExporting(true);
+		try {
+			const res = await api.editorExport({ ir, board, title: ir?.name });
+			if (res?.ok && res.data?.files) {
+				downloadFiles(res.data.files);
+			}
+		} finally {
+			setExporting(false);
+		}
+	}, [api, ir, board]);
+	return { exportKiCad, exporting };
+}
+
 function getNextRef(parts, rawPrefix) {
 	const prefix = (rawPrefix || "U").replace(/[?#]+$/, "") || "U";
 	const usedNumbers = new Set();
@@ -365,40 +471,56 @@ function usePlacePartCallback(doc, dispatch) {
 	);
 }
 
+function useIssueSelector(dispatch) {
+	return useCallback(
+		(itemId, issue) => {
+			const targetId = itemId ?? issue?.itemIds?.[0];
+			if (targetId) {
+				dispatch({ type: "select", ids: [targetId] });
+			}
+		},
+		[dispatch],
+	);
+}
+
 function triggerPcbRoute() {
 	const btn = document.querySelector('[aria-label="Toggle route track (X)"]');
 	if (btn) btn.click();
 }
 
-function CanvasViewport({ activeTab, docState, curBoard, fetchers }) {
+function CanvasTab({ visible, children }) {
+	return (
+		<div
+			style={{
+				display: visible ? "block" : "none",
+				width: "100%",
+				height: "100%",
+			}}
+		>
+			{children}
+		</div>
+	);
+}
+
+function CanvasViewport({ activeTab, docState, curBoard, fetchers, markers }) {
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
-			<div
-				style={{
-					display: activeTab === "schematic" ? "block" : "none",
-					width: "100%",
-					height: "100%",
-				}}
-			>
+			<CanvasTab visible={activeTab === "schematic"}>
 				<SchematicCanvas
 					editor={docState.editor}
 					fetchSymbol={fetchers.fetchSymbol}
+					markers={markers}
 				/>
-			</div>
-			<div
-				style={{
-					display: activeTab === "pcb" ? "block" : "none",
-					width: "100%",
-					height: "100%",
-				}}
-			>
+			</CanvasTab>
+			<CanvasTab visible={activeTab === "pcb"}>
 				<PcbCanvas
 					editor={docState.editor}
 					board={curBoard}
 					onBoardChange={docState.setBoard}
 					fetchFootprint={fetchers.fetchFootprint}
+					markers={markers}
 				/>
-			</div>
+			</CanvasTab>
 		</div>
 	);
 }
@@ -418,17 +540,18 @@ function EditorHeader({ activeTab, onTabChange, toolState, actions }) {
 	);
 }
 
-function buildToolState(docState, activeTab) {
+function buildToolState(docState, activeTab, exporting) {
 	return {
 		canUndo: docState.canUndo,
 		canRedo: docState.canRedo,
 		hasSelection: (docState.doc.selection?.length ?? 0) > 0,
 		activeTab,
 		dirty: docState.dirty,
+		exporting,
 	};
 }
 
-function EditorBody({ activeTab, docState, curBoard, fetchers }) {
+function EditorBody({ activeTab, docState, curBoard, fetchers, markers }) {
 	return (
 		<div style={CONTENT_ROW_STYLE}>
 			<CanvasViewport
@@ -436,57 +559,79 @@ function EditorBody({ activeTab, docState, curBoard, fetchers }) {
 				docState={docState}
 				curBoard={curBoard}
 				fetchers={fetchers}
+				markers={markers}
 			/>
 			<PropertiesPanel doc={docState.doc} dispatch={docState.dispatch} />
 		</div>
 	);
 }
 
-function useScreenController({ ir, board, onSave, api }) {
-	const docState = useEditorDocument({ ir, board });
-	const [libraryOpen, setLibraryOpen] = useState(false);
-	const openLibrary = useCallback(() => setLibraryOpen(true), []);
-	const closeLibrary = useCallback(() => setLibraryOpen(false), []);
-	const fetchers = useCanvasFetchers(api);
-	const { doc, board: curBoard, dispatch, undo, redo } = docState;
+function useScreenActions(docState, onSave, extra) {
+	const { doc, board, dispatch, undo, redo, markSaved } = docState;
 	const editActions = useEditorActions({
 		doc,
 		dispatch,
-		board: curBoard,
+		board,
 		onSave,
-		markSaved: docState.markSaved,
+		markSaved,
 	});
 	useSaveShortcut(editActions.save);
-	useAddPartShortcut(openLibrary);
+	return { ...editActions, undo, redo, route: triggerPcbRoute, ...extra };
+}
+
+function useScreenController({ ir, board, onSave, api }) {
+	const docState = useEditorDocument({ ir, board });
+	const lib = useLibraryState();
+	const fetchers = useCanvasFetchers(api);
+	const { doc, board: curBoard, dispatch } = docState;
 	const onPlace = usePlacePartCallback(doc, dispatch);
-	const actions = {
-		...editActions,
-		undo,
-		redo,
-		route: triggerPcbRoute,
-		openLibrary,
-	};
+	const onSelectIssue = useIssueSelector(dispatch);
+	const exp = useExportAction({ api, ir: doc.ir, board: curBoard });
+	const liveChecks = useLiveChecks({ api, ir: doc.ir, board: curBoard });
+	const actions = useScreenActions(docState, onSave, {
+		openLibrary: lib.openLibrary,
+		exportKiCad: exp.exportKiCad,
+	});
 	return {
 		docState,
 		curBoard,
 		fetchers,
-		libraryOpen,
-		closeLibrary,
+		lib,
 		onPlace,
+		onSelectIssue,
 		actions,
+		exporting: exp.exporting,
+		liveChecks,
 	};
 }
 
-export default function EditorScreen({ ir, board, onSave, api }) {
-	const [activeTab, setActiveTab] = useState("schematic");
-	const ctrl = useScreenController({ ir, board, onSave, api });
-	const toolState = buildToolState(ctrl.docState, activeTab);
-
+function EditorPanels({ problemsOpen, ctrl, api }) {
 	return (
-		<main style={ROOT_STYLE} aria-label="Editor screen">
+		<>
+			{problemsOpen && (
+				<section style={PROBLEMS_PANEL_STYLE} aria-label="Problems panel">
+					<IssuesPanel
+						issues={ctrl.liveChecks.issues}
+						onSelectItem={ctrl.onSelectIssue}
+					/>
+				</section>
+			)}
+			<LibraryBrowser
+				api={api}
+				open={ctrl.lib.libraryOpen}
+				onClose={ctrl.lib.closeLibrary}
+				onPlace={ctrl.onPlace}
+			/>
+		</>
+	);
+}
+
+function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
+	return (
+		<>
 			<EditorHeader
 				activeTab={activeTab}
-				onTabChange={setActiveTab}
+				onTabChange={onTabChange}
 				toolState={toolState}
 				actions={ctrl.actions}
 			/>
@@ -495,17 +640,38 @@ export default function EditorScreen({ ir, board, onSave, api }) {
 				docState={ctrl.docState}
 				curBoard={ctrl.curBoard}
 				fetchers={ctrl.fetchers}
+				markers={ctrl.liveChecks.markers}
 			/>
+		</>
+	);
+}
+
+export default function EditorScreen({ ir, board, onSave, api }) {
+	const [activeTab, setActiveTab] = useState("schematic");
+	const [problemsOpen, setProblemsOpen] = useState(false);
+	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
+	const ctrl = useScreenController({ ir, board, onSave, api });
+	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exporting);
+	const problems = {
+		count: ctrl.liveChecks.issues.length,
+		open: problemsOpen,
+		toggle,
+	};
+
+	return (
+		<main style={ROOT_STYLE} aria-label="Editor screen">
+			<EditorMainContent
+				ctrl={ctrl}
+				activeTab={activeTab}
+				toolState={toolState}
+				onTabChange={setActiveTab}
+			/>
+			<EditorPanels problemsOpen={problemsOpen} ctrl={ctrl} api={api} />
 			<StatusBar
 				doc={ctrl.docState.doc}
 				activeTab={activeTab}
 				dirty={ctrl.docState.dirty}
-			/>
-			<LibraryBrowser
-				api={api}
-				open={ctrl.libraryOpen}
-				onClose={ctrl.closeLibrary}
-				onPlace={ctrl.onPlace}
+				problems={problems}
 			/>
 		</main>
 	);

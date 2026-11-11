@@ -252,6 +252,15 @@ function buildLibraryMethods(send, h) {
 	};
 }
 
+function buildEditorMethods(send, h) {
+	return {
+		editorCheck: ({ ir, board, rules } = {}, { signal } = {}) =>
+			send("/api/editor/check", postOptions(h, { ir, board, rules }), signal),
+		editorExport: ({ ir, board, title } = {}, { signal } = {}) =>
+			send("/api/editor/export", postOptions(h, { ir, board, title }), signal),
+	};
+}
+
 export function createSimApi({
 	baseUrl = "",
 	fetchImpl = globalThis.fetch,
@@ -267,5 +276,6 @@ export function createSimApi({
 		...buildRunMethods(send, h),
 		...buildCircuitMethods(send, h),
 		...buildLibraryMethods(send, h),
+		...buildEditorMethods(send, h),
 	};
 }
