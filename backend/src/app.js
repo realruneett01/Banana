@@ -4,7 +4,9 @@ import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
+import { createRateLimiter, skipWhenLocal } from "./rate-limit.js";
 import agentRouter from "./routes/agent-routes.js";
+import circuitRouter from "./routes/circuit-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import simRouter from "./routes/sim-routes.js";
 
@@ -145,6 +147,11 @@ export function createApp(options = {}) {
 	app.use("/api", createApiRouter());
 	app.use("/api", simRouter);
 	app.use("/api", agentRouter);
+	app.use(
+		"/api",
+		skipWhenLocal(createRateLimiter({ windowMs: 60000, max: 30 })),
+		circuitRouter,
+	);
 
 	// Static files
 	setupStaticServing(app, options.staticDir);
