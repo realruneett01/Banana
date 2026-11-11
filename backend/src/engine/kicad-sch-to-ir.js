@@ -3,10 +3,11 @@ import { newId } from "./ids.js";
 import { parse } from "./sexpr.js";
 
 const LABEL_HEADS = new Set(["label", "global_label", "hierarchical_label"]);
+const CORE_PROP_KEYS = new Set(["Reference", "Value", "Footprint"]);
 
 function roundCoord(val) {
-	const r = Math.round(Number(val) * 100) / 100;
-	return Object.is(r, -0) ? 0 : r;
+	const rounded = Math.round(Number(val) * 100) / 100;
+	return rounded === 0 ? 0 : rounded;
 }
 
 function pointKey(x, y) {
@@ -46,12 +47,17 @@ class UnionFind {
 }
 
 function nodeSym(node) {
-	if (node === null || node === undefined) return "";
-	return typeof node === "object" ? (node.sym ?? "") : String(node);
+	if (node == null) return "";
+	return typeof node === "object" ? (node.sym ?? "") : `${node}`;
+}
+
+function matchHead(item, head) {
+	return Array.isArray(item) && item[0]?.sym === head;
 }
 
 function extractChildNode(node, head) {
-	return node.find((c) => Array.isArray(c) && c[0]?.sym === head);
+	if (!Array.isArray(node)) return null;
+	return node.find((c) => matchHead(c, head)) ?? null;
 }
 
 function extractAt(node) {
@@ -69,86 +75,108 @@ function extractMirror(node) {
 	return nodeSym(mNode[1]).toLowerCase();
 }
 
+function extractChildText(node, head) {
+	const child = extractChildNode(node, head);
+	return child ? nodeSym(child[1]) : "";
+}
+
 function extractLibId(node) {
-	const libNode = extractChildNode(node, "lib_id");
-	if (!libNode) return "";
-	return nodeSym(libNode[1]);
+	return extractChildText(node, "lib_id");
 }
 
 function extractPinNumber(pinNode) {
-	const numNode = extractChildNode(pinNode, "number");
-	if (!numNode) return "";
-	return nodeSym(numNode[1]);
+	return extractChildText(pinNode, "number");
+}
+
+function recordPin(node, pins) {
+	const at = extractAt(node);
+	const num = extractPinNumber(node);
+	if (at && num) {
+		pins.push({ pin: num, x: at.x, y: at.y });
+	}
 }
 
 function collectPins(node, pins) {
 	if (!Array.isArray(node)) return;
 	if (node[0]?.sym === "pin") {
-		const at = extractAt(node);
-		const num = extractPinNumber(node);
-		if (at && num) pins.push({ pin: num, x: at.x, y: at.y });
+		recordPin(node, pins);
 		return;
 	}
-	for (let i = 1; i < node.length; i++) {
-		if (Array.isArray(node[i])) collectPins(node[i], pins);
+	for (const child of node.slice(1)) {
+		if (Array.isArray(child)) collectPins(child, pins);
 	}
 }
 
-function dedupeLibPins(pins) {
+function dedupeBy(items, keyFn) {
 	const seen = new Set();
 	const out = [];
-	for (const p of pins) {
-		const k = `${p.pin}:${roundCoord(p.x)},${roundCoord(p.y)}`;
+	for (const item of items) {
+		const k = keyFn(item);
 		if (!seen.has(k)) {
 			seen.add(k);
-			out.push(p);
+			out.push(item);
 		}
 	}
 	return out;
+}
+
+function dedupeLibPins(pins) {
+	return dedupeBy(
+		pins,
+		(p) => `${p.pin}:${roundCoord(p.x)},${roundCoord(p.y)}`,
+	);
 }
 
 function parseLibSymbols(libSymbolsNode) {
 	const map = new Map();
 	if (!Array.isArray(libSymbolsNode)) return map;
 	for (const child of libSymbolsNode.slice(1)) {
-		if (Array.isArray(child) && child[0]?.sym === "symbol") {
-			const name = nodeSym(child[1]);
-			const pins = [];
-			collectPins(child, pins);
-			map.set(name, dedupeLibPins(pins));
-		}
+		if (!Array.isArray(child) || child[0]?.sym !== "symbol") continue;
+		const pins = [];
+		collectPins(child, pins);
+		map.set(nodeSym(child[1]), dedupeLibPins(pins));
 	}
 	return map;
 }
 
+function applyRotation(x, y, rot) {
+	if (!rot) return { x, y };
+	const rad = (rot * Math.PI) / 180;
+	const cos = Math.cos(rad);
+	const sin = Math.sin(rad);
+	return {
+		x: x * cos - y * sin,
+		y: x * sin + y * cos,
+	};
+}
+
 function transformOffset(px, py, rot, mirror) {
-	let x = px;
-	let y = py;
-	if (mirror === "x") y = -y;
-	if (mirror === "y") x = -x;
-	if (rot) {
-		const rad = (rot * Math.PI) / 180;
-		const cos = Math.cos(rad);
-		const sin = Math.sin(rad);
-		const rx = x * cos - y * sin;
-		const ry = x * sin + y * cos;
-		x = rx;
-		y = ry;
-	}
-	return { dx: x, dy: y };
+	const mx = mirror === "y" ? -px : px;
+	const my = mirror === "x" ? -py : py;
+	const rotated = applyRotation(mx, my, rot);
+	return { dx: rotated.x, dy: rotated.y };
 }
 
 function inRange(val, min, max) {
 	return val >= min - 0.01 && val <= max + 0.01;
 }
 
+function isPointWithinBounds(px, py, seg) {
+	const withinX = inRange(
+		px,
+		Math.min(seg.x1, seg.x2),
+		Math.max(seg.x1, seg.x2),
+	);
+	const withinY = inRange(
+		py,
+		Math.min(seg.y1, seg.y2),
+		Math.max(seg.y1, seg.y2),
+	);
+	return withinX && withinY;
+}
+
 function isPointOnSegment(px, py, seg) {
-	if (!inRange(px, Math.min(seg.x1, seg.x2), Math.max(seg.x1, seg.x2))) {
-		return false;
-	}
-	if (!inRange(py, Math.min(seg.y1, seg.y2), Math.max(seg.y1, seg.y2))) {
-		return false;
-	}
+	if (!isPointWithinBounds(px, py, seg)) return false;
 	const dx = seg.x2 - seg.x1;
 	const dy = seg.y2 - seg.y1;
 	const len = Math.hypot(dx, dy);
@@ -162,9 +190,8 @@ function extractWirePoints(wireNode) {
 	if (!ptsNode) return [];
 	const pts = [];
 	for (const child of ptsNode.slice(1)) {
-		if (Array.isArray(child) && child[0]?.sym === "xy") {
-			pts.push({ x: Number(child[1]), y: Number(child[2]) });
-		}
+		if (!Array.isArray(child) || child[0]?.sym !== "xy") continue;
+		pts.push({ x: Number(child[1]), y: Number(child[2]) });
 	}
 	return pts;
 }
@@ -192,11 +219,7 @@ function connectPointToSegments(px, py, segments, uf) {
 	return key;
 }
 
-function processLabelNode(child, ctx) {
-	const text = nodeSym(child[1]);
-	const at = extractAt(child);
-	if (!at) return;
-	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+function recordPointLabel(key, text, ctx) {
 	if (!ctx.pointLabels.has(key)) ctx.pointLabels.set(key, []);
 	ctx.pointLabels.get(key).push(text);
 	if (ctx.labelFirstPoint.has(text)) {
@@ -206,27 +229,32 @@ function processLabelNode(child, ctx) {
 	}
 }
 
+function processLabelNode(child, ctx) {
+	const text = nodeSym(child[1]);
+	const at = extractAt(child);
+	if (!at) return;
+	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+	recordPointLabel(key, text, ctx);
+}
+
 function processJunctionNode(child, ctx) {
 	const at = extractAt(child);
 	if (at) connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 }
 
-function isLabelHead(head) {
-	return LABEL_HEADS.has(head);
+function handleUnsupportedHead(head, ctx) {
+	if (head === "bus" || head === "sheet") {
+		ctx.warnings.push(`unsupported element: ${head}`);
+	}
 }
 
 function processAstNode(child, ctx) {
 	if (!Array.isArray(child)) return;
 	const head = child[0]?.sym;
-	if (head === "wire") {
-		addWireSegments(child, ctx.segments, ctx.uf);
-	} else if (head === "junction") {
-		processJunctionNode(child, ctx);
-	} else if (isLabelHead(head)) {
-		processLabelNode(child, ctx);
-	} else if (head === "bus" || head === "sheet") {
-		ctx.warnings.push(`unsupported element: ${head}`);
-	}
+	if (head === "wire") return addWireSegments(child, ctx.segments, ctx.uf);
+	if (head === "junction") return processJunctionNode(child, ctx);
+	if (LABEL_HEADS.has(head)) return processLabelNode(child, ctx);
+	handleUnsupportedHead(head, ctx);
 }
 
 function isPropertyNode(child) {
@@ -248,33 +276,39 @@ function shouldSkipSymbol(libId, ref) {
 	return ref.startsWith("#");
 }
 
+function extractSymbolExtraProps(props) {
+	const extraProps = {};
+	for (const [k, v] of props) {
+		if (!CORE_PROP_KEYS.has(k)) {
+			extraProps[k] = v;
+		}
+	}
+	return extraProps;
+}
+
+function extractSymbolPlacement(symNode) {
+	const at = extractAt(symNode);
+	return at ? at : { x: 0, y: 0, rot: 0 };
+}
+
 function parseSymbolPart(symNode, idFn) {
 	const libId = extractLibId(symNode);
 	const props = extractProperties(symNode);
 	const ref = props.get("Reference") || "";
 	if (shouldSkipSymbol(libId, ref)) return null;
-	const value = props.get("Value") || "";
-	const footprint = props.get("Footprint") || "";
-	const extraProps = {};
-	for (const [k, v] of props) {
-		if (k !== "Reference" && k !== "Value" && k !== "Footprint") {
-			extraProps[k] = v;
-		}
-	}
-	const at = extractAt(symNode) || { x: 0, y: 0, rot: 0 };
-	const mirror = extractMirror(symNode);
+	const at = extractSymbolPlacement(symNode);
 	return {
 		part: {
 			id: idFn("part"),
 			ref,
-			value,
+			value: props.get("Value") || "",
 			symbol: libId,
-			footprint,
-			props: extraProps,
+			footprint: props.get("Footprint") || "",
+			props: extractSymbolExtraProps(props),
 			placement: { x: at.x, y: at.y, rot: at.rot, side: "F" },
 		},
 		at,
-		mirror,
+		mirror: extractMirror(symNode),
 	};
 }
 
@@ -302,51 +336,46 @@ function findSymbolPins(child, libSymbolsMap, symbolId) {
 	return localPins.length > 0 ? localPins : null;
 }
 
+function processSingleSymbol(child, libSymbolsMap, ctx, idFn) {
+	const parsed = parseSymbolPart(child, idFn);
+	if (!parsed) return null;
+	const pins = findSymbolPins(child, libSymbolsMap, parsed.part.symbol);
+	if (!pins) {
+		ctx.warnings.push(`missing library symbol ${parsed.part.symbol}`);
+		return parsed.part;
+	}
+	connectPartPins(parsed, pins, ctx);
+	return parsed.part;
+}
+
 function processSymbols(ast, libSymbolsMap, ctx, idFn) {
 	const parts = [];
 	for (const child of ast.slice(1)) {
-		if (Array.isArray(child) && child[0]?.sym === "symbol") {
-			const parsed = parseSymbolPart(child, idFn);
-			if (!parsed) continue;
-			parts.push(parsed.part);
-			const pins = findSymbolPins(child, libSymbolsMap, parsed.part.symbol);
-			if (!pins) {
-				ctx.warnings.push(`missing library symbol ${parsed.part.symbol}`);
-				continue;
-			}
-			connectPartPins(parsed, pins, ctx);
-		}
+		if (!Array.isArray(child) || child[0]?.sym !== "symbol") continue;
+		const part = processSingleSymbol(child, libSymbolsMap, ctx, idFn);
+		if (part) parts.push(part);
 	}
 	return parts;
+}
+
+function appendGroupedItems(sourceMap, targetMap, uf) {
+	for (const [key, items] of sourceMap) {
+		const root = uf.find(key);
+		if (!targetMap.has(root)) targetMap.set(root, []);
+		targetMap.get(root).push(...items);
+	}
 }
 
 function groupComponents(ctx) {
 	const compPins = new Map();
 	const compLabels = new Map();
-	for (const [key, pins] of ctx.pointPins) {
-		const root = ctx.uf.find(key);
-		if (!compPins.has(root)) compPins.set(root, []);
-		compPins.get(root).push(...pins);
-	}
-	for (const [key, labels] of ctx.pointLabels) {
-		const root = ctx.uf.find(key);
-		if (!compLabels.has(root)) compLabels.set(root, []);
-		compLabels.get(root).push(...labels);
-	}
+	appendGroupedItems(ctx.pointPins, compPins, ctx.uf);
+	appendGroupedItems(ctx.pointLabels, compLabels, ctx.uf);
 	return { compPins, compLabels };
 }
 
 function dedupePins(pins) {
-	const seen = new Set();
-	const result = [];
-	for (const p of pins) {
-		const k = `${p.partId}:${p.pin}`;
-		if (!seen.has(k)) {
-			seen.add(k);
-			result.push(p);
-		}
-	}
-	return result;
+	return dedupeBy(pins, (p) => `${p.partId}:${p.pin}`);
 }
 
 function comparePins(a, b) {
@@ -364,17 +393,20 @@ function determineNetName(pins, labels) {
 	return `Net-(${pins[0].ref}-Pad${pins[0].pin})`;
 }
 
+function shouldSkipNet(pins, labels) {
+	if (pins.length === 0) return true;
+	return pins.length === 1 && labels.length === 0;
+}
+
 function buildNets(compPins, compLabels, idFn) {
 	const nets = [];
 	for (const [root, rawPins] of compPins) {
 		const pins = dedupePins(rawPins);
 		const labels = compLabels.get(root) || [];
-		if (pins.length === 0) continue;
-		if (pins.length === 1 && labels.length === 0) continue;
-		const name = determineNetName(pins, labels);
+		if (shouldSkipNet(pins, labels)) continue;
 		nets.push({
 			id: idFn("net"),
-			name,
+			name: determineNetName(pins, labels),
 			pins: pins.map((p) => ({ partId: p.partId, pin: p.pin })),
 		});
 	}
@@ -385,8 +417,7 @@ function extractTitle(ast) {
 	const tb = extractChildNode(ast, "title_block");
 	if (!tb) return null;
 	const titleNode = extractChildNode(tb, "title");
-	if (!titleNode) return null;
-	return nodeSym(titleNode[1]);
+	return titleNode ? nodeSym(titleNode[1]) : null;
 }
 
 function createParseContext() {
@@ -400,35 +431,65 @@ function createParseContext() {
 	};
 }
 
-function convertSchToIr(text, { name, idFn }) {
+function isKicadSchAst(ast) {
+	return Array.isArray(ast) && ast[0]?.sym === "kicad_sch";
+}
+
+function parseSchAst(text) {
 	if (typeof text !== "string") {
 		return { ok: false, errors: ["Input must be a string"] };
 	}
-	let ast;
 	try {
-		ast = parse(text);
+		const ast = parse(text);
+		if (!isKicadSchAst(ast)) {
+			return {
+				ok: false,
+				errors: ["Invalid KiCad schematic: root must be kicad_sch"],
+			};
+		}
+		return { ok: true, ast };
 	} catch (err) {
 		// Broad catch to guarantee sexpr parse errors are captured
 		return { ok: false, errors: [err?.message || String(err)] };
 	}
-	if (!Array.isArray(ast) || ast[0]?.sym !== "kicad_sch") {
-		return {
-			ok: false,
-			errors: ["Invalid KiCad schematic: root must be kicad_sch"],
-		};
-	}
-	const ctx = createParseContext();
+}
+
+function resolveIrName(name, ast) {
+	if (name !== "imported") return name;
+	return extractTitle(ast) || name;
+}
+
+function populateContextElements(ast, ctx) {
 	for (const child of ast.slice(1)) {
 		processAstNode(child, ctx);
 	}
+}
+
+function assembleCircuit(ast, ctx, idFn) {
+	populateContextElements(ast, ctx);
 	const libNode = extractChildNode(ast, "lib_symbols");
 	const libMap = parseLibSymbols(libNode);
 	const parts = processSymbols(ast, libMap, ctx, idFn);
 	const { compPins, compLabels } = groupComponents(ctx);
 	const nets = buildNets(compPins, compLabels, idFn);
-	const title = extractTitle(ast);
-	const irName = name !== "imported" ? name : title || name;
-	const ir = { schemaVersion: 1, name: irName, parts, nets, constraints: [] };
+	return { parts, nets };
+}
+
+function convertSchToIr(text, { name, idFn }) {
+	const parsed = parseSchAst(text);
+	if (!parsed.ok) return parsed;
+
+	const { ast } = parsed;
+	const ctx = createParseContext();
+	const { parts, nets } = assembleCircuit(ast, ctx, idFn);
+	const ir = {
+		schemaVersion: 1,
+		name: resolveIrName(name, ast),
+		parts,
+		nets,
+		constraints: [],
+	};
+
 	const validation = validateCircuitIR(ir);
 	if (!validation.ok) return { ok: false, errors: validation.errors };
 	return { ok: true, ir, warnings: ctx.warnings };
