@@ -10,7 +10,9 @@ import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { registerRouteTools } from "../engine/tools/route-tools.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
-const ALLOWED_PROVIDERS = new Set(["gemini", "claude"]);
+const ALLOWED_PROVIDERS = new Set(["gemini", "claude", "ollama"]);
+const API_KEY_PATTERN = /^\S{10,300}$/;
+const MODEL_NAME_PATTERN = /^[A-Za-z0-9._:-]{1,80}$/;
 
 const SSE_HEADERS = {
 	"Content-Type": "text/event-stream",
@@ -57,21 +59,44 @@ function isValidProvider(provider) {
 	return typeof provider === "string" && ALLOWED_PROVIDERS.has(provider);
 }
 
+function isValidModel(model) {
+	if (model === undefined) {
+		return true;
+	}
+	return typeof model === "string" && MODEL_NAME_PATTERN.test(model);
+}
+
+const BODY_VALIDATORS = [
+	{
+		check: (b) => isValidMessage(b.message),
+		error: "Invalid message: must be a string of 1-8000 characters",
+	},
+	{
+		check: (b) => isValidApproved(b.approved),
+		error: "Invalid approved: must be a boolean",
+	},
+	{
+		check: (b) => isValidMaxSteps(b.maxSteps),
+		error: "Invalid maxSteps: must be an integer between 1 and 16",
+	},
+	{
+		check: (b) => isValidProvider(b.provider),
+		error: "Invalid provider",
+	},
+	{
+		check: (b) => isValidModel(b.model),
+		error: "Invalid model",
+	},
+];
+
 function validateAgentRunBody(body) {
 	if (!isPlainObject(body)) {
 		return "Request body must be an object";
 	}
-	if (!isValidMessage(body.message)) {
-		return "Invalid message: must be a string of 1-8000 characters";
-	}
-	if (!isValidApproved(body.approved)) {
-		return "Invalid approved: must be a boolean";
-	}
-	if (!isValidMaxSteps(body.maxSteps)) {
-		return "Invalid maxSteps: must be an integer between 1 and 16";
-	}
-	if (!isValidProvider(body.provider)) {
-		return "Invalid provider";
+	for (const { check, error } of BODY_VALIDATORS) {
+		if (!check(body)) {
+			return error;
+		}
 	}
 	return null;
 }
@@ -93,8 +118,31 @@ export function buildLocalRegistry(deps = {}) {
 	return registry;
 }
 
+function extractApiKey(req) {
+	const key = req?.headers?.["x-model-api-key"];
+	if (typeof key === "string" && API_KEY_PATTERN.test(key)) {
+		return key;
+	}
+	return undefined;
+}
+
+function buildModelOptions(req, provider) {
+	const options = {};
+	if (provider !== undefined) {
+		options.provider = provider;
+		if (req?.body?.model !== undefined) {
+			options.model = req.body.model;
+		}
+	}
+	const apiKey = extractApiKey(req);
+	if (apiKey !== undefined) {
+		options.apiKey = apiKey;
+	}
+	return Object.keys(options).length > 0 ? options : undefined;
+}
+
 function resolveModel(req, provider) {
-	const options = provider ? { provider } : undefined;
+	const options = buildModelOptions(req, provider);
 	if (typeof req.app?.locals?.agentModelFactory === "function") {
 		return req.app.locals.agentModelFactory(options);
 	}
