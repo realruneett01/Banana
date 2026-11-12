@@ -14,89 +14,69 @@ const NON_ARRAY_INPUTS = [
 ];
 
 const SEVERITY_CASES = [
-	{ severity: "error", expected: "red" },
-	{ severity: "ERROR", expected: "red" },
-	{ severity: "warning", expected: "orange" },
-	{ severity: "Warning", expected: "orange" },
-	{ severity: "info", expected: "blue" },
-	{ severity: "other", expected: "blue" },
-	{ severity: undefined, expected: "blue" },
-	{ severity: null, expected: "blue" },
+	["error", "red"],
+	["ERROR", "red"],
+	["warning", "orange"],
+	["Warning", "orange"],
+	["info", "blue"],
+	["other", "blue"],
+	[undefined, "blue"],
+	[null, "blue"],
 ];
 
 const INVALID_COORD_CASES = [
-	{ desc: "missing coords", marker: { severity: "error" } },
-	{ desc: "NaN in array", marker: { at: [Number.NaN, 10] } },
-	{ desc: "Infinity in array", marker: { at: [10, Number.POSITIVE_INFINITY] } },
-	{ desc: "null coords", marker: { at: [null, 10] } },
-	{ desc: "empty array", marker: { position: [] } },
-	{ desc: "single coordinate", marker: { position: [10] } },
-	{ desc: "non-finite object", marker: { position: { x: Number.NaN, y: 10 } } },
-	{ desc: "non-object item", marker: null },
+	["missing coords", { severity: "error" }],
+	["NaN in array", { at: [Number.NaN, 10] }],
+	["Infinity in array", { at: [10, Number.POSITIVE_INFINITY] }],
+	["null coords", { at: [null, 10] }],
+	["empty array", { position: [] }],
+	["single coordinate", { position: [10] }],
+	["non-finite object", { position: { x: Number.NaN, y: 10 } }],
+	["non-object item", null],
 ];
 
 const VALID_COORD_CASES = [
-	{
-		desc: "at array",
-		marker: { at: [10.5, 20.25] },
-		expected: { x: 10.5, y: 20.25 },
-	},
-	{
-		desc: "at object",
-		marker: { at: { x: 5, y: 15 } },
-		expected: { x: 5, y: 15 },
-	},
-	{
-		desc: "position array",
-		marker: { position: [30, 40] },
-		expected: { x: 30, y: 40 },
-	},
-	{
-		desc: "position object",
-		marker: { position: { x: 1, y: 2 } },
-		expected: { x: 1, y: 2 },
-	},
-	{
-		desc: "direct x/y",
-		marker: { x: 8, y: 9 },
-		expected: { x: 8, y: 9 },
-	},
-	{
-		desc: "zero coordinates",
-		marker: { at: [0, 0] },
-		expected: { x: 0, y: 0 },
-	},
-	{
-		desc: "negative coordinates",
-		marker: { at: [-10, -20.5] },
-		expected: { x: -10, y: -20.5 },
-	},
+	["at array", { at: [10.5, 20.25] }, { x: 10.5, y: 20.25 }],
+	["at object", { at: { x: 5, y: 15 } }, { x: 5, y: 15 }],
+	["position array", { position: [30, 40] }, { x: 30, y: 40 }],
+	["position object", { position: { x: 1, y: 2 } }, { x: 1, y: 2 }],
+	["direct x/y", { x: 8, y: 9 }, { x: 8, y: 9 }],
+	["zero coordinates", { at: [0, 0] }, { x: 0, y: 0 }],
+	["negative coordinates", { at: [-10, -20.5] }, { x: -10, y: -20.5 }],
 ];
 
 const RADIUS_CASES = [
-	{ desc: "omitted options", options: undefined, expected: 1.2 },
-	{ desc: "empty options object", options: {}, expected: 1.2 },
-	{ desc: "custom options.radius", options: { radius: 2.5 }, expected: 2.5 },
-	{ desc: "numeric options shorthand", options: 0.8, expected: 0.8 },
+	["omitted options", undefined, 1.2],
+	["empty options object", {}, 1.2],
+	["custom options.radius", { radius: 2.5 }, 2.5],
+	["numeric options shorthand", 0.8, 0.8],
 ];
 
 const TITLE_CASES = [
-	{
-		desc: "from message property",
-		marker: { at: [1, 1], message: "Trace clearance too small" },
-		expected: "Trace clearance too small",
-	},
-	{
-		desc: "from title property",
-		marker: { at: [1, 1], title: "Clearance error" },
-		expected: "Clearance error",
-	},
-	{
-		desc: "empty string fallback when omitted",
-		marker: { at: [1, 1] },
-		expected: "",
-	},
+	[
+		"from message property",
+		{ at: [1, 1], message: "Trace clearance too small" },
+		"Trace clearance too small",
+	],
+	[
+		"from title property",
+		{ at: [1, 1], title: "Clearance error" },
+		"Clearance error",
+	],
+	["empty string fallback when omitted", { at: [1, 1] }, ""],
 ];
+
+function assertGlyph(marker, checks, config = {}) {
+	const glyphs = markerGlyphs([marker], config.options);
+	assert.equal(
+		glyphs.length,
+		1,
+		config.desc ? `Expected 1 glyph for ${config.desc}` : undefined,
+	);
+	for (const [prop, val] of Object.entries(checks)) {
+		assert.equal(glyphs[0][prop], val);
+	}
+}
 
 describe("markerRender", () => {
 	test("returns empty array for non-array inputs", () => {
@@ -106,42 +86,33 @@ describe("markerRender", () => {
 	});
 
 	test("maps severity to color lookup table correctly", () => {
-		for (const { severity, expected } of SEVERITY_CASES) {
-			const glyphs = markerGlyphs([{ at: [10, 20], severity }]);
-			assert.equal(glyphs.length, 1);
-			assert.equal(glyphs[0].color, expected);
+		for (const [severity, expected] of SEVERITY_CASES) {
+			assertGlyph({ at: [10, 20], severity }, { color: expected });
 		}
 	});
 
 	test("skips markers without finite coordinates", () => {
-		for (const { desc, marker } of INVALID_COORD_CASES) {
+		for (const [desc, marker] of INVALID_COORD_CASES) {
 			const glyphs = markerGlyphs([marker]);
 			assert.equal(glyphs.length, 0, `Expected 0 glyphs for ${desc}`);
 		}
 	});
 
 	test("extracts valid coordinates from multiple supported shapes", () => {
-		for (const { desc, marker, expected } of VALID_COORD_CASES) {
-			const glyphs = markerGlyphs([marker]);
-			assert.equal(glyphs.length, 1, `Expected 1 glyph for ${desc}`);
-			assert.equal(glyphs[0].x, expected.x);
-			assert.equal(glyphs[0].y, expected.y);
+		for (const [desc, marker, expected] of VALID_COORD_CASES) {
+			assertGlyph(marker, expected, { desc });
 		}
 	});
 
 	test("sets default radius and handles custom radius options", () => {
-		for (const { desc, options, expected } of RADIUS_CASES) {
-			const glyphs = markerGlyphs([{ at: [1, 2] }], options);
-			assert.equal(glyphs.length, 1, `Expected 1 glyph for ${desc}`);
-			assert.equal(glyphs[0].r, expected);
+		for (const [desc, options, expected] of RADIUS_CASES) {
+			assertGlyph({ at: [1, 2] }, { r: expected }, { options, desc });
 		}
 	});
 
 	test("extracts plain-English title from message or title", () => {
-		for (const { desc, marker, expected } of TITLE_CASES) {
-			const glyphs = markerGlyphs([marker]);
-			assert.equal(glyphs.length, 1, `Expected 1 glyph for ${desc}`);
-			assert.equal(glyphs[0].title, expected);
+		for (const [desc, marker, expected] of TITLE_CASES) {
+			assertGlyph(marker, { title: expected }, { desc });
 		}
 	});
 
