@@ -1,28 +1,40 @@
+function toNum(val) {
+	return Number(val) || 0;
+}
+
 function nodeSym(node) {
-	if (node === null || node === undefined) return "";
+	if (node == null) return "";
 	return typeof node === "object" ? (node.sym ?? "") : String(node);
 }
 
 function findChild(node, head) {
 	if (!Array.isArray(node)) return null;
-	return node.find((c) => Array.isArray(c) && nodeSym(c[0]) === head) ?? null;
+	for (const child of node) {
+		if (Array.isArray(child) && nodeSym(child[0]) === head) {
+			return child;
+		}
+	}
+	return null;
+}
+
+function resolveCoords(node) {
+	const inner = node[1];
+	if (Array.isArray(inner) && nodeSym(inner[0]) === "xy") {
+		return [toNum(inner[1]), toNum(inner[2])];
+	}
+	return [toNum(inner), toNum(node[2])];
 }
 
 function extractXy(node) {
-	if (!node || !Array.isArray(node)) return [0, 0];
-	if (Array.isArray(node[1]) && nodeSym(node[1][0]) === "xy") {
-		return [Number(node[1][1]) || 0, Number(node[1][2]) || 0];
-	}
-	return [Number(node[1]) || 0, Number(node[2]) || 0];
+	if (!Array.isArray(node)) return [0, 0];
+	return resolveCoords(node);
 }
 
 function extractAt(node) {
 	const atNode = findChild(node, "at");
 	if (!atNode) return [0, 0, 0];
-	const x = Number(atNode[1]) || 0;
-	const y = Number(atNode[2]) || 0;
-	const rot = atNode.length > 3 ? Number(atNode[3]) || 0 : 0;
-	return [x, y, rot];
+	const rot = atNode.length > 3 ? toNum(atNode[3]) : 0;
+	return [toNum(atNode[1]), toNum(atNode[2]), rot];
 }
 
 function round(n, dec = 6) {
@@ -30,13 +42,10 @@ function round(n, dec = 6) {
 	return Math.round(n * factor) / factor;
 }
 
+const FLIP_VALUES = new Set([true, "x", "B"]);
+
 function isFlipped(placement) {
-	return Boolean(
-		placement.flip === true ||
-			placement.flip === "x" ||
-			placement.flip === "B" ||
-			placement.side === "B",
-	);
+	return Boolean(placement?.side === "B" || FLIP_VALUES.has(placement?.flip));
 }
 
 function rotatePoint(x, y, rotDeg) {
@@ -110,12 +119,7 @@ function computeArcSpan(angles, sweep) {
 	return s1 + s2;
 }
 
-function buildArcPath(A, B, C) {
-	const D =
-		2 * (A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1]));
-	if (Math.abs(D) < 1e-9) {
-		return { d: `M ${A[0]} ${A[1]} L ${C[0]} ${C[1]}`, collinear: true };
-	}
+function calculateCircleCenter(A, B, C, D) {
 	const aSq = A[0] ** 2 + A[1] ** 2;
 	const bSq = B[0] ** 2 + B[1] ** 2;
 	const cSq = C[0] ** 2 + C[1] ** 2;
@@ -125,6 +129,16 @@ function buildArcPath(A, B, C) {
 	const cy = round(
 		(aSq * (C[0] - B[0]) + bSq * (A[0] - C[0]) + cSq * (B[0] - A[0])) / D,
 	);
+	return [cx, cy];
+}
+
+function buildArcPath(A, B, C) {
+	const D =
+		2 * (A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1]));
+	if (Math.abs(D) < 1e-9) {
+		return { d: `M ${A[0]} ${A[1]} L ${C[0]} ${C[1]}`, collinear: true };
+	}
+	const [cx, cy] = calculateCircleCenter(A, B, C, D);
 	const r = round(Math.hypot(A[0] - cx, A[1] - cy));
 	const sweep = computeArcSweep(A, B, C);
 	const span = computeArcSpan(computeArcAngles(A, B, C, [cx, cy]), sweep);
@@ -209,23 +223,18 @@ function convertPin(pin) {
 	};
 }
 
+const GRAPHIC_CONVERTERS = {
+	rectangle: convertRect,
+	polyline: convertPolyline,
+	circle: convertCircle,
+	arc: convertArc,
+	text: convertText,
+};
+
 function convertGraphicNode(node) {
 	if (!Array.isArray(node)) return null;
-	const head = nodeSym(node[0]);
-	switch (head) {
-		case "rectangle":
-			return convertRect(node);
-		case "polyline":
-			return convertPolyline(node);
-		case "circle":
-			return convertCircle(node);
-		case "arc":
-			return convertArc(node);
-		case "text":
-			return convertText(node);
-		default:
-			return null;
-	}
+	const converter = GRAPHIC_CONVERTERS[nodeSym(node[0])];
+	return converter ? converter(node) : null;
 }
 
 export function symbolToSvgPrimitives(symbol) {
@@ -289,31 +298,36 @@ function transformPin(prim, placement) {
 	};
 }
 
+function transformPolyline(prim, placement) {
+	return {
+		...prim,
+		points: prim.points.map((pt) => transformPoint(pt, placement)),
+	};
+}
+
+function transformCircle(prim, placement) {
+	const c = transformPoint([prim.cx, prim.cy], placement);
+	return { ...prim, cx: c[0], cy: c[1] };
+}
+
+function transformText(prim, placement) {
+	const p = transformPoint([prim.x, prim.y], placement);
+	const rot = ((prim.rot ?? 0) + (placement.rot ?? 0)) % 360;
+	return { ...prim, x: p[0], y: p[1], rot };
+}
+
+const PRIMITIVE_TRANSFORMS = {
+	rect: transformRect,
+	polyline: transformPolyline,
+	circle: transformCircle,
+	arc: transformArc,
+	text: transformText,
+	pin: transformPin,
+};
+
 function transformSinglePrimitive(prim, placement) {
-	switch (prim.type) {
-		case "rect":
-			return transformRect(prim, placement);
-		case "polyline":
-			return {
-				...prim,
-				points: prim.points.map((pt) => transformPoint(pt, placement)),
-			};
-		case "circle": {
-			const c = transformPoint([prim.cx, prim.cy], placement);
-			return { ...prim, cx: c[0], cy: c[1] };
-		}
-		case "arc":
-			return transformArc(prim, placement);
-		case "text": {
-			const p = transformPoint([prim.x, prim.y], placement);
-			const rot = ((prim.rot ?? 0) + (placement.rot ?? 0)) % 360;
-			return { ...prim, x: p[0], y: p[1], rot };
-		}
-		case "pin":
-			return transformPin(prim, placement);
-		default:
-			return prim;
-	}
+	const transform = PRIMITIVE_TRANSFORMS[prim.type];
+	return transform ? transform(prim, placement) : prim;
 }
 
 export function transformPrimitives(prims, placement = {}) {
