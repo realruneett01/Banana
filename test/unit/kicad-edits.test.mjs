@@ -48,35 +48,62 @@ function freezeIr(partOverrides) {
 	});
 }
 
+const moveCase = (name, beforeAt, afterAt, rot) => ({
+	name,
+	before: singlePartIr({ placement: beforeAt }),
+	after: singlePartIr({ placement: afterAt }),
+	canSaveInPlace: true,
+	sch: [],
+	pcb: [{ op: "move", ref: "R1", x: afterAt.x, y: afterAt.y, rot }],
+	summary: "1 position will be saved",
+});
+
+const unsupp = (name, before, after, expectedSentence) => ({
+	name,
+	before,
+	after,
+	expectedSentence,
+});
+
+const emptyCase = (name, before, after) => ({
+	name,
+	before,
+	after,
+	canSaveInPlace: false,
+	sch: [],
+	pcb: [],
+	summary: "Nothing to save",
+});
+
+const makeRefFixture = (vals) =>
+	irWithParts(
+		part("p3", "R3", vals[0]),
+		part("p1", "R1", vals[1]),
+		part("p2", "R2", vals[2]),
+	);
+
 const SUPPORTED_CASES = [
 	{
 		name: "value change produces setValue edit in both sch and pcb",
 		before: singlePartIr({ value: "10k" }),
 		after: singlePartIr({ value: "20k" }),
+		canSaveInPlace: true,
 		sch: [{ op: "setValue", ref: "R1", value: "20k" }],
 		pcb: [{ op: "setValue", ref: "R1", value: "20k" }],
 		summary: "1 value will be saved",
 	},
-	{
-		name: "move produces move edit in pcb only",
-		before: singlePartIr({ placement: at(0, 0) }),
-		after: singlePartIr({ placement: at(10, 20) }),
-		sch: [],
-		pcb: [{ op: "move", ref: "R1", x: 10, y: 20, rot: 0 }],
-		summary: "1 position will be saved",
-	},
-	{
-		name: "rot-only change produces move edit in pcb only",
-		before: singlePartIr({ placement: at(10, 20) }),
-		after: singlePartIr({ placement: at(10, 20, 90) }),
-		sch: [],
-		pcb: [{ op: "move", ref: "R1", x: 10, y: 20, rot: 90 }],
-		summary: "1 position will be saved",
-	},
+	moveCase("move produces move edit in pcb only", at(0, 0), at(10, 20), 0),
+	moveCase(
+		"rot-only change produces move edit in pcb only",
+		at(10, 20),
+		at(10, 20, 90),
+		90,
+	),
 	{
 		name: "value plus move on one part produces edits in both sch and pcb",
 		before: singlePartIr({ value: "10k", placement: at(0, 0) }),
 		after: singlePartIr({ value: "20k", placement: at(10, 20, 90) }),
+		canSaveInPlace: true,
 		sch: [{ op: "setValue", ref: "R1", value: "20k" }],
 		pcb: [
 			{ op: "move", ref: "R1", x: 10, y: 20, rot: 90 },
@@ -87,46 +114,46 @@ const SUPPORTED_CASES = [
 ];
 
 const UNSUPPORTED_CASES = [
-	{
-		name: "side flip unsupported",
-		before: singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0) }),
-		after: singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0, 0, "B") }),
-		expectedSentence: "D1 moved to the other side of the board",
-	},
-	{
-		name: "added part unsupported",
-		before: irWithParts(),
-		after: singlePartIr({ id: "r5", ref: "R5" }),
-		expectedSentence: "R5 was added",
-	},
-	{
-		name: "removed part unsupported",
-		before: singlePartIr({ id: "c2", ref: "C2" }),
-		after: irWithParts(),
-		expectedSentence: "C2 was removed",
-	},
-	{
-		name: "renamed part unsupported",
-		before: singlePartIr({ id: "p1", ref: "R1" }),
-		after: singlePartIr({ id: "p1", ref: "R10" }),
-		expectedSentence: "R1 was renamed to R10",
-	},
-	{
-		name: "footprint change unsupported",
-		before: singlePartIr({ id: "u1", ref: "U1", footprint: "SOIC-8" }),
-		after: singlePartIr({ id: "u1", ref: "U1", footprint: "TSSOP-8" }),
-		expectedSentence: "U1 changed footprint",
-	},
-	{
-		name: "net change unsupported",
-		before: irWithNets(
+	unsupp(
+		"side flip unsupported",
+		singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0) }),
+		singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0, 0, "B") }),
+		"D1 moved to the other side of the board",
+	),
+	unsupp(
+		"added part unsupported",
+		irWithParts(),
+		singlePartIr({ id: "r5", ref: "R5" }),
+		"R5 was added",
+	),
+	unsupp(
+		"removed part unsupported",
+		singlePartIr({ id: "c2", ref: "C2" }),
+		irWithParts(),
+		"C2 was removed",
+	),
+	unsupp(
+		"renamed part unsupported",
+		singlePartIr({ id: "p1", ref: "R1" }),
+		singlePartIr({ id: "p1", ref: "R10" }),
+		"R1 was renamed to R10",
+	),
+	unsupp(
+		"footprint change unsupported",
+		singlePartIr({ id: "u1", ref: "U1", footprint: "SOIC-8" }),
+		singlePartIr({ id: "u1", ref: "U1", footprint: "TSSOP-8" }),
+		"U1 changed footprint",
+	),
+	unsupp(
+		"net change unsupported",
+		irWithNets(
 			makeNet({
 				id: "n1",
 				name: "VCC",
 				pins: [{ partId: "p1", pin: "1" }],
 			}),
 		),
-		after: irWithNets(
+		irWithNets(
 			makeNet({
 				id: "n1",
 				name: "VCC",
@@ -136,100 +163,89 @@ const UNSUPPORTED_CASES = [
 				],
 			}),
 		),
-		expectedSentence: "connection VCC changed",
-	},
-	{
-		name: "non-finite coordinates unsupported",
-		before: singlePartIr({ id: "r1", ref: "R1", placement: at(0, 0) }),
-		after: singlePartIr({ id: "r1", ref: "R1", placement: at(Number.NaN, 0) }),
-		expectedSentence: "R1 has non-finite coordinates",
-	},
+		"connection VCC changed",
+	),
+	unsupp(
+		"non-finite coordinates unsupported",
+		singlePartIr({ id: "r1", ref: "R1", placement: at(0, 0) }),
+		singlePartIr({ id: "r1", ref: "R1", placement: at(Number.NaN, 0) }),
+		"R1 has non-finite coordinates",
+	),
 ];
 
 const unchangedIr = { parts: [makePart()], nets: [makeNet()] };
 const EMPTY_CASES = [
-	{
-		name: "no change returns canSaveInPlace false and Nothing to save",
-		before: unchangedIr,
-		after: unchangedIr,
-	},
-	{
-		name: "null inputs return canSaveInPlace false and Nothing to save",
-		before: null,
-		after: null,
-	},
+	emptyCase(
+		"no change returns canSaveInPlace false and Nothing to save",
+		unchangedIr,
+		unchangedIr,
+	),
+	emptyCase(
+		"null inputs return canSaveInPlace false and Nothing to save",
+		null,
+		null,
+	),
 ];
+
+function runEditCase(tc) {
+	test(tc.name, () => {
+		const res = editsFromIrChange(tc.before, tc.after);
+		assert.equal(res.canSaveInPlace, tc.canSaveInPlace);
+		assert.equal(res.summary, tc.summary);
+		assert.deepEqual(res.sch, tc.sch);
+		assert.deepEqual(res.pcb, tc.pcb);
+		assert.deepEqual(res.unsupported, []);
+	});
+}
+
+function runUnsupportedCase(tc) {
+	test(`unsupported case: ${tc.name}`, () => {
+		const res = editsFromIrChange(tc.before, tc.after);
+		assert.equal(res.canSaveInPlace, false);
+		assert.equal(res.summary, "Nothing to save");
+		assert.ok(res.unsupported.includes(tc.expectedSentence));
+	});
+}
 
 describe("kicadEdits - supported in-place edits", () => {
 	for (const tc of SUPPORTED_CASES) {
-		test(tc.name, () => {
-			const res = editsFromIrChange(tc.before, tc.after);
-			assert.deepEqual(res.sch, tc.sch);
-			assert.equal(res.canSaveInPlace, true);
-			assert.deepEqual(res.pcb, tc.pcb);
-			assert.equal(res.summary, tc.summary);
-			assert.deepEqual(res.unsupported, []);
-		});
+		runEditCase(tc);
 	}
 
 	test("deterministic order sorts edits by ref", () => {
-		const before = irWithParts(
-			part("p3", "R3", "30k"),
-			part("p1", "R1", "10k"),
-			part("p2", "R2", "20k"),
-		);
-		const after = irWithParts(
-			part("p3", "R3", "33k"),
-			part("p1", "R1", "11k"),
-			part("p2", "R2", "22k"),
-		);
+		const before = makeRefFixture(["30k", "10k", "20k"]);
+		const after = makeRefFixture(["33k", "11k", "22k"]);
 		const res = editsFromIrChange(before, after);
 		const orderedRefs = ["R1", "R2", "R3"];
-		assert.deepEqual(
-			res.sch.map((e) => e.ref),
-			orderedRefs,
-		);
-		assert.deepEqual(
-			res.pcb.map((e) => e.ref),
-			orderedRefs,
-		);
 		assert.equal(res.summary, "3 values will be saved");
+		for (const edits of [res.sch, res.pcb]) {
+			assert.deepEqual(
+				edits.map((e) => e.ref),
+				orderedRefs,
+			);
+		}
 	});
 
 	test("inputs are not mutated", () => {
-		const before = freezeIr({
-			value: "10k",
-			placement: at(0, 0),
-		});
-		const after = freezeIr({
-			value: "20k",
-			placement: at(10, 10),
-		});
+		const before = freezeIr({ value: "10k", placement: at(0, 0) });
+		const after = freezeIr({ value: "20k", placement: at(10, 10) });
 		const res = editsFromIrChange(before, after);
 		assert.equal(res.canSaveInPlace, true);
-		assert.equal(before.parts[0].value, "10k");
-		assert.equal(after.parts[0].value, "20k");
+		for (const [actual, expected] of [
+			[before.parts[0].value, "10k"],
+			[after.parts[0].value, "20k"],
+		]) {
+			assert.equal(actual, expected);
+		}
 	});
 });
 
 describe("kicadEdits - unsupported and edge cases", () => {
 	for (const tc of UNSUPPORTED_CASES) {
-		test(`unsupported case: ${tc.name}`, () => {
-			const res = editsFromIrChange(tc.before, tc.after);
-			assert.equal(res.canSaveInPlace, false);
-			assert.ok(res.unsupported.includes(tc.expectedSentence));
-			assert.equal(res.summary, "Nothing to save");
-		});
+		runUnsupportedCase(tc);
 	}
 
 	for (const tc of EMPTY_CASES) {
-		test(tc.name, () => {
-			const res = editsFromIrChange(tc.before, tc.after);
-			assert.equal(res.canSaveInPlace, false);
-			assert.deepEqual(res.sch, []);
-			assert.equal(res.summary, "Nothing to save");
-			assert.deepEqual(res.pcb, []);
-			assert.deepEqual(res.unsupported, []);
-		});
+		runEditCase(tc);
 	}
 });
