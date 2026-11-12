@@ -331,6 +331,55 @@ function handleBatchExec({ args, callback, onCaptureDir }) {
 	callback(null, "", "");
 }
 
+async function testBatchRun() {
+	let capturedDir = null;
+	const onCaptureDir = (d) => {
+		capturedDir = d;
+	};
+	const fakeExec = makeFakeExec({
+		onExec: (ctx) => handleBatchExec({ ...ctx, onCaptureDir }),
+	});
+
+	const runner = createTestRunner(fakeExec);
+	const result = await runner.run("* test circuit\n.end\n");
+
+	assertOkSinglePlot(result);
+	assert.match(result.log, /Simulation completed normally/);
+	assertDirCleanedUp(capturedDir);
+}
+
+async function testTimeoutRun() {
+	let capturedDir = null;
+	const lines = Array.from({ length: 30 }, (_, i) => `log line ${i + 1}`);
+	const fakeExec = makeFakeExec({
+		onExec: ({ args, callback }) => {
+			capturedDir = path.dirname(args[2]);
+			fs.writeFileSync(args[4], lines.join("\n"), "utf8");
+			const err = new Error("Command failed: ngspice timed out");
+			callback(err, "", "process killed");
+		},
+	});
+
+	const runner = createTestRunner(fakeExec);
+	const result = await runner.run("* test netlist\n.end\n");
+
+	assertTimeoutErrorPayload(result);
+	assertDirCleanedUp(capturedDir);
+}
+
+async function testDangerousNetlistRun() {
+	const fakeExec = makeFakeExec({
+		onExec: () => {
+			assert.fail("execFileFn must not be called for rejected netlists");
+		},
+	});
+	const runner = createTestRunner(fakeExec);
+
+	const result = await runner.run(".include /etc/passwd\n.end\n");
+	assertErrorResult(result);
+	assert.equal(fakeExec.getCallsCount(), 0);
+}
+
 describe("parseRawAscii", () => {
 	for (const tc of PARSE_RAW_CASES) {
 		test(tc.name, () => {
@@ -374,57 +423,18 @@ describe("createNgspice available", () => {
 });
 
 describe("createNgspice run", () => {
-	test("executes batch mode, parses raw output, and cleans up temp directory", async () => {
-		let capturedDir = null;
-		const fakeExec = makeFakeExec({
-			onExec: (ctx) =>
-				handleBatchExec({
-					...ctx,
-					onCaptureDir: (d) => {
-						capturedDir = d;
-					},
-				}),
-		});
-
-		const runner = createTestRunner(fakeExec);
-		const result = await runner.run("* test circuit\n.end\n");
-
-		assertOkSinglePlot(result);
-		assert.match(result.log, /Simulation completed normally/);
-		assertDirCleanedUp(capturedDir);
-	});
-
-	test("handles timeout/error by returning ok: false with log tail and removing dir", async () => {
-		let capturedDir = null;
-		const lines = Array.from({ length: 30 }, (_, i) => `log line ${i + 1}`);
-		const fakeExec = makeFakeExec({
-			onExec: ({ args, callback }) => {
-				capturedDir = path.dirname(args[2]);
-				fs.writeFileSync(args[4], lines.join("\n"), "utf8");
-				const err = new Error("Command failed: ngspice timed out");
-				callback(err, "", "process killed");
-			},
-		});
-
-		const runner = createTestRunner(fakeExec);
-		const result = await runner.run("* test netlist\n.end\n");
-
-		assertTimeoutErrorPayload(result);
-		assertDirCleanedUp(capturedDir);
-	});
-
-	test("refuses dangerous netlist without executing or creating temp dir", async () => {
-		const fakeExec = makeFakeExec({
-			onExec: () => {
-				assert.fail("execFileFn must not be called for rejected netlists");
-			},
-		});
-		const runner = createTestRunner(fakeExec);
-
-		const result = await runner.run(".include /etc/passwd\n.end\n");
-		assertErrorResult(result);
-		assert.equal(fakeExec.getCallsCount(), 0);
-	});
+	test(
+		"executes batch mode, parses raw output, and cleans up temp directory",
+		testBatchRun,
+	);
+	test(
+		"handles timeout/error by returning ok: false with log tail and removing dir",
+		testTimeoutRun,
+	);
+	test(
+		"refuses dangerous netlist without executing or creating temp dir",
+		testDangerousNetlistRun,
+	);
 });
 
 describe("validateNetlist", () => {
