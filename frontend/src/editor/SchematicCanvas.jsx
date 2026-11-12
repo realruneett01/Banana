@@ -5,7 +5,6 @@ import {
 	hitTest,
 	partBox,
 	pinPositions,
-	snapToGrid,
 	wireForNet,
 } from "./schematicGeometry.js";
 import {
@@ -13,6 +12,15 @@ import {
 	symbolToSvgPrimitives,
 	transformPrimitives,
 } from "./symbolRender.js";
+import { getSchematicColor, SCHEMATIC_THEME } from "./theme.js";
+import {
+	bboxOfPoints,
+	fitToBounds,
+	screenToWorld,
+	snapPoint,
+	worldToScreen,
+	zoomAt,
+} from "./viewport.js";
 
 const CANVAS_CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -20,7 +28,7 @@ const CANVAS_CONTAINER_STYLE = Object.freeze({
 	height: "100%",
 	minHeight: "450px",
 	overflow: "hidden",
-	background: "#0d0f18",
+	background: SCHEMATIC_THEME.background,
 	borderRadius: "8px",
 	border: "1px solid #23283e",
 	outline: "none",
@@ -81,26 +89,20 @@ function useWheelZoom(svgRef, vp) {
 		const handleWheel = (e) => {
 			e.preventDefault();
 			const rect = el.getBoundingClientRect();
-			const mx = e.clientX - rect.left;
-			const my = e.clientY - rect.top;
-			const wx = (mx - pan.x) / zoom;
-			const wy = (my - pan.y) / zoom;
+			const screenPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 			const factor = e.deltaY < 0 ? 1.15 : 0.87;
-			const nextZoom = Math.min(20, Math.max(0.1, zoom * factor));
-			setPan({ x: mx - wx * nextZoom, y: my - wy * nextZoom });
-			setZoom(nextZoom);
+			const next = zoomAt({ pan, zoom }, screenPt, factor);
+			setPan(next.pan);
+			setZoom(next.zoom);
 		};
 		el.addEventListener("wheel", handleWheel, { passive: false });
 		return () => el.removeEventListener("wheel", handleWheel);
 	}, [svgRef, pan, zoom, setPan, setZoom]);
 }
 
-function screenToWorld(clientX, clientY, svgEl, vp) {
+function clientToWorld(clientX, clientY, svgEl, vp) {
 	const rect = svgEl.getBoundingClientRect();
-	return {
-		x: (clientX - rect.left - vp.pan.x) / vp.zoom,
-		y: (clientY - rect.top - vp.pan.y) / vp.zoom,
-	};
+	return screenToWorld({ x: clientX - rect.left, y: clientY - rect.top }, vp);
 }
 
 function distToSeg(pt, p1, p2) {
@@ -198,45 +200,52 @@ function buildAllPinMap(parts, symbolCache) {
 	return map;
 }
 
-function SchematicGrid() {
+function SchematicGrid({ zoom, theme }) {
+	const gridStep = zoom * 1.27 >= 4 ? 1.27 : 12.7;
+	const half = gridStep / 2;
+	const color = getSchematicColor(theme, "grid");
 	return (
 		<>
 			<defs>
 				<pattern
 					id="sch-grid"
-					width={2.54}
-					height={2.54}
+					x={-half}
+					y={-half}
+					width={gridStep}
+					height={gridStep}
 					patternUnits="userSpaceOnUse"
 				>
-					<circle cx={1.27} cy={1.27} r={0.2} fill="#23283e" />
+					<circle cx={half} cy={half} r={0.2} fill={color} />
 				</pattern>
 			</defs>
 			<rect
-				x={-5000}
-				y={-5000}
-				width={10000}
-				height={10000}
+				x={-50000}
+				y={-50000}
+				width={100000}
+				height={100000}
 				fill="url(#sch-grid)"
 			/>
 		</>
 	);
 }
 
-function PinSvg({ pin, pos, isWireStart }) {
+function PinSvg({ pin, pos, isWireStart, theme }) {
+	const selColor = getSchematicColor(theme, "selection");
+	const pinColor = getSchematicColor(theme, "pin");
 	return (
 		<g key={pin}>
 			<circle
 				cx={pos[0]}
 				cy={pos[1]}
 				r={0.65}
-				fill={isWireStart ? "#fadb14" : "#38bdf8"}
-				stroke="#0d0f18"
+				fill={isWireStart ? selColor : pinColor}
+				stroke={getSchematicColor(theme, "background")}
 				strokeWidth={0.2}
 			/>
 			<text
 				x={pos[0]}
 				y={pos[1] - 0.9}
-				fill="#94a3b8"
+				fill={getSchematicColor(theme, "pinNumber")}
 				fontSize={1.1}
 				textAnchor="middle"
 			>
@@ -246,32 +255,8 @@ function PinSvg({ pin, pos, isWireStart }) {
 	);
 }
 
-function SymbolPrimitive({ prim, style }) {
+function renderShapePrim(prim, style) {
 	const { stroke, strokeWidth } = style;
-	if (prim.type === "rect") {
-		return (
-			<rect
-				x={prim.x}
-				y={prim.y}
-				width={prim.width}
-				height={prim.height}
-				fill={style.fill}
-				stroke={stroke}
-				strokeWidth={strokeWidth}
-			/>
-		);
-	}
-	if (prim.type === "polyline") {
-		const pts = prim.points.map((p) => `${p[0]},${p[1]}`).join(" ");
-		return (
-			<polyline
-				points={pts}
-				fill="none"
-				stroke={stroke}
-				strokeWidth={strokeWidth}
-			/>
-		);
-	}
 	if (prim.type === "circle") {
 		return (
 			<circle
@@ -289,12 +274,45 @@ function SymbolPrimitive({ prim, style }) {
 			<path d={prim.d} fill="none" stroke={stroke} strokeWidth={strokeWidth} />
 		);
 	}
+	return null;
+}
+
+function renderRectPrim(prim, style) {
+	return (
+		<rect
+			x={prim.x}
+			y={prim.y}
+			width={prim.width}
+			height={prim.height}
+			fill={style.fill}
+			fillOpacity={style.fillOpacity}
+			stroke={style.stroke}
+			strokeWidth={style.strokeWidth}
+		/>
+	);
+}
+
+function renderPolylinePrim(prim, style) {
+	const pts = prim.points.map((p) => `${p[0]},${p[1]}`).join(" ");
+	return (
+		<polyline
+			points={pts}
+			fill="none"
+			stroke={style.stroke}
+			strokeWidth={style.strokeWidth}
+		/>
+	);
+}
+
+function SymbolPrimitive({ prim, style }) {
+	if (prim.type === "rect") return renderRectPrim(prim, style);
+	if (prim.type === "polyline") return renderPolylinePrim(prim, style);
 	if (prim.type === "text") {
 		return (
 			<text
 				x={prim.x}
 				y={prim.y}
-				fill="#94a3b8"
+				fill={style.stroke}
 				fontSize={1.2}
 				textAnchor="middle"
 			>
@@ -302,13 +320,22 @@ function SymbolPrimitive({ prim, style }) {
 			</text>
 		);
 	}
-	return null;
+	return renderShapePrim(prim, style);
 }
 
-function SymbolPin({ pin, activePart, wireStart, strokeWidth }) {
+function SymbolPinName({ name, pos, color }) {
+	if (!name || name === "~") return null;
+	return (
+		<text x={pos[0]} y={pos[1]} fill={color} fontSize={1.0} textAnchor="middle">
+			{name}
+		</text>
+	);
+}
+
+function SymbolPin({ pin, activePart, wireStart, strokeWidth, theme }) {
 	const isStart =
 		wireStart?.partId === activePart.id && wireStart?.pin === pin.number;
-	const hasName = pin.name && pin.name !== "~";
+	const pinColor = getSchematicColor(theme, "pin");
 	return (
 		<g key={pin.number}>
 			<line
@@ -316,37 +343,31 @@ function SymbolPin({ pin, activePart, wireStart, strokeWidth }) {
 				y1={pin.y}
 				x2={pin.x2}
 				y2={pin.y2}
-				stroke="#94a3b8"
+				stroke={pinColor}
 				strokeWidth={strokeWidth}
 			/>
 			<circle
 				cx={pin.x}
 				cy={pin.y}
 				r={0.65}
-				fill={isStart ? "#fadb14" : "#38bdf8"}
-				stroke="#0d0f18"
+				fill={isStart ? getSchematicColor(theme, "selection") : pinColor}
+				stroke={getSchematicColor(theme, "background")}
 				strokeWidth={0.2}
 			/>
 			<text
 				x={pin.numberPos[0]}
 				y={pin.numberPos[1]}
-				fill="#94a3b8"
+				fill={getSchematicColor(theme, "pinNumber")}
 				fontSize={1.0}
 				textAnchor="middle"
 			>
 				{pin.number}
 			</text>
-			{hasName && (
-				<text
-					x={pin.namePos[0]}
-					y={pin.namePos[1]}
-					fill="#38bdf8"
-					fontSize={1.0}
-					textAnchor="middle"
-				>
-					{pin.name}
-				</text>
-			)}
+			<SymbolPinName
+				name={pin.name}
+				pos={pin.namePos}
+				color={getSchematicColor(theme, "pinName")}
+			/>
 		</g>
 	);
 }
@@ -362,64 +383,113 @@ function getPrimKey(prim, idx) {
 	return `prim-${prim.type}-${idx}`;
 }
 
-function SymbolPartSvg({ activePart, isSelected, wireStart, symbol }) {
-	const placement = {
-		x: activePart.placement?.x ?? 0,
-		y: activePart.placement?.y ?? 0,
-		rot: activePart.placement?.rot ?? 0,
-		side: activePart.placement?.side ?? "F",
-	};
-	const prims = transformPrimitives(symbolToSvgPrimitives(symbol), placement);
-	const stroke = isSelected ? "#fadb14" : "#f87171";
-	const fill = isSelected ? "rgba(250, 219, 20, 0.15)" : "none";
-	const style = { stroke, fill, strokeWidth: 0.254 };
-	const px = placement.x;
-	const py = placement.y;
-
+function PartTextLabels({ x, yRef, yVal, refText, valueText, theme }) {
 	return (
-		<g className="schematic-part">
-			{prims.map((prim, i) => {
-				const k = getPrimKey(prim, i);
-				return prim.type === "pin" ? (
-					<SymbolPin
-						key={k}
-						pin={prim}
-						activePart={activePart}
-						wireStart={wireStart}
-						strokeWidth={0.254}
-					/>
-				) : (
-					<SymbolPrimitive key={k} prim={prim} style={style} />
-				);
-			})}
+		<>
 			<text
-				x={px}
-				y={py - 2.54}
-				fill="#f1f5f9"
+				x={x}
+				y={yRef}
+				fill={getSchematicColor(theme, "reference")}
 				fontSize={1.8}
 				fontWeight="bold"
 				textAnchor="middle"
 			>
-				{activePart.ref}
+				{refText}
 			</text>
 			<text
-				x={px}
-				y={py + 3.81}
-				fill="#94a3b8"
+				x={x}
+				y={yVal}
+				fill={getSchematicColor(theme, "value")}
 				fontSize={1.3}
 				textAnchor="middle"
 			>
-				{activePart.value ?? ""}
+				{valueText ?? ""}
 			</text>
+		</>
+	);
+}
+
+function SymbolPartSvg({ activePart, isSelected, wireStart, symbol, theme }) {
+	const pl = activePart.placement ?? {};
+	const placement = {
+		x: pl.x ?? 0,
+		y: pl.y ?? 0,
+		rot: pl.rot ?? 0,
+		side: pl.side ?? "F",
+	};
+	const prims = transformPrimitives(symbolToSvgPrimitives(symbol), placement);
+	const stroke = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "symbolBody");
+	const fill = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "symbolFill");
+	const style = {
+		stroke,
+		fill,
+		fillOpacity: isSelected ? 0.2 : 1,
+		strokeWidth: 0.254,
+	};
+
+	return (
+		<g className="schematic-part">
+			{prims.map((prim, i) =>
+				prim.type === "pin" ? (
+					<SymbolPin
+						key={getPrimKey(prim, i)}
+						pin={prim}
+						activePart={activePart}
+						wireStart={wireStart}
+						strokeWidth={0.254}
+						theme={theme}
+					/>
+				) : (
+					<SymbolPrimitive
+						key={getPrimKey(prim, i)}
+						prim={prim}
+						style={style}
+					/>
+				),
+			)}
+			<PartTextLabels
+				x={placement.x}
+				yRef={placement.y - 2.54}
+				yVal={placement.y + 3.81}
+				refText={activePart.ref}
+				valueText={activePart.value}
+				theme={theme}
+			/>
 		</g>
 	);
 }
 
-function BoxPartSvg({ activePart, isSelected, wireStart }) {
+function BoxPartPins({ pinList, pins, wireStart, activePart, theme }) {
+	return pinList.map((p) => {
+		const pos = pins.get(p);
+		if (!pos) return null;
+		const isStart =
+			wireStart?.partId === activePart.id && wireStart?.pin === String(p);
+		return (
+			<PinSvg
+				key={String(p)}
+				pin={String(p)}
+				pos={pos}
+				isWireStart={isStart}
+				theme={theme}
+			/>
+		);
+	});
+}
+
+function BoxPartSvg({ activePart, isSelected, wireStart, theme }) {
 	const box = partBox(activePart);
 	const pins = pinPositions(activePart);
-	const stroke = isSelected ? "#fadb14" : "#38bdf8";
-	const fill = isSelected ? "rgba(250, 219, 20, 0.15)" : "#161b2e";
+	const stroke = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "symbolBody");
+	const fill = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "symbolFill");
 	const rot = box.rot ? `rotate(${box.rot} ${box.cx} ${box.cy})` : undefined;
 	const pinList = Array.isArray(activePart.pins) ? activePart.pins : ["1", "2"];
 
@@ -431,48 +501,31 @@ function BoxPartSvg({ activePart, isSelected, wireStart }) {
 				width={box.width}
 				height={box.height}
 				fill={fill}
+				fillOpacity={isSelected ? 0.2 : 1}
 				stroke={stroke}
 				strokeWidth={isSelected ? 0.6 : 0.4}
 				rx={0.5}
 			/>
-			<text
+			<PartTextLabels
 				x={box.cx}
-				y={box.cy - 1.2}
-				fill="#f1f5f9"
-				fontSize={1.8}
-				fontWeight="bold"
-				textAnchor="middle"
-			>
-				{activePart.ref}
-			</text>
-			<text
-				x={box.cx}
-				y={box.cy + 1.8}
-				fill="#94a3b8"
-				fontSize={1.3}
-				textAnchor="middle"
-			>
-				{activePart.value ?? ""}
-			</text>
-			{pinList.map((p) => {
-				const pos = pins.get(p);
-				if (!pos) return null;
-				const isStart =
-					wireStart?.partId === activePart.id && wireStart?.pin === String(p);
-				return (
-					<PinSvg
-						key={String(p)}
-						pin={String(p)}
-						pos={pos}
-						isWireStart={isStart}
-					/>
-				);
-			})}
+				yRef={box.cy - 1.2}
+				yVal={box.cy + 1.8}
+				refText={activePart.ref}
+				valueText={activePart.value}
+				theme={theme}
+			/>
+			<BoxPartPins
+				pinList={pinList}
+				pins={pins}
+				wireStart={wireStart}
+				activePart={activePart}
+				theme={theme}
+			/>
 		</g>
 	);
 }
 
-function PartSvg({ part, isSelected, dragPos, wireStart, symbol }) {
+function PartSvg({ part, isSelected, dragPos, wireStart, symbol, theme }) {
 	const activePart = dragPos
 		? { ...part, placement: { ...part.placement, x: dragPos.x, y: dragPos.y } }
 		: part;
@@ -483,6 +536,7 @@ function PartSvg({ part, isSelected, dragPos, wireStart, symbol }) {
 				isSelected={isSelected}
 				wireStart={wireStart}
 				symbol={symbol}
+				theme={theme}
 			/>
 		);
 	}
@@ -491,22 +545,27 @@ function PartSvg({ part, isSelected, dragPos, wireStart, symbol }) {
 			activePart={activePart}
 			isSelected={isSelected}
 			wireStart={wireStart}
+			theme={theme}
 		/>
 	);
 }
 
-function WireSvg({ net, allPinPos, isSelected }) {
-	const polylines = wireForNet(net, allPinPos);
-	const stroke = isSelected ? "#fadb14" : "#4ade80";
-	const strokeWidth = isSelected ? 0.6 : 0.4;
+function getNetLabelPos(polylines) {
 	const first = polylines[0];
-	const lbl =
-		first && first.length >= 2
-			? {
-					x: (first[0][0] + first[1][0]) / 2,
-					y: (first[0][1] + first[1][1]) / 2 - 0.5,
-				}
-			: null;
+	if (!first || first.length < 2) return null;
+	return {
+		x: (first[0][0] + first[1][0]) / 2,
+		y: (first[0][1] + first[1][1]) / 2 - 0.5,
+	};
+}
+
+function WireSvg({ net, allPinPos, isSelected, theme }) {
+	const polylines = wireForNet(net, allPinPos);
+	const stroke = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "wire");
+	const strokeWidth = isSelected ? 0.6 : 0.4;
+	const lbl = getNetLabelPos(polylines);
 
 	return (
 		<g className="schematic-wire">
@@ -526,7 +585,7 @@ function WireSvg({ net, allPinPos, isSelected }) {
 				<text
 					x={lbl.x}
 					y={lbl.y}
-					fill="#4ade80"
+					fill={stroke}
 					fontSize={1.2}
 					textAnchor="middle"
 				>
@@ -537,7 +596,7 @@ function WireSvg({ net, allPinPos, isSelected }) {
 	);
 }
 
-function RubberbandWire({ wireStart, allPinPos, cursorWorld }) {
+function RubberbandWire({ wireStart, allPinPos, cursorWorld, theme }) {
 	if (!wireStart || !cursorWorld) return null;
 	const startPos = allPinPos.get(`${wireStart.partId}:${wireStart.pin}`);
 	if (!startPos) return null;
@@ -545,7 +604,7 @@ function RubberbandWire({ wireStart, allPinPos, cursorWorld }) {
 		<polyline
 			points={`${startPos[0]},${startPos[1]} ${cursorWorld.x},${cursorWorld.y}`}
 			fill="none"
-			stroke="#fadb14"
+			stroke={getSchematicColor(theme, "selection")}
 			strokeWidth={0.4}
 			strokeDasharray="1.5,1.5"
 		/>
@@ -580,6 +639,23 @@ function handleDeleteKey(ctx) {
 	}
 }
 
+function handleHomeKey(ctx) {
+	const parts = ctx.doc.ir?.parts ?? [];
+	const points = parts.map((p) => ({
+		x: p.placement?.x ?? 0,
+		y: p.placement?.y ?? 0,
+	}));
+	const bounds = bboxOfPoints(points);
+	const rect = ctx.svgRef?.current?.getBoundingClientRect();
+	const size = {
+		width: rect?.width || 800,
+		height: rect?.height || 600,
+	};
+	const next = fitToBounds(bounds, size);
+	ctx.vp.setPan(next.pan);
+	ctx.vp.setZoom(next.zoom);
+}
+
 const ACTION_KEY_HANDLERS = {
 	w: handleWireModeKey,
 	W: handleWireModeKey,
@@ -590,6 +666,7 @@ const ACTION_KEY_HANDLERS = {
 	F: handleFlipKey,
 	Delete: handleDeleteKey,
 	Backspace: handleDeleteKey,
+	Home: handleHomeKey,
 };
 
 function handleActionKey(e, ctx) {
@@ -626,6 +703,9 @@ function handleKeyDown(e, ctx) {
 		e.preventDefault();
 		ctx.handleRedo();
 		return;
+	}
+	if (e.key === "Home") {
+		e.preventDefault();
 	}
 	handleActionKey(e, ctx);
 }
@@ -682,9 +762,11 @@ function updatePartDrag(dragState, worldPt, setDragPos) {
 	const dx = worldPt.x - dragState.mouseStartX;
 	const dy = worldPt.y - dragState.mouseStartY;
 	if (Math.hypot(dx, dy) > 0.5) dragState.moved = true;
-	const x = snapToGrid(dragState.startX + dx, 1.27);
-	const y = snapToGrid(dragState.startY + dy, 1.27);
-	setDragPos({ partId: dragState.partId, x, y });
+	const pos = snapPoint(
+		{ x: dragState.startX + dx, y: dragState.startY + dy },
+		1.27,
+	);
+	setDragPos({ partId: dragState.partId, x: pos.x, y: pos.y });
 }
 
 function startPanDrag(e, vp, panDragRef) {
@@ -724,7 +806,7 @@ function onPointerDownEvent(e, ctx) {
 		return;
 	}
 	if (e.button !== 0) return;
-	const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
+	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 	const hit = schematicHitTest(doc, allPinPos, worldPt);
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt });
 }
@@ -760,7 +842,7 @@ function usePointerMove(svgRef, vp, dragState, moveCtx) {
 	return useCallback(
 		(e) => {
 			if (!svgRef.current) return;
-			const worldPt = screenToWorld(e.clientX, e.clientY, svgRef.current, vp);
+			const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 			setCursorWorld(worldPt);
 			if (panDragRef.current) {
 				updatePanDrag(e, vp, panDragRef.current);
@@ -810,8 +892,16 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 		moveCtx,
 	);
 	const onPointerUp = usePointerUp(editorState, wireState, dragState, upCtx);
+	const onPointerLeave = useCallback(() => setCursorWorld(null), []);
 
-	return { onPointerDown, onPointerMove, onPointerUp, cursorWorld };
+	return {
+		onPointerDown,
+		onPointerMove,
+		onPointerUp,
+		onPointerLeave,
+		cursorWorld,
+		setCursorWorld,
+	};
 }
 
 function useCanvasViewport(svgRef) {
@@ -863,7 +953,7 @@ function useWireState(wire, vp, isSpaceDown, allPinPos) {
 	);
 }
 
-function useKeyContext(ed, wire) {
+function useKeyContext(ed, wire, vp, svgRef) {
 	return useMemo(
 		() => ({
 			doc: ed.doc,
@@ -872,6 +962,8 @@ function useKeyContext(ed, wire) {
 			handleRedo: ed.handleRedo,
 			setWireMode: wire.setWireMode,
 			setWireStart: wire.setWireStart,
+			vp,
+			svgRef,
 		}),
 		[
 			ed.doc,
@@ -880,6 +972,8 @@ function useKeyContext(ed, wire) {
 			ed.handleRedo,
 			wire.setWireMode,
 			wire.setWireStart,
+			vp,
+			svgRef,
 		],
 	);
 }
@@ -908,7 +1002,7 @@ function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 		[ed.doc, ed.dispatchCmd],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
-	const keyCtx = useKeyContext(ed, wire);
+	const keyCtx = useKeyContext(ed, wire, vp, svgRef);
 	return {
 		svgRef,
 		vp,
@@ -931,18 +1025,19 @@ function handleCanvasKeyUp(e, setIsSpaceDown) {
 	if (e.code === "Space") setIsSpaceDown(false);
 }
 
-function SchematicNetsLayer({ nets, allPinPos, selection }) {
+function SchematicNetsLayer({ nets, allPinPos, selection, theme }) {
 	return (nets ?? []).map((net) => (
 		<WireSvg
 			key={net.id}
 			net={net}
 			allPinPos={allPinPos}
 			isSelected={selection?.includes(net.id)}
+			theme={theme}
 		/>
 	));
 }
 
-function SchematicPartsLayer({ parts, selection, wire, symbolCache }) {
+function SchematicPartsLayer({ parts, selection, wire, symbolCache, theme }) {
 	return (parts ?? []).map((part) => (
 		<PartSvg
 			key={part.id}
@@ -951,8 +1046,32 @@ function SchematicPartsLayer({ parts, selection, wire, symbolCache }) {
 			dragPos={wire.dragPos?.partId === part.id ? wire.dragPos : null}
 			wireStart={wire.wireStart}
 			symbol={part.symbol ? symbolCache[part.symbol] : null}
+			theme={theme}
 		/>
 	));
+}
+
+function SchematicJunctionsLayer({ doc, theme }) {
+	const junctions = doc?.ir?.junctions;
+	if (!Array.isArray(junctions) || junctions.length === 0) return null;
+	const color = getSchematicColor(theme, "junction");
+	return (
+		<g className="schematic-junctions">
+			{junctions.map((j) => {
+				const jx = j.x ?? j[0];
+				const jy = j.y ?? j[1];
+				return (
+					<circle
+						key={j.id ?? `junc-${jx}:${jy}`}
+						cx={jx}
+						cy={jy}
+						r={0.65}
+						fill={color}
+					/>
+				);
+			})}
+		</g>
+	);
 }
 
 const SEVERITY_RANK = Object.freeze({ error: 2, warning: 1, info: 0 });
@@ -1052,26 +1171,61 @@ function SchematicProblemsOverlay({ parts, problems }) {
 	);
 }
 
-function SchematicSvgScene({ s, problems }) {
+function SchematicCrosshair({ cursorWorld, vp, theme }) {
+	if (!cursorWorld) return null;
+	const snapped = snapPoint(cursorWorld, 1.27);
+	const pt = worldToScreen(snapped, vp);
+	const color = getSchematicColor(theme, "cursor");
+	return (
+		<g
+			className="schematic-crosshair"
+			pointerEvents="none"
+			style={{ pointerEvents: "none" }}
+		>
+			<line
+				x1={0}
+				y1={pt.y}
+				x2="100%"
+				y2={pt.y}
+				stroke={color}
+				strokeWidth={1}
+			/>
+			<line
+				x1={pt.x}
+				y1={0}
+				x2={pt.x}
+				y2="100%"
+				stroke={color}
+				strokeWidth={1}
+			/>
+		</g>
+	);
+}
+
+function SchematicSvgScene({ s, problems, theme }) {
 	return (
 		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
-			<SchematicGrid />
+			<SchematicGrid zoom={s.vp.zoom} theme={theme} />
 			<SchematicNetsLayer
 				nets={s.doc.ir?.nets}
 				allPinPos={s.allPinPos}
 				selection={s.doc.selection}
+				theme={theme}
 			/>
 			<SchematicPartsLayer
 				parts={s.doc.ir?.parts}
 				selection={s.doc.selection}
 				wire={s.wire}
 				symbolCache={s.symbolCache}
+				theme={theme}
 			/>
 			<RubberbandWire
 				wireStart={s.wire.wireStart}
 				allPinPos={s.allPinPos}
 				cursorWorld={s.ptr.cursorWorld}
+				theme={theme}
 			/>
+			<SchematicJunctionsLayer doc={s.doc} theme={theme} />
 			<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
 		</g>
 	);
@@ -1082,8 +1236,10 @@ export default function SchematicCanvas({
 	onChange,
 	fetchSymbol,
 	problems = [],
+	theme,
 }) {
 	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
+	const bg = getSchematicColor(theme, "background");
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
 		<div
@@ -1091,12 +1247,13 @@ export default function SchematicCanvas({
 			tabIndex={0}
 			role="region"
 			aria-label="Schematic editor"
-			style={CANVAS_CONTAINER_STYLE}
+			style={{ ...CANVAS_CONTAINER_STYLE, background: bg }}
 			onKeyDown={(e) => handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx)}
 			onKeyUp={(e) => handleCanvasKeyUp(e, s.setIsSpaceDown)}
 			onPointerDown={s.ptr.onPointerDown}
 			onPointerMove={s.ptr.onPointerMove}
 			onPointerUp={s.ptr.onPointerUp}
+			onPointerLeave={s.ptr.onPointerLeave}
 		>
 			<svg
 				ref={s.svgRef}
@@ -1105,7 +1262,12 @@ export default function SchematicCanvas({
 				style={{ display: "block", userSelect: "none" }}
 			>
 				<title>Schematic Canvas</title>
-				<SchematicSvgScene s={s} problems={problems} />
+				<SchematicSvgScene s={s} problems={problems} theme={theme} />
+				<SchematicCrosshair
+					cursorWorld={s.ptr.cursorWorld}
+					vp={s.vp}
+					theme={theme}
+				/>
 			</svg>
 		</div>
 	);
