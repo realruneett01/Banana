@@ -14,6 +14,9 @@ import { createSqliteStateStore } from "../oauth-state-sqlite.js";
 
 const DEFAULT_MAX_STATES = 1000;
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_HANDOFFS = 500;
+const DEFAULT_HANDOFF_TTL_MS = 60 * 1000;
+const HEX_64_PATTERN = /^[0-9a-fA-F]{64}$/;
 
 export class StateStore {
 	constructor(options = {}) {
@@ -79,7 +82,50 @@ function resolveStateStore() {
 
 export const stateStore = resolveStateStore();
 
-const router = express.Router();
+export class HandoffStore {
+	constructor(options = {}) {
+		this.maxEntries = options.maxEntries ?? DEFAULT_MAX_HANDOFFS;
+		this.ttlMs = options.ttlMs ?? DEFAULT_HANDOFF_TTL_MS;
+		this.now = options.now ?? (() => Date.now());
+		this.entries = new Map();
+	}
+
+	put(token, createdAt = this.now()) {
+		if (!token || typeof token !== "string") return null;
+		if (this.entries.size >= this.maxEntries) {
+			const oldest = this.entries.keys().next().value;
+			this.entries.delete(oldest);
+		}
+		const code = crypto.randomBytes(32).toString("hex");
+		this.entries.set(code, { token, createdAt });
+		return code;
+	}
+
+	take(code) {
+		if (!code || typeof code !== "string") return null;
+		const entry = this.entries.get(code);
+		if (!entry) return null;
+		this.entries.delete(code);
+		if (this.now() - entry.createdAt > this.ttlMs) {
+			return null;
+		}
+		return entry.token;
+	}
+
+	clear() {
+		this.entries.clear();
+	}
+
+	get size() {
+		return this.entries.size;
+	}
+}
+
+export function createHandoffStore(options) {
+	return new HandoffStore(options);
+}
+
+export const handoffStore = createHandoffStore();
 
 function resolveProtocol(req, trustProxy) {
 	if (trustProxy) {
@@ -123,41 +169,96 @@ function getCallbackUrl(req) {
 	return `${getDynamicOrigin(req)}/api/auth/github/callback`;
 }
 
-// 1. Get OAuth login URL
-router.get("/auth/github/url", (req, res) => {
-	try {
-		const callbackUrl = getCallbackUrl(req);
-		const state = stateStore.generate();
-		const url = getOAuthAuthorizeUrl(state, callbackUrl);
-		res.json({ url, configured: true });
-	} catch (err) {
-		res.json({ configured: false, error: err.message });
-	}
-});
+function isValidHandoffCode(code) {
+	return typeof code === "string" && HEX_64_PATTERN.test(code);
+}
 
-// 2. OAuth Callback
-router.get("/auth/github/callback", async (req, res) => {
-	const { code, state } = req.query;
-	if (!state || !stateStore.consume(state)) {
-		return res.status(400).send("Invalid OAuth state");
+function extractHandoffCode(req) {
+	const body = req.body;
+	if (!body) return null;
+	if (typeof body === "object") return body.code;
+	if (typeof body === "string") {
+		try {
+			return JSON.parse(body)?.code;
+		} catch {
+			return null;
+		}
 	}
-	if (!code) {
-		return res.status(400).send("Authorization code missing");
-	}
+	return null;
+}
 
-	const targetFrontend = getDynamicOrigin(req);
+function logOAuthCallbackError(err) {
+	console.error("[Banana API] GitHub OAuth callback error:", {
+		name: err?.name,
+		code: err?.code,
+	});
+}
 
-	try {
-		const token = await exchangeCodeForToken(code);
-		const redirectUrl = `${targetFrontend}/#github_token=${encodeURIComponent(token)}`;
-		res.redirect(redirectUrl);
-	} catch (err) {
-		console.error("[Banana API] GitHub OAuth callback error:", err);
-		res.redirect(
-			`${targetFrontend}/#github_error=${encodeURIComponent(err.message)}`,
-		);
+function checkProductionFrontendUrl(res) {
+	const isProd = process.env.NODE_ENV === "production";
+	const hasFrontendUrl = Boolean(process.env.FRONTEND_URL?.trim());
+	if (isProd && !hasFrontendUrl) {
+		res.status(500).send("FRONTEND_URL must be configured");
+		return false;
 	}
-});
+	return true;
+}
+
+function createLoginUrlHandler(sStore) {
+	return (req, res) => {
+		try {
+			const callbackUrl = getCallbackUrl(req);
+			const state = sStore.generate();
+			const url = getOAuthAuthorizeUrl(state, callbackUrl);
+			res.json({ url, configured: true });
+		} catch (err) {
+			res.json({ configured: false, error: err.message });
+		}
+	};
+}
+
+function createCallbackHandler({
+	exchange,
+	handoffStore: hStore,
+	stateStore: sStore,
+}) {
+	return async (req, res) => {
+		if (!checkProductionFrontendUrl(res)) return;
+		const { code, state } = req.query;
+		if (!state || !sStore.consume(state)) {
+			return res.status(400).send("Invalid OAuth state");
+		}
+		if (!code) {
+			return res.status(400).send("Authorization code missing");
+		}
+
+		const targetFrontend = getDynamicOrigin(req);
+		try {
+			const token = await exchange(code);
+			const handoffCode = hStore.put(token);
+			const redirectUrl = `${targetFrontend}/#github_handoff=${encodeURIComponent(handoffCode)}`;
+			res.redirect(redirectUrl);
+		} catch (err) {
+			logOAuthCallbackError(err);
+			res.redirect(`${targetFrontend}/#github_error=oauth_failed`);
+		}
+	};
+}
+
+function createHandoffHandler(hStore) {
+	return (req, res) => {
+		const code = extractHandoffCode(req);
+		if (!isValidHandoffCode(code)) {
+			return res.status(400).json({ error: "Invalid handoff code" });
+		}
+		const token = hStore.take(code);
+		if (!token) {
+			return res.status(400).json({ error: "Invalid handoff code" });
+		}
+		res.set("Cache-Control", "no-store");
+		res.status(200).json({ token });
+	};
+}
 
 function extractToken(req) {
 	return (
@@ -174,12 +275,8 @@ function requireToken(req, res, next) {
 	next();
 }
 
-/**
- * Registers a token-guarded GitHub read route: 401 without a token,
- * { [key]: data } on success, 500 { error, details } on failure.
- */
-function githubReadRoute(path, { key, errorMessage, fetch }) {
-	router.get(path, requireToken, async (req, res) => {
+function githubReadRoute(rtr, path, { key, errorMessage, fetch }) {
+	rtr.get(path, requireToken, async (req, res) => {
 		try {
 			res.json({ [key]: await fetch(req.token, req) });
 		} catch (err) {
@@ -197,55 +294,87 @@ async function handleVerify(req, res) {
 	}
 }
 
-// 3. Verify Token & Get User
-router.get("/auth/github/verify", requireToken, handleVerify);
+function registerRepoReadRoutes(rtr) {
+	githubReadRoute(rtr, "/github/repos", {
+		key: "repos",
+		errorMessage: "Failed to list repositories",
+		fetch: (token, req) =>
+			getUserRepositories(token, parseInt(req.query.page, 10) || 1),
+	});
 
-// 4. List User Repositories
-githubReadRoute("/github/repos", {
-	key: "repos",
-	errorMessage: "Failed to list repositories",
-	fetch: (token, req) =>
-		getUserRepositories(token, parseInt(req.query.page, 10) || 1),
-});
+	githubReadRoute(rtr, "/github/repos/:owner/:repo/branches", {
+		key: "branches",
+		errorMessage: "Failed to fetch branches",
+		fetch: (token, { params }) =>
+			getRepoBranches(token, params.owner, params.repo),
+	});
+}
 
-// 5. Get Repo Branches
-githubReadRoute("/github/repos/:owner/:repo/branches", {
-	key: "branches",
-	errorMessage: "Failed to fetch branches",
-	fetch: (token, { params }) =>
-		getRepoBranches(token, params.owner, params.repo),
-});
+function registerRepoDetailRoutes(rtr) {
+	githubReadRoute(rtr, "/github/repos/:owner/:repo/commits", {
+		key: "commits",
+		errorMessage: "Failed to fetch commits",
+		fetch: (token, { params, query }) =>
+			getRepoCommits(token, params.owner, params.repo, {
+				sha: query.sha,
+				filePath: query.path,
+			}),
+	});
 
-// 6. Get Repo Commits
-githubReadRoute("/github/repos/:owner/:repo/commits", {
-	key: "commits",
-	errorMessage: "Failed to fetch commits",
-	fetch: (token, { params, query }) =>
-		getRepoCommits(token, params.owner, params.repo, {
-			sha: query.sha,
-			filePath: query.path,
+	githubReadRoute(rtr, "/github/repos/:owner/:repo/pulls", {
+		key: "pulls",
+		errorMessage: "Failed to fetch pull requests",
+		fetch: (token, { params, query }) =>
+			getRepoPullRequests(
+				token,
+				params.owner,
+				params.repo,
+				query.state || "open",
+			),
+	});
+
+	githubReadRoute(rtr, "/github/repos/:owner/:repo/files", {
+		key: "files",
+		errorMessage: "Failed to fetch hardware files from repository",
+		fetch: (token, { params, query }) =>
+			getRepoHardwareFiles(
+				token,
+				params.owner,
+				params.repo,
+				query.ref || "main",
+			),
+	});
+}
+
+function registerProtectedRoutes(rtr) {
+	rtr.get("/auth/github/verify", requireToken, handleVerify);
+	registerRepoReadRoutes(rtr);
+	registerRepoDetailRoutes(rtr);
+}
+
+export function createGithubRouter(dependencies = {}) {
+	const rtr = express.Router();
+	const exchange = dependencies.exchangeCodeForToken ?? exchangeCodeForToken;
+	const hStore = dependencies.handoffStore ?? handoffStore;
+	const sStore = dependencies.stateStore ?? stateStore;
+
+	rtr.get("/auth/github/url", createLoginUrlHandler(sStore));
+	rtr.get(
+		"/auth/github/callback",
+		createCallbackHandler({
+			exchange,
+			handoffStore: hStore,
+			stateStore: sStore,
 		}),
-});
+	);
+	rtr.post(
+		"/auth/github/handoff",
+		express.json(),
+		createHandoffHandler(hStore),
+	);
+	registerProtectedRoutes(rtr);
+	return rtr;
+}
 
-// 7. Get Repo Pull Requests
-githubReadRoute("/github/repos/:owner/:repo/pulls", {
-	key: "pulls",
-	errorMessage: "Failed to fetch pull requests",
-	fetch: (token, { params, query }) =>
-		getRepoPullRequests(
-			token,
-			params.owner,
-			params.repo,
-			query.state || "open",
-		),
-});
-
-// 8. Get Repo Hardware Files (.kicad_pcb / .kicad_sch)
-githubReadRoute("/github/repos/:owner/:repo/files", {
-	key: "files",
-	errorMessage: "Failed to fetch hardware files from repository",
-	fetch: (token, { params, query }) =>
-		getRepoHardwareFiles(token, params.owner, params.repo, query.ref || "main"),
-});
-
-export default router;
+const defaultRouter = createGithubRouter();
+export default defaultRouter;

@@ -275,7 +275,7 @@ describe("OAuth State & Origin Hardening", () => {
 			assertRedirectFragment(res, "github_error");
 		});
 
-		it("redirects with URL fragment #github_token= on exchange success", async () => {
+		it("redirects with URL fragment #github_handoff= on exchange success", async () => {
 			const validState = stateStore.generate();
 			process.env.FRONTEND_URL = "https://banana.app";
 			config.githubClientId = "test-client-id";
@@ -300,11 +300,14 @@ describe("OAuth State & Origin Hardening", () => {
 					`${baseUrl}/api/auth/github/callback?code=valid_code&state=${validState}`,
 					{ redirect: "manual" },
 				);
-				assertRedirectFragment(
-					res,
-					"github_token",
-					"https://banana.app/#github_token=gho_super_secret_token",
+				assert.equal(res.status, 302);
+				const location = res.headers.get("location");
+				assert.match(
+					location,
+					/^https:\/\/banana\.app\/#github_handoff=[0-9a-f]{64}$/,
 				);
+				assert.doesNotMatch(location, /gho_super_secret_token/);
+				assert.doesNotMatch(location, /github_token/);
 			} finally {
 				globalThis.fetch = originalFetch;
 			}
