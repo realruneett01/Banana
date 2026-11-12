@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import express from "express";
 import { config } from "../config.js";
-import { createNgspice } from "../engine/spice/ngspice-runner.js";
+import { createSimEngine } from "../engine/spice/sim-engine.js";
 
 const router = express.Router();
 
@@ -11,12 +11,14 @@ let cachedCapabilities = null;
 let cacheExpiresAt = 0;
 let pendingCapabilitiesPromise = null;
 
-async function checkNgspice() {
+async function checkSimulator() {
 	try {
-		return Boolean(await createNgspice().available());
+		const engine = createSimEngine();
+		const available = Boolean(await engine.available());
+		return { available, simulatorKind: engine.kind() };
 	} catch {
-		// Suppress failure and report ngspice unavailable
-		return false;
+		// Suppress failure and report simulator unavailable
+		return { available: false, simulatorKind: "none" };
 	}
 }
 
@@ -46,10 +48,15 @@ function checkFreerouting() {
 }
 
 async function computeCapabilities() {
-	const ngspice = await checkNgspice();
+	const sim = await checkSimulator();
 	const kicadLibraries = checkKicadLibraries();
 	const freerouting = checkFreerouting();
-	return { ngspice, kicadLibraries, freerouting };
+	return {
+		ngspice: sim.available,
+		simulatorKind: sim.simulatorKind,
+		kicadLibraries,
+		freerouting,
+	};
 }
 
 async function getCapabilities() {

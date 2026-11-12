@@ -9,7 +9,7 @@ import {
 } from "../engine/sim/fault-inject.js";
 import { suggestFixes } from "../engine/sim/fix-suggest.js";
 import { irToSpice } from "../engine/spice/ir-to-spice.js";
-import { createNgspice } from "../engine/spice/ngspice-runner.js";
+import { createSimEngine } from "../engine/spice/sim-engine.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
 let lazyNgspice = null;
@@ -26,10 +26,11 @@ function sanitizeLog(rawLog) {
 }
 
 function resolveNgspice(req) {
-	if (req.app?.locals?.ngspice) {
-		return req.app.locals.ngspice;
+	const local = req.app?.locals?.simEngine ?? req.app?.locals?.ngspice;
+	if (local) {
+		return local;
 	}
-	lazyNgspice ??= createNgspice();
+	lazyNgspice ??= createSimEngine();
 	return lazyNgspice;
 }
 
