@@ -5,38 +5,127 @@ import { isLayerActive, resolveLayerVisuals } from "../utils/diffLayerUtils.js";
 
 const { Text } = Typography;
 
+const LAYER_PROP_KEYS = ["content", "layerTier", "opacityStyle", "filterStyle"];
+
+function areLayerPropsEqual(prev, next) {
+	return LAYER_PROP_KEYS.every((key) => prev[key] === next[key]);
+}
+
+function formatSvgContent(content) {
+	return content.replace(
+		/<svg/,
+		'<svg style="width:100%;height:100%;position:absolute;"',
+	);
+}
+
+function SvgLayerContent({ content, layerTier, opacityStyle, filterStyle }) {
+	return (
+		<div
+			className={layerTier}
+			style={{
+				position: "absolute",
+				top: 0,
+				left: 0,
+				width: "100%",
+				height: "100%",
+				opacity: opacityStyle,
+				filter: filterStyle,
+				transition: "opacity 0.15s, filter 0.2s",
+				pointerEvents: "none",
+			}}
+			// biome-ignore lint/security/noDangerouslySetInnerHtml: raw SVG string from backend diff rendered into viewport
+			dangerouslySetInnerHTML={{
+				__html: formatSvgContent(content),
+			}}
+		/>
+	);
+}
+
 export const SideBySideSvgLayer = React.memo(
-	({ content, layerTier, opacityStyle, filterStyle }) => {
-		return (
-			<div
-				className={layerTier}
+	SvgLayerContent,
+	areLayerPropsEqual,
+);
+
+function HeaderTag({ isBase }) {
+	return (
+		<Tag
+			color={isBase ? "red" : "green"}
+			style={{ margin: 0, fontWeight: 700, letterSpacing: "0.05em" }}
+		>
+			{isBase ? (
+				<>
+					<ArrowLeftOutlined /> BASE
+				</>
+			) : (
+				<>
+					TARGET <ArrowRightOutlined />
+				</>
+			)}
+		</Tag>
+	);
+}
+
+function LegendBadge({ color, dotColor, label }) {
+	return (
+		<span
+			style={{
+				fontSize: "10px",
+				color,
+				display: "flex",
+				alignItems: "center",
+				gap: "3px",
+			}}
+		>
+			<span
 				style={{
-					position: "absolute",
-					top: 0,
-					left: 0,
-					width: "100%",
-					height: "100%",
-					opacity: opacityStyle,
-					filter: filterStyle,
-					transition: "opacity 0.15s, filter 0.2s",
-					pointerEvents: "none",
-				}}
-				// biome-ignore lint/security/noDangerouslySetInnerHtml: raw SVG string from backend diff rendered into viewport
-				dangerouslySetInnerHTML={{
-					__html: content.replace(
-						/<svg/,
-						'<svg style="width:100%;height:100%;position:absolute;"',
-					),
+					width: 8,
+					height: 8,
+					borderRadius: "50%",
+					background: dotColor,
+					display: "inline-block",
 				}}
 			/>
-		);
-	},
-	(prev, next) =>
-		prev.content === next.content &&
-		prev.layerTier === next.layerTier &&
-		prev.opacityStyle === next.opacityStyle &&
-		prev.filterStyle === next.filterStyle,
-);
+			{label}
+		</span>
+	);
+}
+
+function getLegendItems(isBase) {
+	const baseColor = isBase ? "#ff3366" : "#00ff66";
+	return [
+		{
+			label: isBase ? "Deleted" : "Added",
+			color: baseColor,
+			dotColor: baseColor,
+		},
+		{
+			label: "Changed",
+			color: "#ffff00",
+			dotColor: "#ffff00",
+		},
+		{
+			label: "Unchanged",
+			color: "#a1a1aa",
+			dotColor: "#71717a",
+		},
+	];
+}
+
+function HeaderLegend({ isBase }) {
+	const items = getLegendItems(isBase);
+	return (
+		<div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+			{items.map((item) => (
+				<LegendBadge
+					key={item.label}
+					color={item.color}
+					dotColor={item.dotColor}
+					label={item.label}
+				/>
+			))}
+		</div>
+	);
+}
 
 function PanelHeader({ isBase, commitLabel }) {
 	return (
@@ -52,20 +141,7 @@ function PanelHeader({ isBase, commitLabel }) {
 				gap: "8px",
 			}}
 		>
-			<Tag
-				color={isBase ? "red" : "green"}
-				style={{ margin: 0, fontWeight: 700, letterSpacing: "0.05em" }}
-			>
-				{isBase ? (
-					<>
-						<ArrowLeftOutlined /> BASE
-					</>
-				) : (
-					<>
-						TARGET <ArrowRightOutlined />
-					</>
-				)}
-			</Tag>
+			<HeaderTag isBase={isBase} />
 			<Text
 				style={{
 					fontSize: "11px",
@@ -77,107 +153,78 @@ function PanelHeader({ isBase, commitLabel }) {
 			>
 				{commitLabel}
 			</Text>
-			<div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-				<span
-					style={{
-						fontSize: "10px",
-						color: isBase ? "#ff3366" : "#00ff66",
-						display: "flex",
-						alignItems: "center",
-						gap: "3px",
-					}}
-				>
-					<span
-						style={{
-							width: 8,
-							height: 8,
-							borderRadius: "50%",
-							background: isBase ? "#ff3366" : "#00ff66",
-							display: "inline-block",
-						}}
-					/>
-					{isBase ? "Deleted" : "Added"}
-				</span>
-				<span
-					style={{
-						fontSize: "10px",
-						color: "#ffff00",
-						display: "flex",
-						alignItems: "center",
-						gap: "3px",
-					}}
-				>
-					<span
-						style={{
-							width: 8,
-							height: 8,
-							borderRadius: "50%",
-							background: "#ffff00",
-							display: "inline-block",
-						}}
-					/>
-					Changed
-				</span>
-				<span
-					style={{
-						fontSize: "10px",
-						color: "#a1a1aa",
-						display: "flex",
-						alignItems: "center",
-						gap: "3px",
-					}}
-				>
-					<span
-						style={{
-							width: 8,
-							height: 8,
-							borderRadius: "50%",
-							background: "#71717a",
-							display: "inline-block",
-						}}
-					/>
-					Unchanged
-				</span>
-			</div>
+			<HeaderLegend isBase={isBase} />
 		</div>
+	);
+}
+
+function EmptyLayerNotice() {
+	return (
+		<div
+			style={{
+				position: "absolute",
+				inset: 0,
+				display: "flex",
+				alignItems: "center",
+				justifyContent: "center",
+				color: "#444",
+				fontSize: 14,
+			}}
+		>
+			No layers selected
+		</div>
+	);
+}
+
+function renderLayerItem(svg, side, soloLayer, layerOpacities) {
+	const visuals = resolveLayerVisuals(svg.filename, soloLayer, layerOpacities);
+	return (
+		<SideBySideSvgLayer
+			key={`${side}-${svg.filename}`}
+			content={svg.content}
+			layerTier={visuals.layerTier}
+			opacityStyle={visuals.opacityStyle}
+			filterStyle={visuals.filterStyle}
+		/>
 	);
 }
 
 function SvgLayerList({ filtered, side, soloLayer, layerOpacities }) {
 	if (filtered.length === 0) {
-		return (
-			<div
-				style={{
-					position: "absolute",
-					inset: 0,
-					display: "flex",
-					alignItems: "center",
-					justifyContent: "center",
-					color: "#444",
-					fontSize: 14,
-				}}
-			>
-				No layers selected
-			</div>
-		);
+		return <EmptyLayerNotice />;
 	}
 
-	return filtered.map((svg) => {
-		const visuals = resolveLayerVisuals(
-			svg.filename,
-			soloLayer,
-			layerOpacities,
-		);
-		return (
-			<SideBySideSvgLayer
-				key={`${side}-${svg.filename}`}
-				content={svg.content}
-				layerTier={visuals.layerTier}
-				opacityStyle={visuals.opacityStyle}
-				filterStyle={visuals.filterStyle}
-			/>
-		);
-	});
+	return filtered.map((svg) =>
+		renderLayerItem(svg, side, soloLayer, layerOpacities),
+	);
+}
+
+function PanelViewport({ contentRef, transform, children }) {
+	return (
+		<div
+			className="diff-viewport"
+			style={{
+				flex: 1,
+				overflow: "hidden",
+				position: "relative",
+				cursor: "grab",
+				userSelect: "none",
+			}}
+		>
+			<div
+				ref={contentRef}
+				style={{
+					width: "100%",
+					height: "100%",
+					transformOrigin: "0 0",
+					position: "relative",
+					transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+				}}
+			>
+				{children}
+			</div>
+		</div>
+	);
 }
 
 export function SvgPanel({
@@ -209,35 +256,14 @@ export function SvgPanel({
 			}}
 		>
 			<PanelHeader isBase={isBase} commitLabel={commitLabel} />
-
-			<div
-				className="diff-viewport"
-				style={{
-					flex: 1,
-					overflow: "hidden",
-					position: "relative",
-					cursor: "grab",
-					userSelect: "none",
-				}}
-			>
-				<div
-					ref={contentRef}
-					style={{
-						width: "100%",
-						height: "100%",
-						transformOrigin: "0 0",
-						position: "relative",
-						transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
-					}}
-				>
-					<SvgLayerList
-						filtered={filtered}
-						side={side}
-						soloLayer={soloLayer}
-						layerOpacities={layerOpacities}
-					/>
-				</div>
-			</div>
+			<PanelViewport contentRef={contentRef} transform={transform}>
+				<SvgLayerList
+					filtered={filtered}
+					side={side}
+					soloLayer={soloLayer}
+					layerOpacities={layerOpacities}
+				/>
+			</PanelViewport>
 		</div>
 	);
 }
