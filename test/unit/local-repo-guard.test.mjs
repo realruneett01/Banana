@@ -1,13 +1,36 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import express from "express";
 import boardRouter from "../../backend/src/routes/board-routes.js";
 import diffRouter from "../../backend/src/routes/diff-routes.js";
 
+const recordedErrors = [];
+const onUncaughtException = (err) => {
+	recordedErrors.push({
+		type: "uncaughtException",
+		message: err?.message,
+		err,
+	});
+};
+const onUnhandledRejection = (reason) => {
+	recordedErrors.push({
+		type: "unhandledRejection",
+		message: reason?.message || String(reason),
+		reason,
+	});
+};
+
+process.on("uncaughtException", onUncaughtException);
+process.on("unhandledRejection", onUnhandledRejection);
+
 const BOARD_ROUTES = ["/board/pads", "/board/glb"];
 const REPO = "/path/to/repo";
 const NONEXISTENT_REPO = "/nonexistent/test/repo";
+const NON_GIT_DIR = path.join(os.tmpdir(), "banana_non_git_test_repo");
 const SHA_A = "a1b2c3d4";
 const SHA_B = "e5f6a7b8";
 const PCB_FILE = "board.kicad_pcb";
@@ -89,6 +112,26 @@ function assertDisabledGuard(status, json) {
 function assertNotGuarded(status, name) {
 	assert.notEqual(status, 400, `Expected not 400 for ${name}, got ${status}`);
 	assert.notEqual(status, 403, `Expected not 403 for ${name}, got ${status}`);
+}
+
+function assertErrorResponse(result) {
+	const { status, json } = result;
+	assert.ok(
+		status >= 400 && status < 600,
+		`Expected 4xx or 5xx status, got ${status}`,
+	);
+	assert.ok(json && typeof json === "object", "Expected JSON object");
+	assert.ok(
+		Boolean(json.error || json.details),
+		"Expected error property in JSON",
+	);
+}
+
+async function sendParallelRequests(port, route, body, count = 20) {
+	const requests = Array.from({ length: count }, () =>
+		postJson(port, route, body),
+	);
+	return Promise.all(requests);
 }
 
 const DISABLED_CASES = [
@@ -291,13 +334,30 @@ describe("local repository guards and input validation", () => {
 	let enabled;
 
 	before(async () => {
+		if (!fs.existsSync(NON_GIT_DIR)) {
+			fs.mkdirSync(NON_GIT_DIR, { recursive: true });
+		}
 		disabled = await createTestServer(false);
 		enabled = await createTestServer(true);
 	});
 
 	after(async () => {
+		process.off("uncaughtException", onUncaughtException);
+		process.off("unhandledRejection", onUnhandledRejection);
 		await disabled?.close();
 		await enabled?.close();
+		try {
+			if (fs.existsSync(NON_GIT_DIR)) {
+				fs.rmSync(NON_GIT_DIR, { recursive: true, force: true });
+			}
+		} catch (_) {
+			// Best-effort cleanup of non-git temp directory
+		}
+		assert.equal(
+			recordedErrors.length,
+			0,
+			`Expected 0 unhandled errors, got: ${JSON.stringify(recordedErrors)}`,
+		);
 	});
 
 	describe("disabled server returns 403 for local repository routes", () => {
@@ -346,6 +406,32 @@ describe("local repository guards and input validation", () => {
 			test(c.name, async () => {
 				const { json } = await postJson(enabled.port, c.route, c.body);
 				assert.notEqual(json.error, "Invalid repository path");
+			});
+		}
+	});
+
+	describe("parallel requests with nonexistent and non-git repo paths", () => {
+		for (const route of BOARD_ROUTES) {
+			test(`${route} handles 20 parallel requests with nonexistent repo`, async () => {
+				const results = await sendParallelRequests(enabled.port, route, {
+					repoPath: NONEXISTENT_REPO,
+					commit: SHA_A,
+					relativeFilePath: PCB_FILE,
+				});
+				for (const res of results) {
+					assertErrorResponse(res);
+				}
+			});
+
+			test(`${route} handles 20 parallel requests with non-git folder`, async () => {
+				const results = await sendParallelRequests(enabled.port, route, {
+					repoPath: NON_GIT_DIR,
+					commit: SHA_A,
+					relativeFilePath: PCB_FILE,
+				});
+				for (const res of results) {
+					assertErrorResponse(res);
+				}
 			});
 		}
 	});

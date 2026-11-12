@@ -210,8 +210,27 @@ function cleanupTempDir(dirPath) {
 		}
 	} catch (err) {
 		// Best-effort cleanup: do not throw if directory removal fails
-		console.warn("Failed to clean up temp directory:", dirPath, err?.message);
+		try {
+			console.warn("Failed to clean up temp directory:", dirPath, err?.message);
+		} catch (_) {
+			// Ignore logging errors to ensure cleanup never throws
+		}
 	}
+}
+
+function waitForResponse(res) {
+	if (res.writableFinished || res.closed || res.destroyed) {
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		const onDone = () => {
+			res.off("finish", onDone);
+			res.off("close", onDone);
+			resolve();
+		};
+		res.once("finish", onDone);
+		res.once("close", onDone);
+	});
 }
 
 function sendErrorResponse(res, error, fallbackError) {
@@ -260,6 +279,7 @@ async function executeBoardAction(req, res, endpoint) {
 	} catch (error) {
 		sendErrorResponse(res, error, endpoint.fallbackError);
 	} finally {
+		await waitForResponse(res);
 		cleanupTempDir(temp.dir);
 	}
 }
