@@ -12,6 +12,7 @@ import {
 import { Button, Space, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import IssuesPanel from "../components/IssuesPanel.jsx";
+import BoardTools from "./BoardTools.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
@@ -300,13 +301,9 @@ function ExportButton({ onExport, loading }) {
 	);
 }
 
-function EditorToolbar({ state, actions }) {
+function ActionGroup({ state, actions }) {
 	return (
-		<div
-			style={TOOLBAR_CONTAINER_STYLE}
-			role="toolbar"
-			aria-label="Editor tools"
-		>
+		<>
 			<HistoryButtons
 				canUndo={state.canUndo}
 				canRedo={state.canRedo}
@@ -320,11 +317,29 @@ function EditorToolbar({ state, actions }) {
 				flip={actions.flip}
 				remove={actions.remove}
 			/>
+		</>
+	);
+}
+
+function EditorToolbar({ state, actions }) {
+	return (
+		<div
+			style={TOOLBAR_CONTAINER_STYLE}
+			role="toolbar"
+			aria-label="Editor tools"
+		>
+			<ActionGroup state={state} actions={actions} />
 			<ModeButtons
 				activeTab={state.activeTab}
 				dirty={state.dirty}
 				route={actions.route}
 				save={actions.save}
+			/>
+			<BoardTools
+				ir={state.ir}
+				board={state.board}
+				onChange={actions.onBoardToolsChange}
+				disabled={state.activeTab !== "pcb"}
 			/>
 			<ExportButton onExport={actions.exportKiCad} loading={state.exporting} />
 		</div>
@@ -622,6 +637,8 @@ function buildToolState(docState, activeTab, exporting) {
 		activeTab,
 		dirty: docState.dirty,
 		exporting,
+		ir: docState.ir,
+		board: docState.board,
 	};
 }
 
@@ -661,6 +678,20 @@ function useScreenActions(docState, onSave, extra) {
 	return { ...editActions, undo, redo, route: triggerPcbRoute, ...extra };
 }
 
+function useBoardToolsChange(docState) {
+	return useCallback(
+		({ ir: nextIr, board: nextBoard }) => {
+			if (nextBoard !== undefined) {
+				docState.setBoard(nextBoard);
+			}
+			if (nextIr) {
+				docState.replaceIr(nextIr);
+			}
+		},
+		[docState],
+	);
+}
+
 function useScreenController({ ir, board, onSave, api }) {
 	const docState = useEditorDocument({ ir, board });
 	const lib = useLibraryState();
@@ -670,9 +701,11 @@ function useScreenController({ ir, board, onSave, api }) {
 	const onSelectIssue = useIssueSelector(dispatch);
 	const exp = useExportAction({ api, ir: doc.ir, board: curBoard });
 	const liveChecks = useLiveChecks({ api, ir: doc.ir, board: curBoard });
+	const onBoardToolsChange = useBoardToolsChange(docState);
 	const actions = useScreenActions(docState, onSave, {
 		openLibrary: lib.openLibrary,
 		exportKiCad: exp.exportKiCad,
+		onBoardToolsChange,
 	});
 	return {
 		docState,

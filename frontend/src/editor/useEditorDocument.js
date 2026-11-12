@@ -21,6 +21,42 @@ function applyStepResult(next, setDoc, setDirty) {
 	return next;
 }
 
+function findPartMoveCommand(oldPart, newPart) {
+	if (!newPart?.placement) return null;
+	const oldPl = oldPart?.placement;
+	const isNewX = !oldPl || oldPl.x !== newPart.placement.x;
+	const isNewY = !oldPl || oldPl.y !== newPart.placement.y;
+	if (isNewX || isNewY) {
+		return {
+			type: "movePart",
+			partId: newPart.id,
+			x: newPart.placement.x,
+			y: newPart.placement.y,
+		};
+	}
+	return null;
+}
+
+function buildDiffCommands(oldIr, newIr) {
+	const commands = [];
+	const oldMap = new Map((oldIr?.parts ?? []).map((p) => [p.id, p]));
+	for (const newPart of newIr?.parts ?? []) {
+		const oldPart = oldMap.get(newPart.id);
+		if (!oldPart) {
+			commands.push({ type: "addPart", part: newPart });
+			continue;
+		}
+		const moveCmd = findPartMoveCommand(oldPart, newPart);
+		if (moveCmd) commands.push(moveCmd);
+	}
+	for (const oldPart of oldIr?.parts ?? []) {
+		if (!newIr?.parts?.some((p) => p.id === oldPart.id)) {
+			commands.push({ type: "deletePart", partId: oldPart.id });
+		}
+	}
+	return commands;
+}
+
 function useHistoryOperations(base, setDoc, setDirty) {
 	const dispatch = useCallback(
 		(cmd) => applyDispatchResult(base.dispatch(cmd), cmd, setDoc, setDirty),
@@ -34,7 +70,17 @@ function useHistoryOperations(base, setDoc, setDirty) {
 		() => applyStepResult(base.redo(), setDoc, setDirty),
 		[base, setDoc, setDirty],
 	);
-	return { dispatch, undo, redo };
+	const replaceIr = useCallback(
+		(nextIr) => {
+			if (!nextIr) return;
+			const commands = buildDiffCommands(base.state?.ir, nextIr);
+			if (commands.length > 0) {
+				dispatch({ type: "batch", commands });
+			}
+		},
+		[base, dispatch],
+	);
+	return { dispatch, undo, redo, replaceIr };
 }
 
 function useBoardState(initialBoard, setDirty) {
@@ -54,7 +100,7 @@ function useBoardState(initialBoard, setDirty) {
 	return [board, setBoard];
 }
 
-function createEditorWrapper(base, dispatch, undo, redo) {
+function createEditorWrapper(base, ops) {
 	return {
 		get state() {
 			return base.state;
@@ -68,9 +114,10 @@ function createEditorWrapper(base, dispatch, undo, redo) {
 		get canRedo() {
 			return base.canRedo;
 		},
-		dispatch,
-		undo,
-		redo,
+		dispatch: ops.dispatch,
+		undo: ops.undo,
+		redo: ops.redo,
+		replaceIr: ops.replaceIr,
 	};
 }
 
@@ -82,6 +129,7 @@ function buildDocumentResult(editor, doc, board, ops) {
 		board,
 		setBoard: ops.setBoard,
 		dispatch: ops.dispatch,
+		replaceIr: ops.replaceIr,
 		undo: ops.undo,
 		redo: ops.redo,
 		canUndo: doc.history?.past?.length > 0,
@@ -100,16 +148,22 @@ export function useEditorDocument({ ir, board: initialBoard } = {}) {
 	const [doc, setDoc] = useState(() => base.state);
 	const [dirty, setDirty] = useState(false);
 	const [board, setBoard] = useBoardState(initialBoard, setDirty);
-	const { dispatch, undo, redo } = useHistoryOperations(base, setDoc, setDirty);
-	const markSaved = useCallback(() => setDirty(false), []);
-	const editor = useMemo(
-		() => createEditorWrapper(base, dispatch, undo, redo),
-		[base, dispatch, undo, redo],
+	const { dispatch, undo, redo, replaceIr } = useHistoryOperations(
+		base,
+		setDoc,
+		setDirty,
 	);
+	const markSaved = useCallback(() => setDirty(false), []);
+	const ops = useMemo(
+		() => ({ dispatch, undo, redo, replaceIr }),
+		[dispatch, undo, redo, replaceIr],
+	);
+	const editor = useMemo(() => createEditorWrapper(base, ops), [base, ops]);
 
 	return buildDocumentResult(editor, doc, board, {
 		setBoard,
 		dispatch,
+		replaceIr,
 		undo,
 		redo,
 		dirty,
