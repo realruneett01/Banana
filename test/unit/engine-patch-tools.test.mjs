@@ -30,14 +30,15 @@ const SAMPLE_PCB = `(kicad_pcb
 
 const REPO_DIR = path.resolve("/fake/repo");
 const COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
+const DEFAULT_EDITS = [{ ref: "R1", op: "setValue", value: "20k" }];
+const SCH_PATH = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
+const PCB_PATH = path.resolve(REPO_DIR, "hardware/board.kicad_pcb");
 
 function createFakeFs(initialFiles = {}, options = {}) {
 	const files = new Map(Object.entries(initialFiles));
 	const written = new Map();
 	const readFile = async (p) => {
-		if (!files.has(p)) {
-			throw new Error(`ENOENT: ${p}`);
-		}
+		if (!files.has(p)) throw new Error(`ENOENT: ${p}`);
 		return files.get(p);
 	};
 	const writeFile = async (p, data) => {
@@ -47,9 +48,7 @@ function createFakeFs(initialFiles = {}, options = {}) {
 	if (options.realPaths) {
 		const realMap = new Map(Object.entries(options.realPaths));
 		fsImpl.realpath = async (p) => {
-			if (!realMap.has(p)) {
-				throw new Error(`ENOENT: ${p}`);
-			}
+			if (!realMap.has(p)) throw new Error(`ENOENT: ${p}`);
 			return realMap.get(p);
 		};
 	}
@@ -92,6 +91,106 @@ function setupToolHarness(fsFiles = {}, execOptions = {}, fsOptions = {}) {
 	return { registry, fakeFs, fakeExec };
 }
 
+function assertHappyPathResults(res, fakeFs, fakeExec, tc) {
+	for (const [filePath, expectedContent] of tc.expectedWrites) {
+		assert.equal(fakeFs.written.get(filePath), expectedContent);
+	}
+	assert.equal(res.ok, true);
+	assert.deepEqual(res.output.files, tc.expectedFiles);
+	assert.equal(res.output.commit, COMMIT_HASH);
+	const addCall = fakeExec.calls.find((c) => c.args.includes("add"));
+	assert.deepEqual(addCall.args, tc.expectedAddArgs);
+	if (tc.expectedCommitArgs) {
+		const commitCall = fakeExec.calls.find((c) => c.args.includes("commit"));
+		assert.deepEqual(commitCall.args, tc.expectedCommitArgs);
+	}
+}
+
+const HAPPY_PATH_CASES = [
+	{
+		name: "happy path for one sch file",
+		initialFiles: { [SCH_PATH]: SAMPLE_SCH },
+		files: [
+			{
+				path: "hardware/board.kicad_sch",
+				kind: "sch",
+				edits: DEFAULT_EDITS,
+			},
+		],
+		message: "Update R1 value",
+		expectedFiles: [
+			{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
+		],
+		expectedWrites: [
+			[
+				SCH_PATH,
+				patchKicadText(SAMPLE_SCH, {
+					kind: "sch",
+					edits: DEFAULT_EDITS,
+				}).text,
+			],
+		],
+		expectedAddArgs: ["-C", REPO_DIR, "add", "--", "hardware/board.kicad_sch"],
+		expectedCommitArgs: [
+			"-C",
+			REPO_DIR,
+			"commit",
+			"-m",
+			"Update R1 value",
+			"--",
+			"hardware/board.kicad_sch",
+		],
+	},
+	{
+		name: "happy path for sch plus pcb",
+		initialFiles: {
+			[SCH_PATH]: SAMPLE_SCH,
+			[PCB_PATH]: SAMPLE_PCB,
+		},
+		files: [
+			{
+				path: "hardware/board.kicad_sch",
+				kind: "sch",
+				edits: [{ ref: "R1", op: "setValue", value: "22k" }],
+			},
+			{
+				path: "hardware/board.kicad_pcb",
+				kind: "pcb",
+				edits: [{ ref: "R1", op: "move", x: 15, y: 25, rot: 90 }],
+			},
+		],
+		message: "Update R1 schema and layout",
+		expectedFiles: [
+			{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
+			{ path: "hardware/board.kicad_pcb", applied: 1, skipped: [] },
+		],
+		expectedWrites: [
+			[
+				SCH_PATH,
+				patchKicadText(SAMPLE_SCH, {
+					kind: "sch",
+					edits: [{ ref: "R1", op: "setValue", value: "22k" }],
+				}).text,
+			],
+			[
+				PCB_PATH,
+				patchKicadText(SAMPLE_PCB, {
+					kind: "pcb",
+					edits: [{ ref: "R1", op: "move", x: 15, y: 25, rot: 90 }],
+				}).text,
+			],
+		],
+		expectedAddArgs: [
+			"-C",
+			REPO_DIR,
+			"add",
+			"--",
+			"hardware/board.kicad_sch",
+			"hardware/board.kicad_pcb",
+		],
+	},
+];
+
 describe("engine-patch-tools registration and metadata", () => {
 	test("exports registerPatchTools function", () => {
 		assert.equal(typeof registerPatchTools, "function");
@@ -104,9 +203,9 @@ describe("engine-patch-tools registration and metadata", () => {
 		assert.equal(tools.length, 1);
 		const [tool] = tools;
 		assert.equal(tool.name, "design.patch");
+		assert.ok(tool.inputSchema);
 		assert.equal(tool.permission, "destructive");
 		assert.equal(typeof tool.description, "string");
-		assert.ok(tool.inputSchema);
 	});
 
 	test("refuses execution when approved is not true", async () => {
@@ -117,7 +216,7 @@ describe("engine-patch-tools registration and metadata", () => {
 				{
 					path: "board.kicad_sch",
 					kind: "sch",
-					edits: [{ ref: "R1", op: "setValue", value: "20k" }],
+					edits: DEFAULT_EDITS,
 				},
 			],
 			message: "Patch resistor",
@@ -128,107 +227,21 @@ describe("engine-patch-tools registration and metadata", () => {
 });
 
 describe("engine-patch-tools happy paths", () => {
-	test("happy path for one sch file", async () => {
-		const schPath = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
-		const { registry, fakeFs, fakeExec } = setupToolHarness({
-			[schPath]: SAMPLE_SCH,
+	for (const tc of HAPPY_PATH_CASES) {
+		test(tc.name, async () => {
+			const { registry, fakeFs, fakeExec } = setupToolHarness(tc.initialFiles);
+			const res = await registry.call(
+				"design.patch",
+				{
+					repoPath: REPO_DIR,
+					files: tc.files,
+					message: tc.message,
+				},
+				{ approved: true },
+			);
+			assertHappyPathResults(res, fakeFs, fakeExec, tc);
 		});
-
-		const edits = [{ ref: "R1", op: "setValue", value: "20k" }];
-		const expectedPatched = patchKicadText(SAMPLE_SCH, {
-			kind: "sch",
-			edits,
-		}).text;
-
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [{ path: "hardware/board.kicad_sch", kind: "sch", edits }],
-				message: "Update R1 value",
-			},
-			{ approved: true },
-		);
-
-		assert.equal(res.ok, true);
-		assert.equal(res.output.commit, COMMIT_HASH);
-		assert.deepEqual(res.output.files, [
-			{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
-		]);
-		assert.equal(fakeFs.written.get(schPath), expectedPatched);
-
-		const addCall = fakeExec.calls.find((c) => c.args.includes("add"));
-		assert.deepEqual(addCall.args, [
-			"-C",
-			REPO_DIR,
-			"add",
-			"--",
-			"hardware/board.kicad_sch",
-		]);
-
-		const commitCall = fakeExec.calls.find((c) => c.args.includes("commit"));
-		assert.deepEqual(commitCall.args, [
-			"-C",
-			REPO_DIR,
-			"commit",
-			"-m",
-			"Update R1 value",
-			"--",
-			"hardware/board.kicad_sch",
-		]);
-	});
-
-	test("happy path for sch plus pcb", async () => {
-		const schPath = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
-		const pcbPath = path.resolve(REPO_DIR, "hardware/board.kicad_pcb");
-		const { registry, fakeFs, fakeExec } = setupToolHarness({
-			[schPath]: SAMPLE_SCH,
-			[pcbPath]: SAMPLE_PCB,
-		});
-
-		const schEdits = [{ ref: "R1", op: "setValue", value: "22k" }];
-		const pcbEdits = [{ ref: "R1", op: "move", x: 15, y: 25, rot: 90 }];
-		const expectedSch = patchKicadText(SAMPLE_SCH, {
-			kind: "sch",
-			edits: schEdits,
-		}).text;
-		const expectedPcb = patchKicadText(SAMPLE_PCB, {
-			kind: "pcb",
-			edits: pcbEdits,
-		}).text;
-
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{ path: "hardware/board.kicad_sch", kind: "sch", edits: schEdits },
-					{ path: "hardware/board.kicad_pcb", kind: "pcb", edits: pcbEdits },
-				],
-				message: "Update R1 schema and layout",
-			},
-			{ approved: true },
-		);
-
-		assert.equal(res.ok, true);
-		assert.equal(res.output.commit, COMMIT_HASH);
-		assert.deepEqual(res.output.files, [
-			{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
-			{ path: "hardware/board.kicad_pcb", applied: 1, skipped: [] },
-		]);
-		assert.equal(fakeFs.written.get(schPath), expectedSch);
-		assert.equal(fakeFs.written.get(pcbPath), expectedPcb);
-
-		const addCall = fakeExec.calls.find((c) => c.args.includes("add"));
-		assert.deepEqual(addCall.args, [
-			"-C",
-			REPO_DIR,
-			"add",
-			"--",
-			"hardware/board.kicad_sch",
-			"hardware/board.kicad_pcb",
-		]);
-	});
+	}
 });
 
 describe("engine-patch-tools path attack validations", () => {
@@ -261,7 +274,7 @@ describe("engine-patch-tools path attack validations", () => {
 						{
 							path: tc.path,
 							kind: tc.kind,
-							edits: [{ ref: "R1", op: "setValue", value: "20k" }],
+							edits: DEFAULT_EDITS,
 						},
 					],
 					message: "Attack attempt",
@@ -269,313 +282,267 @@ describe("engine-patch-tools path attack validations", () => {
 				{ approved: true },
 			);
 
-			assert.equal(res.ok, false);
 			assertNothingCommitted(fakeFs, fakeExec);
+			assert.equal(res.ok, false);
 		});
 	}
 });
 
 describe("engine-patch-tools input boundary validations", () => {
-	test("rejects more than 2 files", async () => {
-		const { registry, fakeFs, fakeExec } = setupToolHarness();
-		const edit = [{ ref: "R1", op: "setValue", value: "20k" }];
-		const res = await registry.call(
-			"design.patch",
-			{
+	const BOUNDARY_CASES = [
+		{
+			name: "rejects more than 2 files",
+			payload: {
 				repoPath: REPO_DIR,
 				files: [
-					{ path: "f1.kicad_sch", kind: "sch", edits: edit },
-					{ path: "f2.kicad_sch", kind: "sch", edits: edit },
-					{ path: "f3.kicad_sch", kind: "sch", edits: edit },
+					{ path: "f1.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+					{ path: "f2.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+					{ path: "f3.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
 				],
 				message: "Three files",
 			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("rejects 0 files", async () => {
-		const { registry, fakeFs, fakeExec } = setupToolHarness();
-		const res = await registry.call(
-			"design.patch",
-			{
+		},
+		{
+			name: "rejects 0 files",
+			payload: {
 				repoPath: REPO_DIR,
 				files: [],
 				message: "Empty files",
 			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("rejects more than 500 edits", async () => {
-		const { registry, fakeFs, fakeExec } = setupToolHarness();
-		const edits = Array.from({ length: 501 }, () => ({
-			ref: "R1",
-			op: "setValue",
-			value: "1k",
-		}));
-		const res = await registry.call(
-			"design.patch",
-			{
+		},
+		{
+			name: "rejects more than 500 edits",
+			payload: {
 				repoPath: REPO_DIR,
-				files: [{ path: "board.kicad_sch", kind: "sch", edits }],
+				files: [
+					{
+						path: "board.kicad_sch",
+						kind: "sch",
+						edits: Array.from({ length: 501 }, () => ({
+							ref: "R1",
+							op: "setValue",
+							value: "1k",
+						})),
+					},
+				],
 				message: "Too many edits",
 			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("rejects non-absolute repoPath", async () => {
-		const { registry, fakeFs, fakeExec } = setupToolHarness();
-		const res = await registry.call(
-			"design.patch",
-			{
+		},
+		{
+			name: "rejects non-absolute repoPath",
+			payload: {
 				repoPath: "relative/repo",
 				files: [
 					{
 						path: "board.kicad_sch",
 						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
+						edits: DEFAULT_EDITS,
 					},
 				],
 				message: "Relative repoPath",
 			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.match(res.error, /absolute/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	const BAD_MESSAGES = ["", "m".repeat(201)];
-	for (const msg of BAD_MESSAGES) {
-		test(`rejects invalid message len=${msg.length}`, async () => {
-			const { registry, fakeFs, fakeExec } = setupToolHarness();
-			const res = await registry.call(
-				"design.patch",
-				{
-					repoPath: REPO_DIR,
-					files: [
-						{
-							path: "board.kicad_sch",
-							kind: "sch",
-							edits: [{ ref: "R1", op: "setValue", value: "20k" }],
-						},
-					],
-					message: msg,
-				},
-				{ approved: true },
-			);
-			assert.equal(res.ok, false);
-			assertNothingCommitted(fakeFs, fakeExec);
-		});
-	}
-
-	test("rejects when repoPath is not inside a git work tree", async () => {
-		const schPath = path.resolve(REPO_DIR, "board.kicad_sch");
-		const { registry, fakeFs, fakeExec } = setupToolHarness(
-			{ [schPath]: SAMPLE_SCH },
-			{ isWorkTree: false },
-		);
-
-		const res = await registry.call(
-			"design.patch",
-			{
+			expectedErrorMatch: /absolute/i,
+		},
+		{
+			name: "rejects invalid message len=0",
+			payload: {
 				repoPath: REPO_DIR,
 				files: [
 					{
 						path: "board.kicad_sch",
 						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
+						edits: DEFAULT_EDITS,
+					},
+				],
+				message: "",
+			},
+		},
+		{
+			name: "rejects invalid message len=201",
+			payload: {
+				repoPath: REPO_DIR,
+				files: [
+					{
+						path: "board.kicad_sch",
+						kind: "sch",
+						edits: DEFAULT_EDITS,
+					},
+				],
+				message: "m".repeat(201),
+			},
+		},
+		{
+			name: "rejects when repoPath is not inside a git work tree",
+			setupFiles: {
+				[path.resolve(REPO_DIR, "board.kicad_sch")]: SAMPLE_SCH,
+			},
+			execOptions: { isWorkTree: false },
+			payload: {
+				repoPath: REPO_DIR,
+				files: [
+					{
+						path: "board.kicad_sch",
+						kind: "sch",
+						edits: DEFAULT_EDITS,
 					},
 				],
 				message: "Not work tree",
 			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.match(res.error, /git work tree/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-});
-
-describe("engine-patch-tools failure modes and all-or-nothing", () => {
-	test("unreadable file: nothing written, no git add/commit", async () => {
-		const { registry, fakeFs, fakeExec } = setupToolHarness({});
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{
-						path: "missing.kicad_sch",
-						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
-					},
-				],
-				message: "Unreadable",
-			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.match(res.error, /Failed to read file/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("unparseable file: nothing written, no git add/commit", async () => {
-		const schPath = path.resolve(REPO_DIR, "corrupt.kicad_sch");
-		const { registry, fakeFs, fakeExec } = setupToolHarness({
-			[schPath]: "(kicad_sch broken (",
-		});
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{
-						path: "corrupt.kicad_sch",
-						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
-					},
-				],
-				message: "Corrupt file",
-			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.match(res.error, /Failed to patch/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("zero applied edits: nothing written, no git add/commit", async () => {
-		const schPath = path.resolve(REPO_DIR, "board.kicad_sch");
-		const { registry, fakeFs, fakeExec } = setupToolHarness({
-			[schPath]: SAMPLE_SCH,
-		});
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{
-						path: "board.kicad_sch",
-						kind: "sch",
-						edits: [{ ref: "UNKNOWN_REF", op: "setValue", value: "20k" }],
-					},
-				],
-				message: "No-op edits",
-			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.match(res.error, /No edits were applied/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-
-	test("second file failing means the first is NOT written (all-or-nothing)", async () => {
-		const schPath = path.resolve(REPO_DIR, "good.kicad_sch");
-		const pcbPath = path.resolve(REPO_DIR, "bad.kicad_pcb");
-		const { registry, fakeFs, fakeExec } = setupToolHarness({
-			[schPath]: SAMPLE_SCH,
-			[pcbPath]: "(kicad_pcb broken (",
-		});
-
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{
-						path: "good.kicad_sch",
-						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
-					},
-					{
-						path: "bad.kicad_pcb",
-						kind: "pcb",
-						edits: [{ ref: "R1", op: "setValue", value: "20k" }],
-					},
-				],
-				message: "Atomic transaction test",
-			},
-			{ approved: true },
-		);
-
-		assert.equal(res.ok, false);
-		assert.match(res.error, /Failed to patch/i);
-		assertNothingCommitted(fakeFs, fakeExec);
-	});
-});
-
-describe("engine-patch-tools hardening and registry integration", () => {
-	const DUPLICATE_PATH_CASES = [
-		{
-			name: "exact duplicate",
-			first: "hardware/board.kicad_sch",
-			second: "hardware/board.kicad_sch",
-		},
-		{
-			name: "normalized dot-slash duplicate",
-			first: "hardware/board.kicad_sch",
-			second: "hardware/./board.kicad_sch",
+			expectedErrorMatch: /git work tree/i,
 		},
 	];
 
-	for (const tc of DUPLICATE_PATH_CASES) {
-		test(`rejects duplicate path: ${tc.name}`, async () => {
-			const { registry, fakeFs, fakeExec } = setupToolHarness();
-			const edits = [{ ref: "R1", op: "setValue", value: "20k" }];
+	for (const tc of BOUNDARY_CASES) {
+		test(tc.name, async () => {
+			const { registry, fakeFs, fakeExec } = setupToolHarness(
+				tc.setupFiles,
+				tc.execOptions,
+			);
+			const res = await registry.call("design.patch", tc.payload, {
+				approved: true,
+			});
+			assert.equal(res.ok, false);
+			if (tc.expectedErrorMatch) {
+				assert.match(res.error, tc.expectedErrorMatch);
+			}
+			assertNothingCommitted(fakeFs, fakeExec);
+		});
+	}
+});
+
+describe("engine-patch-tools failure modes and all-or-nothing", () => {
+	const FAILURE_CASES = [
+		{
+			name: "unreadable file: nothing written, no git add/commit",
+			files: [{ path: "missing.kicad_sch", kind: "sch", edits: DEFAULT_EDITS }],
+			message: "Unreadable",
+			errorMatch: /Failed to read file/i,
+		},
+		{
+			name: "unparseable file: nothing written, no git add/commit",
+			setupFiles: {
+				[path.resolve(REPO_DIR, "corrupt.kicad_sch")]: "(kicad_sch broken (",
+			},
+			files: [{ path: "corrupt.kicad_sch", kind: "sch", edits: DEFAULT_EDITS }],
+			message: "Corrupt file",
+			errorMatch: /Failed to patch/i,
+		},
+		{
+			name: "zero applied edits: nothing written, no git add/commit",
+			setupFiles: {
+				[path.resolve(REPO_DIR, "board.kicad_sch")]: SAMPLE_SCH,
+			},
+			files: [
+				{
+					path: "board.kicad_sch",
+					kind: "sch",
+					edits: [{ ref: "UNKNOWN_REF", op: "setValue", value: "20k" }],
+				},
+			],
+			message: "No-op edits",
+			errorMatch: /No edits were applied/i,
+		},
+		{
+			name: "second file failing means the first is NOT written (all-or-nothing)",
+			setupFiles: {
+				[path.resolve(REPO_DIR, "good.kicad_sch")]: SAMPLE_SCH,
+				[path.resolve(REPO_DIR, "bad.kicad_pcb")]: "(kicad_pcb broken (",
+			},
+			files: [
+				{ path: "good.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+				{ path: "bad.kicad_pcb", kind: "pcb", edits: DEFAULT_EDITS },
+			],
+			message: "Atomic transaction test",
+			errorMatch: /Failed to patch/i,
+		},
+	];
+
+	for (const tc of FAILURE_CASES) {
+		test(tc.name, async () => {
+			const { registry, fakeFs, fakeExec } = setupToolHarness(tc.setupFiles);
 			const res = await registry.call(
 				"design.patch",
 				{
 					repoPath: REPO_DIR,
-					files: [
-						{ path: tc.first, kind: "sch", edits },
-						{ path: tc.second, kind: "sch", edits },
-					],
-					message: "Duplicate path test",
+					files: tc.files,
+					message: tc.message,
+				},
+				{ approved: true },
+			);
+			assert.match(res.error, tc.errorMatch);
+			assert.equal(res.ok, false);
+			assertNothingCommitted(fakeFs, fakeExec);
+		});
+	}
+});
+
+describe("engine-patch-tools hardening and registry integration", () => {
+	const HARDENING_REJECTION_CASES = [
+		{
+			name: "rejects duplicate path: exact duplicate",
+			files: [
+				{ path: "hardware/board.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+				{ path: "hardware/board.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+			],
+			message: "Duplicate path test",
+			expectedError: "files must not repeat the same path",
+		},
+		{
+			name: "rejects duplicate path: normalized dot-slash duplicate",
+			files: [
+				{ path: "hardware/board.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+				{
+					path: "hardware/./board.kicad_sch",
+					kind: "sch",
+					edits: DEFAULT_EDITS,
+				},
+			],
+			message: "Duplicate path test",
+			expectedError: "files must not repeat the same path",
+		},
+		{
+			name: "rejects symlink whose realpath is outside repoPath",
+			setupFiles: {
+				[path.resolve(REPO_DIR, "hardware/board.kicad_sch")]: SAMPLE_SCH,
+			},
+			fsOptions: {
+				realPaths: {
+					[REPO_DIR]: REPO_DIR,
+					[path.resolve(REPO_DIR, "hardware/board.kicad_sch")]: path.resolve(
+						"/outside/evil.kicad_sch",
+					),
+				},
+			},
+			files: [
+				{ path: "hardware/board.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+			],
+			message: "Symlink outside repo",
+			expectedError: "path resolves outside repoPath",
+		},
+	];
+
+	for (const tc of HARDENING_REJECTION_CASES) {
+		test(tc.name, async () => {
+			const { registry, fakeFs, fakeExec } = setupToolHarness(
+				tc.setupFiles,
+				{},
+				tc.fsOptions,
+			);
+			const res = await registry.call(
+				"design.patch",
+				{
+					repoPath: REPO_DIR,
+					files: tc.files,
+					message: tc.message,
 				},
 				{ approved: true },
 			);
 			assert.equal(res.ok, false);
-			assert.equal(res.error, "files must not repeat the same path");
+			assert.equal(res.error, tc.expectedError);
 			assert.equal(fakeFs.written.size, 0);
 			assert.equal(fakeExec.calls.length, 0);
 		});
 	}
-
-	test("rejects symlink whose realpath is outside repoPath", async () => {
-		const schPath = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
-		const realPaths = {
-			[REPO_DIR]: REPO_DIR,
-			[schPath]: path.resolve("/outside/evil.kicad_sch"),
-		};
-		const { registry, fakeFs, fakeExec } = setupToolHarness(
-			{ [schPath]: SAMPLE_SCH },
-			{},
-			{ realPaths },
-		);
-		const edits = [{ ref: "R1", op: "setValue", value: "20k" }];
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [{ path: "hardware/board.kicad_sch", kind: "sch", edits }],
-				message: "Symlink outside repo",
-			},
-			{ approved: true },
-		);
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "path resolves outside repoPath");
-		assert.equal(fakeFs.written.size, 0);
-		assert.equal(fakeExec.calls.length, 0);
-	});
 
 	test("allows normal file with realpath inside repoPath", async () => {
 		const schPath = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
@@ -588,19 +555,24 @@ describe("engine-patch-tools hardening and registry integration", () => {
 			{},
 			{ realPaths },
 		);
-		const edits = [{ ref: "R1", op: "setValue", value: "20k" }];
 		const res = await registry.call(
 			"design.patch",
 			{
 				repoPath: REPO_DIR,
-				files: [{ path: "hardware/board.kicad_sch", kind: "sch", edits }],
+				files: [
+					{
+						path: "hardware/board.kicad_sch",
+						kind: "sch",
+						edits: DEFAULT_EDITS,
+					},
+				],
 				message: "Valid realpath",
 			},
 			{ approved: true },
 		);
+		assert.ok(fakeFs.written.has(schPath));
 		assert.equal(res.ok, true);
 		assert.equal(res.output.commit, COMMIT_HASH);
-		assert.ok(fakeFs.written.has(schPath));
 	});
 
 	test("buildLocalRegistry contains design.patch", () => {
