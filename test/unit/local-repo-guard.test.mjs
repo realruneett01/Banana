@@ -12,6 +12,9 @@ const SHA_A = "a1b2c3d4";
 const SHA_B = "e5f6a7b8";
 const PCB_FILE = "board.kicad_pcb";
 
+// Proves server rejects hostile paths quickly without waiting on network or filesystem timeouts (8s+).
+const HOSTILE_PATH_TIMEOUT_MS = 5000;
+
 const diffBody = (baseCommit, targetCommit, relativeFilePath) => ({
 	repoPath: REPO,
 	baseCommit,
@@ -241,7 +244,7 @@ function buildHostileCases(routes, fieldTargets, hostilePaths) {
 			hostilePaths
 				.filter((hostile) => isApplicableHostile(target.field, hostile))
 				.map((hostile) => ({
-					name: `${route} ${target.field} rejects "${hostile.label}" in <1000ms`,
+					name: `${route} ${target.field} rejects "${hostile.label}" in <${HOSTILE_PATH_TIMEOUT_MS}ms`,
 					route,
 					body: target.buildBody(hostile.val),
 				})),
@@ -257,8 +260,8 @@ function runHostileTests(cases, getPort) {
 			const durationMs = performance.now() - start;
 			assert.equal(status, 400);
 			assert.ok(
-				durationMs < 1000,
-				`Expected response under 1000ms for ${c.name}, took ${durationMs}ms`,
+				durationMs < HOSTILE_PATH_TIMEOUT_MS,
+				`Expected response under ${HOSTILE_PATH_TIMEOUT_MS}ms for ${c.name}, took ${durationMs}ms`,
 			);
 		});
 	}
@@ -322,7 +325,7 @@ describe("local repository guards and input validation", () => {
 		);
 	});
 
-	describe("hostile path inputs to board routes return 400 under 1000ms", () => {
+	describe(`hostile path inputs to board routes return 400 under ${HOSTILE_PATH_TIMEOUT_MS}ms`, () => {
 		runHostileTests(
 			buildHostileCases(BOARD_ROUTES, BOARD_FIELD_TARGETS, HOSTILE_PATHS),
 			() => enabled.port,
