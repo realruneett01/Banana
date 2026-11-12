@@ -6,20 +6,6 @@ import {
 	invertCommand,
 } from "../../frontend/src/editor/editorModel.js";
 
-function createPart(
-	id,
-	ref,
-	value,
-	{
-		placement,
-		symbol = "Device:R",
-		footprint = "Resistor_SMD:R_0805",
-		props = {},
-	} = {},
-) {
-	return { id, ref, value, symbol, footprint, props, placement };
-}
-
 function makeCapPart(id, ref, value) {
 	const part = {
 		ref,
@@ -34,38 +20,49 @@ function makeCapPart(id, ref, value) {
 	return part;
 }
 
+function makeResistorPart(id, ref, value, placement) {
+	return {
+		id,
+		ref,
+		value,
+		symbol: "Device:R",
+		footprint: "Resistor_SMD:R_0805",
+		props: {},
+		placement: { y: 100, ...placement },
+	};
+}
+
 function buildParts() {
 	return [
-		createPart("part_u1", "U1", "NE555", {
-			placement: { x: 100, y: 100, rot: 0, side: "F" },
+		{
+			id: "part_u1",
+			ref: "U1",
+			value: "NE555",
 			symbol: "Timer:NE555",
 			footprint: "Package_SO:SOIC-8",
 			props: { temp: "industrial" },
-		}),
-		createPart("part_r1", "R1", "10k", {
-			placement: { x: 200, y: 100, rot: 90, side: "F" },
-		}),
-		createPart("part_r2", "R2", "1k", {
-			placement: { x: 300, y: 100, rot: 180, side: "B" },
-		}),
+			placement: { x: 100, y: 100, rot: 0, side: "F" },
+		},
+		makeResistorPart("part_r1", "R1", "10k", { x: 200, rot: 90, side: "F" }),
+		makeResistorPart("part_r2", "R2", "1k", { x: 300, rot: 180, side: "B" }),
 	];
+}
+
+function makeNet(id, name, pins) {
+	return {
+		id,
+		name,
+		pins: pins.map(([partId, pin]) => ({ partId, pin })),
+	};
 }
 
 function buildNets() {
 	return [
-		{
-			id: "net_vcc",
-			name: "VCC",
-			pins: [
-				{ partId: "part_u1", pin: "8" },
-				{ partId: "part_r1", pin: "1" },
-			],
-		},
-		{
-			id: "net_gnd",
-			name: "GND",
-			pins: [{ partId: "part_u1", pin: "1" }],
-		},
+		makeNet("net_vcc", "VCC", [
+			["part_u1", "8"],
+			["part_r1", "1"],
+		]),
+		makeNet("net_gnd", "GND", [["part_u1", "1"]]),
 	];
 }
 
@@ -93,6 +90,12 @@ function setupEditor() {
 	return { baseIr, editor };
 }
 
+function setupAndDispatch(command) {
+	const ctx = setupEditor();
+	ctx.editor.dispatch(command);
+	return ctx;
+}
+
 function makeBatchCommands(field, value) {
 	return [
 		{ type: "movePart", partId: "part_u1", x: 10, y: 20 },
@@ -118,14 +121,11 @@ function assertNoUndoState(editor, baseIr) {
 
 function assertUndoRedoCycle(editor, baseIr) {
 	assertModifiedState(editor, baseIr);
-
 	assertUndoneState(editor, baseIr);
 	assert.equal(editor.canUndo, false);
 	assert.equal(editor.canRedo, true);
-
 	editor.redo();
 	assertModifiedState(editor, baseIr);
-
 	assertUndoneState(editor, baseIr);
 }
 
@@ -159,79 +159,171 @@ function assertInvalidState(editor, baseIr) {
 	assertNoUndoState(editor, baseIr);
 }
 
-const ROUND_TRIP_CASES = [
-	{
-		name: "addPart with explicit id",
-		command: {
-			type: "addPart",
-			part: makeCapPart("part_c1", "C1", "100nF"),
-		},
-	},
-	{
-		name: "deletePart removes part and pins",
-		command: { type: "deletePart", partId: "part_r1" },
-	},
-	{
-		name: "movePart updates placement",
-		command: { type: "movePart", partId: "part_u1", x: 150, y: 250 },
-	},
-	...[
-		["positive delta", 90],
-		["negative delta", -90],
-		["> 360 delta", 450],
-	].map(([desc, deltaDeg]) => ({
-		name: `rotatePart with ${desc}`,
-		command: { type: "rotatePart", partId: "part_u1", deltaDeg },
-	})),
-	{
-		name: "flipPart F to B",
-		command: { type: "flipPart", partId: "part_u1" },
-	},
-	...[
-		["ref", "U99"],
-		["value", "TLC555"],
-	].map(([field, value]) => ({
-		name: `setPartField ${field}`,
-		command: { type: "setPartField", partId: "part_u1", field, value },
-	})),
-	...[
-		["add prop", "package", "DIP"],
-		["update existing prop", "temp", "commercial"],
-		["delete prop", "temp", undefined],
-	].map(([desc, key, value]) => ({
-		name: `setPartProp ${desc}`,
-		command: { type: "setPartProp", partId: "part_u1", key, value },
-	})),
-	...[
-		["connect unconnected pins creates new net", "part_r2", "2"],
-		["connect unconnected pin to existing net", "part_u1", "8"],
-	].map(([name, partIdB, pinB]) => ({
-		name,
-		command: { type: "connect", partIdA: "part_r2", pinA: "1", partIdB, pinB },
-	})),
-	{
-		name: "disconnect pin from net",
-		command: { type: "disconnect", partId: "part_r1", pin: "1" },
-	},
-	{
-		name: "renameNet updates name",
-		command: { type: "renameNet", netId: "net_vcc", name: "VCC_3V3" },
-	},
-	{
-		name: "batch executes multiple commands",
-		command: {
-			type: "batch",
-			commands: makeBatchCommands("ref", "U10"),
-		},
-	},
-];
+function assertEditorUndoRedoRoundTrip(command) {
+	const { baseIr, editor } = setupAndDispatch(command);
+	assertUndoRedoCycle(editor, baseIr);
+}
+
+function assertInvalidDispatch(command) {
+	const { baseIr, editor } = setupAndDispatch(command);
+	assertInvalidState(editor, baseIr);
+}
+
+function assertBatchCheck(editor, { past, canUndo, partValue } = {}) {
+	if (past !== undefined) assert.equal(editor.state.history.past.length, past);
+	if (canUndo !== undefined) assert.equal(editor.canUndo, canUndo);
+	if (partValue !== undefined)
+		assert.equal(editor.state.ir.parts[0].value, partValue);
+}
+
+function assertBatchUndoFlow(editor, baseIr, expectedValue) {
+	assertBatchCheck(editor, { past: 1, canUndo: true });
+	assertUndoneState(editor, baseIr);
+	assertHistoryLengths(editor, 0, 1);
+	editor.redo();
+	assertBatchCheck(editor, { past: 1, partValue: expectedValue });
+}
+
+function assertNetInfo(net, id, pinCount) {
+	assert.equal(net.id, id);
+	assert.equal(net.pins.length, pinCount);
+}
+
+function assertMergedNet(editor, baseIr) {
+	assertNetCount(editor, 1);
+	assertNetInfo(editor.state.ir.nets[0], "net_vcc", 3);
+	assertUndoneState(editor, baseIr);
+	assertNetCount(editor, 2);
+}
+
+function assertPinCleanup(editor, baseIr) {
+	assert.equal(editor.state.ir.parts.length, 2);
+	assertNetCount(editor, 2);
+	const vcc = editor.state.ir.nets.find((n) => n.id === "net_vcc");
+	const gnd = editor.state.ir.nets.find((n) => n.id === "net_gnd");
+	assert.equal(vcc.pins[0].partId, "part_r1");
+	assert.equal(vcc.pins.length, 1);
+	assert.equal(gnd.pins.length, 0);
+	assertUndoneState(editor, baseIr);
+}
+
+function assertPartId(editor, index, expectedId) {
+	assert.equal(editor.state.ir.parts[index].id, expectedId);
+}
+
+function assertGeneratedMockId(id) {
+	assert.equal(typeof id, "string");
+	assert.equal(id.startsWith("part_mock_"), true);
+}
+
+function makeRoundTripCases() {
+	return [
+		[
+			"addPart with explicit id",
+			{ type: "addPart", part: makeCapPart("part_c1", "C1", "100nF") },
+		],
+		[
+			"deletePart removes part and pins",
+			{ type: "deletePart", partId: "part_r1" },
+		],
+		[
+			"movePart updates placement",
+			{ type: "movePart", partId: "part_u1", x: 150, y: 250 },
+		],
+		[
+			"rotatePart with positive delta",
+			{ type: "rotatePart", partId: "part_u1", deltaDeg: 90 },
+		],
+		[
+			"rotatePart with negative delta",
+			{ type: "rotatePart", partId: "part_u1", deltaDeg: -90 },
+		],
+		[
+			"rotatePart with > 360 delta",
+			{ type: "rotatePart", partId: "part_u1", deltaDeg: 450 },
+		],
+		["flipPart F to B", { type: "flipPart", partId: "part_u1" }],
+		[
+			"setPartField ref",
+			{ type: "setPartField", partId: "part_u1", field: "ref", value: "U99" },
+		],
+		[
+			"setPartField value",
+			{
+				type: "setPartField",
+				partId: "part_u1",
+				field: "value",
+				value: "TLC555",
+			},
+		],
+		[
+			"setPartProp add prop",
+			{
+				type: "setPartProp",
+				partId: "part_u1",
+				key: "package",
+				value: "DIP",
+			},
+		],
+		[
+			"setPartProp update existing prop",
+			{
+				type: "setPartProp",
+				partId: "part_u1",
+				key: "temp",
+				value: "commercial",
+			},
+		],
+		[
+			"setPartProp delete prop",
+			{
+				type: "setPartProp",
+				partId: "part_u1",
+				key: "temp",
+				value: undefined,
+			},
+		],
+		[
+			"connect unconnected pins creates new net",
+			{
+				type: "connect",
+				partIdA: "part_r2",
+				pinA: "1",
+				partIdB: "part_r2",
+				pinB: "2",
+			},
+		],
+		[
+			"connect unconnected pin to existing net",
+			{
+				type: "connect",
+				partIdA: "part_r2",
+				pinA: "1",
+				partIdB: "part_u1",
+				pinB: "8",
+			},
+		],
+		[
+			"disconnect pin from net",
+			{ type: "disconnect", partId: "part_r1", pin: "1" },
+		],
+		[
+			"renameNet updates name",
+			{ type: "renameNet", netId: "net_vcc", name: "VCC_3V3" },
+		],
+		[
+			"batch executes multiple commands",
+			{ type: "batch", commands: makeBatchCommands("ref", "U10") },
+		],
+	];
+}
+
+const ROUND_TRIP_CASES = makeRoundTripCases();
 
 describe("round-trip editor undo and redo", () => {
-	for (const { name, command } of ROUND_TRIP_CASES) {
+	for (const [name, command] of ROUND_TRIP_CASES) {
 		test(`editor undo/redo round-trip: ${name}`, () => {
-			const { baseIr, editor } = setupEditor();
-			editor.dispatch(command);
-			assertUndoRedoCycle(editor, baseIr);
+			assertEditorUndoRedoRoundTrip(command);
 		});
 
 		test(`pure applyCommand / invertCommand round-trip: ${name}`, () => {
@@ -242,78 +334,53 @@ describe("round-trip editor undo and redo", () => {
 
 describe("batch command", () => {
 	test("batch undo is one step", () => {
-		const { baseIr, editor } = setupEditor();
-		editor.dispatch({
+		const { baseIr, editor } = setupAndDispatch({
 			type: "batch",
 			commands: makeBatchCommands("value", "NEW555"),
 		});
-		assertHistoryLengths(editor, 1);
-		assert.equal(editor.canUndo, true);
-
-		assertUndoneState(editor, baseIr);
-		assertHistoryLengths(editor, 0, 1);
-
-		editor.redo();
-		assertHistoryLengths(editor, 1);
-		assert.equal(editor.state.ir.parts[0].value, "NEW555");
+		assertBatchUndoFlow(editor, baseIr, "NEW555");
 	});
 });
 
 describe("connect and net merging", () => {
 	test("connect merges two distinct nets correctly", () => {
-		const { baseIr, editor } = setupEditor();
-		editor.dispatch({
+		const { baseIr, editor } = setupAndDispatch({
 			type: "connect",
 			partIdA: "part_u1",
 			pinA: "8",
 			partIdB: "part_u1",
 			pinB: "1",
 		});
-		assertNetCount(editor, 1);
-		const mergedNet = editor.state.ir.nets[0];
-		assert.equal(mergedNet.id, "net_vcc");
-		assert.equal(mergedNet.pins.length, 3);
-
-		assertUndoneState(editor, baseIr);
-		assertNetCount(editor, 2);
+		assertMergedNet(editor, baseIr);
 	});
 });
 
 describe("deletePart pin cleanup", () => {
 	test("deletePart removes pins from nets while keeping empty nets", () => {
-		const { baseIr, editor } = setupEditor();
-		editor.dispatch({ type: "deletePart", partId: "part_u1" });
-
-		assert.equal(editor.state.ir.parts.length, 2);
-		assertNetCount(editor, 2);
-		const vcc = editor.state.ir.nets.find((n) => n.id === "net_vcc");
-		assert.equal(vcc.pins.length, 1);
-		assert.equal(vcc.pins[0].partId, "part_r1");
-
-		const gnd = editor.state.ir.nets.find((n) => n.id === "net_gnd");
-		assert.equal(gnd.pins.length, 0);
-
-		assertUndoneState(editor, baseIr);
+		const { baseIr, editor } = setupAndDispatch({
+			type: "deletePart",
+			partId: "part_u1",
+		});
+		assertPinCleanup(editor, baseIr);
 	});
 });
 
 describe("id permanence", () => {
 	test("ids never change on move or rotate", () => {
-		const { editor } = setupEditor();
-		editor.dispatch({
+		const { editor } = setupAndDispatch({
 			type: "movePart",
 			partId: "part_u1",
 			x: 999,
 			y: 888,
 		});
-		assert.equal(editor.state.ir.parts[0].id, "part_u1");
+		assertPartId(editor, 0, "part_u1");
 
 		editor.dispatch({
 			type: "rotatePart",
 			partId: "part_u1",
 			deltaDeg: 180,
 		});
-		assert.equal(editor.state.ir.parts[0].id, "part_u1");
+		assertPartId(editor, 0, "part_u1");
 	});
 });
 
@@ -367,14 +434,12 @@ const INVALID_CASES = [
 	],
 	["select non-array ids", { type: "select", ids: "not-an-array" }],
 	["batch non-array commands", { type: "batch", commands: "not-an-array" }],
-].map(([name, command]) => ({ name, command }));
+];
 
 describe("invalid commands", () => {
-	for (const { name, command } of INVALID_CASES) {
+	for (const [name, command] of INVALID_CASES) {
 		test(`invalid command returns error and no change: ${name}`, () => {
-			const { baseIr, editor } = setupEditor();
-			editor.dispatch(command);
-			assertInvalidState(editor, baseIr);
+			assertInvalidDispatch(command);
 		});
 	}
 });
@@ -401,25 +466,25 @@ describe("history cap", () => {
 
 describe("selection and missing id handling", () => {
 	test("select command updates selection without undo entry", () => {
-		const { baseIr, editor } = setupEditor();
-		editor.dispatch({ type: "select", ids: ["part_u1", "net_vcc"] });
+		const { baseIr, editor } = setupAndDispatch({
+			type: "select",
+			ids: ["part_u1", "net_vcc"],
+		});
 		assert.deepEqual(editor.selection, ["part_u1", "net_vcc"]);
 		assertNoUndoState(editor, baseIr);
 	});
 
 	test("addPart assigns id using idFn when id is missing", () => {
-		const { baseIr, editor } = setupEditor();
-		editor.dispatch({
+		const { baseIr, editor } = setupAndDispatch({
 			type: "addPart",
 			part: makeCapPart(undefined, "C10", "10uF"),
 		});
-		const addedPart = editor.state.ir.parts[3];
-		assert.equal(typeof addedPart.id, "string");
-		assert.equal(addedPart.id.startsWith("part_mock_"), true);
+		const addedId = editor.state.ir.parts[3].id;
+		assertGeneratedMockId(addedId);
 
 		assertUndoneState(editor, baseIr);
 
 		editor.redo();
-		assert.equal(editor.state.ir.parts[3].id, addedPart.id);
+		assertPartId(editor, 3, addedId);
 	});
 });
