@@ -8,36 +8,6 @@ import {
 } from "../../backend/src/engine/spice/env-corners.js";
 import { parseSiValue } from "../../backend/src/engine/spice/ir-to-spice.js";
 
-function makePart(ref, value, overrides = {}) {
-	return {
-		id: newId("part"),
-		ref,
-		value,
-		symbol: `Device:${ref.replace(/\d+$/, "")}`,
-		footprint: "Resistor_SMD:R_0603_1608Metric",
-		props: {},
-		...overrides,
-	};
-}
-
-function makeNet(name, pins = []) {
-	return {
-		id: newId("net"),
-		name,
-		pins,
-	};
-}
-
-function makeIR(parts, nets, name = "TestCircuit") {
-	return {
-		schemaVersion: 1,
-		name,
-		parts,
-		nets,
-		constraints: [],
-	};
-}
-
 function createFakeEngine(runsBehavior = {}) {
 	const netlists = [];
 	return {
@@ -68,45 +38,42 @@ function assertCornerProperties(corner, tc, index) {
 	}
 }
 
+const AMBIENT_0_70 = { ambientC: { min: 0, max: 70 } };
+const BASE_3_IDS = ["nominal", "cold", "hot"];
+const FIVE_CORNER_IDS = [...BASE_3_IDS, "worst-low", "worst-high"];
+const FIVE_CORNER_SCALES = [1, 1, 1, 0.95, 1.05];
+
 const CORNERS_TABLE = [
 	{
 		name: "default 3 corners (tolerancePct: 0)",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: { tolerancePct: 0, supplyPct: 0 },
 		expectedCount: 3,
-		expectedIds: ["nominal", "cold", "hot"],
+		expectedIds: BASE_3_IDS,
 		expectedTemps: [35, 0, 70],
 	},
 	{
 		name: "with tolerance 5 percent -> 5 corners with scales 0.95 and 1.05",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: { tolerancePct: 5, supplyPct: 0 },
 		expectedCount: 5,
-		expectedIds: ["nominal", "cold", "hot", "worst-low", "worst-high"],
-		expectedScales: [1, 1, 1, 0.95, 1.05],
+		expectedIds: FIVE_CORNER_IDS,
+		expectedScales: FIVE_CORNER_SCALES,
 	},
 	{
 		name: "default options -> 5 corners with 5% tolerance",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: undefined,
 		expectedCount: 5,
-		expectedIds: ["nominal", "cold", "hot", "worst-low", "worst-high"],
-		expectedScales: [1, 1, 1, 0.95, 1.05],
+		expectedIds: FIVE_CORNER_IDS,
+		expectedScales: FIVE_CORNER_SCALES,
 	},
 	{
 		name: "with supply 10 percent -> 7",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: { tolerancePct: 5, supplyPct: 10 },
 		expectedCount: 7,
-		expectedIds: [
-			"nominal",
-			"cold",
-			"hot",
-			"worst-low",
-			"worst-high",
-			"supply-low",
-			"supply-high",
-		],
+		expectedIds: [...FIVE_CORNER_IDS, "supply-low", "supply-high"],
 		expectedSupplyScales: [1, 1, 1, 1, 1, 0.9, 1.1],
 	},
 	{
@@ -114,7 +81,7 @@ const CORNERS_TABLE = [
 		env: { ambientC: { min: -100, max: 200 } },
 		options: { tolerancePct: 0 },
 		expectedCount: 3,
-		expectedIds: ["nominal", "cold", "hot"],
+		expectedIds: BASE_3_IDS,
 		expectedTemps: [50, -55, 150],
 	},
 	{
@@ -122,7 +89,7 @@ const CORNERS_TABLE = [
 		env: {},
 		options: { tolerancePct: 0 },
 		expectedCount: 3,
-		expectedIds: ["nominal", "cold", "hot"],
+		expectedIds: BASE_3_IDS,
 		expectedTemps: [25, 25, 25],
 	},
 ];
@@ -240,53 +207,82 @@ describe("applyCorner", () => {
 });
 
 function makeCircuitIR() {
-	const p1 = makePart("V1", "10", { props: { voltage: "10" } });
-	const p2 = makePart("R1", "1k");
-	const n1 = makeNet("in", [
-		{ partId: p1.id, pin: "1" },
-		{ partId: p2.id, pin: "1" },
-	]);
-	const n0 = makeNet("GND", [
-		{ partId: p1.id, pin: "2" },
-		{ partId: p2.id, pin: "2" },
-	]);
-	return makeIR([p1, p2], [n1, n0]);
+	const p1 = newId("part");
+	const p2 = newId("part");
+	const createPart = (id, ref, value, props) => ({
+		id,
+		ref,
+		value,
+		symbol: `Device:${ref[0]}`,
+		footprint: "Resistor_SMD:R_0603_1608Metric",
+		props,
+	});
+	return {
+		schemaVersion: 1,
+		name: "TestCircuit",
+		parts: [
+			createPart(p1, "V1", "10", { voltage: "10" }),
+			createPart(p2, "R1", "1k", {}),
+		],
+		nets: [
+			{
+				id: newId("net"),
+				name: "in",
+				pins: [
+					{ partId: p1, pin: "1" },
+					{ partId: p2, pin: "1" },
+				],
+			},
+			{
+				id: newId("net"),
+				name: "GND",
+				pins: [
+					{ partId: p1, pin: "2" },
+					{ partId: p2, pin: "2" },
+				],
+			},
+		],
+		constraints: [],
+	};
 }
 
 const RUN_CORNERS_TABLE = [
 	{
 		name: "calls engine once per corner sequentially and returns success",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: { tolerancePct: 5, supplyPct: 0 },
 		engineBehavior: { ok: true, plots: [{ name: "sim" }] },
 		expectedOk: true,
 		expectedCalls: 5,
-		validateResult: (res) => {
-			assert.equal(res.ok, true);
-			assert.equal(res.corners.length, 5);
-			res.corners.forEach((c) => {
-				assert.equal(c.ok, true);
-				assert.ok(Array.isArray(c.plots));
-			});
-		},
+		expectedPlots: true,
 	},
 	{
 		name: "handles engine failure on a corner run",
-		env: { ambientC: { min: 0, max: 70 } },
+		env: AMBIENT_0_70,
 		options: { tolerancePct: 0, supplyPct: 0 },
 		engineBehavior: { ok: false, error: "Singular matrix" },
 		expectedOk: false,
 		expectedCalls: 3,
-		validateResult: (res) => {
-			assert.equal(res.ok, false);
-			assert.equal(res.corners.length, 3);
-			res.corners.forEach((c) => {
-				assert.equal(c.ok, false);
-				assert.equal(c.error, "Singular matrix");
-			});
-		},
+		expectedError: "Singular matrix",
 	},
 ];
+
+function assertRunCorners(res, tc) {
+	assert.ok(res);
+	assert.equal(res.ok, tc.expectedOk);
+	assert.ok(Array.isArray(res.corners));
+	assert.equal(res.corners.length, tc.expectedCalls);
+	for (const c of res.corners) {
+		assert.ok(c);
+		assert.equal(c.ok, tc.expectedOk);
+		if (tc.expectedPlots) {
+			assert.ok(Array.isArray(c.plots));
+		}
+		if (tc.expectedError) {
+			assert.equal(c.error, tc.expectedError);
+		}
+	}
+}
 
 describe("runCorners", () => {
 	for (const tc of RUN_CORNERS_TABLE) {
@@ -301,7 +297,7 @@ describe("runCorners", () => {
 				options: tc.options,
 			});
 			assert.equal(engine.netlists.length, tc.expectedCalls);
-			tc.validateResult(res);
+			assertRunCorners(res, tc);
 		});
 	}
 

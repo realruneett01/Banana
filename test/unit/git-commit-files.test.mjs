@@ -8,41 +8,40 @@ import { after, before, describe, test } from "node:test";
 import express from "express";
 import gitRouter from "../../backend/src/routes/git-routes.js";
 
+const gitIn = (cwd, args) => execFileSync("git", args, { cwd });
+
 function initTempRepo() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "banana-commit-test-"));
-	execFileSync("git", ["init"], { cwd: dir });
-	const schFile = path.join(dir, "board.kicad_sch");
-	fs.writeFileSync(schFile, "(kicad_sch (version 20230121))", "utf8");
-	execFileSync("git", ["add", "--", "board.kicad_sch"], { cwd: dir });
-	execFileSync(
-		"git",
-		[
-			"-c",
-			"user.name=Banana",
-			"-c",
-			"user.email=banana@localhost",
-			"commit",
-			"-m",
-			"init",
-			"--",
-			"board.kicad_sch",
-		],
-		{ cwd: dir },
+	const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "banana-commit-test-"));
+	gitIn(repoDir, ["init"]);
+	fs.writeFileSync(
+		path.join(repoDir, "board.kicad_sch"),
+		"(kicad_sch (version 20230121))",
+		"utf8",
 	);
-	return dir;
+	gitIn(repoDir, ["add", "--", "board.kicad_sch"]);
+	gitIn(repoDir, [
+		"-c",
+		"user.name=Banana",
+		"-c",
+		"user.email=banana@localhost",
+		"commit",
+		"-m",
+		"init",
+		"--",
+		"board.kicad_sch",
+	]);
+	return repoDir;
 }
 
-async function startServer(allowLocalRepos) {
-	const app = express();
-	app.locals.allowLocalRepos = allowLocalRepos;
-	app.use(express.json());
+async function createTestServer(allowLocal) {
+	const app = express().use(express.json());
+	app.locals.allowLocalRepos = allowLocal;
 	app.use("/api/git", gitRouter);
-	const server = http.createServer(app);
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const port = server.address().port;
+	const srv = http.createServer(app);
+	await new Promise((cb) => srv.listen(0, "127.0.0.1", cb));
 	return {
-		url: `http://127.0.0.1:${port}`,
-		close: () => new Promise((resolve) => server.close(resolve)),
+		url: `http://127.0.0.1:${srv.address().port}`,
+		close: () => new Promise((cb) => srv.close(cb)),
 	};
 }
 
@@ -62,62 +61,39 @@ function cleanDir(dir) {
 	}
 }
 
+function commitBody(repoPath, overrides = {}) {
+	return {
+		repoPath,
+		files: ["board.kicad_sch"],
+		message: "valid message",
+		...overrides,
+	};
+}
+
 const VALIDATION_CASES = [
+	{ name: "empty message", payload: { message: "" } },
+	{ name: "whitespace-only message", payload: { message: "   " } },
+	{ name: "message of 201 chars", payload: { message: "a".repeat(201) } },
+	{ name: "../ path", payload: { files: ["../board.kicad_sch"] } },
+	{ name: "wrong extension", payload: { files: ["board.txt"] } },
+	{ name: "nonexistent file", payload: { files: ["missing.kicad_sch"] } },
+	{ name: "empty files array", payload: { files: [] } },
+];
+
+const ERROR_RESPONSE_CASES = [
 	{
-		name: "empty message",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["board.kicad_sch"],
-			message: "",
-		}),
+		name: "returns 409 when file is unchanged",
+		useDisabledServer: false,
+		payload: { message: "no changes" },
+		expectedStatus: 409,
+		expectedError: "No changes to commit",
 	},
 	{
-		name: "whitespace-only message",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["board.kicad_sch"],
-			message: "   ",
-		}),
-	},
-	{
-		name: "message of 201 chars",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["board.kicad_sch"],
-			message: "a".repeat(201),
-		}),
-	},
-	{
-		name: "../ path",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["../board.kicad_sch"],
-			message: "valid message",
-		}),
-	},
-	{
-		name: "wrong extension",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["board.txt"],
-			message: "valid message",
-		}),
-	},
-	{
-		name: "nonexistent file",
-		body: (dir) => ({
-			repoPath: dir,
-			files: ["missing.kicad_sch"],
-			message: "valid message",
-		}),
-	},
-	{
-		name: "empty files array",
-		body: (dir) => ({
-			repoPath: dir,
-			files: [],
-			message: "valid message",
-		}),
+		name: "returns 403 when allowLocalRepos is false",
+		useDisabledServer: true,
+		payload: { message: "try commit" },
+		expectedStatus: 403,
+		expectedError: "Local repositories are disabled on this server",
 	},
 ];
 
@@ -128,63 +104,51 @@ describe("POST /commit-files", () => {
 
 	before(async () => {
 		repoDir = initTempRepo();
-		disabledServer = await startServer(false);
-		enabledServer = await startServer(true);
+		[disabledServer, enabledServer] = await Promise.all([
+			createTestServer(false),
+			createTestServer(true),
+		]);
 	});
 
 	after(async () => {
-		if (disabledServer) await disabledServer.close();
-		if (enabledServer) await enabledServer.close();
+		await Promise.all([disabledServer?.close(), enabledServer?.close()]);
 		cleanDir(repoDir);
 	});
 
 	for (const tc of VALIDATION_CASES) {
 		test(`returns 400 on ${tc.name}`, async () => {
-			const res = await postCommit(enabledServer.url, tc.body(repoDir));
+			const res = await postCommit(
+				enabledServer.url,
+				commitBody(repoDir, tc.payload),
+			);
 			assert.equal(res.status, 400);
 			assert.equal(typeof res.json?.error, "string");
 			assert.equal(res.json.error.includes(repoDir), false);
 		});
 	}
 
-	test("returns 409 when file is unchanged", async () => {
-		const res = await postCommit(enabledServer.url, {
-			repoPath: repoDir,
-			files: ["board.kicad_sch"],
-			message: "no changes",
+	for (const tc of ERROR_RESPONSE_CASES) {
+		test(tc.name, async () => {
+			const server = tc.useDisabledServer ? disabledServer : enabledServer;
+			const res = await postCommit(server.url, commitBody(repoDir, tc.payload));
+			assert.equal(res.status, tc.expectedStatus);
+			assert.deepEqual(res.json, { error: tc.expectedError });
 		});
-		assert.equal(res.status, 409);
-		assert.deepEqual(res.json, { error: "No changes to commit" });
-	});
+	}
 
 	test("returns 200 with short sha and commits modified file", async () => {
 		const schFile = path.join(repoDir, "board.kicad_sch");
 		fs.writeFileSync(schFile, "(kicad_sch (version 20230121) (mod 1))", "utf8");
-		const res = await postCommit(enabledServer.url, {
-			repoPath: repoDir,
-			files: ["board.kicad_sch"],
-			message: "update schematic",
-		});
+		const res = await postCommit(
+			enabledServer.url,
+			commitBody(repoDir, { message: "update schematic" }),
+		);
 		assert.equal(res.status, 200);
 		assert.equal(typeof res.json?.commit, "string");
 		assert.deepEqual(res.json?.files, ["board.kicad_sch"]);
-		const logMsg = execFileSync("git", ["log", "-1", "--format=%s"], {
-			cwd: repoDir,
-		})
+		const logMsg = gitIn(repoDir, ["log", "-1", "--format=%s"])
 			.toString()
 			.trim();
 		assert.equal(logMsg, "update schematic");
-	});
-
-	test("returns 403 when allowLocalRepos is false", async () => {
-		const res = await postCommit(disabledServer.url, {
-			repoPath: repoDir,
-			files: ["board.kicad_sch"],
-			message: "try commit",
-		});
-		assert.equal(res.status, 403);
-		assert.deepEqual(res.json, {
-			error: "Local repositories are disabled on this server",
-		});
 	});
 });
