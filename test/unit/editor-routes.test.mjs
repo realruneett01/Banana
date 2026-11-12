@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { after, before, describe, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
 import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import { newId } from "../../backend/src/engine/ids.js";
@@ -80,62 +80,38 @@ function bootServer(app) {
 const shutdownServer = (server) =>
 	new Promise((done) => (server ? server.close(done) : done()));
 
-async function postJson(port, path, body) {
-	const targetUrl = `http://127.0.0.1:${port}${path}`;
-	const res = await fetch(targetUrl, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	const text = await res.text();
-	let payload = {};
-	try {
-		payload = JSON.parse(text);
-	} catch {
-		payload = {};
-	}
-	return {
-		status: res.status,
-		headers: res.headers,
-		json: payload,
-		text,
-	};
-}
-
-async function postText(
-	targetPort,
-	endpoint,
-	body,
-	contentType = "text/plain",
-) {
-	const headers = {};
-	if (contentType) {
-		headers["content-type"] = contentType;
-	}
-	const targetUrl = `http://127.0.0.1:${targetPort}${endpoint}`;
-	const res = await fetch(targetUrl, {
+async function sendPost(targetPort, endpoint, body, contentType) {
+	const headers = contentType ? { "content-type": contentType } : {};
+	const res = await fetch(`http://127.0.0.1:${targetPort}${endpoint}`, {
 		method: "POST",
 		headers,
 		body,
 	});
-	let payload = {};
+	const text = await res.text();
+	let json = {};
 	try {
-		payload = await res.json();
+		json = JSON.parse(text);
 	} catch {
-		payload = {};
+		json = {};
 	}
-	return {
-		status: res.status,
-		headers: res.headers,
-		json: payload,
-	};
+	return { status: res.status, headers: res.headers, json, text };
 }
+
+const postJson = (port, path, body) =>
+	sendPost(port, path, JSON.stringify(body), "application/json");
+
+const postText = (port, path, body, contentType = "text/plain") =>
+	sendPost(port, path, body, contentType);
 
 const createCase = (name, body, expected = 400) => ({ name, body, expected });
 
-const CHECK_INVALID_CASES = [
+const COMMON_INVALID_IR_CASES = [
 	createCase("empty body", {}),
 	createCase("null ir", { ir: null }),
+];
+
+const CHECK_INVALID_CASES = [
+	...COMMON_INVALID_IR_CASES,
 	createCase("string ir", { ir: "invalid" }),
 	createCase("malformed ir", { ir: { schemaVersion: 99 } }),
 	createCase("array body", []),
@@ -151,8 +127,7 @@ const SANITIZE_CASES = [
 ];
 
 const EXPORT_INVALID_CASES = [
-	createCase("empty body", {}),
-	createCase("null ir", { ir: null }),
+	...COMMON_INVALID_IR_CASES,
 	createCase("invalid ir schema", { ir: { schemaVersion: 2 } }),
 ];
 
@@ -176,68 +151,32 @@ const SAMPLE_PCB = `(kicad_pcb
 	)
 )`;
 
+const KIND_ERROR = "Query parameter kind must be sch or pcb";
+const SCH_HEADER_ERROR = "File is not a KiCad schematic";
+const PCB_HEADER_ERROR = "File is not a KiCad board";
+
 const IMPORT_INVALID_CASES = [
-	{
-		name: "missing kind",
-		endpoint: "/api/editor/import",
-		body: SAMPLE_SCH,
-		expected: "Query parameter kind must be sch or pcb",
-	},
-	{
-		name: "invalid kind",
-		endpoint: "/api/editor/import?kind=xml",
-		body: SAMPLE_SCH,
-		expected: "Query parameter kind must be sch or pcb",
-	},
-	{
-		name: "constructor kind",
-		endpoint: "/api/editor/import?kind=constructor",
-		body: SAMPLE_SCH,
-		expected: "Query parameter kind must be sch or pcb",
-	},
-	{
-		name: "array kind",
-		endpoint: "/api/editor/import?kind=sch&kind=pcb",
-		body: SAMPLE_SCH,
-		expected: "Query parameter kind must be sch or pcb",
-	},
-	{
-		name: "wrong header for sch",
-		endpoint: "/api/editor/import?kind=sch",
-		body: SAMPLE_PCB,
-		expected: "File is not a KiCad schematic",
-	},
-	{
-		name: "wrong header for pcb",
-		endpoint: "/api/editor/import?kind=pcb",
-		body: SAMPLE_SCH,
-		expected: "File is not a KiCad board",
-	},
-	{
-		name: "garbage text for sch",
-		endpoint: "/api/editor/import?kind=sch",
-		body: "not a kicad schematic",
-		expected: "File is not a KiCad schematic",
-	},
-	{
-		name: "garbage text for pcb",
-		endpoint: "/api/editor/import?kind=pcb",
-		body: "not a kicad board",
-		expected: "File is not a KiCad board",
-	},
-	{
-		name: "empty body for sch",
-		endpoint: "/api/editor/import?kind=sch",
-		body: "",
-		expected: "File is not a KiCad schematic",
-	},
-	{
-		name: "empty body for pcb",
-		endpoint: "/api/editor/import?kind=pcb",
-		body: "",
-		expected: "File is not a KiCad board",
-	},
-];
+	["missing kind", "", SAMPLE_SCH, KIND_ERROR],
+	["invalid kind", "?kind=xml", SAMPLE_SCH, KIND_ERROR],
+	["constructor kind", "?kind=constructor", SAMPLE_SCH, KIND_ERROR],
+	["array kind", "?kind=sch&kind=pcb", SAMPLE_SCH, KIND_ERROR],
+	["wrong header for sch", "?kind=sch", SAMPLE_PCB, SCH_HEADER_ERROR],
+	["wrong header for pcb", "?kind=pcb", SAMPLE_SCH, PCB_HEADER_ERROR],
+	[
+		"garbage text for sch",
+		"?kind=sch",
+		"not a kicad schematic",
+		SCH_HEADER_ERROR,
+	],
+	["garbage text for pcb", "?kind=pcb", "not a kicad board", PCB_HEADER_ERROR],
+	["empty body for sch", "?kind=sch", "", SCH_HEADER_ERROR],
+	["empty body for pcb", "?kind=pcb", "", PCB_HEADER_ERROR],
+].map(([name, qs, body, expected]) => ({
+	name,
+	endpoint: `/api/editor/import${qs}`,
+	body,
+	expected,
+}));
 
 const REPO_DIR = path.resolve("/fake/repo");
 const COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
@@ -245,33 +184,37 @@ const COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
 function createFakeFs(initialFiles = {}) {
 	const files = new Map(Object.entries(initialFiles));
 	const written = new Map();
-	const readFile = async (p) => {
-		if (!files.has(p)) {
-			throw new Error(`ENOENT: ${p}`);
-		}
-		return files.get(p);
+	return {
+		files,
+		written,
+		fsImpl: {
+			readFile: async (target) => {
+				const content = files.get(target);
+				if (content === undefined) {
+					throw new Error(`ENOENT: ${target}`);
+				}
+				return content;
+			},
+			writeFile: async (target, content) => {
+				written.set(target, content);
+			},
+		},
 	};
-	const writeFile = async (p, data) => {
-		written.set(p, data);
-	};
-	return { files, written, fsImpl: { readFile, writeFile } };
 }
 
-function createFakeExecFile(options = {}) {
+function createFakeExecFile() {
 	const calls = [];
-	const isWorkTree = options.isWorkTree ?? true;
-	const commitHash = options.commitHash ?? COMMIT_HASH;
-	const execFileFn = async (cmd, args, opts) => {
-		calls.push({ cmd, args, opts });
-		if (args.includes("--is-inside-work-tree")) {
-			return { stdout: isWorkTree ? "true\n" : "false\n" };
-		}
-		if (args.includes("HEAD")) {
-			return { stdout: `${commitHash}\n` };
-		}
-		return { stdout: "" };
+	return {
+		calls,
+		execFileFn: async (cmd, args, opts) => {
+			calls.push({ cmd, args, opts });
+			if (args.includes("--is-inside-work-tree")) {
+				return { stdout: "true\n" };
+			}
+			const stdout = args.includes("HEAD") ? `${COMMIT_HASH}\n` : "";
+			return { stdout };
+		},
 	};
-	return { calls, execFileFn };
 }
 
 function assertNoWritesOrCommits(fakeFs, fakeExec) {
@@ -295,60 +238,50 @@ function makeValidCommitBody(overrides = {}) {
 	};
 }
 
+const makeCommitCase = (name, overrides) =>
+	createCase(name, overrides ? makeValidCommitBody(overrides) : {});
+
 const COMMIT_INVALID_CASES = [
-	createCase("empty body", {}),
-	createCase("null repoPath", makeValidCommitBody({ repoPath: null })),
-	createCase("non-string repoPath", makeValidCommitBody({ repoPath: 123 })),
-	createCase("empty repoPath", makeValidCommitBody({ repoPath: "" })),
-	createCase(
-		"overly long repoPath",
-		makeValidCommitBody({ repoPath: "x".repeat(1025) }),
-	),
-	createCase("null message", makeValidCommitBody({ message: null })),
-	createCase("empty message", makeValidCommitBody({ message: "" })),
-	createCase(
-		"overly long message",
-		makeValidCommitBody({ message: "m".repeat(201) }),
-	),
-	createCase("non-array files", makeValidCommitBody({ files: "not-array" })),
-	createCase("empty files array", makeValidCommitBody({ files: [] })),
-	createCase(
-		"too many files",
-		makeValidCommitBody({
-			files: [
-				{ path: "a.kicad_sch", kind: "sch", edits: [] },
-				{ path: "b.kicad_pcb", kind: "pcb", edits: [] },
-				{ path: "c.kicad_sch", kind: "sch", edits: [] },
-			],
-		}),
-	),
-	createCase("invalid file entry type", makeValidCommitBody({ files: [null] })),
-	createCase(
-		"missing file path",
-		makeValidCommitBody({ files: [{ kind: "sch", edits: [] }] }),
-	),
-	createCase(
-		"empty file path",
-		makeValidCommitBody({ files: [{ path: "", kind: "sch", edits: [] }] }),
-	),
-	createCase(
-		"invalid file kind",
-		makeValidCommitBody({
-			files: [{ path: "a.kicad_sch", kind: "csv", edits: [] }],
-		}),
-	),
-	createCase(
-		"edits not array",
-		makeValidCommitBody({
-			files: [{ path: "a.kicad_sch", kind: "sch", edits: "none" }],
-		}),
-	),
-	createCase(
-		"edits too large",
-		makeValidCommitBody({
-			files: [{ path: "a.kicad_sch", kind: "sch", edits: new Array(501) }],
-		}),
-	),
+	makeCommitCase("empty body"),
+	makeCommitCase("null repoPath", { repoPath: null }),
+	makeCommitCase("non-string repoPath", { repoPath: 123 }),
+	makeCommitCase("empty repoPath", { repoPath: "" }),
+	makeCommitCase("overly long repoPath", { repoPath: "x".repeat(1025) }),
+	makeCommitCase("null message", { message: null }),
+	makeCommitCase("empty message", { message: "" }),
+	makeCommitCase("overly long message", { message: "m".repeat(201) }),
+	makeCommitCase("non-array files", { files: "not-array" }),
+	makeCommitCase("empty files array", { files: [] }),
+	makeCommitCase("too many files", {
+		files: [
+			{ path: "a.kicad_sch", kind: "sch", edits: [] },
+			{ path: "b.kicad_pcb", kind: "pcb", edits: [] },
+			{ path: "c.kicad_sch", kind: "sch", edits: [] },
+		],
+	}),
+	makeCommitCase("invalid file entry type", { files: [null] }),
+	makeCommitCase("missing file path", { files: [{ kind: "sch", edits: [] }] }),
+	makeCommitCase("empty file path", {
+		files: [{ path: "", kind: "sch", edits: [] }],
+	}),
+	makeCommitCase("invalid file kind", {
+		files: [{ path: "a.kicad_sch", kind: "csv", edits: [] }],
+	}),
+	makeCommitCase("edits not array", {
+		files: [{ path: "a.kicad_sch", kind: "sch", edits: "none" }],
+	}),
+	makeCommitCase("edits too large", {
+		files: [{ path: "a.kicad_sch", kind: "sch", edits: new Array(501) }],
+	}),
+	makeCommitCase("traversal path", {
+		files: [
+			{
+				path: "../secret.kicad_sch",
+				kind: "sch",
+				edits: [{ ref: "R1", op: "setValue", value: "22k" }],
+			},
+		],
+	}),
 ];
 
 function assertErrorResponse(res, expectedStatus) {
@@ -404,6 +337,28 @@ function assertExportTracksAndWarnings(res, expectedTracks) {
 	for (const w of warnings) {
 		assert.strictEqual(w.toLowerCase().includes("todo"), false);
 	}
+}
+
+function assertDownloadResponse(res, expectedDisposition, expectedContentType) {
+	assert.strictEqual(res.status, 200);
+	assert.strictEqual(
+		res.headers.get("content-disposition"),
+		expectedDisposition,
+	);
+	if (expectedContentType) {
+		assert.strictEqual(res.headers.get("content-type"), expectedContentType);
+	}
+}
+
+function assertCommitSuccess(res) {
+	assert.strictEqual(res.status, 200);
+	assert.strictEqual(res.json.commit, COMMIT_HASH);
+}
+
+function assertCommitRejected(res, expectedStatus, expectedError, fakes) {
+	assert.strictEqual(res.status, expectedStatus);
+	assert.strictEqual(res.json.error, expectedError);
+	assertNoWritesOrCommits(fakes.fakeFs, fakes.fakeExec);
 }
 
 const DOWNLOAD_HAPPY_CASES = [
@@ -522,14 +477,10 @@ describe("editor-routes", () => {
 			test(`${tc.kind} returns 200 with attachment and correct content`, async () => {
 				const ir = makeTestIR("TestCircuit", 2);
 				const res = await postJson(port, tc.endpoint, { ir });
-				assert.strictEqual(res.status, 200);
-				assert.strictEqual(
-					res.headers.get("content-type"),
-					tc.expectedContentType,
-				);
-				assert.strictEqual(
-					res.headers.get("content-disposition"),
+				assertDownloadResponse(
+					res,
 					tc.expectedDisposition,
+					tc.expectedContentType,
 				);
 				tc.assertContent(res.text);
 			});
@@ -549,11 +500,7 @@ describe("editor-routes", () => {
 					ir,
 					name: '../evil"name',
 				});
-				assert.strictEqual(res.status, 200);
-				assert.strictEqual(
-					res.headers.get("content-disposition"),
-					tc.expectedDisposition,
-				);
+				assertDownloadResponse(res, tc.expectedDisposition);
 			});
 		}
 	});
@@ -567,22 +514,39 @@ describe("editor-routes", () => {
 			});
 		}
 
-		test("sch happy path returns 200 and ir.parts is an array", async () => {
-			const schText = fs.readFileSync(schFixturePath, "utf8");
-			const res = await postText(port, "/api/editor/import?kind=sch", schText);
-			assert.strictEqual(res.status, 200);
-			assert.ok(Array.isArray(res.json.ir?.parts));
-			assert.strictEqual(res.json.board, null);
-			assert.ok(Array.isArray(res.json.warnings));
-		});
+		const IMPORT_HAPPY_CASES = [
+			{
+				name: "sch happy path returns 200 and ir.parts is an array",
+				kind: "sch",
+				fixture: () => schFixturePath,
+				assertPayload: (json) => {
+					assert.ok(Array.isArray(json.ir?.parts));
+					assert.strictEqual(json.board, null);
+				},
+			},
+			{
+				name: "pcb happy path returns 200 and board is an object",
+				kind: "pcb",
+				fixture: () => pcbFixturePath,
+				assertPayload: (json) => {
+					assert.ok(typeof json.board === "object" && json.board !== null);
+				},
+			},
+		];
 
-		test("pcb happy path returns 200 and board is an object", async () => {
-			const pcbText = fs.readFileSync(pcbFixturePath, "utf8");
-			const res = await postText(port, "/api/editor/import?kind=pcb", pcbText);
-			assert.strictEqual(res.status, 200);
-			assert.ok(typeof res.json.board === "object" && res.json.board !== null);
-			assert.ok(Array.isArray(res.json.warnings));
-		});
+		for (const tc of IMPORT_HAPPY_CASES) {
+			test(tc.name, async () => {
+				const text = fs.readFileSync(tc.fixture(), "utf8");
+				const res = await postText(
+					port,
+					`/api/editor/import?kind=${tc.kind}`,
+					text,
+				);
+				assert.strictEqual(res.status, 200);
+				assert.ok(Array.isArray(res.json.warnings));
+				tc.assertPayload(res.json);
+			});
+		}
 
 		test("accepts valid fixture padded with trailing spaces past 100kb", async () => {
 			const schText = fs.readFileSync(schFixturePath, "utf8");
@@ -639,32 +603,33 @@ describe("editor-routes", () => {
 			await shutdownServer(commitServer);
 		});
 
-		test("refuses with 403 in hosted mode without calling fs or git", async () => {
+		beforeEach(() => {
 			resetHarness();
+		});
+
+		test("refuses with 403 in hosted mode without calling fs or git", async () => {
 			commitApp.locals.allowLocalRepos = false;
 			const res = await postJson(
 				commitPort,
 				"/api/editor/commit",
 				makeValidCommitBody(),
 			);
-			assert.strictEqual(res.status, 403);
-			assert.strictEqual(
-				res.json.error,
+			assertCommitRejected(
+				res,
+				403,
 				"Saving to KiCad files is only available in the desktop app",
+				{ fakeFs, fakeExec },
 			);
-			assertNoWritesOrCommits(fakeFs, fakeExec);
 			assert.strictEqual(fakeExec.calls.length, 0);
 		});
 
 		test("desktop happy path returns commit hash and per-file counts", async () => {
-			resetHarness();
 			const res = await postJson(
 				commitPort,
 				"/api/editor/commit",
 				makeValidCommitBody(),
 			);
-			assert.strictEqual(res.status, 200);
-			assert.strictEqual(res.json.commit, COMMIT_HASH);
+			assertCommitSuccess(res);
 			assert.deepStrictEqual(res.json.files, [
 				{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
 			]);
@@ -673,31 +638,13 @@ describe("editor-routes", () => {
 
 		for (const { name, body } of COMMIT_INVALID_CASES) {
 			test(`rejects ${name} with 400 and writes nothing`, async () => {
-				resetHarness();
 				const res = await postJson(commitPort, "/api/editor/commit", body);
 				assertErrorResponse(res, 400);
 				assertNoWritesOrCommits(fakeFs, fakeExec);
 			});
 		}
 
-		test("rejects traversal path with 400 and writes nothing", async () => {
-			resetHarness();
-			const body = makeValidCommitBody({
-				files: [
-					{
-						path: "../secret.kicad_sch",
-						kind: "sch",
-						edits: [{ ref: "R1", op: "setValue", value: "22k" }],
-					},
-				],
-			});
-			const res = await postJson(commitPort, "/api/editor/commit", body);
-			assertErrorResponse(res, 400);
-			assertNoWritesOrCommits(fakeFs, fakeExec);
-		});
-
 		test("returns 400 when tool applies zero edits", async () => {
-			resetHarness();
 			const body = makeValidCommitBody({
 				files: [
 					{
@@ -708,13 +655,13 @@ describe("editor-routes", () => {
 				],
 			});
 			const res = await postJson(commitPort, "/api/editor/commit", body);
-			assert.strictEqual(res.status, 400);
-			assert.strictEqual(res.json.error, "No edits were applied");
-			assertNoWritesOrCommits(fakeFs, fakeExec);
+			assertCommitRejected(res, 400, "No edits were applied", {
+				fakeFs,
+				fakeExec,
+			});
 		});
 
 		test("returns 500 on unexpected throw without leaking absolute path", async () => {
-			resetHarness();
 			const secretPath = path.resolve("/secret/storage/leak.txt");
 			fakeFs.fsImpl.writeFile = async () => {
 				throw new Error(`Write failed at ${secretPath}: broken disk`);
@@ -731,14 +678,12 @@ describe("editor-routes", () => {
 		});
 
 		test("responds successfully at /editor/commit", async () => {
-			resetHarness();
 			const res = await postJson(
 				commitPort,
 				"/editor/commit",
 				makeValidCommitBody(),
 			);
-			assert.strictEqual(res.status, 200);
-			assert.strictEqual(res.json.commit, COMMIT_HASH);
+			assertCommitSuccess(res);
 		});
 	});
 
@@ -755,30 +700,34 @@ describe("editor-routes", () => {
 			}
 		});
 
-		test("enforces rate limiter headers when allowLocalRepos is false", async () => {
-			app.locals.allowLocalRepos = false;
-			try {
-				const ir = makeTestIR("RateLimitActiveTest", 2);
-				const res = await postJson(port, "/api/editor/check", { ir });
-				assert.strictEqual(res.status, 200);
-				assert.strictEqual(res.headers.get("ratelimit-limit"), "120");
-				assert.notStrictEqual(res.headers.get("ratelimit-remaining"), null);
-			} finally {
-				app.locals.allowLocalRepos = true;
-			}
-		});
+		const RATE_LIMIT_HEADER_CASES = [
+			{
+				name: "enforces rate limiter headers when allowLocalRepos is false",
+				endpoint: "/api/editor/check",
+				body: () => ({ ir: makeTestIR("RateLimitActiveTest", 2) }),
+				expectedStatus: 200,
+			},
+			{
+				name: "enforces rate limiter headers on commit route when allowLocalRepos is false",
+				endpoint: "/api/editor/commit",
+				body: () => ({}),
+				expectedStatus: 403,
+			},
+		];
 
-		test("enforces rate limiter headers on commit route when allowLocalRepos is false", async () => {
-			app.locals.allowLocalRepos = false;
-			try {
-				const res = await postJson(port, "/api/editor/commit", {});
-				assert.strictEqual(res.status, 403);
-				assert.strictEqual(res.headers.get("ratelimit-limit"), "120");
-				assert.notStrictEqual(res.headers.get("ratelimit-remaining"), null);
-			} finally {
-				app.locals.allowLocalRepos = true;
-			}
-		});
+		for (const tc of RATE_LIMIT_HEADER_CASES) {
+			test(tc.name, async () => {
+				app.locals.allowLocalRepos = false;
+				try {
+					const res = await postJson(port, tc.endpoint, tc.body());
+					assert.strictEqual(res.status, tc.expectedStatus);
+					assert.strictEqual(res.headers.get("ratelimit-limit"), "120");
+					assert.notStrictEqual(res.headers.get("ratelimit-remaining"), null);
+				} finally {
+					app.locals.allowLocalRepos = true;
+				}
+			});
+		}
 
 		test("does not rate limit commit route when allowLocalRepos is true", async () => {
 			const res = await postJson(port, "/api/editor/commit", {});
