@@ -1,4 +1,5 @@
 import express from "express";
+import { config } from "../config.js";
 import { createKicadLibrary } from "../engine/kicad-library.js";
 
 const LIB_ID_REGEX = /^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+ -]+$/;
@@ -28,7 +29,10 @@ function resolveLibrary(req) {
 	if (req.app?.locals?.kicadLibrary) {
 		return req.app.locals.kicadLibrary;
 	}
-	lazyLibrary ??= createKicadLibrary();
+	lazyLibrary ??= createKicadLibrary({
+		symbolDir: process.env.KICAD_SYMBOL_DIR || config.kicadSymbolDir,
+		footprintDir: process.env.KICAD_FOOTPRINT_DIR || config.kicadFootprintDir,
+	});
 	return lazyLibrary;
 }
 

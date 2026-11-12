@@ -71,6 +71,38 @@ function resolveKicadCliPath() {
 
 export const KICAD_CLI_PATH = resolveKicadCliPath();
 
+function resolveKicadAssetDir(envVars, subDir, extraDirs = []) {
+	for (const key of envVars) {
+		const val = process.env[key];
+		if (val && fs.existsSync(val)) return val;
+	}
+	const cliDir = path.dirname(KICAD_CLI_PATH);
+	const candidates = [
+		path.resolve(cliDir, "..", "share", "kicad", subDir),
+		path.resolve(cliDir, "..", "SharedSupport", subDir),
+		...extraDirs,
+	];
+	return candidates.find((dir) => fs.existsSync(dir)) || "";
+}
+
+export const KICAD_SYMBOL_DIR = resolveKicadAssetDir(
+	["KICAD_SYMBOL_DIR", "KICAD10_SYMBOL_DIR", "KICAD9_SYMBOL_DIR"],
+	"symbols",
+	["/usr/share/kicad/symbols", "/usr/local/share/kicad/symbols"],
+);
+
+export const KICAD_FOOTPRINT_DIR = resolveKicadAssetDir(
+	["KICAD_FOOTPRINT_DIR", "KICAD10_FOOTPRINT_DIR", "KICAD9_FOOTPRINT_DIR"],
+	"footprints",
+	["/usr/share/kicad/footprints", "/usr/local/share/kicad/footprints"],
+);
+
+export const KICAD_3DMODEL_DIR = resolveKicadAssetDir(
+	["KICAD_3DMODEL_DIR", "KICAD10_3DMODEL_DIR", "KICAD9_3DMODEL_DIR"],
+	"3dmodels",
+	["/usr/share/kicad/3dmodels", "/usr/local/share/kicad/3dmodels"],
+);
+
 // Fail-fast verification at startup: throw immediately if KiCad CLI cannot execute
 export const KICAD_VERSION = (() => {
 	try {
@@ -106,6 +138,9 @@ export const config = {
 	tempStorageDir: BANANA_DATA_DIR,
 	kicadCliPath: KICAD_CLI_PATH,
 	kicadVersion: KICAD_VERSION,
+	kicadSymbolDir: KICAD_SYMBOL_DIR,
+	kicadFootprintDir: KICAD_FOOTPRINT_DIR,
+	kicad3dModelDir: KICAD_3DMODEL_DIR,
 	geminiApiKey: process.env.GEMINI_API_KEY || "",
 	geminiModel: process.env.GEMINI_MODEL || "gemini-3-flash-preview",
 	githubClientId: process.env.GITHUB_CLIENT_ID || "",
