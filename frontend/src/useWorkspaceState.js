@@ -375,8 +375,8 @@ export function useWorkspaceDiffSync({ revisions, gh }) {
 	return { evolution, diffLoader, activeDiffData };
 }
 
-function useWorkspaceLocalRepo(form, revisions) {
-	return useLocalGitRepo({ form, ...revisions });
+function useWorkspaceLocalRepo(form, revisions, onCommitsAutoSelected) {
+	return useLocalGitRepo({ form, ...revisions, onCommitsAutoSelected });
 }
 
 function useWorkspaceFocus(viewer, sideBySideRef, diffCanvasRef) {
@@ -440,11 +440,28 @@ function assembleWorkspaceState(ctx) {
 }
 
 function useWorkspaceIntegrations(form, revisions) {
-	const localRepo = useWorkspaceLocalRepo(form, revisions);
+	const fetchDiffRef = useRef(null);
+	const onCommitsAutoSelected = useCallback(
+		(selection) => {
+			fetchDiffRef.current?.({
+				repoPath: revisions.repoPath,
+				...selection,
+			});
+		},
+		[revisions.repoPath],
+	);
+	const localRepo = useWorkspaceLocalRepo(
+		form,
+		revisions,
+		onCommitsAutoSelected,
+	);
 	const gh = useBackendHealthAndGithub({
 		onMountRepoInit: () => localRepo.loadRepoInfo(revisions.repoPath, true),
 	});
 	const diffSync = useWorkspaceDiffSync({ revisions, gh });
+	useEffect(() => {
+		fetchDiffRef.current = diffSync.diffLoader.fetchDiff;
+	}, [diffSync.diffLoader.fetchDiff]);
 	return { localRepo, gh, ...diffSync };
 }
 

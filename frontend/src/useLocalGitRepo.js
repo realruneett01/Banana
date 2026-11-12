@@ -1,6 +1,7 @@
 import { message } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "./config.js";
+import { onCommitCreated } from "./designEvents.js";
 
 function isKiCadDesignFile(filePath) {
 	return filePath?.endsWith(".kicad_pcb") || filePath?.endsWith(".kicad_sch");
@@ -29,6 +30,74 @@ function updateSelectedCommits(commits, setBaseCommit, setTargetCommit, form) {
 		form.setFieldValue("targetCommit", nextTarget);
 		return nextTarget;
 	});
+}
+
+function selectCommitPair(commits, previousTarget) {
+	const hasPrevious = Boolean(
+		previousTarget && commits.some((c) => c.hash === previousTarget),
+	);
+	const baseCommit = hasPrevious ? previousTarget : (commits[1]?.hash ?? "");
+	const targetCommit = commits[0]?.hash ?? "";
+	return { baseCommit, targetCommit };
+}
+
+function applyAutoSelection(commits, pending, ctx) {
+	const { baseCommit, targetCommit } = selectCommitPair(
+		commits,
+		pending.previousTarget,
+	);
+	ctx.setBaseCommit(baseCommit);
+	ctx.setTargetCommit(targetCommit);
+	ctx.form.setFieldsValue({ baseCommit, targetCommit });
+	const relativeFilePath = pending.filePath || ctx.relativeFilePath;
+	ctx.onCommitsAutoSelected?.({
+		baseCommit,
+		targetCommit,
+		relativeFilePath,
+	});
+}
+
+function handleFetchedCommits(commits, ctx) {
+	ctx.setRepoInfo((prev) => (prev ? { ...prev, commits } : null));
+	if (ctx.pendingRef.current) {
+		const pending = ctx.pendingRef.current;
+		applyAutoSelection(commits, pending, ctx);
+		ctx.pendingRef.current = null;
+		return;
+	}
+	updateSelectedCommits(
+		commits,
+		ctx.setBaseCommit,
+		ctx.setTargetCommit,
+		ctx.form,
+	);
+}
+
+function handleCommitEvent(detail, ctx) {
+	const current = ctx.repoPath?.trim();
+	const incoming = detail?.repoPath?.trim();
+	if (!current || current !== incoming) return;
+
+	ctx.pendingRef.current = {
+		previousTarget: ctx.form.getFieldValue("targetCommit"),
+		filePath: detail?.filePath,
+	};
+	if (typeof detail?.filePath === "string" && detail.filePath.length > 0) {
+		ctx.setRelativeFilePath(detail.filePath);
+	}
+	ctx.setRefreshKey((k) => k + 1);
+}
+
+function fetchFileCommits(repoPath, relativeFilePath, onData) {
+	const query = `repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`;
+	fetch(`${API_BASE_URL}/api/git/commits?${query}`)
+		.then((res) => (res.ok ? res.json() : null))
+		.then((data) => {
+			if (data?.commits) onData(data.commits);
+		})
+		.catch((err) =>
+			console.error("Failed to fetch file-specific commits:", err),
+		);
 }
 
 function parseDroppedFile(file) {
@@ -102,39 +171,37 @@ function useRepoInfoLoader({
 function useFileCommitsEffect({
 	repoPath,
 	relativeFilePath,
+	refreshKey,
 	form,
 	setBaseCommit,
 	setTargetCommit,
 	setRepoInfo,
+	pendingRef,
+	onCommitsAutoSelected,
 }) {
 	useEffect(() => {
-		if (!repoPath || !relativeFilePath) return;
-
-		const url = `${API_BASE_URL}/api/git/commits?repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`;
-		fetch(url)
-			.then((res) => (res.ok ? res.json() : null))
-			.then((data) => {
-				if (!data?.commits) return;
-				setRepoInfo((prev) =>
-					prev ? { ...prev, commits: data.commits } : null,
-				);
-				updateSelectedCommits(
-					data.commits,
-					setBaseCommit,
-					setTargetCommit,
-					form,
-				);
-			})
-			.catch((err) =>
-				console.error("Failed to fetch file-specific commits:", err),
-			);
+		if (!repoPath || !relativeFilePath || refreshKey === undefined) return;
+		fetchFileCommits(repoPath, relativeFilePath, (commits) => {
+			handleFetchedCommits(commits, {
+				form,
+				relativeFilePath,
+				setBaseCommit,
+				setTargetCommit,
+				setRepoInfo,
+				pendingRef,
+				onCommitsAutoSelected,
+			});
+		});
 	}, [
 		repoPath,
 		relativeFilePath,
+		refreshKey,
 		form,
 		setBaseCommit,
 		setTargetCommit,
 		setRepoInfo,
+		pendingRef,
+		onCommitsAutoSelected,
 	]);
 }
 
@@ -231,9 +298,28 @@ export function useLocalGitRepo(options) {
 		setRelativeFilePath,
 		setBaseCommit,
 		setTargetCommit,
+		onCommitsAutoSelected,
 	} = options;
 
 	const [compareBranches, setCompareBranches] = useState(false);
+	const [refreshKey, setRefreshKey] = useState(0);
+	const pendingRef = useRef(null);
+
+	useEffect(() => {
+		const unsubscribe = onCommitCreated((detail) => {
+			handleCommitEvent(detail, {
+				repoPath,
+				form,
+				setRelativeFilePath,
+				setRefreshKey,
+				pendingRef,
+			});
+		});
+		return () => {
+			if (typeof unsubscribe === "function") unsubscribe();
+		};
+	}, [repoPath, form, setRelativeFilePath]);
+
 	const { repoInfo, setRepoInfo, loadRepoInfo } = useRepoInfoLoader({
 		form,
 		relativeFilePath,
@@ -243,10 +329,13 @@ export function useLocalGitRepo(options) {
 	useFileCommitsEffect({
 		repoPath,
 		relativeFilePath,
+		refreshKey,
 		form,
 		setBaseCommit,
 		setTargetCommit,
 		setRepoInfo,
+		pendingRef,
+		onCommitsAutoSelected,
 	});
 	const { changedFiles, setChangedFiles, fetchChangedFiles } =
 		useChangedFilesFetcher({ form, setRelativeFilePath });
