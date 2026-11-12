@@ -99,11 +99,8 @@ export function parseSiValue(val) {
 
 function sanitizeNodeName(name, fallbackId) {
 	const raw = String(name || fallbackId || "").trim();
-	if (raw.startsWith("n_")) {
-		const alnum = raw.slice(2).replace(/[^a-zA-Z0-9]/g, "");
-		return `n_${alnum || "net"}`;
-	}
-	const alnum = raw.replace(/[^a-zA-Z0-9]/g, "");
+	const source = raw.startsWith("n_") ? raw.slice(2) : raw;
+	const alnum = source.replace(/[^a-zA-Z0-9]/g, "");
 	return `n_${alnum || "net"}`;
 }
 
@@ -116,9 +113,8 @@ function createNodeResolver(groundNames) {
 		}
 		const base = sanitizeNodeName(net.name, net.id || `net${index}`);
 		let candidate = base;
-		let counter = 2;
-		while (used.has(candidate)) {
-			candidate = `${base}_${counter++}`;
+		for (let i = 2; used.has(candidate); i++) {
+			candidate = `${base}_${i}`;
 		}
 		used.add(candidate);
 		return candidate;
@@ -146,6 +142,10 @@ function isDiodeOrLed(part) {
 	].some(Boolean);
 }
 
+function warnUnconnectedPin(ref, pin, warnings) {
+	warnings.push(`Part '${ref}' pin '${pin}' is unconnected`);
+}
+
 function getPartPins(part, pinToNet, nodeMap, warnings) {
 	const isDiode = isDiodeOrLed(part);
 	let net1 = pinToNet.get(`${part.id}:1`);
@@ -155,14 +155,10 @@ function getPartPins(part, pinToNet, nodeMap, warnings) {
 		net2 = net2 ?? pinToNet.get(`${part.id}:K`) ?? pinToNet.get(`${part.id}:k`);
 	}
 	if (!net1) {
-		warnings.push(
-			`Part '${part.ref}' pin '${isDiode ? "A" : "1"}' is unconnected`,
-		);
+		warnUnconnectedPin(part.ref, isDiode ? "A" : "1", warnings);
 	}
 	if (!net2) {
-		warnings.push(
-			`Part '${part.ref}' pin '${isDiode ? "K" : "2"}' is unconnected`,
-		);
+		warnUnconnectedPin(part.ref, isDiode ? "K" : "2", warnings);
 	}
 	if (!net1 || !net2) {
 		return null;
@@ -187,6 +183,25 @@ function sanitizeElementName(rawRef, prefix, usedNames) {
 	return candidate;
 }
 
+function bindElementName(part, prefix, ctx) {
+	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
+	ctx.elementMap[part.id] = name;
+	return name;
+}
+
+function formatElement(name, pins, spec) {
+	return `${name} ${pins.node1} ${pins.node2} ${spec}`;
+}
+
+function parsePartValue(part, raw, kind, warnings) {
+	const val = parseSiValue(raw);
+	if (Number.isNaN(val)) {
+		warnings.push(`Part '${part.ref}' has unparsable ${kind} '${raw}'`);
+		return null;
+	}
+	return val;
+}
+
 function getPassivePrefix(ref) {
 	const first = String(ref || "")
 		.trim()[0]
@@ -195,80 +210,63 @@ function getPassivePrefix(ref) {
 }
 
 function buildPassive(part, pins, ctx) {
-	const val = parseSiValue(part.value);
-	if (Number.isNaN(val)) {
-		ctx.warnings.push(
-			`Part '${part.ref}' has unparsable value '${part.value}'`,
-		);
+	const val = parsePartValue(part, part.value, "value", ctx.warnings);
+	if (val === null) {
 		return null;
 	}
 	const prefix = getPassivePrefix(part.ref);
-	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
-	ctx.elementMap[part.id] = name;
-	return `${name} ${pins.node1} ${pins.node2} ${val}`;
+	const name = bindElementName(part, prefix, ctx);
+	return formatElement(name, pins, val);
 }
 
 function buildSwitch(part, pins, ctx) {
-	const name = sanitizeElementName(part.ref, "R", ctx.usedElementNames);
+	const name = bindElementName(part, "R", ctx);
 	const resistance = part.props?.closed === true ? 0.001 : 1e9;
-	ctx.elementMap[part.id] = name;
-	return `${name} ${pins.node1} ${pins.node2} ${resistance}`;
+	return formatElement(name, pins, resistance);
 }
 
 function buildFuse(part, pins, ctx) {
-	const name = sanitizeElementName(part.ref, "R", ctx.usedElementNames);
-	ctx.elementMap[part.id] = name;
-	return `${name} ${pins.node1} ${pins.node2} 0.01`;
+	const name = bindElementName(part, "R", ctx);
+	return formatElement(name, pins, 0.01);
 }
 
 function buildDiode(part, pins, ctx) {
 	const symbol = String(part.symbol || "").toLowerCase();
 	const isLed =
 		part.ref.toUpperCase().startsWith("LED") || symbol.includes("led");
-	const name = sanitizeElementName(part.ref, "D", ctx.usedElementNames);
-	ctx.elementMap[part.id] = name;
+	const name = bindElementName(part, "D", ctx);
 	if (isLed) {
 		ctx.hasLed = true;
-		return `${name} ${pins.node1} ${pins.node2} LED`;
+		return formatElement(name, pins, "LED");
 	}
 	ctx.hasDiode = true;
-	return `${name} ${pins.node1} ${pins.node2} D`;
+	return formatElement(name, pins, "D");
 }
 
 function buildSource(part, pins, ctx) {
 	const isVoltage = part.ref.toUpperCase().startsWith("V");
-	const raw = isVoltage
-		? (part.props?.voltage ?? part.value)
-		: (part.props?.current ?? part.value);
-	const val = parseSiValue(raw);
-	if (Number.isNaN(val)) {
-		const kind = isVoltage ? "voltage" : "current";
-		ctx.warnings.push(`Part '${part.ref}' has unparsable ${kind} '${raw}'`);
+	const kind = isVoltage ? "voltage" : "current";
+	const raw = part.props?.[kind] ?? part.value;
+	const val = parsePartValue(part, raw, kind, ctx.warnings);
+	if (val === null) {
 		return null;
 	}
 	const prefix = isVoltage ? "V" : "I";
-	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
-	ctx.elementMap[part.id] = name;
-	return `${name} ${pins.node1} ${pins.node2} DC ${val}`;
+	const name = bindElementName(part, prefix, ctx);
+	return formatElement(name, pins, `DC ${val}`);
 }
 
+const ELEMENT_HANDLERS = [
+	{ pattern: /^(LED|D)/, handler: buildDiode },
+	{ pattern: /^(SW|S)/, handler: buildSwitch },
+	{ pattern: /^[RCL]/, handler: buildPassive },
+	{ pattern: /^[VI]/, handler: buildSource },
+	{ pattern: /^F/, handler: buildFuse },
+];
+
 function getElementHandler(upperRef) {
-	if (upperRef.startsWith("LED") || upperRef.startsWith("D")) {
-		return buildDiode;
-	}
-	if (upperRef.startsWith("SW") || upperRef.startsWith("S")) {
-		return buildSwitch;
-	}
-	if (/^[RCL]/.test(upperRef)) {
-		return buildPassive;
-	}
-	if (upperRef.startsWith("V") || upperRef.startsWith("I")) {
-		return buildSource;
-	}
-	if (upperRef.startsWith("F")) {
-		return buildFuse;
-	}
-	return null;
+	const entry = ELEMENT_HANDLERS.find((e) => e.pattern.test(upperRef));
+	return entry ? entry.handler : null;
 }
 
 function getModelPins(part, pinRoles, ctx) {
@@ -276,7 +274,7 @@ function getModelPins(part, pinRoles, ctx) {
 	for (const [role, pinNumber] of Object.entries(pinRoles)) {
 		const netId = ctx.pinToNet.get(`${part.id}:${pinNumber}`);
 		if (!netId) {
-			ctx.warnings.push(`Part '${part.ref}' pin '${pinNumber}' is unconnected`);
+			warnUnconnectedPin(part.ref, pinNumber, ctx.warnings);
 			return null;
 		}
 		nodes[role] = ctx.nodeMap[netId];
@@ -297,19 +295,14 @@ function processPart(part, ctx) {
 		return handler(part, pins, ctx);
 	}
 	const model = modelForPart(part);
-	if (!model) {
-		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
-		return null;
-	}
-	const nodes = getModelPins(part, model.pinRoles, ctx);
+	const nodes = model ? getModelPins(part, model.pinRoles, ctx) : null;
 	if (!nodes) {
 		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
 		return null;
 	}
 	const rawFirst = String(part.ref || "").trim()[0];
 	const prefix = /^[A-Za-z]$/.test(rawFirst) ? rawFirst : "U";
-	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
-	ctx.elementMap[part.id] = name;
+	const name = bindElementName(part, prefix, ctx);
 	const lines = model.build(nodes, name, model.params);
 	return lines.join("\n");
 }
