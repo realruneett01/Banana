@@ -11,16 +11,37 @@ function nodeSym(node) {
 	return typeof node === "object" ? (node.sym ?? "") : String(node);
 }
 
-function extractPropRef(child) {
-	if (!Array.isArray(child) || child.length < 3) return null;
+function isString(val) {
+	return typeof val === "string" && val.length > 0;
+}
+
+function isPresent(val) {
+	return val !== undefined && val !== null;
+}
+
+function isPositiveNumber(val) {
+	return Number.isFinite(val) && val > 0;
+}
+
+function findChildByTag(node, tag) {
+	if (!Array.isArray(node)) return null;
+	return node.find((c) => Array.isArray(c) && c[0]?.sym === tag) ?? null;
+}
+
+function matchProp(child, name) {
+	if (!Array.isArray(child) || child.length < 3) return false;
 	const head = child[0]?.sym;
-	if (head === "property" && nodeSym(child[1]) === "Reference") {
-		return nodeSym(child[2]);
+	if (head === "property") {
+		return nodeSym(child[1]) === name;
 	}
-	if (head === "fp_text" && nodeSym(child[1]).toLowerCase() === "reference") {
-		return nodeSym(child[2]);
+	if (head === "fp_text") {
+		return nodeSym(child[1]).toLowerCase() === name.toLowerCase();
 	}
-	return null;
+	return false;
+}
+
+function extractPropRef(child) {
+	return matchProp(child, "Reference") ? nodeSym(child[2]) : null;
 }
 
 function getFootprintRef(fpNode) {
@@ -30,6 +51,18 @@ function getFootprintRef(fpNode) {
 		if (ref !== null) return ref;
 	}
 	return null;
+}
+
+function findFootprintIndex(ast, ref) {
+	for (let i = 1; i < ast.length; i++) {
+		if (getFootprintRef(ast[i]) === ref) return i;
+	}
+	return -1;
+}
+
+function findFootprintNode(ast, ref) {
+	const idx = findFootprintIndex(ast, ref);
+	return idx !== -1 ? ast[idx] : null;
 }
 
 function flipLayerString(str) {
@@ -81,6 +114,14 @@ function refreshChildUuids(node, newUuid) {
 	}
 }
 
+function findLastIndexByHeads(ast, heads) {
+	for (let i = ast.length - 1; i >= 1; i--) {
+		const head = ast[i]?.[0]?.sym;
+		if (heads.includes(head)) return i;
+	}
+	return -1;
+}
+
 function findFootprintInsertIndex(ast) {
 	let lastIdx = -1;
 	for (let i = 1; i < ast.length; i++) {
@@ -90,23 +131,8 @@ function findFootprintInsertIndex(ast) {
 		}
 	}
 	if (lastIdx !== -1) return lastIdx + 1;
-	for (let i = ast.length - 1; i >= 1; i--) {
-		const head = ast[i]?.[0]?.sym;
-		if (head === "net" || head === "setup") return i + 1;
-	}
-	return ast.length;
-}
-
-function matchProp(child, name) {
-	if (!Array.isArray(child) || child.length < 3) return false;
-	const head = child[0]?.sym;
-	if (head === "property") {
-		return nodeSym(child[1]) === name;
-	}
-	if (head === "fp_text") {
-		return nodeSym(child[1]).toLowerCase() === name.toLowerCase();
-	}
-	return false;
+	const fallback = findLastIndexByHeads(ast, ["net", "setup"]);
+	return fallback !== -1 ? fallback + 1 : ast.length;
 }
 
 function updateOrAddProperty(fpNode, name, value, defaultLayer) {
@@ -142,11 +168,8 @@ function findNetDecl(ast, netName) {
 }
 
 function findNetInsertIndex(ast) {
-	for (let i = ast.length - 1; i >= 1; i--) {
-		const head = ast[i]?.[0]?.sym;
-		if (head === "setup" || head === "layers") return i + 1;
-	}
-	return 1;
+	const idx = findLastIndexByHeads(ast, ["setup", "layers"]);
+	return idx !== -1 ? idx + 1 : 1;
 }
 
 function ensureNetDeclaration(ast, netName) {
@@ -164,7 +187,7 @@ function resolveNetNumber(ast, net) {
 	if (typeof net === "number" && Number.isFinite(net)) {
 		return net;
 	}
-	if (typeof net === "string" && net.length > 0) {
+	if (isString(net)) {
 		const decl = findNetDecl(ast, net);
 		if (decl.targetNetNum !== null) return decl.targetNetNum;
 		const num = Number(net);
@@ -175,9 +198,7 @@ function resolveNetNumber(ast, net) {
 }
 
 function applyFootprintSideB(fpNode) {
-	const layerNode = fpNode.find(
-		(c) => Array.isArray(c) && c[0]?.sym === "layer",
-	);
+	const layerNode = findChildByTag(fpNode, "layer");
 	if (layerNode) {
 		layerNode[1] = flipLayerString(layerNode[1]);
 	} else {
@@ -194,7 +215,7 @@ function applyFootprintSideB(fpNode) {
 }
 
 function updateFootprintAt(fpNode, x, y, rot) {
-	const atNode = fpNode.find((c) => Array.isArray(c) && c[0]?.sym === "at");
+	const atNode = findChildByTag(fpNode, "at");
 	const rx = roundCoord(x);
 	const ry = roundCoord(y);
 	const rrot = roundCoord(rot);
@@ -208,7 +229,7 @@ function updateFootprintAt(fpNode, x, y, rot) {
 }
 
 function updateFootprintUuids(fpNode, newUuid) {
-	const fpUuid = fpNode.find((c) => Array.isArray(c) && c[0]?.sym === "uuid");
+	const fpUuid = findChildByTag(fpNode, "uuid");
 	if (fpUuid) {
 		fpUuid[1] = newUuid();
 	} else {
@@ -222,11 +243,21 @@ function updateFootprintUuids(fpNode, newUuid) {
 	}
 }
 
-function validateAddFootprint(edit) {
-	if (!edit.libId || typeof edit.libId !== "string") return "Invalid libId";
-	if (!edit.source || typeof edit.source !== "string") return "Invalid source";
-	if (!edit.ref || typeof edit.ref !== "string") return "Invalid ref";
-	if (edit.value === undefined || edit.value === null) return "Invalid value";
+const ADD_FP_STRING_FIELDS = [
+	["libId", "Invalid libId"],
+	["source", "Invalid source"],
+	["ref", "Invalid ref"],
+];
+
+function validateAddFootprintFields(edit) {
+	for (const [key, msg] of ADD_FP_STRING_FIELDS) {
+		if (!isString(edit[key])) return msg;
+	}
+	if (!isPresent(edit.value)) return "Invalid value";
+	return null;
+}
+
+function validateAddFootprintCoords(edit) {
 	if (!Number.isFinite(edit.x) || !Number.isFinite(edit.y)) {
 		return "Non-finite coordinates";
 	}
@@ -234,6 +265,10 @@ function validateAddFootprint(edit) {
 		return "Non-finite rotation";
 	}
 	return null;
+}
+
+function validateAddFootprint(edit) {
+	return validateAddFootprintFields(edit) ?? validateAddFootprintCoords(edit);
 }
 
 function parseFootprintSource(source) {
@@ -248,12 +283,7 @@ function parseFootprintSource(source) {
 	}
 }
 
-function handleAddFootprint(ast, edit, newUuid) {
-	const err = validateAddFootprint(edit);
-	if (err) return { ok: false, error: err };
-	const parsed = parseFootprintSource(edit.source);
-	if (!parsed.ok) return parsed;
-	const fpNode = parsed.node;
+function configureFootprintNode(fpNode, edit, newUuid) {
 	fpNode[1] = edit.libId;
 	updateFootprintAt(fpNode, edit.x, edit.y, edit.rot ?? 0);
 	const side = edit.side ?? "F";
@@ -263,19 +293,24 @@ function handleAddFootprint(ast, edit, newUuid) {
 	updateOrAddProperty(fpNode, "Value", String(edit.value), valLayer);
 	updateFootprintUuids(fpNode, newUuid);
 	if (side === "B") applyFootprintSideB(fpNode);
+}
+
+function handleAddFootprint(ast, edit, newUuid) {
+	const err = validateAddFootprint(edit);
+	if (err) return { ok: false, error: err };
+	const parsed = parseFootprintSource(edit.source);
+	if (!parsed.ok) return parsed;
+	configureFootprintNode(parsed.node, edit, newUuid);
 	const insertIdx = findFootprintInsertIndex(ast);
-	ast.splice(insertIdx, 0, fpNode);
+	ast.splice(insertIdx, 0, parsed.node);
 	return { ok: true };
 }
 
 function handleDeleteFootprint(ast, edit) {
-	if (!edit.ref || typeof edit.ref !== "string") {
+	if (!isString(edit.ref)) {
 		return { ok: false, error: "Invalid ref" };
 	}
-	const idx = ast.findIndex(
-		(node, i) =>
-			i > 0 && Array.isArray(node) && getFootprintRef(node) === edit.ref,
-	);
+	const idx = findFootprintIndex(ast, edit.ref);
 	if (idx === -1) {
 		return { ok: false, error: `Footprint ${edit.ref} not found` };
 	}
@@ -283,20 +318,17 @@ function handleDeleteFootprint(ast, edit) {
 	return { ok: true };
 }
 
+function validateSetFootprintField(edit) {
+	if (!isString(edit.ref)) return "Invalid ref";
+	if (!isString(edit.name)) return "Invalid name";
+	if (!isPresent(edit.value)) return "Invalid value";
+	return null;
+}
+
 function handleSetFootprintField(ast, edit) {
-	if (!edit.ref || typeof edit.ref !== "string") {
-		return { ok: false, error: "Invalid ref" };
-	}
-	if (!edit.name || typeof edit.name !== "string") {
-		return { ok: false, error: "Invalid name" };
-	}
-	if (edit.value === undefined || edit.value === null) {
-		return { ok: false, error: "Invalid value" };
-	}
-	const fpNode = ast.find(
-		(node, i) =>
-			i > 0 && Array.isArray(node) && getFootprintRef(node) === edit.ref,
-	);
+	const err = validateSetFootprintField(edit);
+	if (err) return { ok: false, error: err };
+	const fpNode = findFootprintNode(ast, edit.ref);
 	if (!fpNode) {
 		return { ok: false, error: `Footprint ${edit.ref} not found` };
 	}
@@ -306,9 +338,7 @@ function handleSetFootprintField(ast, edit) {
 
 function updateMatchingPads(matchingPads, netNum, netName) {
 	for (const padNode of matchingPads) {
-		const netChild = padNode.find(
-			(c) => Array.isArray(c) && c[0]?.sym === "net",
-		);
+		const netChild = findChildByTag(padNode, "net");
 		if (netChild) {
 			netChild[1] = netNum;
 			netChild[2] = netName;
@@ -318,24 +348,29 @@ function updateMatchingPads(matchingPads, netNum, netName) {
 	}
 }
 
+function isPadMatching(child, padStr) {
+	if (!Array.isArray(child) || child[0]?.sym !== "pad") return false;
+	return String(child[1]) === padStr;
+}
+
+function findMatchingPads(fpNode, pad) {
+	const padStr = String(pad);
+	return fpNode.filter((c) => isPadMatching(c, padStr));
+}
+
+function validateSetPadNet(edit) {
+	if (!isString(edit.ref)) return "Invalid ref";
+	if (!isPresent(edit.pad)) return "Invalid pad";
+	if (!isString(edit.net)) return "Invalid net";
+	return null;
+}
+
 function handleSetPadNet(ast, edit) {
-	if (!edit.ref || typeof edit.ref !== "string") {
-		return { ok: false, error: "Invalid ref" };
-	}
-	if (edit.pad === undefined || edit.pad === null) {
-		return { ok: false, error: "Invalid pad" };
-	}
-	if (!edit.net || typeof edit.net !== "string") {
-		return { ok: false, error: "Invalid net" };
-	}
-	const fpNode = ast.find(
-		(n, i) => i > 0 && Array.isArray(n) && getFootprintRef(n) === edit.ref,
-	);
+	const err = validateSetPadNet(edit);
+	if (err) return { ok: false, error: err };
+	const fpNode = findFootprintNode(ast, edit.ref);
 	if (!fpNode) return { ok: false, error: `Footprint ${edit.ref} not found` };
-	const padStr = String(edit.pad);
-	const matching = fpNode.filter(
-		(c) => Array.isArray(c) && c[0]?.sym === "pad" && String(c[1]) === padStr,
-	);
+	const matching = findMatchingPads(fpNode, edit.pad);
 	if (matching.length === 0) {
 		return { ok: false, error: `Pad ${edit.pad} not found on ${edit.ref}` };
 	}
@@ -344,21 +379,25 @@ function handleSetPadNet(ast, edit) {
 	return { ok: true };
 }
 
+function isValidPoint(p) {
+	return Boolean(p && Number.isFinite(p.x) && Number.isFinite(p.y));
+}
+
 function validateTrackPoints(points) {
 	if (!Array.isArray(points) || points.length < 2) return false;
-	return points.every((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y));
+	return points.every(isValidPoint);
+}
+
+function validateTrackParams(edit) {
+	if (!isString(edit.layer)) return "Invalid layer";
+	if (!isPositiveNumber(edit.width)) return "Invalid width";
+	if (!validateTrackPoints(edit.points)) return "Invalid points";
+	return null;
 }
 
 function handleAddTrack(ast, edit, newUuid) {
-	if (!edit.layer || typeof edit.layer !== "string") {
-		return { ok: false, error: "Invalid layer" };
-	}
-	if (!Number.isFinite(edit.width) || edit.width <= 0) {
-		return { ok: false, error: "Invalid width" };
-	}
-	if (!validateTrackPoints(edit.points)) {
-		return { ok: false, error: "Invalid points" };
-	}
+	const err = validateTrackParams(edit);
+	if (err) return { ok: false, error: err };
 	const netNum = resolveNetNumber(ast, edit.net);
 	if (netNum === null) return { ok: false, error: "Invalid net" };
 	const w = roundCoord(edit.width);
@@ -378,18 +417,20 @@ function handleAddTrack(ast, edit, newUuid) {
 	return { ok: true };
 }
 
-function handleAddVia(ast, edit, newUuid) {
+function validateViaParams(edit, size, drill) {
 	if (!Number.isFinite(edit.x) || !Number.isFinite(edit.y)) {
-		return { ok: false, error: "Non-finite coords" };
+		return "Non-finite coords";
 	}
+	if (!isPositiveNumber(size)) return "Invalid via size";
+	if (!isPositiveNumber(drill)) return "Invalid via drill";
+	return null;
+}
+
+function handleAddVia(ast, edit, newUuid) {
 	const size = edit.size ?? 0.6;
 	const drill = edit.drill ?? 0.3;
-	if (!Number.isFinite(size) || size <= 0) {
-		return { ok: false, error: "Invalid via size" };
-	}
-	if (!Number.isFinite(drill) || drill <= 0) {
-		return { ok: false, error: "Invalid via drill" };
-	}
+	const err = validateViaParams(edit, size, drill);
+	if (err) return { ok: false, error: err };
 	const netNum = resolveNetNumber(ast, edit.net);
 	if (netNum === null) return { ok: false, error: "Invalid net" };
 	ast.push([
@@ -408,12 +449,12 @@ function isTrackNode(node, uuid) {
 	if (!Array.isArray(node)) return false;
 	const head = node[0]?.sym;
 	if (!["segment", "via", "arc"].includes(head)) return false;
-	const uuidChild = node.find((c) => Array.isArray(c) && c[0]?.sym === "uuid");
+	const uuidChild = findChildByTag(node, "uuid");
 	return uuidChild?.[1] === uuid;
 }
 
 function handleDeleteTrack(ast, edit) {
-	if (!edit.uuid || typeof edit.uuid !== "string") {
+	if (!isString(edit.uuid)) {
 		return { ok: false, error: "Invalid track uuid" };
 	}
 	const idx = ast.findIndex((node, i) => i > 0 && isTrackNode(node, edit.uuid));
@@ -445,6 +486,18 @@ function dispatchEdit(ast, edit, newUuid) {
 	return handler(ast, edit, newUuid);
 }
 
+function parsePcbAst(text) {
+	try {
+		const ast = parse(text);
+		if (!Array.isArray(ast) || ast[0]?.sym !== "kicad_pcb") {
+			return { ok: false, error: "Input is not a kicad_pcb sexpr" };
+		}
+		return { ok: true, ast };
+	} catch (e) {
+		return { ok: false, error: `Parse error: ${e.message}` };
+	}
+}
+
 export function applyPcbEdits(text, edits, { newUuid = randomUUID } = {}) {
 	if (typeof text !== "string") {
 		return { ok: false, error: "text must be a string" };
@@ -452,18 +505,11 @@ export function applyPcbEdits(text, edits, { newUuid = randomUUID } = {}) {
 	if (!Array.isArray(edits)) {
 		return { ok: false, error: "edits must be an array" };
 	}
-	let ast;
-	try {
-		ast = parse(text);
-	} catch (e) {
-		return { ok: false, error: `Parse error: ${e.message}` };
-	}
-	if (!Array.isArray(ast) || ast[0]?.sym !== "kicad_pcb") {
-		return { ok: false, error: "Input is not a kicad_pcb sexpr" };
-	}
+	const parsed = parsePcbAst(text);
+	if (!parsed.ok) return parsed;
 	for (const edit of edits) {
-		const res = dispatchEdit(ast, edit, newUuid);
+		const res = dispatchEdit(parsed.ast, edit, newUuid);
 		if (!res.ok) return res;
 	}
-	return { ok: true, text: serialize(ast) };
+	return { ok: true, text: serialize(parsed.ast) };
 }
