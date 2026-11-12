@@ -9,12 +9,35 @@ import {
 	SwapOutlined,
 	UndoOutlined,
 } from "@ant-design/icons";
-import { Button, Modal, message, Radio, Space, Tabs, Tooltip } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	Button,
+	Modal,
+	message,
+	Radio,
+	Select,
+	Space,
+	Tabs,
+	Tooltip,
+} from "antd";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import IssuesPanel from "../components/IssuesPanel.jsx";
 import { emitCommitCreated } from "../designEvents.js";
 import { annotate } from "./annotate.js";
 import BoardTools from "./BoardTools.jsx";
+import {
+	get,
+	setCursor,
+	setGrid,
+	setOrigin,
+	setUnits,
+	subscribe,
+} from "./editorStatus.js";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
@@ -22,6 +45,7 @@ import SaveCommitDialog from "./SaveCommitDialog.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
 import { useEditorDocument } from "./useEditorDocument.js";
 import { useLiveChecks } from "./useLiveChecks.js";
+import { formatCoord, GRID_PRESETS } from "./viewport.js";
 
 const ROOT_STYLE = Object.freeze({
 	display: "flex",
@@ -129,8 +153,96 @@ function ProblemBadge({ problems }) {
 	);
 }
 
+const UNIT_CYCLE = Object.freeze(["mm", "mil", "in"]);
+
+const UNIT_BUTTON_STYLE = Object.freeze({
+	background: "transparent",
+	border: "none",
+	color: "#8a91a3",
+	cursor: "pointer",
+	padding: 0,
+	font: "inherit",
+	fontSize: "inherit",
+});
+
+const STATUS_COORDS_STYLE = Object.freeze({
+	display: "flex",
+	alignItems: "center",
+	gap: "4px",
+	color: "#8a91a3",
+});
+
+function nextUnit(current) {
+	const idx = UNIT_CYCLE.indexOf(current);
+	return UNIT_CYCLE[(idx + 1) % UNIT_CYCLE.length] ?? "mm";
+}
+
+function useTabGridSync(activeTab) {
+	useEffect(() => {
+		setGrid(activeTab === "pcb" ? 0.25 : 1.27);
+	}, [activeTab]);
+}
+
+function GridSelect({ activeTab, grid, units, onGridChange }) {
+	const presets = GRID_PRESETS[activeTab] ?? GRID_PRESETS.schematic;
+	const baseOptions = presets.map((g) => ({
+		value: g,
+		label: formatCoord(g, units),
+	}));
+	const options = presets.includes(grid)
+		? baseOptions
+		: [{ value: grid, label: formatCoord(grid, units) }, ...baseOptions];
+	return (
+		<Select
+			size="small"
+			style={{ minWidth: 75 }}
+			value={grid}
+			onChange={onGridChange}
+			options={options}
+			aria-label="Grid"
+		/>
+	);
+}
+
+function UnitsButton({ units, onCycle }) {
+	return (
+		<button
+			type="button"
+			onClick={onCycle}
+			style={UNIT_BUTTON_STYLE}
+			aria-label={`Current units: ${units}. Click to cycle.`}
+		>
+			{units}
+		</button>
+	);
+}
+
+function StatusBarSection({ status, activeTab }) {
+	const xStr = formatCoord(status.x ?? 0, status.units);
+	const yStr = formatCoord(status.y ?? 0, status.units);
+	const dxStr = formatCoord(status.dx ?? 0, status.units);
+	const dyStr = formatCoord(status.dy ?? 0, status.units);
+	const zoomStr = status.zoom ?? 1;
+	const handleCycle = () => setUnits(nextUnit(status.units));
+	return (
+		<div style={STATUS_COORDS_STYLE}>
+			<span>{`X ${xStr} Y ${yStr} | dx ${dxStr} dy ${dyStr} | Z ${zoomStr} | Grid `}</span>
+			<GridSelect
+				activeTab={activeTab}
+				grid={status.grid}
+				units={status.units}
+				onGridChange={setGrid}
+			/>
+			<span>{" | "}</span>
+			<UnitsButton units={status.units} onCycle={handleCycle} />
+		</div>
+	);
+}
+
 function StatusBar({ doc, activeTab, dirty, problems }) {
-	const gridText = activeTab === "pcb" ? "Grid: 0.25 mm" : "Grid: 1.27 mm";
+	const status = useSyncExternalStore(subscribe, get);
+	useOriginShortcut();
+	useTabGridSync(activeTab);
 	const dirtyText = dirty ? "Unsaved changes" : "Saved";
 	const dirtyColor = dirty ? "#fbbf24" : "#34d399";
 	return (
@@ -139,7 +251,7 @@ function StatusBar({ doc, activeTab, dirty, problems }) {
 			<div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
 				{problems && <ProblemBadge problems={problems} />}
 				<span style={{ color: dirtyColor }}>● {dirtyText}</span>
-				<span style={{ color: "#5d6476" }}>{gridText}</span>
+				<StatusBarSection status={status} activeTab={activeTab} />
 			</div>
 		</footer>
 	);
@@ -577,6 +689,26 @@ function useAddPartShortcut(openLibrary) {
 	}, [openLibrary]);
 }
 
+function isOriginShortcut(e) {
+	if (hasActiveModifiers(e)) return false;
+	if (e.code === "Space") return !isEditableElement(e.target);
+	if (e.key === " ") return !isEditableElement(e.target);
+	return false;
+}
+
+function useOriginShortcut() {
+	useEffect(() => {
+		const onKeyDown = (e) => {
+			if (isOriginShortcut(e)) {
+				e.preventDefault();
+				setOrigin();
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, []);
+}
+
 function useLibraryState() {
 	const [libraryOpen, setLibraryOpen] = useState(false);
 	const openLibrary = useCallback(() => setLibraryOpen(true), []);
@@ -833,14 +965,8 @@ function CanvasTab({ visible, children }) {
 	);
 }
 
-function CanvasViewport({
-	activeTab,
-	docState,
-	curBoard,
-	fetchers,
-	markers,
-	problems,
-}) {
+function CanvasViewport(props) {
+	const { activeTab, docState, curBoard, fetchers, markers, problems } = props;
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
 			<CanvasTab visible={activeTab === "schematic"}>
@@ -848,6 +974,7 @@ function CanvasViewport({
 					editor={docState.editor}
 					fetchSymbol={fetchers.fetchSymbol}
 					problems={problems}
+					onCursorMove={setCursor}
 				/>
 			</CanvasTab>
 			<CanvasTab visible={activeTab === "pcb"}>
@@ -857,6 +984,7 @@ function CanvasViewport({
 					onBoardChange={docState.setBoard}
 					fetchFootprint={fetchers.fetchFootprint}
 					markers={markers}
+					onCursorMove={setCursor}
 				/>
 			</CanvasTab>
 		</div>
