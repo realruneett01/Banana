@@ -1,4 +1,12 @@
-import { Alert, Button, Input, Tag, Timeline, Typography } from "antd";
+import {
+	Alert,
+	Button,
+	Input,
+	Segmented,
+	Tag,
+	Timeline,
+	Typography,
+} from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../config.js";
 import { createSimApi } from "../simApi.js";
@@ -23,6 +31,25 @@ const SECTION_STYLE = Object.freeze({
 	display: "flex",
 	flexDirection: "column",
 	gap: "8px",
+});
+
+const MODEL_STORAGE_KEY = "banana.agent.provider";
+
+const MODEL_OPTIONS = Object.freeze([
+	{ label: "Auto (server default)", value: "auto" },
+	{ label: "Gemini", value: "gemini" },
+	{ label: "Claude", value: "claude" },
+]);
+
+const MODEL_PICKER_STYLE = Object.freeze({
+	display: "flex",
+	flexDirection: "column",
+	gap: "4px",
+});
+
+const MODEL_HINT_STYLE = Object.freeze({
+	color: "#94a3b8",
+	fontSize: "12px",
 });
 
 const TEXTAREA_STYLE = Object.freeze({
@@ -452,19 +479,62 @@ function AgentOutputs({ agent, currentIr, review, onOpenSimulation }) {
 	);
 }
 
+function ModelPicker({ value, onChange, disabled }) {
+	return (
+		<div style={MODEL_PICKER_STYLE}>
+			<Segmented
+				size="small"
+				options={MODEL_OPTIONS}
+				value={value}
+				onChange={onChange}
+				disabled={disabled}
+				aria-label="Model selection"
+			/>
+			<span style={MODEL_HINT_STYLE}>
+				Keys are set up in the app settings, not here.
+			</span>
+		</div>
+	);
+}
+
+function useAgentModel() {
+	const [model, setModel] = useState(() => {
+		let val = "auto";
+		try {
+			val = globalThis.localStorage?.getItem(MODEL_STORAGE_KEY);
+		} catch {
+			// Ignore storage access errors
+		}
+		return val === "gemini" || val === "claude" ? val : "auto";
+	});
+
+	const selectModel = (next) => {
+		setModel(next);
+		try {
+			globalThis.localStorage?.setItem(MODEL_STORAGE_KEY, next);
+		} catch {
+			// Ignore storage access errors
+		}
+	};
+
+	const provider = model === "gemini" || model === "claude" ? model : undefined;
+	return { model, selectModel, provider };
+}
+
 function useAgentPanelState({ api, currentIr, onAcceptIr }) {
 	const [text, setText] = useState("");
+	const { model, selectModel, provider } = useAgentModel();
 	const effectiveApi = useMemo(
 		() => api ?? createSimApi({ baseUrl: API_BASE_URL }),
 		[api],
 	);
-	const agent = useDesignAgent({ api: effectiveApi });
+	const agent = useDesignAgent({ api: effectiveApi, provider });
 	const review = useIrReview({
 		agentIr: agent.ir,
 		currentIr,
 		onAcceptIr,
 	});
-	return { text, setText, agent, review };
+	return { text, setText, agent, review, model, selectModel };
 }
 
 function PanelPrompt({ text, setText, agent }) {
@@ -485,14 +555,20 @@ export default function AgentDesignPanel({
 	currentIr,
 	onAcceptIr,
 }) {
-	const { text, setText, agent, review } = useAgentPanelState({
-		api,
-		currentIr,
-		onAcceptIr,
-	});
+	const { text, setText, agent, review, model, selectModel } =
+		useAgentPanelState({
+			api,
+			currentIr,
+			onAcceptIr,
+		});
 
 	return (
 		<section style={PANEL_STYLE} aria-label="AI Design Panel">
+			<ModelPicker
+				value={model}
+				onChange={selectModel}
+				disabled={agent.status === "running"}
+			/>
 			<PanelPrompt text={text} setText={setText} agent={agent} />
 			<AgentOutputs
 				agent={agent}
