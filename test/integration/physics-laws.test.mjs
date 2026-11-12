@@ -40,10 +40,19 @@ function findNearestPointIndex(plot, targetTime) {
 function verifyOhmDivider(plot) {
 	const vMid = valueOf(plot, "v(mid)");
 	const iV1 = Math.abs(valueOf(plot, "i(v1)"));
-	const vMidErr = Math.abs(vMid - 7.5) / 7.5;
-	const iV1Err = Math.abs(iV1 - 0.0025) / 0.0025;
-	assert.ok(vMidErr <= 0.001, `v(mid) ${vMid} V outside 0.1% of 7.5 V`);
-	assert.ok(iV1Err <= 0.001, `i(v1) ${iV1} A outside 0.1% of 2.5 mA`);
+	const cases = [
+		{
+			err: Math.abs(vMid - 7.5) / 7.5,
+			msg: `v(mid) ${vMid} V outside 0.1% of 7.5 V`,
+		},
+		{
+			err: Math.abs(iV1 - 0.0025) / 0.0025,
+			msg: `i(v1) ${iV1} A outside 0.1% of 2.5 mA`,
+		},
+	];
+	for (const tc of cases) {
+		assert.ok(tc.err <= 0.001, tc.msg);
+	}
 }
 
 function verifyKcl(plot) {
@@ -102,28 +111,14 @@ function verifyDiode(plot) {
 	);
 }
 
-const SERIES_LOOP_NETLIST = `* Series loop for KVL and power balance
-V1 in 0 9
-R1 in n1 1k
-R2 n1 n2 2k
-R3 n2 0 6k
-.op
-.end`;
-
-const CIRCUITS = [
-	{
-		name: "1) Ohm/divider: solves 7.5 V midpoint and 2.5 mA current",
-		netlist: `* Ohm divider
+const OHM_DIVIDER_NETLIST = `* Ohm divider
 V1 in 0 10
 R1 in mid 1k
 R2 mid 0 3k
 .op
-.end`,
-		verify: verifyOhmDivider,
-	},
-	{
-		name: "2) KCL: node n branch currents balance within 1e-9 A",
-		netlist: `* KCL test
+.end`;
+
+const KCL_NETLIST = `* KCL test
 V1 in 0 12
 R1 in n1 1k
 Vs1 n1 n 0
@@ -132,7 +127,40 @@ R2 n2 0 2k
 Vs3 n n3 0
 R3 n3 0 3k
 .op
-.end`,
+.end`;
+
+const SERIES_LOOP_NETLIST = `* Series loop for KVL and power balance
+V1 in 0 9
+R1 in n1 1k
+R2 n1 n2 2k
+R3 n2 0 6k
+.op
+.end`;
+
+const RC_CHARGING_NETLIST = `* RC charging
+V1 in 0 PULSE(0 5 0 1n 1n 10m 20m)
+R1 in out 1k
+C1 out 0 1u
+.tran 1u 5m
+.end`;
+
+const DIODE_NETLIST = `* Diode circuit
+V1 in 0 5
+R1 in d_anode 1k
+D1 d_anode 0 D1N4148
+.model D1N4148 D(IS=2.52n RS=0.568 N=1.752)
+.op
+.end`;
+
+const CIRCUITS = [
+	{
+		name: "1) Ohm/divider: solves 7.5 V midpoint and 2.5 mA current",
+		netlist: OHM_DIVIDER_NETLIST,
+		verify: verifyOhmDivider,
+	},
+	{
+		name: "2) KCL: node n branch currents balance within 1e-9 A",
+		netlist: KCL_NETLIST,
 		verify: verifyKcl,
 	},
 	{
@@ -147,23 +175,12 @@ R3 n3 0 3k
 	},
 	{
 		name: "5) RC charging: transient reaches 63.2% at tau and >99% at 5 tau",
-		netlist: `* RC charging
-V1 in 0 PULSE(0 5 0 1n 1n 10m 20m)
-R1 in out 1k
-C1 out 0 1u
-.tran 1u 5m
-.end`,
+		netlist: RC_CHARGING_NETLIST,
 		verify: verifyRcCharging,
 	},
 	{
 		name: "6) Diode: forward voltage between 0.55-0.8 V and Ohm consistent current",
-		netlist: `* Diode circuit
-V1 in 0 5
-R1 in d_anode 1k
-D1 d_anode 0 D1N4148
-.model D1N4148 D(IS=2.52n RS=0.568 N=1.752)
-.op
-.end`,
+		netlist: DIODE_NETLIST,
 		verify: verifyDiode,
 	},
 ];
