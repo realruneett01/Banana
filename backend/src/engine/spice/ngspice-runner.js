@@ -11,53 +11,63 @@ function parseNumeric(token) {
 	return Number.isFinite(val) ? val : null;
 }
 
-function splitPlotLines(text) {
-	if (typeof text !== "string" || !text.trim()) {
-		return [];
-	}
-	const lines = text.split(/\r?\n/);
-	const plots = [];
-	let current = [];
-	let seenBody = false;
+const PLOT_HEADER_PREFIXES = ["Title:", "Plotname:"];
+const PLOT_BODY_PREFIXES = ["Variables:", "Values:"];
 
-	for (const rawLine of lines) {
-		const line = rawLine.trim();
-		const isHeader = line.startsWith("Title:") || line.startsWith("Plotname:");
-		if (seenBody && isHeader) {
-			plots.push(current);
-			current = [];
-			seenBody = false;
-		}
-		if (line.startsWith("Variables:") || line.startsWith("Values:")) {
-			seenBody = true;
-		}
-		current.push(rawLine);
+function isPlotHeader(line) {
+	return PLOT_HEADER_PREFIXES.some((prefix) => line.startsWith(prefix));
+}
+
+function isPlotBody(line) {
+	return PLOT_BODY_PREFIXES.some((prefix) => line.startsWith(prefix));
+}
+
+function accumulatePlotLine(acc, rawLine) {
+	const trimmed = rawLine.trim();
+	if (acc.seenBody && isPlotHeader(trimmed)) {
+		acc.plots.push(acc.current);
+		acc.current = [];
+		acc.seenBody = false;
 	}
-	if (current.length > 0) plots.push(current);
-	return plots;
+	if (isPlotBody(trimmed)) {
+		acc.seenBody = true;
+	}
+	acc.current.push(rawLine);
+}
+
+function splitPlotLines(text) {
+	if (typeof text !== "string") return [];
+	if (!text.trim()) return [];
+
+	const acc = { plots: [], current: [], seenBody: false };
+	for (const rawLine of text.split(/\r?\n/)) {
+		accumulatePlotLine(acc, rawLine);
+	}
+	if (acc.current.length > 0) {
+		acc.plots.push(acc.current);
+	}
+	return acc.plots;
 }
 
 function partitionPlotLines(lines) {
 	let section = "header";
-	const headerLines = [];
-	const variableLines = [];
-	const valueLines = [];
+	const buckets = { header: [], variables: [], values: [] };
 
 	for (const line of lines) {
 		const trimmed = line.trim();
 		if (trimmed.startsWith("Variables:")) {
 			section = "variables";
-			continue;
-		}
-		if (trimmed.startsWith("Values:")) {
+		} else if (trimmed.startsWith("Values:")) {
 			section = "values";
-			continue;
+		} else {
+			buckets[section].push(section === "header" ? trimmed : line);
 		}
-		if (section === "header") headerLines.push(trimmed);
-		else if (section === "variables") variableLines.push(line);
-		else if (section === "values") valueLines.push(line);
 	}
-	return { headerLines, variableLines, valueLines };
+	return {
+		headerLines: buckets.header,
+		variableLines: buckets.variables,
+		valueLines: buckets.values,
+	};
 }
 
 function extractHeaderValue(lines, prefix) {
@@ -105,21 +115,26 @@ function parseNextValue(line, isStart) {
 	return isStart ? parsePointStart(line) : parseNumeric(line);
 }
 
-function parseValues(lines, numVars) {
-	const points = [];
-	let cur = [];
-	for (const line of lines) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		const val = parseNextValue(trimmed, cur.length === 0);
-		if (val === null) return null;
-		cur.push(val);
-		if (cur.length === numVars) {
-			points.push(cur);
-			cur = [];
-		}
+function processValueLine(line, state, numVars) {
+	const trimmed = line.trim();
+	if (!trimmed) return true;
+	const val = parseNextValue(trimmed, state.cur.length === 0);
+	if (val === null) return false;
+	state.cur.push(val);
+	if (state.cur.length === numVars) {
+		state.points.push(state.cur);
+		state.cur = [];
 	}
-	return cur.length === 0 && points.length > 0 ? points : null;
+	return true;
+}
+
+function parseValues(lines, numVars) {
+	const state = { points: [], cur: [] };
+	for (const line of lines) {
+		if (!processValueLine(line, state, numVars)) return null;
+	}
+	if (state.cur.length > 0 || state.points.length === 0) return null;
+	return state.points;
 }
 
 function parseSinglePlot(lines) {
@@ -159,8 +174,8 @@ export function parseRawAscii(text) {
 	return { ok: true, plots };
 }
 
-function isWithinDir(parent, target) {
-	const rel = path.relative(parent, target);
+function isPathInside(parentDir, targetPath) {
+	const rel = path.relative(parentDir, targetPath);
 	if (!rel || path.isAbsolute(rel)) return false;
 	return !rel.startsWith("..");
 }
@@ -172,27 +187,29 @@ function extractLogTail(logText, maxLines = 20) {
 }
 
 async function safeRemoveDir(dirPath, parentDir) {
-	if (!dirPath || !isWithinDir(parentDir, path.resolve(dirPath))) {
-		return;
+	if (!dirPath || !isPathInside(parentDir, path.resolve(dirPath))) {
+		return false;
 	}
 	try {
 		await fs.promises.rm(dirPath, { recursive: true, force: true });
-	} catch {
-		// Ignore cleanup errors on removed temp directory
+		return true;
+	} catch (_err) {
+		return false;
 	}
 }
 
 function runExec(execFn, file, args, options) {
 	return new Promise((resolve, reject) => {
-		execFn(file, args, options, (error, stdout, stderr) => {
+		const onDone = (error, stdout, stderr) => {
 			if (error) {
 				error.stdout = stdout;
 				error.stderr = stderr;
 				reject(error);
-			} else {
-				resolve({ stdout, stderr });
+				return;
 			}
-		});
+			resolve({ stdout, stderr });
+		};
+		execFn(file, args, options, onDone);
 	});
 }
 
@@ -200,9 +217,8 @@ async function createWorkDir(tempDir) {
 	const resolvedTemp = path.resolve(tempDir);
 	await fs.promises.mkdir(resolvedTemp, { recursive: true });
 	const workDir = await fs.promises.mkdtemp(path.join(resolvedTemp, "spice-"));
-	const resolvedWork = path.resolve(workDir);
-	if (!isWithinDir(resolvedTemp, resolvedWork)) {
-		await safeRemoveDir(resolvedWork, resolvedTemp);
+	if (!isPathInside(resolvedTemp, path.resolve(workDir))) {
+		await safeRemoveDir(workDir, resolvedTemp);
 		throw new Error("Work directory created outside temp directory");
 	}
 	return { workDir, resolvedTemp };
@@ -211,8 +227,7 @@ async function createWorkDir(tempDir) {
 async function readLogFile(logPath, execError) {
 	try {
 		return await fs.promises.readFile(logPath, "utf8");
-	} catch {
-		// Fallback to error output if log file was not created
+	} catch (_err) {
 		const out = execError?.stderr || execError?.stdout || "";
 		return typeof out === "string" ? out : "";
 	}
@@ -236,6 +251,14 @@ async function invokeBatchNgspice(cfg, cirPath, rawPath, logPath) {
 	}
 }
 
+async function readRawOutput(rawPath) {
+	try {
+		return await fs.promises.readFile(rawPath, "utf8");
+	} catch (_err) {
+		return null;
+	}
+}
+
 async function executeSimulation(cfg, workDir, netlist) {
 	const cirPath = path.join(workDir, "circuit.cir");
 	const rawPath = path.join(workDir, "output.raw");
@@ -246,11 +269,8 @@ async function executeSimulation(cfg, workDir, netlist) {
 	const log = await readLogFile(logPath, execError);
 	if (execError) return buildErrorResult(log, "ngspice execution failed");
 
-	let rawText;
-	try {
-		rawText = await fs.promises.readFile(rawPath, "utf8");
-	} catch {
-		// Raw file was not generated
+	const rawText = await readRawOutput(rawPath);
+	if (rawText === null) {
 		return buildErrorResult(log, "Raw output file not generated");
 	}
 
@@ -259,35 +279,36 @@ async function executeSimulation(cfg, workDir, netlist) {
 	return { ok: true, plots: parsed.plots, log };
 }
 
-const MAX_NETLIST_BYTES = 500 * 1024;
-const FORBIDDEN_CHARS_REGEX = /[\0`]/;
-const FILE_PATH_CHARS_REGEX = /[/\\~"'>]/;
-const FILE_PATH_PARAM_REGEX = /^(file|path)\s*=/i;
-
-const FORBIDDEN_PREFIXES = [
-	".control",
-	".endc",
-	".exec",
-	".include",
-	".inc",
-	".lib",
-	".write",
-	".shell",
-	"shell",
-	"*ng_script",
-	"* ng_script",
-];
+const NETLIST_LIMITS = {
+	maxBytes: 500 * 1024,
+	forbiddenChars: /[\0`]/,
+	filePathChars: /[/\\~"'>]/,
+	filePathParam: /^(file|path)\s*=/i,
+	forbiddenPrefixes: [
+		".control",
+		".endc",
+		".exec",
+		".include",
+		".inc",
+		".lib",
+		".write",
+		".shell",
+		"shell",
+		"*ng_script",
+		"* ng_script",
+	],
+};
 
 function hasExtensionWithoutParens(token) {
-	if (token.includes("(") || token.includes(")")) return false;
+	if (/[()]/.test(token)) return false;
 	return /\.[a-z0-9_-]+$/i.test(token);
 }
 
 function isFilePathToken(token) {
 	if (!token) return false;
-	if (FILE_PATH_CHARS_REGEX.test(token)) return true;
+	if (NETLIST_LIMITS.filePathChars.test(token)) return true;
 	if (token.startsWith(".")) return true;
-	if (FILE_PATH_PARAM_REGEX.test(token)) return true;
+	if (NETLIST_LIMITS.filePathParam.test(token)) return true;
 	return hasExtensionWithoutParens(token);
 }
 
@@ -312,7 +333,7 @@ function checkDangerousLine(line) {
 	const normalized = normalizeLine(line);
 	if (!normalized) return null;
 	const lower = normalized.toLowerCase();
-	for (const prefix of FORBIDDEN_PREFIXES) {
+	for (const prefix of NETLIST_LIMITS.forbiddenPrefixes) {
 		if (lower.startsWith(prefix)) {
 			return `Netlist contains forbidden '${prefix}' directive`;
 		}
@@ -357,10 +378,10 @@ function checkNetlistPayload(netlist) {
 	if (typeof netlist !== "string" || !netlist.trim()) {
 		return "Netlist must be non-empty";
 	}
-	if (Buffer.byteLength(netlist, "utf8") > MAX_NETLIST_BYTES) {
+	if (Buffer.byteLength(netlist, "utf8") > NETLIST_LIMITS.maxBytes) {
 		return "Netlist exceeds maximum allowed size of 500 KB";
 	}
-	if (FORBIDDEN_CHARS_REGEX.test(netlist)) {
+	if (NETLIST_LIMITS.forbiddenChars.test(netlist)) {
 		return "Netlist contains forbidden character";
 	}
 	if (netlist.includes("$(")) {
@@ -386,6 +407,27 @@ export function validateNetlist(netlist) {
 	return { ok: true };
 }
 
+function checkNgspiceAvailable(execFileFn, ngspicePath) {
+	return new Promise((resolve) => {
+		execFileFn(ngspicePath, ["--version"], { timeout: 5000 }, (err) => {
+			resolve(!err);
+		});
+	});
+}
+
+async function runNgspiceSimulation(cfg, netlist) {
+	const validation = validateNetlist(netlist);
+	if (!validation.ok) {
+		return { ok: false, error: validation.error, log: "" };
+	}
+	const { workDir, resolvedTemp } = await createWorkDir(cfg.tempDir);
+	try {
+		return await executeSimulation(cfg, workDir, netlist);
+	} finally {
+		await safeRemoveDir(workDir, resolvedTemp);
+	}
+}
+
 export function createNgspice({
 	ngspicePath = process.env.NGSPICE_PATH || "ngspice",
 	execFileFn = execFile,
@@ -398,24 +440,9 @@ export function createNgspice({
 	return {
 		available: () => {
 			if (availablePromise !== null) return availablePromise;
-			availablePromise = new Promise((resolve) => {
-				execFileFn(ngspicePath, ["--version"], { timeout: 5000 }, (err) => {
-					resolve(!err);
-				});
-			});
+			availablePromise = checkNgspiceAvailable(execFileFn, ngspicePath);
 			return availablePromise;
 		},
-		run: async (netlist) => {
-			const validation = validateNetlist(netlist);
-			if (!validation.ok) {
-				return { ok: false, error: validation.error, log: "" };
-			}
-			const { workDir, resolvedTemp } = await createWorkDir(cfg.tempDir);
-			try {
-				return await executeSimulation(cfg, workDir, netlist);
-			} finally {
-				await safeRemoveDir(workDir, resolvedTemp);
-			}
-		},
+		run: (netlist) => runNgspiceSimulation(cfg, netlist),
 	};
 }
