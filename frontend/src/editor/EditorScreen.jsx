@@ -807,8 +807,10 @@ function CommitDialog(props) {
 	);
 }
 
-function useEditorScreen({ ir, board, onSave, api, focusItemId }) {
-	const [activeTab, setActiveTab] = useState("schematic");
+function useEditorScreen({ ir, board, onSave, api, focusItemId, initialTab }) {
+	const [activeTab, setActiveTab] = useState(
+		initialTab === "pcb" ? "pcb" : "schematic",
+	);
 	const [problemsOpen, setProblemsOpen] = useState(false);
 	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
 	const commit = useCommitController(() => ctrl.actions.save());
@@ -871,7 +873,15 @@ export default function EditorScreen({
 	api,
 	focusItemId,
 	repo,
+	initialTab,
 }) {
-	const s = useEditorScreen({ ir, board, onSave, api, focusItemId });
+	const s = useEditorScreen({
+		ir,
+		board,
+		onSave,
+		api,
+		focusItemId,
+		initialTab,
+	});
 	return <EditorView s={s} ir={ir} api={api} repo={repo} />;
 }

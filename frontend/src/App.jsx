@@ -6,9 +6,10 @@ import {
 	Grid,
 	Layout,
 	message,
+	Space,
 	theme,
 } from "antd";
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import "./harness.css";
 import ChatbotDrawer from "./ChatbotDrawer";
 import AgentDesignPanel from "./components/AgentDesignPanel.jsx";
@@ -92,31 +93,116 @@ function useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed) {
 	}, [compact, setLeftCollapsed, setRightCollapsed]);
 }
 
-function createEmptyIr() {
-	return {
-		schemaVersion: 1,
-		name: "untitled",
-		parts: [],
-		nets: [],
-		constraints: [],
-	};
+const EMPTY_PANEL_STYLE = {
+	display: "flex",
+	alignItems: "center",
+	justifyContent: "center",
+	height: "100%",
+	width: "100%",
+};
+
+async function loadKicadFile(loop, file) {
+	const kind = file.name.endsWith(".kicad_pcb") ? "pcb" : "sch";
+	const text = await file.text();
+	let res;
+	try {
+		res = await loop.api.editorImport({ kind, text });
+	} catch {
+		message.error("Could not open file");
+		return;
+	}
+	if (!res?.ok) {
+		message.error(res?.data?.error || "Could not open file");
+		return;
+	}
+	const opened = loop.openDesign({
+		ir: res.data.ir,
+		board: res.data.board,
+		tab: kind === "pcb" ? "pcb" : "schematic",
+	});
+	if (opened === false) {
+		message.error("File did not contain a valid design");
+	}
 }
 
-function EmptyDesignNotice({ onStartEmpty }) {
+function useOpenKicadFile(loop) {
+	const fileInputRef = useRef(null);
+	const openFileDialog = useCallback(() => {
+		fileInputRef.current?.click();
+	}, []);
+	const handleFileChosen = useCallback(
+		async (e) => {
+			const file = e.target.files?.[0];
+			try {
+				if (file) {
+					await loadKicadFile(loop, file);
+				}
+			} finally {
+				e.target.value = "";
+			}
+		},
+		[loop],
+	);
+	return { fileInputRef, openFileDialog, handleFileChosen };
+}
+
+function StartButtons({ loop, compact, openFileDialog }) {
+	const size = compact ? "small" : undefined;
 	return (
-		<div
-			style={{
-				display: "flex",
-				alignItems: "center",
-				justifyContent: "center",
-				height: "100%",
-				width: "100%",
-			}}
-		>
-			<Empty description="No design yet - use 'Design with AI' first, or start an empty design">
-				<Button type="primary" onClick={onStartEmpty}>
-					Start empty design
-				</Button>
+		<Space size="small">
+			<Button size={size} onClick={() => loop.newDesign("schematic")}>
+				New schematic
+			</Button>
+			<Button size={size} onClick={() => loop.newDesign("pcb")}>
+				New PCB
+			</Button>
+			<Button size={size} onClick={openFileDialog}>
+				Open KiCad file
+			</Button>
+		</Space>
+	);
+}
+
+function HiddenFileInput({ inputRef, onChange }) {
+	return (
+		<input
+			ref={inputRef}
+			type="file"
+			accept=".kicad_sch,.kicad_pcb"
+			style={{ display: "none" }}
+			onChange={onChange}
+		/>
+	);
+}
+
+function DesignStartPanel({ loop, compact }) {
+	const { fileInputRef, openFileDialog, handleFileChosen } =
+		useOpenKicadFile(loop);
+	const buttons = (
+		<StartButtons
+			loop={loop}
+			compact={compact}
+			openFileDialog={openFileDialog}
+		/>
+	);
+	const fileInput = (
+		<HiddenFileInput inputRef={fileInputRef} onChange={handleFileChosen} />
+	);
+
+	if (compact) {
+		return (
+			<>
+				{fileInput}
+				{buttons}
+			</>
+		);
+	}
+
+	return (
+		<div style={EMPTY_PANEL_STYLE}>
+			{fileInput}
+			<Empty description="No design yet - start a new schematic or PCB, or open a KiCad file">
+				{buttons}
 			</Empty>
 		</div>
 	);
@@ -168,7 +254,7 @@ function StudioDrawer({ loop }) {
 					onApplyFix={(fix) => handleStudioApplyFix(loop, fix)}
 				/>
 			) : (
-				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
+				<DesignStartPanel loop={loop} />
 			)}
 		</Drawer>
 	);
@@ -176,28 +262,32 @@ function StudioDrawer({ loop }) {
 
 function EditorDrawer({ loop, repo, ws }) {
 	const resolvedRepo = repo ?? buildEditorRepo(ws);
+	const content = loop.ir ? (
+		<EditorScreen
+			key={loop.docKey}
+			ir={loop.ir}
+			board={loop.board}
+			initialTab={loop.editorTab}
+			onSave={loop.saveFromEditor}
+			focusItemId={loop.focusItemId}
+			api={loop.api}
+			repo={resolvedRepo}
+		/>
+	) : (
+		<DesignStartPanel loop={loop} />
+	);
 	return (
 		<Drawer
 			title="Editor"
 			open={loop.editorOpen}
 			onClose={loop.closeEditor}
+			extra={<DesignStartPanel loop={loop} compact />}
 			width="100%"
 			destroyOnHidden={false}
 			className="bn-drawer"
 			styles={{ body: { padding: 0, height: "100%" } }}
 		>
-			{loop.ir ? (
-				<EditorScreen
-					ir={loop.ir}
-					board={null}
-					onSave={loop.saveFromEditor}
-					focusItemId={loop.focusItemId}
-					api={loop.api}
-					repo={resolvedRepo}
-				/>
-			) : (
-				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
-			)}
+			{content}
 		</Drawer>
 	);
 }
