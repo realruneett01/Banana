@@ -2,132 +2,165 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { diffIr, summarizeIrDiff } from "../../frontend/src/irDiff.js";
 
-function makePart(overrides = {}) {
-	return {
-		id: "part_1",
-		ref: "R1",
-		value: "10k",
-		footprint: "Resistor_SMD:R_0402",
-		placement: { x: 0, y: 0, rot: 0, side: "F" },
-		props: { tolerance: "5%" },
-		...overrides,
-	};
+const BASE_PART = {
+	id: "part_1",
+	ref: "R1",
+	value: "10k",
+	footprint: "Resistor_SMD:R_0402",
+	placement: { x: 0, y: 0, rot: 0, side: "F" },
+	props: { tolerance: "5%" },
+};
+
+const BASE_NET = {
+	id: "net_1",
+	name: "GND",
+	pins: [{ partId: "part_1", pin: "1" }],
+};
+
+const makePart = (overrides = {}) => ({ ...BASE_PART, ...overrides });
+const makeNet = (overrides = {}) => ({ ...BASE_NET, ...overrides });
+const makeDesign = (parts = [], nets = []) => ({ parts, nets });
+
+function diffParts(before = [], after = []) {
+	return diffIr(makeDesign(before), makeDesign(after));
 }
 
-function makeNet(overrides = {}) {
-	return {
-		id: "net_1",
-		name: "GND",
-		pins: [{ partId: "part_1", pin: "1" }],
-		...overrides,
-	};
+function diffNets(before = [], after = []) {
+	return diffIr(makeDesign([], before), makeDesign([], after));
+}
+
+function assertSingleItem(result, group, bucket, spec) {
+	assert.equal(result.isEmpty, false);
+	const target = result[group][bucket];
+	assert.equal(target.length, 1);
+	assert.equal(target[0][spec.key], spec.value);
+	assert.equal(result.summary, spec.summary);
+}
+
+function assertPartFieldChange(result, expected) {
+	if (expected.isEmpty !== undefined) {
+		assert.equal(result.isEmpty, expected.isEmpty);
+	}
+	assert.equal(result.parts.changed.length, 1);
+	const target = result.parts.changed[0];
+	if (expected.id !== undefined) assert.equal(target.id, expected.id);
+	if (expected.ref !== undefined) assert.equal(target.ref, expected.ref);
+	assert.deepEqual(target.fields, [
+		{ field: expected.field, before: expected.before, after: expected.after },
+	]);
+	if (expected.summary !== undefined) {
+		assert.equal(result.summary, expected.summary);
+	}
+}
+
+function assertSingleNetChange(result, checks) {
+	assert.equal(result.nets.changed.length, 1);
+	const changed = result.nets.changed[0];
+	if (checks.pinKey) {
+		assert.equal(changed[checks.pinKey].length, 1);
+		assert.deepEqual(changed[checks.pinKey][0], checks.pin);
+	}
+	if (checks.name !== undefined) {
+		assert.equal(changed.name, checks.name);
+	}
+	if ("renamedFrom" in checks) {
+		assert.equal(changed.renamedFrom, checks.renamedFrom);
+	}
+	assert.equal(result.summary, checks.summary);
+}
+
+function assertEmptyDiff(result) {
+	assert.equal(result.isEmpty, true);
+	assert.equal(result.summary, "No changes");
+}
+
+function assertNoDiffCounts(result) {
+	assertEmptyDiff(result);
+	for (const key of ["added", "removed", "changed"]) {
+		assert.equal(result.parts[key].length, 0);
+		assert.equal(result.nets[key].length, 0);
+	}
 }
 
 describe("irDiff - parts", () => {
 	test("detects added part", () => {
-		const before = { parts: [], nets: [] };
-		const after = {
-			parts: [makePart({ id: "part_added", ref: "C1" })],
-			nets: [],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.isEmpty, false);
-		assert.equal(result.parts.added.length, 1);
-		assert.equal(result.parts.added[0].ref, "C1");
-		assert.equal(result.summary, "1 part added");
+		const result = diffParts([], [makePart({ id: "part_added", ref: "C1" })]);
+		assertSingleItem(result, "parts", "added", {
+			key: "ref",
+			value: "C1",
+			summary: "1 part added",
+		});
 	});
 
 	test("detects removed part", () => {
-		const before = {
-			parts: [makePart({ id: "part_rm", ref: "R1" })],
-			nets: [],
-		};
-		const after = { parts: [], nets: [] };
-		const result = diffIr(before, after);
-
-		assert.equal(result.isEmpty, false);
-		assert.equal(result.parts.removed.length, 1);
-		assert.equal(result.parts.removed[0].ref, "R1");
-		assert.equal(result.summary, "1 part removed");
+		const result = diffParts([makePart({ id: "part_rm", ref: "R1" })], []);
+		assertSingleItem(result, "parts", "removed", {
+			key: "ref",
+			value: "R1",
+			summary: "1 part removed",
+		});
 	});
 
 	test("detects changed part metadata", () => {
-		const before = {
-			parts: [makePart({ id: "part_1", ref: "R1", value: "10k" })],
-			nets: [],
-		};
-		const after = {
-			parts: [makePart({ id: "part_1", ref: "R1", value: "20k" })],
-			nets: [],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.isEmpty, false);
-		assert.equal(result.parts.changed.length, 1);
-		assert.equal(result.parts.changed[0].id, "part_1");
-		assert.equal(result.parts.changed[0].ref, "R1");
-		assert.deepEqual(result.parts.changed[0].fields, [
-			{ field: "value", before: "10k", after: "20k" },
-		]);
-		assert.equal(result.summary, "1 value changed");
+		const result = diffParts(
+			[makePart({ id: "part_1", ref: "R1", value: "10k" })],
+			[makePart({ id: "part_1", ref: "R1", value: "20k" })],
+		);
+		assertPartFieldChange(result, {
+			isEmpty: false,
+			id: "part_1",
+			ref: "R1",
+			field: "value",
+			before: "10k",
+			after: "20k",
+			summary: "1 value changed",
+		});
 	});
 
 	const FIELD_CASES = [
-		{ field: "ref", beforeVal: "R1", afterVal: "R2", summary: "1 ref changed" },
+		{ field: "ref", before: "R1", after: "R2", summary: "1 ref changed" },
 		{
 			field: "value",
-			beforeVal: "10k",
-			afterVal: "20k",
+			before: "10k",
+			after: "20k",
 			summary: "1 value changed",
 		},
 		{
 			field: "footprint",
-			beforeVal: "R_0402",
-			afterVal: "R_0603",
+			before: "R_0402",
+			after: "R_0603",
 			summary: "1 footprint changed",
 		},
 		{
 			field: "placement",
-			beforeVal: { x: 0, y: 0, rot: 0, side: "F" },
-			afterVal: { x: 5, y: 5, rot: 0, side: "F" },
+			before: { x: 0, y: 0, rot: 0, side: "F" },
+			after: { x: 5, y: 5, rot: 0, side: "F" },
 			summary: "1 placement changed",
 		},
 		{
 			field: "props",
-			beforeVal: { tolerance: "5%" },
-			afterVal: { tolerance: "1%" },
+			before: { tolerance: "5%" },
+			after: { tolerance: "1%" },
 			summary: "1 prop changed",
 		},
 	];
 
-	for (const { field, beforeVal, afterVal, summary } of FIELD_CASES) {
-		test(`detects compared field change: ${field}`, () => {
-			const before = { parts: [makePart({ [field]: beforeVal })], nets: [] };
-			const after = { parts: [makePart({ [field]: afterVal })], nets: [] };
-			const result = diffIr(before, after);
-
-			assert.equal(result.parts.changed.length, 1);
-			assert.deepEqual(result.parts.changed[0].fields, [
-				{ field, before: beforeVal, after: afterVal },
-			]);
-			assert.equal(result.summary, summary);
+	for (const tc of FIELD_CASES) {
+		test(`detects compared field change: ${tc.field}`, () => {
+			const result = diffParts(
+				[makePart({ [tc.field]: tc.before })],
+				[makePart({ [tc.field]: tc.after })],
+			);
+			assertPartFieldChange(result, tc);
 		});
 	}
 
 	test("detects deep placement changes", () => {
-		const before = {
-			parts: [makePart({ placement: { x: 10, y: 20, rot: 0, side: "F" } })],
-			nets: [],
-		};
-		const after = {
-			parts: [makePart({ placement: { x: 10, y: 20, rot: 90, side: "F" } })],
-			nets: [],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.parts.changed.length, 1);
-		assert.deepEqual(result.parts.changed[0].fields[0], {
+		const result = diffParts(
+			[makePart({ placement: { x: 10, y: 20, rot: 0, side: "F" } })],
+			[makePart({ placement: { x: 10, y: 20, rot: 90, side: "F" } })],
+		);
+		assertPartFieldChange(result, {
 			field: "placement",
 			before: { x: 10, y: 20, rot: 0, side: "F" },
 			after: { x: 10, y: 20, rot: 90, side: "F" },
@@ -135,18 +168,11 @@ describe("irDiff - parts", () => {
 	});
 
 	test("detects deep props changes", () => {
-		const before = {
-			parts: [makePart({ props: { sub: { key: "v1" } } })],
-			nets: [],
-		};
-		const after = {
-			parts: [makePart({ props: { sub: { key: "v2" } } })],
-			nets: [],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.parts.changed.length, 1);
-		assert.deepEqual(result.parts.changed[0].fields[0], {
+		const result = diffParts(
+			[makePart({ props: { sub: { key: "v1" } } })],
+			[makePart({ props: { sub: { key: "v2" } } })],
+		);
+		assertPartFieldChange(result, {
 			field: "props",
 			before: { sub: { key: "v1" } },
 			after: { sub: { key: "v2" } },
@@ -156,41 +182,27 @@ describe("irDiff - parts", () => {
 
 describe("irDiff - nets", () => {
 	test("detects added net", () => {
-		const before = { parts: [], nets: [] };
-		const after = {
-			parts: [],
-			nets: [makeNet({ id: "net_vcc", name: "VCC" })],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.isEmpty, false);
-		assert.equal(result.nets.added.length, 1);
-		assert.equal(result.nets.added[0].name, "VCC");
-		assert.equal(result.summary, "1 net added");
+		const result = diffNets([], [makeNet({ id: "net_vcc", name: "VCC" })]);
+		assertSingleItem(result, "nets", "added", {
+			key: "name",
+			value: "VCC",
+			summary: "1 net added",
+		});
 	});
 
 	test("detects removed net", () => {
-		const before = {
-			parts: [],
-			nets: [makeNet({ id: "net_vcc", name: "VCC" })],
-		};
-		const after = { parts: [], nets: [] };
-		const result = diffIr(before, after);
-
-		assert.equal(result.isEmpty, false);
-		assert.equal(result.nets.removed.length, 1);
-		assert.equal(result.nets.removed[0].name, "VCC");
-		assert.equal(result.summary, "1 net removed");
+		const result = diffNets([makeNet({ id: "net_vcc", name: "VCC" })], []);
+		assertSingleItem(result, "nets", "removed", {
+			key: "name",
+			value: "VCC",
+			summary: "1 net removed",
+		});
 	});
 
 	test("detects added pin on net", () => {
-		const before = {
-			parts: [],
-			nets: [makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
-		};
-		const after = {
-			parts: [],
-			nets: [
+		const result = diffNets(
+			[makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
+			[
 				makeNet({
 					pins: [
 						{ partId: "part_1", pin: "1" },
@@ -198,23 +210,18 @@ describe("irDiff - nets", () => {
 					],
 				}),
 			],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.nets.changed.length, 1);
-		assert.equal(result.nets.changed[0].addedPins.length, 1);
-		assert.deepEqual(result.nets.changed[0].addedPins[0], {
-			partId: "part_2",
-			pin: "1",
+		);
+		assertSingleNetChange(result, {
+			pinKey: "addedPins",
+			pin: { partId: "part_2", pin: "1" },
+			renamedFrom: undefined,
+			summary: "1 connection added",
 		});
-		assert.equal(result.nets.changed[0].renamedFrom, undefined);
-		assert.equal(result.summary, "1 connection added");
 	});
 
 	test("detects removed pin on net", () => {
-		const before = {
-			parts: [],
-			nets: [
+		const result = diffNets(
+			[
 				makeNet({
 					pins: [
 						{ partId: "part_1", pin: "1" },
@@ -222,56 +229,35 @@ describe("irDiff - nets", () => {
 					],
 				}),
 			],
-		};
-		const after = {
-			parts: [],
-			nets: [makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.nets.changed.length, 1);
-		assert.equal(result.nets.changed[0].removedPins.length, 1);
-		assert.deepEqual(result.nets.changed[0].removedPins[0], {
-			partId: "part_2",
-			pin: "1",
+			[makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
+		);
+		assertSingleNetChange(result, {
+			pinKey: "removedPins",
+			pin: { partId: "part_2", pin: "1" },
+			summary: "1 connection removed",
 		});
-		assert.equal(result.summary, "1 connection removed");
 	});
 
 	test("detects net rename", () => {
-		const before = {
-			parts: [],
-			nets: [makeNet({ id: "net_1", name: "OLD_NET" })],
-		};
-		const after = {
-			parts: [],
-			nets: [makeNet({ id: "net_1", name: "NEW_NET" })],
-		};
-		const result = diffIr(before, after);
-
-		assert.equal(result.nets.changed.length, 1);
-		assert.equal(result.nets.changed[0].name, "NEW_NET");
-		assert.equal(result.nets.changed[0].renamedFrom, "OLD_NET");
-		assert.equal(result.summary, "1 net renamed");
+		const result = diffNets(
+			[makeNet({ id: "net_1", name: "OLD_NET" })],
+			[makeNet({ id: "net_1", name: "NEW_NET" })],
+		);
+		assertSingleNetChange(result, {
+			name: "NEW_NET",
+			renamedFrom: "OLD_NET",
+			summary: "1 net renamed",
+		});
 	});
 });
 
 describe("irDiff - edge cases and invariants", () => {
 	test("identical designs give isEmpty true and No changes", () => {
-		const design = {
-			parts: [makePart({ id: "part_1", ref: "R1" })],
-			nets: [makeNet({ id: "net_1", name: "GND" })],
-		};
-		const result = diffIr(design, design);
-
-		assert.equal(result.isEmpty, true);
-		assert.equal(result.parts.added.length, 0);
-		assert.equal(result.parts.removed.length, 0);
-		assert.equal(result.parts.changed.length, 0);
-		assert.equal(result.nets.added.length, 0);
-		assert.equal(result.nets.removed.length, 0);
-		assert.equal(result.nets.changed.length, 0);
-		assert.equal(result.summary, "No changes");
+		const design = makeDesign(
+			[makePart({ id: "part_1", ref: "R1" })],
+			[makeNet({ id: "net_1", name: "GND" })],
+		);
+		assertNoDiffCounts(diffIr(design, design));
 	});
 
 	test("null and non-object inputs treated as empty design", () => {
@@ -282,9 +268,7 @@ describe("irDiff - edge cases and invariants", () => {
 			[null, { parts: [], nets: [] }],
 		];
 		for (const [before, after] of cases) {
-			const result = diffIr(before, after);
-			assert.equal(result.isEmpty, true);
-			assert.equal(result.summary, "No changes");
+			assertEmptyDiff(diffIr(before, after));
 		}
 	});
 
@@ -310,20 +294,21 @@ describe("irDiff - edge cases and invariants", () => {
 	});
 
 	test("deterministic ordering of parts and nets", () => {
-		const before = { parts: [], nets: [] };
-		const after = {
-			parts: [
-				makePart({ id: "p3", ref: "U1" }),
-				makePart({ id: "p1", ref: "C2" }),
-				makePart({ id: "p2", ref: "C1" }),
-			],
-			nets: [
-				makeNet({ id: "n3", name: "VCC" }),
-				makeNet({ id: "n1", name: "CLK" }),
-				makeNet({ id: "n2", name: "DATA" }),
-			],
-		};
-		const result = diffIr(before, after);
+		const result = diffIr(
+			makeDesign(),
+			makeDesign(
+				[
+					makePart({ id: "p3", ref: "U1" }),
+					makePart({ id: "p1", ref: "C2" }),
+					makePart({ id: "p2", ref: "C1" }),
+				],
+				[
+					makeNet({ id: "n3", name: "VCC" }),
+					makeNet({ id: "n1", name: "CLK" }),
+					makeNet({ id: "n2", name: "DATA" }),
+				],
+			),
+		);
 
 		assert.deepEqual(
 			result.parts.added.map((p) => p.ref),
