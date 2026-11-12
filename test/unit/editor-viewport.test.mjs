@@ -46,27 +46,17 @@ const ZOOM_ANCHOR_CASES = [
 	},
 ];
 
+const createClampCase = (zoom, factor, expected) => ({
+	view: { pan: { x: 0, y: 0 }, zoom },
+	factor,
+	expected,
+});
+
 const ZOOM_CLAMP_CASES = [
-	{
-		view: { pan: { x: 0, y: 0 }, zoom: 100 },
-		factor: 5,
-		expected: ZOOM_MAX,
-	},
-	{
-		view: { pan: { x: 0, y: 0 }, zoom: 0.1 },
-		factor: 0.1,
-		expected: ZOOM_MIN,
-	},
-	{
-		view: { pan: { x: 0, y: 0 }, zoom: 200 },
-		factor: 2,
-		expected: ZOOM_MAX,
-	},
-	{
-		view: { pan: { x: 0, y: 0 }, zoom: 0.05 },
-		factor: 0.5,
-		expected: ZOOM_MIN,
-	},
+	createClampCase(100, 5, ZOOM_MAX),
+	createClampCase(0.1, 0.1, ZOOM_MIN),
+	createClampCase(200, 2, ZOOM_MAX),
+	createClampCase(0.05, 0.5, ZOOM_MIN),
 ];
 
 const PAN_CASES = [
@@ -84,15 +74,17 @@ const PAN_CASES = [
 	},
 ];
 
+const DEFAULT_FALLBACK_SIZE = { width: 800, height: 600 };
+
 const FIT_FALLBACK_CASES = [
-	{ bounds: null, size: { width: 800, height: 600 } },
+	{ bounds: null, size: DEFAULT_FALLBACK_SIZE },
 	{
 		bounds: { minX: 10, minY: 10, maxX: 10, maxY: 10 },
-		size: { width: 800, height: 600 },
+		size: DEFAULT_FALLBACK_SIZE,
 	},
 	{
 		bounds: { minX: 5, minY: 5, maxX: 0, maxY: 0 },
-		size: { width: 800, height: 600 },
+		size: DEFAULT_FALLBACK_SIZE,
 	},
 ];
 
@@ -130,6 +122,8 @@ const FORMAT_CASES = [
 	{ mm: -0, units: "mm", expected: "0.0000" },
 ];
 
+const EXPECTED_BBOX = { minX: 0, minY: -5, maxX: 30, maxY: 20 };
+
 const BBOX_CASES = [
 	{ points: [], expected: null },
 	{ points: null, expected: null },
@@ -139,7 +133,7 @@ const BBOX_CASES = [
 			{ x: 30, y: -5 },
 			{ x: 0, y: 15 },
 		],
-		expected: { minX: 0, minY: -5, maxX: 30, maxY: 20 },
+		expected: EXPECTED_BBOX,
 	},
 	{
 		points: [
@@ -147,21 +141,31 @@ const BBOX_CASES = [
 			[30, -5],
 			[0, 15],
 		],
-		expected: { minX: 0, minY: -5, maxX: 30, maxY: 20 },
+		expected: EXPECTED_BBOX,
 	},
 ];
+
+function createFitBoxView() {
+	const bounds = { minX: 0, minY: 0, maxX: 100, maxY: 50 };
+	const size = { width: 800, height: 600 };
+	return fitToBounds(bounds, size, 0.05);
+}
 
 describe("viewport coordinate transforms", () => {
 	test("screenToWorld and worldToScreen round-trip", () => {
 		for (const { pt, view } of ROUNDTRIP_CASES) {
 			const world = screenToWorld(pt, view);
 			const backScreen = worldToScreen(world, view);
-			assert.ok(Math.abs(backScreen.x - pt.x) < 1e-9);
-			assert.ok(Math.abs(backScreen.y - pt.y) < 1e-9);
+			const screenDiffX = Math.abs(backScreen.x - pt.x);
+			assert.ok(screenDiffX < 1e-9);
+			const screenDiffY = Math.abs(backScreen.y - pt.y);
+			assert.ok(screenDiffY < 1e-9);
 
 			const backWorld = screenToWorld(backScreen, view);
-			assert.ok(Math.abs(backWorld.x - world.x) < 1e-9);
-			assert.ok(Math.abs(backWorld.y - world.y) < 1e-9);
+			const worldDiffX = Math.abs(backWorld.x - world.x);
+			assert.ok(worldDiffX < 1e-9);
+			const worldDiffY = Math.abs(backWorld.y - world.y);
+			assert.ok(worldDiffY < 1e-9);
 		}
 	});
 
@@ -181,8 +185,10 @@ describe("viewport zoom operations", () => {
 			const wBefore = screenToWorld(anchor, view);
 			const zoomed = zoomAt(view, anchor, factor);
 			const wAfter = screenToWorld(anchor, zoomed);
-			assert.ok(Math.abs(wAfter.x - wBefore.x) < 1e-9);
-			assert.ok(Math.abs(wAfter.y - wBefore.y) < 1e-9);
+			const anchorDiffX = Math.abs(wAfter.x - wBefore.x);
+			assert.ok(anchorDiffX < 1e-9);
+			const anchorDiffY = Math.abs(wAfter.y - wBefore.y);
+			assert.ok(anchorDiffY < 1e-9);
 		}
 	});
 
@@ -196,20 +202,21 @@ describe("viewport zoom operations", () => {
 
 describe("fitToBounds", () => {
 	test("centres a 100x50 box in 800x600 with margins", () => {
-		const bounds = { minX: 0, minY: 0, maxX: 100, maxY: 50 };
-		const size = { width: 800, height: 600 };
-		const view = fitToBounds(bounds, size, 0.05);
-
+		const view = createFitBoxView();
 		const centerWorld = { x: 50, y: 25 };
 		const centerScreen = worldToScreen(centerWorld, view);
-		assert.ok(Math.abs(centerScreen.x - 400) < 1e-9);
-		assert.ok(Math.abs(centerScreen.y - 300) < 1e-9);
+		const centerDiffX = Math.abs(centerScreen.x - 400);
+		assert.ok(centerDiffX < 1e-9);
+		const centerDiffY = Math.abs(centerScreen.y - 300);
+		assert.ok(centerDiffY < 1e-9);
 
 		assert.equal(view.zoom, 7.2);
 		const left = worldToScreen({ x: 0, y: 25 }, view);
 		const right = worldToScreen({ x: 100, y: 25 }, view);
-		assert.ok(Math.abs(left.x - 40) < 1e-9);
-		assert.ok(Math.abs(right.x - 760) < 1e-9);
+		const leftDiff = Math.abs(left.x - 40);
+		assert.ok(leftDiff < 1e-9);
+		const rightDiff = Math.abs(right.x - 760);
+		assert.ok(rightDiff < 1e-9);
 	});
 
 	test("returns default view when bounds are null or empty", () => {
@@ -225,7 +232,8 @@ describe("snap and snapPoint", () => {
 		for (const { val, grid, expected } of SNAP_CASES) {
 			const actual = snap(val, grid);
 			assert.equal(actual, expected);
-			assert.equal(Object.is(actual, -0), false);
+			const isNegZero = Object.is(actual, -0);
+			assert.equal(isNegZero, false);
 		}
 	});
 
@@ -233,8 +241,10 @@ describe("snap and snapPoint", () => {
 		for (const { pt, grid, expected } of SNAP_POINT_CASES) {
 			const actual = snapPoint(pt, grid);
 			assert.deepEqual(actual, expected);
-			assert.equal(Object.is(actual.x, -0), false);
-			assert.equal(Object.is(actual.y, -0), false);
+			const isNegZeroX = Object.is(actual.x, -0);
+			assert.equal(isNegZeroX, false);
+			const isNegZeroY = Object.is(actual.y, -0);
+			assert.equal(isNegZeroY, false);
 		}
 	});
 });
@@ -247,8 +257,10 @@ describe("formatCoord, GRID_PRESETS, bboxOfPoints", () => {
 	});
 
 	test("GRID_PRESETS exposes frozen schematic and pcb arrays", () => {
-		assert.deepEqual(GRID_PRESETS.schematic, [0.635, 1.27, 2.54]);
-		assert.deepEqual(GRID_PRESETS.pcb, [0.1, 0.25, 0.5, 1, 1.27, 2.54]);
+		const schematicPresets = GRID_PRESETS.schematic;
+		assert.deepEqual(schematicPresets, [0.635, 1.27, 2.54]);
+		const pcbPresets = GRID_PRESETS.pcb;
+		assert.deepEqual(pcbPresets, [0.1, 0.25, 0.5, 1, 1.27, 2.54]);
 		assert.equal(Object.isFrozen(GRID_PRESETS), true);
 	});
 
