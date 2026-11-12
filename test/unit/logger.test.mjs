@@ -36,16 +36,18 @@ function createFakeReqRes(opts = {}) {
 	return { req, res };
 }
 
-function assertExactProps(target, expected) {
+function assertPropertyMatch(target, expected, mapper = (v) => v) {
 	for (const [key, value] of Object.entries(expected)) {
-		assert.strictEqual(target[key], value);
+		assert.strictEqual(mapper(target[key]), value);
 	}
 }
 
+function assertExactProps(target, expected) {
+	assertPropertyMatch(target, expected);
+}
+
 function assertTypes(target, expectedTypes) {
-	for (const [key, expectedType] of Object.entries(expectedTypes)) {
-		assert.strictEqual(typeof target[key], expectedType);
-	}
+	assertPropertyMatch(target, expectedTypes, (value) => typeof value);
 }
 
 function assertErrorInfo(errData, { name, message, expectStack }) {
@@ -92,16 +94,14 @@ function captureLoggedError({ env, err, msg }) {
 
 function logSingleJson(payload, msg) {
 	const ctx = createTestContext();
-	ctx.logger.info(payload, msg);
+	assert.doesNotThrow(() => {
+		ctx.logger.info(payload, msg);
+	});
 	return ctx.readJson(0);
 }
 
 function logSafePayload(payload) {
-	const ctx = createTestContext();
-	assert.doesNotThrow(() => {
-		ctx.logger.info(payload);
-	});
-	return ctx.readJson(0);
+	return logSingleJson(payload);
 }
 
 function runRequestFlow(opts = {}) {
@@ -123,12 +123,31 @@ function runRequestFlow(opts = {}) {
 	};
 }
 
+function getFinishedRequestId(headerValue) {
+	return runRequestFlow({
+		headers: { "x-request-id": headerValue },
+	}).finish().requestId;
+}
+
+function assertFilterThreshold(ctx, dropMethod, keepMethod) {
+	ctx.logger[dropMethod](`${dropMethod} message`);
+	assert.strictEqual(ctx.lines.length, 0);
+	ctx.logger[keepMethod](`${keepMethod} message`);
+	assert.strictEqual(ctx.lines.length, 1);
+}
+
+function assertLogOutput(ctx, expectedCount, expectedProps, idx = 0) {
+	assert.ok(ctx.lines);
+	assert.strictEqual(ctx.lines.length, expectedCount);
+	assertExactProps(ctx.readJson(idx), expectedProps);
+}
+
 test("1. writes one JSON line per call with standard fields", () => {
 	const ctx = createTestContext();
 	ctx.logger.info("first line");
 	ctx.logger.info("second line");
-	assert.strictEqual(ctx.lines.length, 2);
-	assertExactProps(ctx.readJson(0), {
+	assert.ok(ctx);
+	assertLogOutput(ctx, 2, {
 		level: "info",
 		msg: "first line",
 		time: "2026-01-01T00:00:00.000Z",
@@ -137,10 +156,8 @@ test("1. writes one JSON line per call with standard fields", () => {
 
 test("2. level filtering drops lower levels by default (info threshold)", () => {
 	const ctx = createTestContext();
-	ctx.logger.debug("debug message");
-	assert.strictEqual(ctx.lines.length, 0);
-	ctx.logger.info("info message");
-	assert.strictEqual(ctx.lines.length, 1);
+	assert.ok(ctx);
+	assertFilterThreshold(ctx, "debug", "info");
 });
 
 test("3. level filtering respects custom level parameter", () => {
@@ -161,10 +178,8 @@ test("3. level filtering respects custom level parameter", () => {
 test("4. level filtering respects LOG_LEVEL environment variable", () => {
 	withEnv("LOG_LEVEL", "error", () => {
 		const ctx = createTestContext();
-		ctx.logger.warn("warn message");
-		assert.strictEqual(ctx.lines.length, 0);
-		ctx.logger.error("error message");
-		assert.strictEqual(ctx.lines.length, 1);
+		assert.ok(ctx);
+		assertFilterThreshold(ctx, "warn", "error");
 	});
 });
 
@@ -189,31 +204,34 @@ test("6. nested child loggers accumulate bindings across generations", () => {
 	assert.strictEqual(data.gen, 2);
 });
 
-test("7. error serialization outside production includes name, message, stack", () => {
-	const data = captureLoggedError({
+const errorCases = [
+	{
+		title:
+			"7. error serialization outside production includes name, message, stack",
 		env: "development",
 		err: new Error("boom"),
 		msg: "failed",
-	});
-	assertErrorInfo(data.err, {
-		name: "Error",
-		message: "boom",
-		expectStack: true,
-	});
-});
-
-test("8. error serialization in production includes name and message ONLY", () => {
-	const data = captureLoggedError({
+		expected: { name: "Error", message: "boom", expectStack: true },
+	},
+	{
+		title:
+			"8. error serialization in production includes name and message ONLY",
 		env: "production",
 		err: new TypeError("invalid input"),
 		msg: "type failure",
+		expected: {
+			name: "TypeError",
+			message: "invalid input",
+			expectStack: false,
+		},
+	},
+];
+for (const tc of errorCases) {
+	test(tc.title, () => {
+		const data = captureLoggedError(tc);
+		assertErrorInfo(data.err, tc.expected);
 	});
-	assertErrorInfo(data.err, {
-		name: "TypeError",
-		message: "invalid input",
-		expectStack: false,
-	});
-});
+}
 
 test("9. redaction replaces sensitive keys with [REDACTED]", () => {
 	const sensitiveKeys = [
@@ -296,8 +314,8 @@ test("14. absolute paths under user home directory are reduced to basename", () 
 test("15. metric logs level metric with finite numeric value and tags", () => {
 	const ctx = createTestContext();
 	ctx.logger.metric("ai.tokens", 1500, { model: "claude-3-5" });
-	assert.strictEqual(ctx.lines.length, 1);
-	assertExactProps(ctx.readJson(0), {
+	assert.ok(ctx);
+	assertLogOutput(ctx, 1, {
 		level: "metric",
 		name: "ai.tokens",
 		value: 1500,
@@ -344,33 +362,39 @@ test("17. requestLogger logs finished request without query string or headers", 
 
 test("18. requestLogger validates and accepts conformant x-request-id", () => {
 	const validId = "custom-req-id_12345";
-	const data = runRequestFlow({
-		headers: { "x-request-id": validId },
-	}).finish();
-	assert.strictEqual(data.requestId, validId);
+	assert.strictEqual(getFinishedRequestId(validId), validId);
 });
 
 test("19. requestLogger generates UUID for invalid or missing x-request-id", () => {
 	const invalidIds = ["bad id with spaces", "a".repeat(65), "drop;table", ""];
 	for (const badId of invalidIds) {
-		const data = runRequestFlow({
-			headers: { "x-request-id": badId },
-		}).finish();
-		assertGeneratedUuid(data.requestId, badId);
+		assertGeneratedUuid(getFinishedRequestId(badId), badId);
 	}
 });
 
-test("20. circular references do not throw and are replaced by [CIRCULAR]", () => {
-	const obj = { name: "cycle" };
-	obj.self = obj;
-	const data = logSafePayload({ cycle: obj });
-	assert.strictEqual(data.cycle.self, "[CIRCULAR]");
-});
-
-test("21. BigInt values do not throw and are replaced by [BIGINT]", () => {
-	const data = logSafePayload({ big: 9007199254740991000n });
-	assert.strictEqual(data.big, "[BIGINT]");
-});
+const safePayloadCases = [
+	{
+		title:
+			"20. circular references do not throw and are replaced by [CIRCULAR]",
+		payload: () => {
+			const obj = { name: "cycle" };
+			obj.self = obj;
+			return { cycle: obj };
+		},
+		verify: (data) => assert.strictEqual(data.cycle.self, "[CIRCULAR]"),
+	},
+	{
+		title: "21. BigInt values do not throw and are replaced by [BIGINT]",
+		payload: () => ({ big: 9007199254740991000n }),
+		verify: (data) => assert.strictEqual(data.big, "[BIGINT]"),
+	},
+];
+for (const tc of safePayloadCases) {
+	test(tc.title, () => {
+		const data = logSafePayload(tc.payload());
+		tc.verify(data);
+	});
+}
 
 test("22. throwing sink is swallowed and does not throw", () => {
 	const failingSink = () => {
