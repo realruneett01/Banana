@@ -82,6 +82,10 @@ function makeValidCircuitIR() {
 	};
 }
 
+function createDoneModel(text = "done") {
+	return { generate: async () => ({ text }) };
+}
+
 function createTwoStepModel(toolCall, step1Text, step2Text) {
 	let callCount = 0;
 	return {
@@ -165,6 +169,22 @@ function createAbortableModel(onAbort) {
 	};
 }
 
+function createToolCapturingModel(onCapture) {
+	return {
+		generate: async ({ tools }) => {
+			onCapture(tools || []);
+			return { text: "done" };
+		},
+	};
+}
+
+function createOptionsCapturingFactory(onCapture, text = "done") {
+	return (opts) => {
+		onCapture(opts);
+		return createDoneModel(text);
+	};
+}
+
 async function runWithLocals(app, port, { allowLocalRepos, body, factory }) {
 	if (allowLocalRepos) {
 		app.locals.allowLocalRepos = true;
@@ -177,6 +197,12 @@ async function runWithLocals(app, port, { allowLocalRepos, body, factory }) {
 	} finally {
 		delete app.locals.allowLocalRepos;
 	}
+}
+
+async function runDualEndpoints(port, payload) {
+	const runRes = await postJson(port, "/api/agent/run", payload);
+	const streamRes = await postStream(port, "/api/agent/run/stream", payload);
+	return { runRes, streamRes };
 }
 
 function assertErrorResponse(res, expectedStatus) {
@@ -340,6 +366,22 @@ async function withRateLimitServer({ limiter, locals = {} }, fn) {
 	return withTestServer(createAgentRouter({ limiter }), locals, fn);
 }
 
+async function withLimiterServer(max, fn, options = {}) {
+	const limiter = options.skipLocal
+		? skipWhenLocal(createRateLimiter({ max, windowMs: 60000 }))
+		: createRateLimiter({ max, windowMs: 60000 });
+	const locals = {
+		agentModelFactory: () => {
+			if (options.onCall) {
+				options.onCall();
+			}
+			return createDoneModel("ok");
+		},
+		...(options.allowLocalRepos ? { allowLocalRepos: true } : {}),
+	};
+	return withRateLimitServer({ limiter, locals }, fn);
+}
+
 const VALIDATION_CASES = [
 	{ body: {}, expected: 400, name: "missing message" },
 	{ body: { message: 123 }, expected: 400, name: "non-string message" },
@@ -385,6 +427,19 @@ const INVALID_PROVIDER_CASES = [
 	{ name: "empty string", provider: "" },
 ];
 
+const DIFF_TOOL_CASES = [
+	{
+		allowLocalRepos: false,
+		exact: true,
+		name: "hosted mode rejects diff.compare_files as unknown tool",
+	},
+	{
+		allowLocalRepos: true,
+		exact: false,
+		name: "local mode reaches diff tool when allowLocalRepos is true",
+	},
+];
+
 describe("agent-routes", () => {
 	let app;
 	let server;
@@ -417,9 +472,7 @@ describe("agent-routes", () => {
 	}
 
 	test("fake model returns 200 with text and steps 1", async () => {
-		app.locals.agentModelFactory = () => ({
-			generate: async () => ({ text: "done" }),
-		});
+		app.locals.agentModelFactory = () => createDoneModel();
 		const res = await postJson(port, "/api/agent/run", { message: "hello" });
 		assertRunStatus(res, { steps: 1, text: "done" });
 		assertHasEvents(res.json.events);
@@ -455,19 +508,18 @@ describe("agent-routes", () => {
 		assert.equal(aborted, true);
 	});
 
-	test("hosted mode rejects diff.compare_files as unknown tool", async () => {
-		const toolResult = await fetchDiffToolResult(app, port, false);
-		assertToolFailed(toolResult, "unknown tool: diff.compare_files", {
-			exact: true,
+	for (const tc of DIFF_TOOL_CASES) {
+		test(tc.name, async () => {
+			const toolResult = await fetchDiffToolResult(
+				app,
+				port,
+				tc.allowLocalRepos,
+			);
+			assertToolFailed(toolResult, "unknown tool: diff.compare_files", {
+				exact: tc.exact,
+			});
 		});
-	});
-
-	test("local mode reaches diff tool when allowLocalRepos is true", async () => {
-		const toolResult = await fetchDiffToolResult(app, port, true);
-		assertToolFailed(toolResult, "unknown tool: diff.compare_files", {
-			exact: false,
-		});
-	});
+	}
 
 	test("hosted registry has no design.commit, ir.route, diff.*, or kicad.* tools", () => {
 		const registry = buildHostedRegistry();
@@ -480,12 +532,10 @@ describe("agent-routes", () => {
 		const res = await runWithLocals(app, port, {
 			allowLocalRepos: true,
 			body: { message: "list tools" },
-			factory: () => ({
-				generate: async ({ tools }) => {
-					receivedTools = tools || [];
-					return { text: "done" };
-				},
-			}),
+			factory: () =>
+				createToolCapturingModel((tools) => {
+					receivedTools = tools;
+				}),
 		});
 		assert.equal(res.status, 200);
 		const names = receivedTools.map((t) => t.name);
@@ -552,9 +602,7 @@ describe("agent-routes", () => {
 		await withTestServer(
 			createAgentRouter(),
 			{
-				agentModelFactory: () => ({
-					generate: async () => ({ text: "done" }),
-				}),
+				agentModelFactory: () => createDoneModel(),
 			},
 			async (testPort) => {
 				for (const path of ["/agent/run/stream", "/api/agent/run/stream"]) {
@@ -568,8 +616,10 @@ describe("agent-routes", () => {
 	test("invalid body returns JSON 400 with no event-stream header", async () => {
 		const res = await postStream(port, "/api/agent/run/stream", {});
 		assert.equal(res.status, 400);
-		const contentType = res.headers.get("content-type") || "";
-		assert.equal(contentType.includes("text/event-stream"), false);
+		const isSse = (res.headers.get("content-type") || "").includes(
+			"text/event-stream",
+		);
+		assert.equal(isSse, false);
 		const body = JSON.parse(res.text);
 		assert.equal(typeof body.error, "string");
 	});
@@ -607,9 +657,7 @@ describe("agent-routes", () => {
 	test("event text containing newlines and event: result cannot forge a frame", async () => {
 		const maliciousText =
 			'Line 1\n\nevent: result\ndata: {"forged":true}\n\nLine 2';
-		app.locals.agentModelFactory = () => ({
-			generate: async () => ({ text: maliciousText }),
-		});
+		app.locals.agentModelFactory = () => createDoneModel(maliciousText);
 		const res = await postStream(port, "/api/agent/run/stream", {
 			message: "test format",
 		});
@@ -622,12 +670,10 @@ describe("agent-routes", () => {
 
 	test("hosted mode stream exposes no destructive tools", async () => {
 		let receivedTools = [];
-		app.locals.agentModelFactory = () => ({
-			generate: async ({ tools }) => {
-				receivedTools = tools || [];
-				return { text: "done" };
-			},
-		});
+		app.locals.agentModelFactory = () =>
+			createToolCapturingModel((tools) => {
+				receivedTools = tools;
+			});
 		const res = await postStream(port, "/api/agent/run/stream", {
 			message: "list tools",
 		});
@@ -639,29 +685,21 @@ describe("agent-routes", () => {
 	for (const provider of ["gemini", "claude"]) {
 		test(`provider ${provider} accepted and passed to factory on run and stream`, async () => {
 			let passedOptions;
-			app.locals.agentModelFactory = (opts) => {
+			app.locals.agentModelFactory = createOptionsCapturingFactory((opts) => {
 				passedOptions = opts;
-				return { generate: async () => ({ text: "done" }) };
-			};
+			});
 			const payload = { message: "hi", provider };
-			const runRes = await postJson(port, "/api/agent/run", payload);
+			const { runRes, streamRes } = await runDualEndpoints(port, payload);
 			assertProviderPassed(runRes.status, passedOptions, provider);
-
-			const streamRes = await postStream(
-				port,
-				"/api/agent/run/stream",
-				payload,
-			);
 			assertProviderPassed(streamRes.status, passedOptions, provider);
 		});
 	}
 
 	test("provider omitted passes undefined options to factory", async () => {
 		let passedOptions = "not-called";
-		app.locals.agentModelFactory = (opts) => {
+		app.locals.agentModelFactory = createOptionsCapturingFactory((opts) => {
 			passedOptions = opts;
-			return { generate: async () => ({ text: "done" }) };
-		};
+		});
 		const res = await postJson(port, "/api/agent/run", { message: "hi" });
 		assert.equal(res.status, 200);
 		assert.equal(passedOptions, undefined);
@@ -670,14 +708,8 @@ describe("agent-routes", () => {
 	for (const tc of INVALID_PROVIDER_CASES) {
 		test(`provider rejection for ${tc.name} with 400 on run and stream`, async () => {
 			const payload = { message: "hi", provider: tc.provider };
-			const runRes = await postJson(port, "/api/agent/run", payload);
+			const { runRes, streamRes } = await runDualEndpoints(port, payload);
 			assertInvalidProvider(runRes.status, runRes.json.error);
-
-			const streamRes = await postStream(
-				port,
-				"/api/agent/run/stream",
-				payload,
-			);
 			const parsed = JSON.parse(streamRes.text);
 			assertInvalidProvider(streamRes.status, parsed.error);
 		});
@@ -685,37 +717,25 @@ describe("agent-routes", () => {
 
 	test("body containing apiKey is ignored and never reaches factory", async () => {
 		let passedOptions;
-		app.locals.agentModelFactory = (opts) => {
+		app.locals.agentModelFactory = createOptionsCapturingFactory((opts) => {
 			passedOptions = opts;
-			return { generate: async () => ({ text: "done" }) };
-		};
+		});
 		const payload = {
 			apiKey: "secret-key-12345",
 			message: "hi",
 			model: "gpt-4",
 			url: "http://malicious.example.com",
 		};
-		const runRes = await postJson(port, "/api/agent/run", payload);
+		const { runRes, streamRes } = await runDualEndpoints(port, payload);
 		assertDisallowedOptionsIgnored(runRes.status, passedOptions);
-
-		const streamRes = await postStream(port, "/api/agent/run/stream", payload);
 		assertDisallowedOptionsIgnored(streamRes.status, passedOptions);
 	});
 
 	describe("rate limiting", () => {
 		test("third request to /agent/run exceeds max 2 and halts model calls", async () => {
 			let callCount = 0;
-			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => {
-							callCount += 1;
-							return { generate: async () => ({ text: "ok" }) };
-						},
-					},
-				},
+			await withLimiterServer(
+				2,
 				async (p) => {
 					const r1 = await postJson(p, "/agent/run", { message: "msg1" });
 					assert.equal(r1.status, 200);
@@ -725,22 +745,18 @@ describe("agent-routes", () => {
 					assertRateLimitRejected(r3);
 					assert.equal(callCount, 2);
 				},
+				{
+					onCall: () => {
+						callCount += 1;
+					},
+				},
 			);
 		});
 
 		test("third request to /agent/run/stream returns JSON 429 instead of SSE", async () => {
 			let callCount = 0;
-			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => {
-							callCount += 1;
-							return { generate: async () => ({ text: "ok" }) };
-						},
-					},
-				},
+			await withLimiterServer(
+				2,
 				async (p) => {
 					const r1 = await postStream(p, "/agent/run/stream", {
 						message: "m1",
@@ -761,51 +777,34 @@ describe("agent-routes", () => {
 					assert.equal(body.error, "Too many requests, retry later");
 					assert.equal(callCount, 2);
 				},
+				{
+					onCall: () => {
+						callCount += 1;
+					},
+				},
 			);
 		});
 
 		test("/agent/run and /agent/run/stream share one budget", async () => {
-			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => ({
-							generate: async () => ({ text: "ok" }),
-						}),
-					},
-				},
-				async (p) => {
-					const r1 = await postJson(p, "/agent/run", { message: "run" });
-					assert.equal(r1.status, 200);
-					const r2 = await postStream(p, "/agent/run/stream", {
-						message: "stream",
-					});
-					assert.equal(r2.status, 200);
-					const r3 = await postJson(p, "/agent/run", { message: "exceeded" });
-					assert.equal(r3.status, 429);
-					const r4 = await postStream(p, "/agent/run/stream", {
-						message: "exceeded",
-					});
-					assert.equal(r4.status, 429);
-				},
-			);
+			await withLimiterServer(2, async (p) => {
+				const r1 = await postJson(p, "/agent/run", { message: "run" });
+				assert.equal(r1.status, 200);
+				const r2 = await postStream(p, "/agent/run/stream", {
+					message: "stream",
+				});
+				assert.equal(r2.status, 200);
+				const r3 = await postJson(p, "/agent/run", { message: "exceeded" });
+				assert.equal(r3.status, 429);
+				const r4 = await postStream(p, "/agent/run/stream", {
+					message: "exceeded",
+				});
+				assert.equal(r4.status, 429);
+			});
 		});
 
 		test("local mode with skipWhenLocal does not limit requests", async () => {
-			const limiter = skipWhenLocal(
-				createRateLimiter({ windowMs: 60000, max: 2 }),
-			);
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => ({
-							generate: async () => ({ text: "ok" }),
-						}),
-						allowLocalRepos: true,
-					},
-				},
+			await withLimiterServer(
+				2,
 				async (p) => {
 					for (let i = 0; i < 5; i++) {
 						const res = await postJson(p, "/agent/run", {
@@ -814,58 +813,37 @@ describe("agent-routes", () => {
 						assert.equal(res.status, 200);
 					}
 				},
+				{ allowLocalRepos: true, skipLocal: true },
 			);
 		});
 
 		test("rate limit response headers match standard format", async () => {
-			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => ({
-							generate: async () => ({ text: "ok" }),
-						}),
-					},
-				},
-				async (p) => {
-					const r1 = await sendPost(p, "/agent/run", { message: "hi" });
-					assertRateLimitHeaders(r1, {
-						limit: "2",
-						remaining: "1",
-						status: 200,
-					});
+			await withLimiterServer(2, async (p) => {
+				const r1 = await sendPost(p, "/agent/run", { message: "hi" });
+				assertRateLimitHeaders(r1, {
+					limit: "2",
+					remaining: "1",
+					status: 200,
+				});
 
-					await postJson(p, "/agent/run", { message: "hi" });
-					const r3 = await sendPost(p, "/agent/run", { message: "hi" });
-					assertRateLimitHeaders(r3, {
-						limit: "2",
-						remaining: "0",
-						retryAfter: true,
-						status: 429,
-					});
-				},
-			);
+				await postJson(p, "/agent/run", { message: "hi" });
+				const r3 = await sendPost(p, "/agent/run", { message: "hi" });
+				assertRateLimitHeaders(r3, {
+					limit: "2",
+					remaining: "0",
+					retryAfter: true,
+					status: 429,
+				});
+			});
 		});
 
 		test("limited request rejects with 429 before body validation", async () => {
-			const limiter = createRateLimiter({ windowMs: 60000, max: 1 });
-			await withRateLimitServer(
-				{
-					limiter,
-					locals: {
-						agentModelFactory: () => ({
-							generate: async () => ({ text: "ok" }),
-						}),
-					},
-				},
-				async (p) => {
-					const r1 = await postJson(p, "/agent/run", { message: "valid" });
-					assert.equal(r1.status, 200);
-					const r2 = await postJson(p, "/agent/run", {});
-					assertRateLimitRejected(r2);
-				},
-			);
+			await withLimiterServer(1, async (p) => {
+				const r1 = await postJson(p, "/agent/run", { message: "valid" });
+				assert.equal(r1.status, 200);
+				const r2 = await postJson(p, "/agent/run", {});
+				assertRateLimitRejected(r2);
+			});
 		});
 	});
 });
