@@ -19,32 +19,23 @@ function isObject(val) {
 }
 
 function deepEqualArrays(a, b) {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) {
-		if (!deepEqual(a[i], b[i])) return false;
-	}
-	return true;
+	return a.length === b.length && a.every((val, i) => deepEqual(val, b[i]));
 }
 
 function deepEqualObjects(a, b) {
 	const keysA = Object.keys(a);
-	const keysB = Object.keys(b);
-	if (keysA.length !== keysB.length) return false;
-	for (const key of keysA) {
-		if (!Object.hasOwn(b, key)) return false;
-		if (!deepEqual(a[key], b[key])) return false;
-	}
-	return true;
+	if (keysA.length !== Object.keys(b).length) return false;
+	return keysA.every(
+		(key) => Object.hasOwn(b, key) && deepEqual(a[key], b[key]),
+	);
 }
 
 function deepEqual(a, b) {
 	if (Object.is(a, b)) return true;
 	if (!isObject(a) || !isObject(b)) return false;
 	const isArrA = Array.isArray(a);
-	const isArrB = Array.isArray(b);
-	if (isArrA !== isArrB) return false;
-	if (isArrA) return deepEqualArrays(a, b);
-	return deepEqualObjects(a, b);
+	if (isArrA !== Array.isArray(b)) return false;
+	return isArrA ? deepEqualArrays(a, b) : deepEqualObjects(a, b);
 }
 
 function getDesignArrays(design) {
@@ -57,60 +48,58 @@ function getDesignArrays(design) {
 	};
 }
 
-function compareByRefThenId(a, b) {
-	const cmp = String(a.ref ?? "").localeCompare(String(b.ref ?? ""));
-	if (cmp !== 0) return cmp;
-	return String(a.id ?? "").localeCompare(String(b.id ?? ""));
-}
-
-function sortByRef(items) {
-	return [...items].sort(compareByRefThenId);
-}
-
-function compareByNameThenId(a, b) {
-	const cmp = String(a.name ?? "").localeCompare(String(b.name ?? ""));
-	if (cmp !== 0) return cmp;
-	return String(a.id ?? "").localeCompare(String(b.id ?? ""));
-}
-
-function sortByName(items) {
-	return [...items].sort(compareByNameThenId);
+function sortEntities(items, keyProp) {
+	return [...items].sort((a, b) => {
+		const cmp = String(a[keyProp] ?? "").localeCompare(
+			String(b[keyProp] ?? ""),
+		);
+		if (cmp !== 0) return cmp;
+		return String(a.id ?? "").localeCompare(String(b.id ?? ""));
+	});
 }
 
 function findPartFieldChanges(beforePart, afterPart) {
 	const changes = [];
 	for (const field of COMPARED_PART_FIELDS) {
-		const beforeVal = beforePart[field];
-		const afterVal = afterPart[field];
-		if (!deepEqual(beforeVal, afterVal)) {
-			changes.push({ field, before: beforeVal, after: afterVal });
+		const before = beforePart[field];
+		const after = afterPart[field];
+		if (!deepEqual(before, after)) {
+			changes.push({ field, before, after });
 		}
 	}
 	return changes;
 }
 
-function diffParts(beforeParts, afterParts) {
-	const beforeMap = new Map(beforeParts.map((p) => [p.id, p]));
-	const afterMap = new Map(afterParts.map((p) => [p.id, p]));
+function diffPartItem(beforePart, afterPart) {
+	const fields = findPartFieldChanges(beforePart, afterPart);
+	if (fields.length === 0) return null;
+	return { id: afterPart.id, ref: afterPart.ref ?? beforePart.ref, fields };
+}
+
+function diffEntities(beforeItems, afterItems, diffItem, keyProp) {
+	const beforeMap = new Map(beforeItems.map((item) => [item.id, item]));
+	const afterMap = new Map(afterItems.map((item) => [item.id, item]));
 	const added = [];
 	const changed = [];
-	for (const part of afterParts) {
-		const beforePart = beforeMap.get(part.id);
-		if (!beforePart) {
-			added.push(part);
-			continue;
-		}
-		const fields = findPartFieldChanges(beforePart, part);
-		if (fields.length > 0) {
-			changed.push({ id: part.id, ref: part.ref ?? beforePart.ref, fields });
+	for (const item of afterItems) {
+		const beforeItem = beforeMap.get(item.id);
+		if (!beforeItem) {
+			added.push(item);
+		} else {
+			const diff = diffItem(beforeItem, item);
+			if (diff) changed.push(diff);
 		}
 	}
-	const removed = beforeParts.filter((p) => !afterMap.has(p.id));
+	const removed = beforeItems.filter((item) => !afterMap.has(item.id));
 	return {
-		added: sortByRef(added),
-		removed: sortByRef(removed),
-		changed: sortByRef(changed),
+		added: sortEntities(added, keyProp),
+		removed: sortEntities(removed, keyProp),
+		changed: sortEntities(changed, keyProp),
 	};
+}
+
+function diffParts(beforeParts, afterParts) {
+	return diffEntities(beforeParts, afterParts, diffPartItem, "ref");
 }
 
 function pinKey(pin) {
@@ -121,14 +110,16 @@ function sortPins(pins) {
 	return [...pins].sort((a, b) => pinKey(a).localeCompare(pinKey(b)));
 }
 
+function filterMissingPins(pins, existingKeys) {
+	return sortPins(pins.filter((p) => !existingKeys.has(pinKey(p))));
+}
+
 function diffNetPins(beforePins = [], afterPins = []) {
 	const beforeKeys = new Set(beforePins.map(pinKey));
 	const afterKeys = new Set(afterPins.map(pinKey));
-	const addedPins = afterPins.filter((p) => !beforeKeys.has(pinKey(p)));
-	const removedPins = beforePins.filter((p) => !afterKeys.has(pinKey(p)));
 	return {
-		addedPins: sortPins(addedPins),
-		removedPins: sortPins(removedPins),
+		addedPins: filterMissingPins(afterPins, beforeKeys),
+		removedPins: filterMissingPins(beforePins, afterKeys),
 	};
 }
 
@@ -152,29 +143,22 @@ function diffNetItem(beforeNet, afterNet) {
 }
 
 function diffNets(beforeNets, afterNets) {
-	const beforeMap = new Map(beforeNets.map((n) => [n.id, n]));
-	const afterMap = new Map(afterNets.map((n) => [n.id, n]));
-	const added = [];
-	const changed = [];
-	for (const net of afterNets) {
-		const beforeNet = beforeMap.get(net.id);
-		if (!beforeNet) {
-			added.push(net);
-			continue;
-		}
-		const diff = diffNetItem(beforeNet, net);
-		if (diff) changed.push(diff);
-	}
-	const removed = beforeNets.filter((n) => !afterMap.has(n.id));
-	return {
-		added: sortByName(added),
-		removed: sortByName(removed),
-		changed: sortByName(changed),
-	};
+	return diffEntities(beforeNets, afterNets, diffNetItem, "name");
 }
 
 function pluralize(count, singular, plural = `${singular}s`) {
 	return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function clause(count, noun, action) {
+	return count > 0 ? `${pluralize(count, noun)} ${action}` : null;
+}
+
+function collectEntityClauses(group, noun) {
+	return [
+		clause(group?.added?.length, noun, "added"),
+		clause(group?.removed?.length, noun, "removed"),
+	].filter(Boolean);
 }
 
 function countPartFieldChanges(changedParts) {
@@ -187,46 +171,38 @@ function countPartFieldChanges(changedParts) {
 	return counts;
 }
 
+function collectPartFieldClauses(changedParts) {
+	const counts = countPartFieldChanges(changedParts || []);
+	return COMPARED_PART_FIELDS.map((field) =>
+		clause(counts[field], FIELD_LABELS[field] || field, "changed"),
+	).filter(Boolean);
+}
+
 function collectPartClauses(parts) {
-	const clauses = [];
-	const addedCount = parts?.added?.length || 0;
-	if (addedCount > 0) clauses.push(`${pluralize(addedCount, "part")} added`);
-	const removedCount = parts?.removed?.length || 0;
-	if (removedCount > 0)
-		clauses.push(`${pluralize(removedCount, "part")} removed`);
-	const counts = countPartFieldChanges(parts?.changed || []);
-	for (const field of COMPARED_PART_FIELDS) {
-		const count = counts[field] || 0;
-		if (count > 0) {
-			const label = FIELD_LABELS[field] || field;
-			clauses.push(`${pluralize(count, label)} changed`);
-		}
-	}
-	return clauses;
+	return [
+		...collectEntityClauses(parts, "part"),
+		...collectPartFieldClauses(parts?.changed),
+	];
 }
 
 function countNetPins(changedNets, pinProp) {
 	return changedNets.reduce((sum, n) => sum + (n[pinProp]?.length || 0), 0);
 }
 
-function collectNetClauses(nets) {
-	const clauses = [];
-	const addedCount = nets?.added?.length || 0;
-	if (addedCount > 0) clauses.push(`${pluralize(addedCount, "net")} added`);
-	const removedCount = nets?.removed?.length || 0;
-	if (removedCount > 0)
-		clauses.push(`${pluralize(removedCount, "net")} removed`);
-	const changed = nets?.changed || [];
+function collectNetChangeClauses(changed = []) {
 	const renamedCount = changed.filter((n) => Boolean(n.renamedFrom)).length;
-	if (renamedCount > 0)
-		clauses.push(`${pluralize(renamedCount, "net")} renamed`);
-	const pinsAdded = countNetPins(changed, "addedPins");
-	if (pinsAdded > 0)
-		clauses.push(`${pluralize(pinsAdded, "connection")} added`);
-	const pinsRemoved = countNetPins(changed, "removedPins");
-	if (pinsRemoved > 0)
-		clauses.push(`${pluralize(pinsRemoved, "connection")} removed`);
-	return clauses;
+	return [
+		clause(renamedCount, "net", "renamed"),
+		clause(countNetPins(changed, "addedPins"), "connection", "added"),
+		clause(countNetPins(changed, "removedPins"), "connection", "removed"),
+	].filter(Boolean);
+}
+
+function collectNetClauses(nets) {
+	return [
+		...collectEntityClauses(nets, "net"),
+		...collectNetChangeClauses(nets?.changed),
+	];
 }
 
 function hasAnyItems(...lists) {
