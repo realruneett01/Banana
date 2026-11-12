@@ -203,7 +203,7 @@ async function requestSearch(base) {
 function pickRandomLibrary(libraries) {
 	if (Array.isArray(libraries) && libraries.length > 0) {
 		const idx = Math.floor(Math.random() * libraries.length);
-		return libraries[idx];
+		return libraries[idx].name;
 	}
 	return "Device";
 }
