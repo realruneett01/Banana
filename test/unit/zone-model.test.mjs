@@ -49,6 +49,71 @@ function makeSampleBoard() {
 	};
 }
 
+function makeFrozenBoard(polygon) {
+	return Object.freeze({
+		zones: Object.freeze([
+			Object.freeze({
+				netId: "GND",
+				layer: "F.Cu",
+				polygon: Object.freeze(polygon),
+			}),
+		]),
+	});
+}
+
+function verifyZoneCounts(beforeBoard, afterBoard, expectedCount) {
+	assert.equal(beforeBoard.zones.length, 1);
+	assert.equal(afterBoard.zones.length, expectedCount);
+}
+
+function verifyAddZoneRejected(pointSets) {
+	const currentBoard = makeSampleBoard();
+	for (const points of pointSets) {
+		assert.equal(
+			addZone(currentBoard, { netId: "GND", layer: "F.Cu", points }),
+			currentBoard,
+		);
+	}
+}
+
+function verifyRemoveNoop(index) {
+	const sample = makeSampleBoard();
+	assert.equal(removeZone(sample, index), sample);
+}
+
+function verifyMoveNoop(zoneIndex, pointIndex, coords) {
+	const targetBoard = makeSampleBoard();
+	assert.equal(
+		moveZonePoint(targetBoard, zoneIndex, pointIndex, coords),
+		targetBoard,
+	);
+}
+
+function verifyRectCorners(start, end, expectedCorners) {
+	assert.deepEqual(rectZonePoints(start, end), expectedCorners);
+}
+
+function verifyZoneArea(points, expected) {
+	assert.equal(zoneArea({ polygon: points }), expected);
+}
+
+function verifyPointsContainment(zone, points, expected) {
+	for (const pt of points) {
+		assert.equal(pointInZone(zone, pt), expected);
+	}
+}
+
+function verifyZoneValid(zoneSpec) {
+	assert.equal(validateZone(zoneSpec), null);
+}
+
+function verifyZoneValidation(targets, errorPattern) {
+	const list = Array.isArray(targets) ? targets : [targets];
+	for (const target of list) {
+		assert.match(validateZone(target), errorPattern);
+	}
+}
+
 describe("addZone", () => {
 	test("appends zone in expected shape", () => {
 		const board = { zones: [] };
@@ -73,14 +138,13 @@ describe("addZone", () => {
 			points: RECT_POINTS,
 			keepout: true,
 		});
-		assert.equal(result.zones.length, 1);
 		assert.equal(result.zones[0].netId, "");
 		assert.equal(result.zones[0].keepout, true);
+		assert.equal(result.zones.length, 1);
 	});
 
 	test("rejects point lists with fewer than 3 points", () => {
-		const board = makeSampleBoard();
-		const cases = [
+		verifyAddZoneRejected([
 			[],
 			[[0, 0]],
 			[
@@ -89,16 +153,11 @@ describe("addZone", () => {
 			],
 			null,
 			undefined,
-		];
-		for (const points of cases) {
-			const res = addZone(board, { netId: "GND", layer: "F.Cu", points });
-			assert.equal(res, board);
-		}
+		]);
 	});
 
 	test("rejects point lists containing non-finite coordinates", () => {
-		const board = makeSampleBoard();
-		const invalidPointSets = [
+		verifyAddZoneRejected([
 			[
 				[0, 0],
 				[NaN, 1],
@@ -111,27 +170,15 @@ describe("addZone", () => {
 			],
 			[[0, 0], null, [2, 2]],
 			[[0, 0], [1], [2, 2]],
-		];
-		for (const points of invalidPointSets) {
-			const res = addZone(board, { netId: "GND", layer: "F.Cu", points });
-			assert.equal(res, board);
-		}
+		]);
 	});
 
 	test("does not mutate inputs", () => {
-		const board = Object.freeze({
-			zones: Object.freeze([
-				Object.freeze({
-					netId: "GND",
-					layer: "F.Cu",
-					polygon: Object.freeze([
-						[0, 0],
-						[1, 0],
-						[1, 1],
-					]),
-				}),
-			]),
-		});
+		const board = makeFrozenBoard([
+			[0, 0],
+			[1, 0],
+			[1, 1],
+		]);
 		const points = Object.freeze([
 			[0, 0],
 			[10, 0],
@@ -139,46 +186,36 @@ describe("addZone", () => {
 		]);
 		const opts = Object.freeze({ netId: "SIG", layer: "F.Cu", points });
 		const result = addZone(board, opts);
-		assert.equal(board.zones.length, 1);
-		assert.equal(result.zones.length, 2);
+		verifyZoneCounts(board, result, 2);
 	});
 });
 
 describe("removeZone", () => {
 	test("removes zone at valid index", () => {
-		const board = {
+		const initialBoard = {
 			zones: [
 				{ netId: "GND", layer: "F.Cu", polygon: RECT_POINTS },
 				{ netId: "VCC", layer: "B.Cu", polygon: RECT_POINTS },
 			],
 		};
-		const result = removeZone(board, 0);
-		assert.notEqual(result, board);
-		assert.equal(result.zones.length, 1);
+		const result = removeZone(initialBoard, 0);
 		assert.equal(result.zones[0].netId, "VCC");
+		assert.equal(result.zones.length, 1);
+		assert.notEqual(result, initialBoard);
 	});
 
 	test("returns board unchanged when index is negative", () => {
-		const board = makeSampleBoard();
-		const result = removeZone(board, -1);
-		assert.equal(result, board);
+		verifyRemoveNoop(-1);
 	});
 
 	test("returns board unchanged when index is out of bounds", () => {
-		const board = makeSampleBoard();
-		const result = removeZone(board, 99);
-		assert.equal(result, board);
+		verifyRemoveNoop(99);
 	});
 
 	test("does not mutate input board", () => {
-		const board = Object.freeze({
-			zones: Object.freeze([
-				Object.freeze({ netId: "GND", layer: "F.Cu", polygon: RECT_POINTS }),
-			]),
-		});
+		const board = makeFrozenBoard(RECT_POINTS);
 		const result = removeZone(board, 0);
-		assert.equal(board.zones.length, 1);
-		assert.equal(result.zones.length, 0);
+		verifyZoneCounts(board, result, 0);
 	});
 });
 
@@ -194,39 +231,24 @@ describe("moveZonePoint", () => {
 	});
 
 	test("returns board unchanged when zone index is invalid", () => {
-		const board = makeSampleBoard();
-		const result = moveZonePoint(board, 5, 0, [10, 10]);
-		assert.equal(result, board);
+		verifyMoveNoop(5, 0, [10, 10]);
 	});
 
 	test("returns board unchanged when point index is invalid", () => {
-		const board = makeSampleBoard();
-		const negativeRes = moveZonePoint(board, 0, -1, [10, 10]);
-		const overflowRes = moveZonePoint(board, 0, 99, [10, 10]);
-		assert.equal(negativeRes, board);
-		assert.equal(overflowRes, board);
+		verifyMoveNoop(0, -1, [10, 10]);
+		verifyMoveNoop(0, 99, [10, 10]);
 	});
 
 	test("returns board unchanged when coordinates are non-finite", () => {
-		const board = makeSampleBoard();
 		const badCoords = [[NaN, 0], [0, Infinity], "invalid", [1]];
 		for (const coords of badCoords) {
-			const res = moveZonePoint(board, 0, 0, coords);
-			assert.equal(res, board);
+			verifyMoveNoop(0, 0, coords);
 		}
 	});
 
 	test("does not mutate input board", () => {
 		const initialPt = Object.freeze([0, 0]);
-		const board = Object.freeze({
-			zones: Object.freeze([
-				Object.freeze({
-					netId: "GND",
-					layer: "F.Cu",
-					polygon: Object.freeze([initialPt, [5, 0], [5, 5]]),
-				}),
-			]),
-		});
+		const board = makeFrozenBoard([initialPt, [5, 0], [5, 5]]);
 		const result = moveZonePoint(board, 0, 0, [2, 2]);
 		assert.deepEqual(board.zones[0].polygon[0], [0, 0]);
 		assert.deepEqual(result.zones[0].polygon[0], [2, 2]);
@@ -235,64 +257,66 @@ describe("moveZonePoint", () => {
 
 describe("rectZonePoints", () => {
 	test("returns 4 corner points in drawing order", () => {
-		const pts = rectZonePoints([0, 0], [10, 5]);
-		assert.deepEqual(pts, [
+		verifyRectCorners(
 			[0, 0],
-			[10, 0],
 			[10, 5],
-			[0, 5],
-		]);
+			[
+				[0, 0],
+				[10, 0],
+				[10, 5],
+				[0, 5],
+			],
+		);
 	});
 
 	test("preserves drawing order when second point is smaller", () => {
-		const pts = rectZonePoints([10, 5], [0, 0]);
-		assert.deepEqual(pts, [
+		verifyRectCorners(
 			[10, 5],
-			[0, 5],
 			[0, 0],
-			[10, 0],
-		]);
+			[
+				[10, 5],
+				[0, 5],
+				[0, 0],
+				[10, 0],
+			],
+		);
 	});
 });
 
 describe("zoneArea", () => {
 	test("computes correct area for a rectangle", () => {
-		const zone = { polygon: RECT_POINTS };
-		const area = zoneArea(zone);
-		assert.equal(area, 50);
+		verifyZoneArea(RECT_POINTS, 50);
 	});
 
 	test("computes correct area for a triangle", () => {
-		const zone = {
-			polygon: [
+		verifyZoneArea(
+			[
 				[0, 0],
 				[10, 0],
 				[0, 10],
 			],
-		};
-		assert.equal(zoneArea(zone), 50);
+			50,
+		);
 	});
 
 	test("returns non-negative area regardless of vertex winding", () => {
-		const clockwiseZone = {
-			polygon: [
+		verifyZoneArea(
+			[
 				[0, 0],
 				[0, 10],
 				[10, 0],
 			],
-		};
-		assert.equal(zoneArea(clockwiseZone), 50);
+			50,
+		);
 	});
 
 	test("returns 0 for degenerate or insufficient points", () => {
-		assert.equal(zoneArea({ polygon: [] }), 0);
-		assert.equal(
-			zoneArea({
-				polygon: [
-					[0, 0],
-					[1, 1],
-				],
-			}),
+		verifyZoneArea([], 0);
+		verifyZoneArea(
+			[
+				[0, 0],
+				[1, 1],
+			],
 			0,
 		);
 	});
@@ -302,112 +326,106 @@ describe("pointInZone", () => {
 	const concaveZone = { polygon: CONCAVE_POINTS };
 
 	test("returns true for points inside concave polygon arms", () => {
-		const insidePoints = [
-			[1, 1],
-			[3, 1],
-			[1, 3],
-		];
-		for (const pt of insidePoints) {
-			assert.equal(pointInZone(concaveZone, pt), true);
-		}
+		verifyPointsContainment(
+			concaveZone,
+			[
+				[1, 1],
+				[3, 1],
+				[1, 3],
+			],
+			true,
+		);
 	});
 
 	test("returns false for points in concave cavity or outside hull", () => {
-		const outsidePoints = [
-			[3, 3],
-			[5, 5],
-			[-1, -1],
-		];
-		for (const pt of outsidePoints) {
-			assert.equal(pointInZone(concaveZone, pt), false);
-		}
+		verifyPointsContainment(
+			concaveZone,
+			[
+				[3, 3],
+				[5, 5],
+				[-1, -1],
+			],
+			false,
+		);
 	});
 
 	test("returns true for points on boundary edges or vertices", () => {
-		const boundaryPoints = [
-			[2, 2],
-			[3, 2],
-			[2, 3],
-			[0, 0],
-		];
-		for (const pt of boundaryPoints) {
-			assert.equal(pointInZone(concaveZone, pt), true);
-		}
+		verifyPointsContainment(
+			concaveZone,
+			[
+				[2, 2],
+				[3, 2],
+				[2, 3],
+				[0, 0],
+			],
+			true,
+		);
 	});
 });
 
 describe("validateZone", () => {
 	test("returns null for a valid zone", () => {
-		const zone = {
+		verifyZoneValid({
 			netId: "GND",
 			layer: "F.Cu",
 			polygon: RECT_POINTS,
-		};
-		assert.equal(validateZone(zone), null);
+		});
 	});
 
 	test("validates keepout zone without a net as valid", () => {
-		const zone = {
+		verifyZoneValid({
 			layer: "F.Cu",
 			polygon: RECT_POINTS,
 			keepout: true,
-		};
-		assert.equal(validateZone(zone), null);
+		});
 	});
 
 	test("reports error when points count is fewer than 3", () => {
-		const zone = {
-			netId: "GND",
-			layer: "F.Cu",
-			polygon: [
-				[0, 0],
-				[1, 1],
-			],
-		};
-		const err = validateZone(zone);
-		assert.match(err, /points/i);
+		verifyZoneValidation(
+			{
+				netId: "GND",
+				layer: "F.Cu",
+				polygon: [
+					[0, 0],
+					[1, 1],
+				],
+			},
+			/points/i,
+		);
 	});
 
 	test("reports error when polygon has zero area", () => {
-		const zone = {
-			netId: "GND",
-			layer: "F.Cu",
-			polygon: [
-				[0, 0],
-				[5, 0],
-				[10, 0],
-			],
-		};
-		const err = validateZone(zone);
-		assert.match(err, /zero area/i);
+		verifyZoneValidation(
+			{
+				netId: "GND",
+				layer: "F.Cu",
+				polygon: [
+					[0, 0],
+					[5, 0],
+					[10, 0],
+				],
+			},
+			/zero area/i,
+		);
 	});
 
 	test("reports error when non-keepout zone is missing net", () => {
-		const emptyNetZone = {
-			netId: "",
-			layer: "F.Cu",
-			polygon: RECT_POINTS,
-		};
-		const missingNetZone = {
-			layer: "F.Cu",
-			polygon: RECT_POINTS,
-		};
-		assert.match(validateZone(emptyNetZone), /net/i);
-		assert.match(validateZone(missingNetZone), /net/i);
+		verifyZoneValidation(
+			[
+				{ netId: "", layer: "F.Cu", polygon: RECT_POINTS },
+				{ layer: "F.Cu", polygon: RECT_POINTS },
+			],
+			/net/i,
+		);
 	});
 
 	test("reports error when layer is missing or empty string", () => {
-		const emptyLayerZone = {
-			netId: "GND",
-			layer: "",
-			polygon: RECT_POINTS,
-		};
-		const nonStringLayerZone = {
-			netId: "GND",
-			layer: 123,
-			polygon: RECT_POINTS,
-		};
-		assert.match(validateZone(emptyLayerZone), /layer/i);
-		assert.match(validateZone(nonStringLayerZone), /layer/i);
+		verifyZoneValidation(
+			[
+				{ netId: "GND", layer: "", polygon: RECT_POINTS },
+				{ netId: "GND", layer: 123, polygon: RECT_POINTS },
+			],
+			/layer/i,
+		);
 	});
 });
