@@ -22,14 +22,34 @@ function isValidCommitRef(ref) {
 }
 
 const ROOT_OR_DRIVE_PATTERN = /^[a-zA-Z]:|^[/\\]/;
-const TRAVERSAL_PATTERN = /(^|[/\\])\.\.([/\\]|$)/;
+const NETWORK_OR_DEVICE_PATTERN = /^[/\\]{2}/;
+const TRAVERSAL_SEGMENT_PATTERN = /(^|[/\\])\.\.([/\\]|$)/;
 const ALLOWED_BOARD_EXTENSIONS = [".kicad_pcb", ".kicad_sch"];
+const SENSITIVE_PATH_PATTERN =
+	/^([a-zA-Z]:)?[/\\]?(etc|windows|system32|proc|sys|dev)([/\\]|$)/i;
+const SENSITIVE_FILE_PATTERN = /\.(ini|conf|passwd|shadow|exe|dll|sys)$/i;
+
+function hasHostileString(val) {
+	if (typeof val !== "string" || val.length === 0) {
+		return true;
+	}
+	if (val.includes("\0")) {
+		return true;
+	}
+	if (NETWORK_OR_DEVICE_PATTERN.test(val)) {
+		return true;
+	}
+	return TRAVERSAL_SEGMENT_PATTERN.test(val);
+}
 
 function isPathConfined(filePath) {
-	if (path.isAbsolute(filePath) || ROOT_OR_DRIVE_PATTERN.test(filePath)) {
+	if (hasHostileString(filePath)) {
 		return false;
 	}
-	return !TRAVERSAL_PATTERN.test(filePath);
+	if (ROOT_OR_DRIVE_PATTERN.test(filePath)) {
+		return false;
+	}
+	return !path.isAbsolute(filePath);
 }
 
 function isValidFilePath(filePath) {
@@ -40,6 +60,32 @@ function isValidFilePath(filePath) {
 		return false;
 	}
 	return ALLOWED_BOARD_EXTENSIONS.some((ext) => filePath.endsWith(ext));
+}
+
+function isValidRepoPath(repoPath) {
+	if (typeof repoPath !== "string" || repoPath.trim().length === 0) {
+		return false;
+	}
+	if (hasHostileString(repoPath)) {
+		return false;
+	}
+	if (SENSITIVE_PATH_PATTERN.test(repoPath)) {
+		return false;
+	}
+	return !SENSITIVE_FILE_PATTERN.test(repoPath);
+}
+
+function hasValidFileInputs(boardReq) {
+	if (
+		boardReq.relativeFilePath &&
+		!isValidFilePath(boardReq.relativeFilePath)
+	) {
+		return false;
+	}
+	if (boardReq.filePath && !isValidFilePath(boardReq.filePath)) {
+		return false;
+	}
+	return isValidFilePath(boardReq.targetFile);
 }
 
 function isRemoteTarget(boardReq) {
@@ -77,7 +123,11 @@ const VALIDATION_RULES = [
 		message: "Invalid commit ref",
 	},
 	{
-		check: (req) => isValidFilePath(req.targetFile),
+		check: (req) => !req.repoPath || isValidRepoPath(req.repoPath),
+		message: "Invalid repository path",
+	},
+	{
+		check: (req) => hasValidFileInputs(req),
 		message: "Invalid target file path",
 	},
 ];
@@ -98,6 +148,8 @@ function extractBoardRequest(req) {
 		repoPath: body.repoPath,
 		commit: body.commit,
 		targetFile: body.relativeFilePath || body.filePath,
+		relativeFilePath: body.relativeFilePath,
+		filePath: body.filePath,
 		owner: body.owner,
 		repo: body.repo,
 		token: extractAuthToken(req),

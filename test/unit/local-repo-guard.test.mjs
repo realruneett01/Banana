@@ -189,6 +189,71 @@ const VALID_CASES = [
 	},
 ];
 
+const HOSTILE_PATHS = [
+	{ label: "UNC with backslashes", val: "\\\\server\\share\\board.kicad_pcb" },
+	{ label: "UNC with forward slashes", val: "//server/share/board.kicad_pcb" },
+	{ label: "\\\\?\\C:\\x", val: "\\\\?\\C:\\x" },
+	{ label: "\\\\.\\pipe\\x", val: "\\\\.\\pipe\\x" },
+	{ label: "a path with a NUL character", val: "board\0.kicad_pcb" },
+	{ label: "C:\\Windows\\system.ini", val: "C:\\Windows\\system.ini" },
+	{ label: "/etc/passwd", val: "/etc/passwd" },
+	{ label: "../../x", val: "../../x" },
+];
+
+const BOARD_FIELD_TARGETS = [
+	{
+		field: "repoPath",
+		buildBody: (val) => ({
+			repoPath: val,
+			commit: SHA_A,
+			relativeFilePath: PCB_FILE,
+		}),
+	},
+	{
+		field: "relativeFilePath",
+		buildBody: (val) => ({
+			repoPath: REPO,
+			commit: SHA_A,
+			relativeFilePath: val,
+		}),
+	},
+	{
+		field: "filePath",
+		buildBody: (val) => ({
+			repoPath: REPO,
+			commit: SHA_A,
+			filePath: val,
+		}),
+	},
+];
+
+function buildHostileCases(routes, fieldTargets, hostilePaths) {
+	return routes.flatMap((route) =>
+		fieldTargets.flatMap((target) =>
+			hostilePaths.map((hostile) => ({
+				name: `${route} ${target.field} rejects "${hostile.label}" in <1000ms`,
+				route,
+				body: target.buildBody(hostile.val),
+			})),
+		),
+	);
+}
+
+function runHostileTests(cases, getPort) {
+	for (const c of cases) {
+		test(c.name, async () => {
+			const start = performance.now();
+			const { status } = await postJson(getPort(), c.route, c.body);
+			const durationMs = performance.now() - start;
+			assert.equal(status, 400);
+			assert.ok(
+				durationMs < 1000,
+				`Expected response under 1000ms for ${c.name}, took ${durationMs}ms`,
+			);
+		});
+	}
+}
+
 describe("local repository guards and input validation", () => {
 	let disabled;
 	let enabled;
@@ -225,6 +290,13 @@ describe("local repository guards and input validation", () => {
 			expandMatrix(BAD_PATHS, PATH_TARGETS),
 			() => enabled.port,
 			400,
+		);
+	});
+
+	describe("hostile path inputs to board routes return 400 under 1000ms", () => {
+		runHostileTests(
+			buildHostileCases(BOARD_ROUTES, BOARD_FIELD_TARGETS, HOSTILE_PATHS),
+			() => enabled.port,
 		);
 	});
 
