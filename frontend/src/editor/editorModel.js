@@ -19,6 +19,10 @@ function withIr(doc, newIr) {
 	return { ir: newIr, selection: doc.selection, history: doc.history };
 }
 
+function withNets(doc, nets) {
+	return withIr(doc, { ...doc.ir, nets });
+}
+
 function findNetWithPin(nets, partId, pin) {
 	return nets.find((n) =>
 		n.pins.some((p) => p.partId === partId && p.pin === pin),
@@ -31,14 +35,17 @@ function mergeNetPins(netA, netB) {
 	return [...netA.pins, ...added];
 }
 
+function updateDocPart(doc, partId, transform) {
+	const parts = doc.ir.parts.map((p) => (p.id === partId ? transform(p) : p));
+	return withIr(doc, { ...doc.ir, parts });
+}
+
 function removePlacement(doc, partId) {
-	const newParts = doc.ir.parts.map((p) => {
-		if (p.id !== partId) return p;
+	return updateDocPart(doc, partId, (p) => {
 		const copy = { ...p };
 		delete copy.placement;
 		return copy;
 	});
-	return withIr(doc, { ...doc.ir, parts: newParts });
 }
 
 function handleAddPart(doc, command, options) {
@@ -52,9 +59,9 @@ function handleAddPart(doc, command, options) {
 		return { ...doc, error: `addPart: duplicate part id ${id}` };
 	}
 	const newPart = { ...part, id, props: { ...(part.props ?? {}) } };
-	const newParts = command._parts ? command._parts : [...doc.ir.parts, newPart];
-	const newNets = command._nets ? command._nets : doc.ir.nets;
-	return withIr(doc, { ...doc.ir, parts: newParts, nets: newNets });
+	const parts = command._parts ?? [...doc.ir.parts, newPart];
+	const nets = command._nets ?? doc.ir.nets;
+	return withIr(doc, { ...doc.ir, parts, nets });
 }
 
 function handleDeletePart(doc, command) {
@@ -75,80 +82,80 @@ function handleDeletePart(doc, command) {
 	};
 }
 
-function handleMovePart(doc, command) {
-	const { partId, x, y } = command;
+function computeMovePlacement(cur, command) {
+	const { x, y } = command;
+	if (typeof x !== "number" || typeof y !== "number") {
+		return { error: "movePart: x and y must be numbers" };
+	}
+	return {
+		placement: {
+			...cur,
+			x,
+			y,
+			rot: cur.rot ?? 0,
+			side: cur.side ?? "F",
+		},
+	};
+}
+
+function computeRotatePlacement(cur, command) {
+	const { deltaDeg } = command;
+	if (typeof deltaDeg !== "number") {
+		return { error: "rotatePart: deltaDeg must be a number" };
+	}
+	return {
+		placement: {
+			...cur,
+			x: cur.x ?? 0,
+			y: cur.y ?? 0,
+			rot: normalizeDeg((cur.rot ?? 0) + deltaDeg),
+			side: cur.side ?? "F",
+		},
+	};
+}
+
+function computeFlipPlacement(cur) {
+	const side = (cur.side ?? "F") === "B" ? "F" : "B";
+	return {
+		placement: {
+			...cur,
+			x: cur.x ?? 0,
+			y: cur.y ?? 0,
+			rot: cur.rot ?? 0,
+			side,
+		},
+	};
+}
+
+function mutatePartPlacement(doc, command, computeFn) {
+	const { partId, type } = command;
 	const part = findPart(doc.ir, partId);
 	if (!part) {
-		return { ...doc, error: `movePart: part not found ${partId}` };
+		return { ...doc, error: `${type}: part not found ${partId}` };
 	}
 	if ("placement" in command && command.placement === undefined) {
 		return removePlacement(doc, partId);
 	}
-	if (typeof x !== "number" || typeof y !== "number") {
-		return { ...doc, error: "movePart: x and y must be numbers" };
+	const res = computeFn(part.placement ?? {}, command);
+	if (res.error) {
+		return { ...doc, error: res.error };
 	}
-	const placement = {
-		...(part.placement ?? {}),
-		x,
-		y,
-		rot: part.placement?.rot ?? 0,
-		side: part.placement?.side ?? "F",
-	};
-	const newParts = doc.ir.parts.map((p) =>
-		p.id === partId ? { ...p, placement } : p,
-	);
-	return withIr(doc, { ...doc.ir, parts: newParts });
+	return updateDocPart(doc, partId, (p) => ({
+		...p,
+		placement: res.placement,
+	}));
+}
+
+function handleMovePart(doc, command) {
+	return mutatePartPlacement(doc, command, computeMovePlacement);
 }
 
 function handleRotatePart(doc, command) {
-	const { partId, deltaDeg } = command;
-	const part = findPart(doc.ir, partId);
-	if (!part) {
-		return { ...doc, error: `rotatePart: part not found ${partId}` };
-	}
-	if ("placement" in command && command.placement === undefined) {
-		return removePlacement(doc, partId);
-	}
-	if (typeof deltaDeg !== "number") {
-		return { ...doc, error: "rotatePart: deltaDeg must be a number" };
-	}
-	const currentRot = part.placement?.rot ?? 0;
-	const rot = normalizeDeg(currentRot + deltaDeg);
-	const placement = {
-		...(part.placement ?? {}),
-		x: part.placement?.x ?? 0,
-		y: part.placement?.y ?? 0,
-		rot,
-		side: part.placement?.side ?? "F",
-	};
-	const newParts = doc.ir.parts.map((p) =>
-		p.id === partId ? { ...p, placement } : p,
-	);
-	return withIr(doc, { ...doc.ir, parts: newParts });
+	return mutatePartPlacement(doc, command, computeRotatePlacement);
 }
 
 function handleFlipPart(doc, command) {
-	const { partId } = command;
-	const part = findPart(doc.ir, partId);
-	if (!part) {
-		return { ...doc, error: `flipPart: part not found ${partId}` };
-	}
-	if ("placement" in command && command.placement === undefined) {
-		return removePlacement(doc, partId);
-	}
-	const currentSide = part.placement?.side ?? "F";
-	const side = currentSide === "B" ? "F" : "B";
-	const placement = {
-		...(part.placement ?? {}),
-		x: part.placement?.x ?? 0,
-		y: part.placement?.y ?? 0,
-		rot: part.placement?.rot ?? 0,
-		side,
-	};
-	const newParts = doc.ir.parts.map((p) =>
-		p.id === partId ? { ...p, placement } : p,
-	);
-	return withIr(doc, { ...doc.ir, parts: newParts });
+	return mutatePartPlacement(doc, command, computeFlipPlacement);
 }
 
 const VALID_FIELDS = new Set(["ref", "value", "footprint", "symbol"]);
@@ -165,10 +172,7 @@ function handleSetPartField(doc, command) {
 	if (!part) {
 		return { ...doc, error: `setPartField: part not found ${partId}` };
 	}
-	const newParts = doc.ir.parts.map((p) =>
-		p.id === partId ? { ...p, [field]: value } : p,
-	);
-	return withIr(doc, { ...doc.ir, parts: newParts });
+	return updateDocPart(doc, partId, (p) => ({ ...p, [field]: value }));
 }
 
 function handleSetPartProp(doc, command) {
@@ -186,10 +190,7 @@ function handleSetPartProp(doc, command) {
 	} else {
 		nextProps[key] = value;
 	}
-	const newParts = doc.ir.parts.map((p) =>
-		p.id === partId ? { ...p, props: nextProps } : p,
-	);
-	return withIr(doc, { ...doc.ir, parts: newParts });
+	return updateDocPart(doc, partId, (p) => ({ ...p, props: nextProps }));
 }
 
 function appendPinToNet(nets, targetId, pinRef) {
@@ -198,34 +199,36 @@ function appendPinToNet(nets, targetId, pinRef) {
 	);
 }
 
-function applyConnectNets(nets, cmd, idFn) {
-	const { partIdA, pinA, partIdB, pinB } = cmd;
-	const netA = findNetWithPin(nets, partIdA, pinA);
-	const netB = findNetWithPin(nets, partIdB, pinB);
-	if (!netA && !netB) {
-		const id = idFn("net");
-		const pins = [
-			{ partId: partIdA, pin: pinA },
-			{ partId: partIdB, pin: pinB },
-		];
-		return [...nets, { id, name: id, pins }];
-	}
-	if (netA && !netB) {
-		return appendPinToNet(nets, netA.id, { partId: partIdB, pin: pinB });
-	}
-	if (!netA && netB) {
-		return appendPinToNet(nets, netB.id, { partId: partIdA, pin: pinA });
-	}
+function mergeTwoNets(nets, netA, netB) {
 	if (netA.id === netB.id) return nets;
-	const mergedPins = mergeNetPins(netA, netB);
+	const pins = mergeNetPins(netA, netB);
 	return nets
 		.filter((n) => n.id !== netB.id)
-		.map((n) => (n.id === netA.id ? { ...n, pins: mergedPins } : n));
+		.map((n) => (n.id === netA.id ? { ...n, pins } : n));
+}
+
+function applyConnectNets(nets, cmd, idFn) {
+	const pinA = { partId: cmd.partIdA, pin: cmd.pinA };
+	const pinB = { partId: cmd.partIdB, pin: cmd.pinB };
+	const netA = findNetWithPin(nets, pinA.partId, pinA.pin);
+	const netB = findNetWithPin(nets, pinB.partId, pinB.pin);
+
+	if (!netA && !netB) {
+		const id = idFn("net");
+		return [...nets, { id, name: id, pins: [pinA, pinB] }];
+	}
+	if (!netA) {
+		return appendPinToNet(nets, netB.id, pinA);
+	}
+	if (!netB) {
+		return appendPinToNet(nets, netA.id, pinB);
+	}
+	return mergeTwoNets(nets, netA, netB);
 }
 
 function handleConnect(doc, command, options) {
 	if (command._prevNets) {
-		return withIr(doc, { ...doc.ir, nets: command._prevNets });
+		return withNets(doc, command._prevNets);
 	}
 	const { partIdA, pinA, partIdB, pinB } = command;
 	if (!findPart(doc.ir, partIdA) || !findPart(doc.ir, partIdB)) {
@@ -236,26 +239,29 @@ function handleConnect(doc, command, options) {
 	}
 	const idFn = options.idFn ?? defaultIdFn;
 	const newNets = applyConnectNets(doc.ir.nets, command, idFn);
-	return withIr(doc, { ...doc.ir, nets: newNets });
+	return withNets(doc, newNets);
+}
+
+function removePinFromNet(net, partId, pin) {
+	return {
+		...net,
+		pins: net.pins.filter((p) => !(p.partId === partId && p.pin === pin)),
+	};
 }
 
 function handleDisconnect(doc, command) {
 	if (command._prevNets) {
-		return withIr(doc, { ...doc.ir, nets: command._prevNets });
+		return withNets(doc, command._prevNets);
 	}
 	const { partId, pin } = command;
 	const net = findNetWithPin(doc.ir.nets, partId, pin);
 	if (!net) {
 		return { ...doc, error: `disconnect: pin ${partId}:${pin} not in any net` };
 	}
-	const newNets = doc.ir.nets.map((n) => {
-		if (n.id !== net.id) return n;
-		return {
-			...n,
-			pins: n.pins.filter((p) => !(p.partId === partId && p.pin === pin)),
-		};
-	});
-	return withIr(doc, { ...doc.ir, nets: newNets });
+	const newNets = doc.ir.nets.map((n) =>
+		n.id === net.id ? removePinFromNet(n, partId, pin) : n,
+	);
+	return withNets(doc, newNets);
 }
 
 function handleRenameNet(doc, command) {
@@ -268,7 +274,7 @@ function handleRenameNet(doc, command) {
 		return { ...doc, error: `renameNet: net not found ${netId}` };
 	}
 	const newNets = doc.ir.nets.map((n) => (n.id === netId ? { ...n, name } : n));
-	return withIr(doc, { ...doc.ir, nets: newNets });
+	return withNets(doc, newNets);
 }
 
 function handleSelect(doc, command) {
@@ -313,7 +319,10 @@ export function applyCommand(doc, command, options = {}) {
 	if (!doc?.ir) {
 		return { ...doc, error: "invalid document" };
 	}
-	if (!command || typeof command !== "object" || !command.type) {
+	if (!command || typeof command !== "object") {
+		return { ...doc, error: "invalid command: missing type" };
+	}
+	if (!command.type) {
 		return { ...doc, error: "invalid command: missing type" };
 	}
 	const handler = HANDLERS[command.type];
@@ -337,60 +346,63 @@ function invertDeletePart(doc, command) {
 	};
 }
 
-function invertMovePart(doc, command) {
+function invertPlacementCommand(doc, command, buildInverse) {
 	const part = findPart(doc.ir, command.partId);
 	if (!part?.placement) {
-		return { type: "movePart", partId: command.partId, placement: undefined };
+		return { type: command.type, partId: command.partId, placement: undefined };
 	}
-	const prevX = command.prevX ?? part.placement.x;
-	const prevY = command.prevY ?? part.placement.y;
-	return { type: "movePart", partId: command.partId, x: prevX, y: prevY };
+	return {
+		type: command.type,
+		partId: command.partId,
+		...buildInverse(part.placement, command),
+	};
+}
+
+function invertMovePart(doc, command) {
+	return invertPlacementCommand(doc, command, (placement, cmd) => ({
+		x: cmd.prevX ?? placement.x,
+		y: cmd.prevY ?? placement.y,
+	}));
 }
 
 function invertRotatePart(doc, command) {
-	const part = findPart(doc.ir, command.partId);
-	if (!part?.placement) {
-		return { type: "rotatePart", partId: command.partId, placement: undefined };
-	}
-	return {
-		type: "rotatePart",
-		partId: command.partId,
-		deltaDeg: normalizeDeg(-command.deltaDeg),
-	};
+	return invertPlacementCommand(doc, command, (_, cmd) => ({
+		deltaDeg: normalizeDeg(-cmd.deltaDeg),
+	}));
 }
 
 function invertFlipPart(doc, command) {
+	return invertPlacementCommand(doc, command, () => ({}));
+}
+
+function invertPropertyCommand(doc, command, attrKey, getCurrentValue) {
 	const part = findPart(doc.ir, command.partId);
-	if (!part?.placement) {
-		return { type: "flipPart", partId: command.partId, placement: undefined };
-	}
-	return { type: "flipPart", partId: command.partId };
+	const prevValue =
+		command.prevValue !== undefined ? command.prevValue : getCurrentValue(part);
+	return {
+		type: command.type,
+		partId: command.partId,
+		[attrKey]: command[attrKey],
+		value: prevValue,
+	};
 }
 
 function invertSetPartField(doc, command) {
-	const part = findPart(doc.ir, command.partId);
-	const prevValue =
-		command.prevValue !== undefined ? command.prevValue : part?.[command.field];
-	return {
-		type: "setPartField",
-		partId: command.partId,
-		field: command.field,
-		value: prevValue,
-	};
+	return invertPropertyCommand(
+		doc,
+		command,
+		"field",
+		(part) => part?.[command.field],
+	);
 }
 
 function invertSetPartProp(doc, command) {
-	const part = findPart(doc.ir, command.partId);
-	const prevValue =
-		command.prevValue !== undefined
-			? command.prevValue
-			: part?.props?.[command.key];
-	return {
-		type: "setPartProp",
-		partId: command.partId,
-		key: command.key,
-		value: prevValue,
-	};
+	return invertPropertyCommand(
+		doc,
+		command,
+		"key",
+		(part) => part?.props?.[command.key],
+	);
 }
 
 function invertConnect(doc, command) {
@@ -449,7 +461,10 @@ const INVERTERS = {
 };
 
 export function invertCommand(doc, command) {
-	if (!command || typeof command !== "object" || !command.type) {
+	if (!command || typeof command !== "object") {
+		return null;
+	}
+	if (!command.type) {
 		return null;
 	}
 	const inverter = INVERTERS[command.type];
@@ -459,19 +474,23 @@ export function invertCommand(doc, command) {
 	return inverter(doc, command);
 }
 
+function prepareBatch(doc, command, idFn) {
+	let current = doc;
+	const prepared = [];
+	for (const sub of command.commands) {
+		const p = prepareCommand(current, sub, idFn);
+		prepared.push(p);
+		current = applyCommand(current, p, { idFn });
+	}
+	return { ...command, commands: prepared };
+}
+
 function prepareCommand(doc, command, idFn) {
 	if (command.type === "addPart" && !command.part?.id) {
 		return { ...command, part: { ...command.part, id: idFn("part") } };
 	}
 	if (command.type === "batch" && Array.isArray(command.commands)) {
-		let current = doc;
-		const prepared = [];
-		for (const sub of command.commands) {
-			const p = prepareCommand(current, sub, idFn);
-			prepared.push(p);
-			current = applyCommand(current, p, { idFn });
-		}
-		return { ...command, commands: prepared };
+		return prepareBatch(doc, command, idFn);
 	}
 	return command;
 }
@@ -499,31 +518,34 @@ function dispatchStep(doc, command, idFn) {
 	};
 }
 
-function undoStep(doc, idFn) {
-	if (doc.history.past.length === 0) return doc;
-	const past = [...doc.history.past];
-	const item = past.pop();
-	const inv = item._inverse ?? invertCommand(doc, item);
-	const next = applyCommand(doc, inv, { idFn });
-	const future = [...doc.history.future, item].slice(-200);
+function stepHistory(doc, idFn, fromKey, resolveCmd) {
+	const source = [...doc.history[fromKey]];
+	if (source.length === 0) return doc;
+	const item = source.pop();
+	const next = applyCommand(doc, resolveCmd(item, doc), { idFn });
+	const toKey = fromKey === "past" ? "future" : "past";
+	const target = [...doc.history[toKey], item].slice(-200);
 	return {
 		ir: next.ir,
 		selection: next.selection,
-		history: { past, future },
+		history: {
+			past: fromKey === "past" ? source : target,
+			future: fromKey === "future" ? source : target,
+		},
 	};
 }
 
+function undoStep(doc, idFn) {
+	return stepHistory(
+		doc,
+		idFn,
+		"past",
+		(item, d) => item._inverse ?? invertCommand(d, item),
+	);
+}
+
 function redoStep(doc, idFn) {
-	if (doc.history.future.length === 0) return doc;
-	const future = [...doc.history.future];
-	const item = future.pop();
-	const next = applyCommand(doc, item, { idFn });
-	const past = [...doc.history.past, item].slice(-200);
-	return {
-		ir: next.ir,
-		selection: next.selection,
-		history: { past, future },
-	};
+	return stepHistory(doc, idFn, "future", (item) => item);
 }
 
 function buildEditorApi(getDoc, setDoc, idFn) {
