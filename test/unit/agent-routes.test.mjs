@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { after, before, describe, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
 import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import {
+	createRateLimiter,
+	skipWhenLocal,
+} from "../../backend/src/rate-limit.js";
+import defaultRouter, {
 	buildHostedRegistry,
 	buildLocalRegistry,
 	createAgentRouter,
@@ -249,6 +253,16 @@ async function runCommitRequest(app, port, bodyExtras = {}) {
 	});
 }
 
+async function startRateLimitApp(limiter, locals = {}) {
+	const testApp = express();
+	testApp.use(express.json());
+	testApp.use(createAgentRouter({ limiter }));
+	Object.assign(testApp.locals, locals);
+	const testServer = http.createServer(testApp);
+	const port = await listen(testServer);
+	return { port, server: testServer };
+}
+
 const VALIDATION_CASES = [
 	{ body: {}, expected: 400, name: "missing message" },
 	{ body: { message: 123 }, expected: 400, name: "non-string message" },
@@ -307,6 +321,10 @@ describe("agent-routes", () => {
 
 	after(async () => {
 		await closeServer(server);
+	});
+
+	beforeEach(() => {
+		defaultRouter.limiter?.store?.clear();
 	});
 
 	test("createAgentRouter named export returns fresh router", () => {
@@ -671,5 +689,154 @@ describe("agent-routes", () => {
 		assert.equal(passedOptions?.apiKey, undefined);
 		assert.equal(passedOptions?.model, undefined);
 		assert.equal(passedOptions?.url, undefined);
+	});
+
+	describe("rate limiting", () => {
+		test("third request to /agent/run exceeds max 2 and halts model calls", async () => {
+			let callCount = 0;
+			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => {
+					callCount += 1;
+					return { generate: async () => ({ text: "ok" }) };
+				},
+			});
+			try {
+				const r1 = await postJson(p, "/agent/run", { message: "msg1" });
+				assert.equal(r1.status, 200);
+				const r2 = await postJson(p, "/agent/run", { message: "msg2" });
+				assert.equal(r2.status, 200);
+				const r3 = await postJson(p, "/agent/run", { message: "msg3" });
+				assert.equal(r3.status, 429);
+				assert.equal(r3.json.error, "Too many requests, retry later");
+				assert.equal(callCount, 2);
+			} finally {
+				await closeServer(s);
+			}
+		});
+
+		test("third request to /agent/run/stream returns JSON 429 instead of SSE", async () => {
+			let callCount = 0;
+			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => {
+					callCount += 1;
+					return { generate: async () => ({ text: "ok" }) };
+				},
+			});
+			try {
+				const r1 = await postStream(p, "/agent/run/stream", { message: "m1" });
+				assert.equal(r1.status, 200);
+				assert.equal(r1.headers.get("content-type"), "text/event-stream");
+				const r2 = await postStream(p, "/agent/run/stream", { message: "m2" });
+				assert.equal(r2.status, 200);
+				const r3 = await postStream(p, "/agent/run/stream", { message: "m3" });
+				assert.equal(r3.status, 429);
+				const contentType = r3.headers.get("content-type") || "";
+				assert.equal(contentType.includes("text/event-stream"), false);
+				const body = JSON.parse(r3.text);
+				assert.equal(body.error, "Too many requests, retry later");
+				assert.equal(callCount, 2);
+			} finally {
+				await closeServer(s);
+			}
+		});
+
+		test("/agent/run and /agent/run/stream share one budget", async () => {
+			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => ({
+					generate: async () => ({ text: "ok" }),
+				}),
+			});
+			try {
+				const r1 = await postJson(p, "/agent/run", { message: "run" });
+				assert.equal(r1.status, 200);
+				const r2 = await postStream(p, "/agent/run/stream", {
+					message: "stream",
+				});
+				assert.equal(r2.status, 200);
+				const r3 = await postJson(p, "/agent/run", { message: "exceeded" });
+				assert.equal(r3.status, 429);
+				const r4 = await postStream(p, "/agent/run/stream", {
+					message: "exceeded",
+				});
+				assert.equal(r4.status, 429);
+			} finally {
+				await closeServer(s);
+			}
+		});
+
+		test("local mode with skipWhenLocal does not limit requests", async () => {
+			const limiter = skipWhenLocal(
+				createRateLimiter({ windowMs: 60000, max: 2 }),
+			);
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => ({
+					generate: async () => ({ text: "ok" }),
+				}),
+				allowLocalRepos: true,
+			});
+			try {
+				for (let i = 0; i < 5; i++) {
+					const res = await postJson(p, "/agent/run", { message: `hi ${i}` });
+					assert.equal(res.status, 200);
+				}
+			} finally {
+				await closeServer(s);
+			}
+		});
+
+		test("rate limit response headers match standard format", async () => {
+			const limiter = createRateLimiter({ windowMs: 60000, max: 2 });
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => ({
+					generate: async () => ({ text: "ok" }),
+				}),
+			});
+			try {
+				const r1 = await fetch(`http://127.0.0.1:${p}/agent/run`, {
+					body: JSON.stringify({ message: "hi" }),
+					headers: { "Content-Type": "application/json" },
+					method: "POST",
+				});
+				assert.equal(r1.status, 200);
+				assert.equal(r1.headers.get("ratelimit-limit"), "2");
+				assert.equal(r1.headers.get("ratelimit-remaining"), "1");
+				assert.ok(r1.headers.get("ratelimit-reset"));
+
+				await postJson(p, "/agent/run", { message: "hi" });
+				const r3 = await fetch(`http://127.0.0.1:${p}/agent/run`, {
+					body: JSON.stringify({ message: "hi" }),
+					headers: { "Content-Type": "application/json" },
+					method: "POST",
+				});
+				assert.equal(r3.status, 429);
+				assert.equal(r3.headers.get("ratelimit-limit"), "2");
+				assert.equal(r3.headers.get("ratelimit-remaining"), "0");
+				assert.ok(r3.headers.get("ratelimit-reset"));
+				assert.ok(r3.headers.get("retry-after"));
+			} finally {
+				await closeServer(s);
+			}
+		});
+
+		test("limited request rejects with 429 before body validation", async () => {
+			const limiter = createRateLimiter({ windowMs: 60000, max: 1 });
+			const { port: p, server: s } = await startRateLimitApp(limiter, {
+				agentModelFactory: () => ({
+					generate: async () => ({ text: "ok" }),
+				}),
+			});
+			try {
+				const r1 = await postJson(p, "/agent/run", { message: "valid" });
+				assert.equal(r1.status, 200);
+				const r2 = await postJson(p, "/agent/run", {});
+				assert.equal(r2.status, 429);
+				assert.equal(r2.json.error, "Too many requests, retry later");
+			} finally {
+				await closeServer(s);
+			}
+		});
 	});
 });

@@ -8,6 +8,7 @@ import { registerDiffTools } from "../engine/tools/diff-tools.js";
 import { registerKicadTools } from "../engine/tools/kicad-tools.js";
 import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { registerRouteTools } from "../engine/tools/route-tools.js";
+import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
 const ALLOWED_PROVIDERS = new Set(["gemini", "claude"]);
 
@@ -203,8 +204,11 @@ async function handleAgentRunStream(req, res, registry) {
 	}
 }
 
-export function createAgentRouter() {
+const passThrough = (_req, _res, next) => next();
+
+export function createAgentRouter({ limiter } = {}) {
 	const router = express.Router();
+	const routeLimiter = limiter ?? passThrough;
 	let hostedRegistry = null;
 	let localRegistry = null;
 
@@ -217,16 +221,24 @@ export function createAgentRouter() {
 		return hostedRegistry;
 	}
 
-	router.post(["/agent/run", "/api/agent/run"], (req, res) => {
+	router.post(["/agent/run", "/api/agent/run"], routeLimiter, (req, res) => {
 		handleAgentRun(req, res, getRegistry(req));
 	});
 
-	router.post(["/agent/run/stream", "/api/agent/run/stream"], (req, res) => {
-		handleAgentRunStream(req, res, getRegistry(req));
-	});
+	router.post(
+		["/agent/run/stream", "/api/agent/run/stream"],
+		routeLimiter,
+		(req, res) => {
+			handleAgentRunStream(req, res, getRegistry(req));
+		},
+	);
 
 	return router;
 }
 
-const defaultRouter = createAgentRouter();
+const defaultRateLimiter = createRateLimiter({ windowMs: 60000, max: 10 });
+const defaultRouter = createAgentRouter({
+	limiter: skipWhenLocal(defaultRateLimiter),
+});
+defaultRouter.limiter = defaultRateLimiter;
 export default defaultRouter;
