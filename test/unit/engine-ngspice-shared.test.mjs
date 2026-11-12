@@ -34,6 +34,48 @@ Values:
 0	0.000000e+00
 `;
 
+const FIND_LIBRARY_CASES = [
+	{
+		name: "returns env.NGSPICE_LIBRARY_PATH when file exists",
+		env: { NGSPICE_LIBRARY_PATH: "C:/custom/bin/ngspice.dll" },
+		exists: (p) => p === "C:/custom/bin/ngspice.dll",
+		expected: "C:/custom/bin/ngspice.dll",
+	},
+	{
+		name: "resolves library from KICAD_CLI_PATH directory",
+		env: { KICAD_CLI_PATH: "C:/KiCad/10.0/bin/kicad-cli.exe" },
+		exists: (p) => p === "C:/KiCad/10.0/bin/ngspice.dll",
+		expected: "C:/KiCad/10.0/bin/ngspice.dll",
+	},
+	{
+		name: "resolves standard Windows 10.0 KiCad location",
+		env: {},
+		exists: (p) => p === "C:/Program Files/KiCad/10.0/bin/ngspice.dll",
+		expected: "C:/Program Files/KiCad/10.0/bin/ngspice.dll",
+	},
+	{
+		name: "returns null when no library candidate exists",
+		env: {},
+		exists: () => false,
+		expected: null,
+	},
+];
+
+const AVAILABLE_CASES = [
+	{
+		name: "returns false when load throws",
+		koffiOptions: { loadThrows: true },
+		libraryPath: "invalid.dll",
+		expected: false,
+	},
+	{
+		name: "returns true and caches check when init succeeds",
+		koffiOptions: { initStatus: 0 },
+		libraryPath: "fake.dll",
+		expected: true,
+	},
+];
+
 function createFakeFuncDispatcher(handlers) {
 	return (decl) => {
 		if (decl.includes("ngSpice_Init")) return handlers.fakeInit;
@@ -162,72 +204,78 @@ function createSequentialTestKoffi(executionOrder) {
 	});
 }
 
+function createBgOrderKoffi(events) {
+	return createFakeKoffi({
+		rawContent: CANNED_OP_RAW,
+		onBgRun: (bg) => {
+			events.push("bg_run_cmd");
+			setTimeout(() => {
+				events.push("bg_started");
+				if (bg) bg(false);
+			}, 10);
+			setTimeout(() => {
+				events.push("bg_finished");
+				if (bg) bg(true);
+			}, 25);
+		},
+		onCommand: (cmd) => {
+			if (cmd.startsWith("write ")) {
+				events.push("write_cmd");
+			}
+		},
+	});
+}
+
+function createTestRunner(koffiImpl, options = {}) {
+	return createSharedNgspice({
+		libraryPath: "fake.dll",
+		koffiImpl,
+		tempDir: os.tmpdir(),
+		pollMs: 5,
+		...options,
+	});
+}
+
+function assertHappyPathPlots(res) {
+	assert.equal(res.ok, true);
+	assert.equal(res.plots.length, 1);
+	assert.equal(res.plots[0].plotname, "Operating Point");
+	assert.match(res.log, /Simulation completed normally/);
+}
+
+function assertHappyPathCleanup(captured) {
+	assert.ok(captured.dir);
+	assert.equal(fs.existsSync(captured.dir), false);
+	assert.equal(captured.circLines[captured.circLines.length - 1], null);
+	assert.equal(captured.circLines[captured.circLines.length - 2], ".end");
+}
+
 describe("findNgspiceLibrary table", () => {
-	test("returns env.NGSPICE_LIBRARY_PATH when file exists", () => {
-		const envPath = "C:/custom/bin/ngspice.dll";
-		const res = findNgspiceLibrary({
-			platform: "win32",
-			env: { NGSPICE_LIBRARY_PATH: envPath },
-			exists: (p) => p === envPath,
+	for (const tc of FIND_LIBRARY_CASES) {
+		test(tc.name, () => {
+			const res = findNgspiceLibrary({
+				platform: "win32",
+				env: tc.env,
+				exists: tc.exists,
+			});
+			assert.equal(res, tc.expected);
 		});
-		assert.equal(res, envPath);
-	});
-
-	test("resolves library from KICAD_CLI_PATH directory", () => {
-		const cliPath = "C:/KiCad/10.0/bin/kicad-cli.exe";
-		const expected = "C:/KiCad/10.0/bin/ngspice.dll";
-		const res = findNgspiceLibrary({
-			platform: "win32",
-			env: { KICAD_CLI_PATH: cliPath },
-			exists: (p) => p === expected,
-		});
-		assert.equal(res, expected);
-	});
-
-	test("resolves standard Windows 10.0 KiCad location", () => {
-		const expected = "C:/Program Files/KiCad/10.0/bin/ngspice.dll";
-		const res = findNgspiceLibrary({
-			platform: "win32",
-			env: {},
-			exists: (p) => p === expected,
-		});
-		assert.equal(res, expected);
-	});
-
-	test("returns null when no library candidate exists", () => {
-		const res = findNgspiceLibrary({
-			platform: "win32",
-			env: {},
-			exists: () => false,
-		});
-		assert.equal(res, null);
-	});
+	}
 });
 
 describe("createSharedNgspice available", () => {
-	test("returns false when load throws", async () => {
-		const fakeKoffi = createFakeKoffi({ loadThrows: true });
-		const runner = createSharedNgspice({
-			libraryPath: "invalid.dll",
-			koffiImpl: fakeKoffi,
+	for (const tc of AVAILABLE_CASES) {
+		test(tc.name, async () => {
+			const runner = createSharedNgspice({
+				libraryPath: tc.libraryPath,
+				koffiImpl: createFakeKoffi(tc.koffiOptions),
+			});
+			const first = await runner.available();
+			const second = await runner.available();
+			assert.equal(first, tc.expected);
+			assert.equal(second, tc.expected);
 		});
-		const first = await runner.available();
-		const second = await runner.available();
-		assert.equal(first, false);
-		assert.equal(second, false);
-	});
-
-	test("returns true and caches check when init succeeds", async () => {
-		const fakeKoffi = createFakeKoffi({ initStatus: 0 });
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
-		});
-		const first = await runner.available();
-		const second = await runner.available();
-		assert.equal(first, true);
-		assert.equal(second, true);
-	});
+	}
 });
 
 describe("createSharedNgspice run", () => {
@@ -245,90 +293,47 @@ describe("createSharedNgspice run", () => {
 
 	test("happy path returns plots, log, and removes temp directory", async () => {
 		const captured = { dir: null, circLines: null };
-		const fakeKoffi = createHappyPathKoffi(captured);
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
-			tempDir: os.tmpdir(),
-			pollMs: 5,
-		});
+		const runner = createTestRunner(createHappyPathKoffi(captured));
 
 		const res = await runner.run("R1 1 0 1k\n.op\n.end\n");
-		assert.equal(res.ok, true);
-		assert.equal(res.plots.length, 1);
-		assert.equal(res.plots[0].plotname, "Operating Point");
-		assert.match(res.log, /Simulation completed normally/);
-		assert.ok(captured.dir);
-		assert.equal(fs.existsSync(captured.dir), false);
-		assert.equal(captured.circLines[captured.circLines.length - 1], null);
-		assert.equal(captured.circLines[captured.circLines.length - 2], ".end");
+		assertHappyPathPlots(res);
+		assertHappyPathCleanup(captured);
 	});
 
 	test("timeout path issues bg_halt and returns timeout error", async () => {
 		const fakeKoffi = createFakeKoffi({ alwaysRunning: true });
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
+		const runner = createTestRunner(fakeKoffi, {
 			timeoutMs: 30,
 			pollMs: 10,
 		});
 		const res = await runner.run("R1 1 0 1k\n.op\n.end\n");
 		assert.equal(res.ok, false);
-		assert.equal(res.error, "Simulation timed out");
 		assert.ok(fakeKoffi.commands.includes("bg_halt"));
+		assert.equal(res.error, "Simulation timed out");
 	});
 
 	test("two concurrent runs execute sequentially in order", async () => {
 		const executionOrder = [];
-		const fakeKoffi = createSequentialTestKoffi(executionOrder);
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
-			pollMs: 5,
-		});
+		const runner = createTestRunner(createSequentialTestKoffi(executionOrder));
 
 		const [r1, r2] = await Promise.all([
 			runner.run("* run 1\nR1 1 0 1k\n.op\n.end\n"),
 			runner.run("* run 2\nR2 1 0 2k\n.op\n.end\n"),
 		]);
 
-		assert.equal(r1.ok, true);
-		assert.equal(r2.ok, true);
 		assert.deepEqual(executionOrder, [
 			"start:1",
 			"finish:1",
 			"start:2",
 			"finish:2",
 		]);
+		assert.equal(r1.ok, true);
+		assert.equal(r2.ok, true);
 	});
 
 	test("waits for BGThreadRunning callback before issuing write command", async () => {
 		const events = [];
-		const fakeKoffi = createFakeKoffi({
-			rawContent: CANNED_OP_RAW,
-			onBgRun: (bg) => {
-				events.push("bg_run_cmd");
-				setTimeout(() => {
-					events.push("bg_started");
-					if (bg) bg(false);
-				}, 10);
-				setTimeout(() => {
-					events.push("bg_finished");
-					if (bg) bg(true);
-				}, 25);
-			},
-			onCommand: (cmd) => {
-				if (cmd.startsWith("write ")) {
-					events.push("write_cmd");
-				}
-			},
-		});
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
-			tempDir: os.tmpdir(),
-			pollMs: 5,
-		});
+		const runner = createTestRunner(createBgOrderKoffi(events));
 
 		const res = await runner.run("R1 1 0 1k\n.op\n.end\n");
 		assert.equal(res.ok, true);
@@ -341,18 +346,12 @@ describe("createSharedNgspice run", () => {
 	});
 
 	test("refuses simulation when parsed raw output contains only constants plot", async () => {
-		const fakeKoffi = createFakeKoffi({
-			rawContent: CANNED_CONSTANTS_RAW,
-		});
-		const runner = createSharedNgspice({
-			libraryPath: "fake.dll",
-			koffiImpl: fakeKoffi,
-			tempDir: os.tmpdir(),
-			pollMs: 5,
-		});
+		const runner = createTestRunner(
+			createFakeKoffi({ rawContent: CANNED_CONSTANTS_RAW }),
+		);
 
 		const res = await runner.run("R1 1 0 1k\n.op\n.end\n");
-		assert.equal(res.ok, false);
 		assert.equal(res.error, "Simulation produced no results");
+		assert.equal(res.ok, false);
 	});
 });
