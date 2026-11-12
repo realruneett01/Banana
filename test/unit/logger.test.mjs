@@ -36,15 +36,103 @@ function createFakeReqRes(opts = {}) {
 	return { req, res };
 }
 
+function assertExactProps(target, expected) {
+	for (const [key, value] of Object.entries(expected)) {
+		assert.strictEqual(target[key], value);
+	}
+}
+
+function assertTypes(target, expectedTypes) {
+	for (const [key, expectedType] of Object.entries(expectedTypes)) {
+		assert.strictEqual(typeof target[key], expectedType);
+	}
+}
+
+function assertErrorInfo(errData, { name, message, expectStack }) {
+	assertExactProps(errData, { name, message });
+	const stackMatches = expectStack
+		? typeof errData.stack === "string"
+		: errData.stack === undefined;
+	assert.strictEqual(stackMatches, true);
+}
+
+function assertGeneratedUuid(actualId, rejectedId) {
+	assert.notStrictEqual(actualId, rejectedId);
+	const matchesUuid = /^[0-9a-f-]{36}$/i.test(actualId);
+	assert.strictEqual(matchesUuid, true);
+}
+
+function assertTruncatedPayload(payload, prefix) {
+	for (const check of [
+		payload.length < 2500,
+		payload.startsWith(prefix),
+		payload.includes("[TRUNCATED]"),
+	]) {
+		assert.strictEqual(check, true);
+	}
+}
+
+function withEnv(name, value, action) {
+	const prev = process.env[name];
+	try {
+		process.env[name] = value;
+		return action();
+	} finally {
+		process.env[name] = prev;
+	}
+}
+
+function captureLoggedError({ env, err, msg }) {
+	return withEnv("NODE_ENV", env, () => {
+		const ctx = createTestContext();
+		ctx.logger.error({ err }, msg);
+		return ctx.readJson(0);
+	});
+}
+
+function logSingleJson(payload, msg) {
+	const ctx = createTestContext();
+	ctx.logger.info(payload, msg);
+	return ctx.readJson(0);
+}
+
+function logSafePayload(payload) {
+	const ctx = createTestContext();
+	assert.doesNotThrow(() => {
+		ctx.logger.info(payload);
+	});
+	return ctx.readJson(0);
+}
+
+function runRequestFlow(opts = {}) {
+	const ctx = createTestContext();
+	const mw = ctx.logger.requestLogger();
+	const { req, res } = createFakeReqRes(opts);
+	let nextCalled = false;
+	mw(req, res, () => {
+		nextCalled = true;
+	});
+	return {
+		ctx,
+		res,
+		nextCalled: () => nextCalled,
+		finish: () => {
+			res.emit("finish");
+			return ctx.readJson(0);
+		},
+	};
+}
+
 test("1. writes one JSON line per call with standard fields", () => {
 	const ctx = createTestContext();
 	ctx.logger.info("first line");
 	ctx.logger.info("second line");
 	assert.strictEqual(ctx.lines.length, 2);
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.level, "info");
-	assert.strictEqual(data.msg, "first line");
-	assert.strictEqual(data.time, "2026-01-01T00:00:00.000Z");
+	assertExactProps(ctx.readJson(0), {
+		level: "info",
+		msg: "first line",
+		time: "2026-01-01T00:00:00.000Z",
+	});
 });
 
 test("2. level filtering drops lower levels by default (info threshold)", () => {
@@ -71,28 +159,25 @@ test("3. level filtering respects custom level parameter", () => {
 });
 
 test("4. level filtering respects LOG_LEVEL environment variable", () => {
-	const prev = process.env.LOG_LEVEL;
-	try {
-		process.env.LOG_LEVEL = "error";
+	withEnv("LOG_LEVEL", "error", () => {
 		const ctx = createTestContext();
 		ctx.logger.warn("warn message");
 		assert.strictEqual(ctx.lines.length, 0);
 		ctx.logger.error("error message");
 		assert.strictEqual(ctx.lines.length, 1);
-	} finally {
-		process.env.LOG_LEVEL = prev;
-	}
+	});
 });
 
 test("5. child logger includes parent base and merges bindings", () => {
 	const ctx = createTestContext({ base: { app: "banana" } });
 	const childLogger = ctx.logger.child({ service: "solver" });
 	childLogger.info("child action", { extra: 42 });
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.app, "banana");
-	assert.strictEqual(data.service, "solver");
-	assert.strictEqual(data.extra, 42);
-	assert.strictEqual(data.msg, "child action");
+	assertExactProps(ctx.readJson(0), {
+		app: "banana",
+		service: "solver",
+		extra: 42,
+		msg: "child action",
+	});
 });
 
 test("6. nested child loggers accumulate bindings across generations", () => {
@@ -105,35 +190,29 @@ test("6. nested child loggers accumulate bindings across generations", () => {
 });
 
 test("7. error serialization outside production includes name, message, stack", () => {
-	const prev = process.env.NODE_ENV;
-	try {
-		process.env.NODE_ENV = "development";
-		const ctx = createTestContext();
-		const err = new Error("boom");
-		ctx.logger.error({ err }, "failed");
-		const data = ctx.readJson(0);
-		assert.strictEqual(data.err.name, "Error");
-		assert.strictEqual(data.err.message, "boom");
-		assert.ok(typeof data.err.stack === "string");
-	} finally {
-		process.env.NODE_ENV = prev;
-	}
+	const data = captureLoggedError({
+		env: "development",
+		err: new Error("boom"),
+		msg: "failed",
+	});
+	assertErrorInfo(data.err, {
+		name: "Error",
+		message: "boom",
+		expectStack: true,
+	});
 });
 
 test("8. error serialization in production includes name and message ONLY", () => {
-	const prev = process.env.NODE_ENV;
-	try {
-		process.env.NODE_ENV = "production";
-		const ctx = createTestContext();
-		const err = new TypeError("invalid input");
-		ctx.logger.error({ err }, "type failure");
-		const data = ctx.readJson(0);
-		assert.strictEqual(data.err.name, "TypeError");
-		assert.strictEqual(data.err.message, "invalid input");
-		assert.strictEqual(data.err.stack, undefined);
-	} finally {
-		process.env.NODE_ENV = prev;
-	}
+	const data = captureLoggedError({
+		env: "production",
+		err: new TypeError("invalid input"),
+		msg: "type failure",
+	});
+	assertErrorInfo(data.err, {
+		name: "TypeError",
+		message: "invalid input",
+		expectStack: false,
+	});
 });
 
 test("9. redaction replaces sensitive keys with [REDACTED]", () => {
@@ -148,9 +227,7 @@ test("9. redaction replaces sensitive keys with [REDACTED]", () => {
 		"client_secret",
 	];
 	for (const key of sensitiveKeys) {
-		const ctx = createTestContext();
-		ctx.logger.info({ [key]: "sensitive-value" }, "login");
-		const data = ctx.readJson(0);
+		const data = logSingleJson({ [key]: "sensitive-value" }, "login");
 		assert.strictEqual(data[key], "[REDACTED]");
 	}
 });
@@ -168,16 +245,13 @@ test("10. redaction masks known secret patterns in string values", () => {
 		{ val: "Bearer eyJhbGciOi...", expected: "[REDACTED]" },
 	];
 	for (const item of patterns) {
-		const ctx = createTestContext();
-		ctx.logger.info({ note: item.val });
-		const data = ctx.readJson(0);
+		const data = logSingleJson({ note: item.val });
 		assert.strictEqual(data.note, item.expected);
 	}
 });
 
 test("11. redaction traverses nested objects and arrays", () => {
-	const ctx = createTestContext();
-	ctx.logger.info({
+	const data = logSingleJson({
 		nested: {
 			users: [
 				{ name: "alice", password: "p1" },
@@ -185,52 +259,50 @@ test("11. redaction traverses nested objects and arrays", () => {
 			],
 		},
 	});
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.nested.users[0].password, "[REDACTED]");
-	assert.strictEqual(data.nested.users[1].token, "[REDACTED]");
-	assert.strictEqual(data.nested.users[0].name, "alice");
+	const { users } = data.nested;
+	const expectedUsers = [
+		{ name: "alice", password: "[REDACTED]" },
+		{ token: "[REDACTED]" },
+	];
+	for (let i = 0; i < expectedUsers.length; i++) {
+		assertExactProps(users[i], expectedUsers[i]);
+	}
 });
 
 test("12. recursion stops beyond depth 5 with placeholder", () => {
-	const ctx = createTestContext();
 	const deep = { l1: { l2: { l3: { l4: { l5: { l6: "too-deep" } } } } } };
-	ctx.logger.info({ deep });
-	const data = ctx.readJson(0);
+	const data = logSingleJson({ deep });
 	assert.strictEqual(data.deep.l1.l2.l3.l4.l5, "[DEPTH_EXCEEDED]");
 });
 
 test("13. strings longer than 2000 characters are truncated with marker", () => {
-	const ctx = createTestContext();
-	const longStr = "x".repeat(2500);
-	ctx.logger.info({ payload: longStr });
-	const data = ctx.readJson(0);
-	assert.ok(data.payload.length < 2500);
-	assert.ok(data.payload.startsWith("x".repeat(2000)));
-	assert.ok(data.payload.includes("[TRUNCATED]"));
+	const data = logSingleJson({ payload: "x".repeat(2500) });
+	assertTruncatedPayload(data.payload, "x".repeat(2000));
 });
 
 test("14. absolute paths under user home directory are reduced to basename", () => {
-	const ctx = createTestContext();
 	const secretPath = path.join(
 		os.homedir(),
 		"documents",
 		"circuit-secret.kicad",
 	);
-	ctx.logger.info({ path: secretPath }, `saving to ${secretPath}`);
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.path, "circuit-secret.kicad");
-	assert.strictEqual(data.msg, "saving to circuit-secret.kicad");
+	const data = logSingleJson({ path: secretPath }, `saving to ${secretPath}`);
+	assertExactProps(data, {
+		path: "circuit-secret.kicad",
+		msg: "saving to circuit-secret.kicad",
+	});
 });
 
 test("15. metric logs level metric with finite numeric value and tags", () => {
 	const ctx = createTestContext();
 	ctx.logger.metric("ai.tokens", 1500, { model: "claude-3-5" });
 	assert.strictEqual(ctx.lines.length, 1);
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.level, "metric");
-	assert.strictEqual(data.name, "ai.tokens");
-	assert.strictEqual(data.value, 1500);
-	assert.strictEqual(data.model, "claude-3-5");
+	assertExactProps(ctx.readJson(0), {
+		level: "metric",
+		name: "ai.tokens",
+		value: 1500,
+		model: "claude-3-5",
+	});
 });
 
 test("16. metric drops non-finite and non-numeric values", () => {
@@ -250,77 +322,53 @@ test("16. metric drops non-finite and non-numeric values", () => {
 });
 
 test("17. requestLogger logs finished request without query string or headers", () => {
-	const ctx = createTestContext();
-	const mw = ctx.logger.requestLogger();
-	const { req, res } = createFakeReqRes({
+	const flow = runRequestFlow({
 		method: "GET",
 		url: "/api/circuits?secret_token=12345&filter=active",
 		headers: { authorization: "Bearer secret", "x-banana-auth": "secret" },
 	});
-	let nextCalled = false;
-	mw(req, res, () => {
-		nextCalled = true;
+	assert.strictEqual(flow.nextCalled(), true);
+	const beforeFinish = flow.ctx.lines.length;
+	assert.strictEqual(beforeFinish, 0);
+	const data = flow.finish();
+	assert.strictEqual(flow.ctx.lines.length, 1);
+	assertExactProps(data, {
+		method: "GET",
+		path: "/api/circuits",
+		status: 200,
+		headers: undefined,
+		body: undefined,
 	});
-	assert.strictEqual(nextCalled, true);
-	assert.strictEqual(ctx.lines.length, 0);
-	res.emit("finish");
-	assert.strictEqual(ctx.lines.length, 1);
-	const data = ctx.readJson(0);
-	assert.strictEqual(data.method, "GET");
-	assert.strictEqual(data.path, "/api/circuits");
-	assert.strictEqual(data.status, 200);
-	assert.ok(typeof data.duration === "number");
-	assert.ok(typeof data.requestId === "string");
-	assert.strictEqual(data.headers, undefined);
-	assert.strictEqual(data.body, undefined);
+	assertTypes(data, { duration: "number", requestId: "string" });
 });
 
 test("18. requestLogger validates and accepts conformant x-request-id", () => {
-	const ctx = createTestContext();
-	const mw = ctx.logger.requestLogger();
 	const validId = "custom-req-id_12345";
-	const { req, res } = createFakeReqRes({
+	const data = runRequestFlow({
 		headers: { "x-request-id": validId },
-	});
-	mw(req, res, () => {});
-	res.emit("finish");
-	const data = ctx.readJson(0);
+	}).finish();
 	assert.strictEqual(data.requestId, validId);
 });
 
 test("19. requestLogger generates UUID for invalid or missing x-request-id", () => {
 	const invalidIds = ["bad id with spaces", "a".repeat(65), "drop;table", ""];
 	for (const badId of invalidIds) {
-		const ctx = createTestContext();
-		const mw = ctx.logger.requestLogger();
-		const { req, res } = createFakeReqRes({
+		const data = runRequestFlow({
 			headers: { "x-request-id": badId },
-		});
-		mw(req, res, () => {});
-		res.emit("finish");
-		const data = ctx.readJson(0);
-		assert.notStrictEqual(data.requestId, badId);
-		assert.ok(/^[0-9a-f-]{36}$/i.test(data.requestId));
+		}).finish();
+		assertGeneratedUuid(data.requestId, badId);
 	}
 });
 
 test("20. circular references do not throw and are replaced by [CIRCULAR]", () => {
-	const ctx = createTestContext();
 	const obj = { name: "cycle" };
 	obj.self = obj;
-	assert.doesNotThrow(() => {
-		ctx.logger.info({ cycle: obj });
-	});
-	const data = ctx.readJson(0);
+	const data = logSafePayload({ cycle: obj });
 	assert.strictEqual(data.cycle.self, "[CIRCULAR]");
 });
 
 test("21. BigInt values do not throw and are replaced by [BIGINT]", () => {
-	const ctx = createTestContext();
-	assert.doesNotThrow(() => {
-		ctx.logger.info({ big: 9007199254740991000n });
-	});
-	const data = ctx.readJson(0);
+	const data = logSafePayload({ big: 9007199254740991000n });
 	assert.strictEqual(data.big, "[BIGINT]");
 });
 
@@ -338,8 +386,7 @@ test("22. throwing sink is swallowed and does not throw", () => {
 
 test("23. default shared logger instance is exported and functional", () => {
 	assert.ok(logger);
-	assert.strictEqual(typeof logger.info, "function");
-	assert.strictEqual(typeof logger.error, "function");
-	assert.strictEqual(typeof logger.metric, "function");
-	assert.strictEqual(typeof logger.requestLogger, "function");
+	for (const method of ["info", "error", "metric", "requestLogger"]) {
+		assert.strictEqual(typeof logger[method], "function");
+	}
 });
