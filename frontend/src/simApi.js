@@ -122,6 +122,20 @@ async function executeTextRequest(fetchImpl, url, options, signal) {
 	}
 }
 
+async function executeBlobRequest(fetchImpl, url, options, signal) {
+	try {
+		const response = await fetchImpl(url, { ...options, signal });
+		if (!response.ok) {
+			const parsed = await parseResponseBody(response);
+			return buildFailureResult(response, parsed);
+		}
+		const blob = await response.blob();
+		return { ok: true, status: response.status, blob };
+	} catch (err) {
+		return handleFetchError(err, signal);
+	}
+}
+
 function buildAgentPayload(params) {
 	const { message, approved, maxSteps, provider } = params || {};
 	const body = { message };
@@ -458,7 +472,7 @@ function buildLibraryMethods(send, h) {
 	};
 }
 
-function buildEditorMethods(send, h) {
+function buildEditorMethods(send, h, sendBlob) {
 	return {
 		editorCheck: ({ ir, board, rules } = {}, { signal } = {}) =>
 			send("/api/editor/check", postOptions(h, { ir, board, rules }), signal),
@@ -480,6 +494,10 @@ function buildEditorMethods(send, h) {
 				postOptions(h, { repoPath, files, message }),
 				signal,
 			),
+		editorBom: ({ ir, name } = {}, { signal } = {}) =>
+			sendBlob("/api/editor/bom", postOptions(h, { ir, name }), signal),
+		editorNetlist: ({ ir, name } = {}, { signal } = {}) =>
+			sendBlob("/api/editor/netlist", postOptions(h, { ir, name }), signal),
 	};
 }
 
@@ -520,6 +538,8 @@ export function createSimApi({
 		executeRequest(fetchImpl, `${base}${p}`, opt, sig);
 	const sendText = (p, opt, sig) =>
 		executeTextRequest(fetchImpl, `${base}${p}`, opt, sig);
+	const sendBlob = (p, opt, sig) =>
+		executeBlobRequest(fetchImpl, `${base}${p}`, opt, sig);
 	const runStream = (params, opt) =>
 		executeAgentStream(
 			fetchImpl,
@@ -533,7 +553,7 @@ export function createSimApi({
 		...buildRunMethods(send, h),
 		...buildCircuitMethods(send, h),
 		...buildLibraryMethods(send, h),
-		...buildEditorMethods(send, h),
+		...buildEditorMethods(send, h, sendBlob),
 		...buildGitMethods(sendText, h),
 	};
 }

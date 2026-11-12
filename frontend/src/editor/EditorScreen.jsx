@@ -9,10 +9,11 @@ import {
 	SwapOutlined,
 	UndoOutlined,
 } from "@ant-design/icons";
-import { Button, Space, Tabs, Tooltip } from "antd";
+import { Button, Modal, message, Radio, Space, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import IssuesPanel from "../components/IssuesPanel.jsx";
 import { emitCommitCreated } from "../designEvents.js";
+import { annotate } from "./annotate.js";
 import BoardTools from "./BoardTools.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
@@ -317,6 +318,125 @@ function ExportButton({ onExport, loading }) {
 	);
 }
 
+function BomButton({ onBom, loading }) {
+	return (
+		<ToolButton
+			title="Export BOM"
+			icon={<DownloadOutlined />}
+			loading={loading}
+			onClick={onBom}
+			ariaLabel="Export BOM"
+			text="BOM"
+		/>
+	);
+}
+
+function NetlistButton({ onNetlist, loading }) {
+	return (
+		<ToolButton
+			title="Export Netlist"
+			icon={<DownloadOutlined />}
+			loading={loading}
+			onClick={onNetlist}
+			ariaLabel="Export Netlist"
+			text="Netlist"
+		/>
+	);
+}
+
+const ANNOTATE_LABEL_STYLE = Object.freeze({
+	fontSize: 12,
+	marginBottom: 4,
+	color: "#8a91a3",
+});
+
+const ANNOTATE_BODY_STYLE = Object.freeze({
+	display: "flex",
+	flexDirection: "column",
+	gap: 12,
+	padding: "8px 0",
+});
+
+function AnnotateModeSelect({ mode, onChange }) {
+	return (
+		<div>
+			<div style={ANNOTATE_LABEL_STYLE}>Mode</div>
+			<Radio.Group
+				value={mode}
+				onChange={(e) => onChange(e.target.value)}
+				size="small"
+			>
+				<Radio value="keep">Keep</Radio>
+				<Radio value="reset">Reset</Radio>
+			</Radio.Group>
+		</div>
+	);
+}
+
+function AnnotateOrderSelect({ order, onChange }) {
+	return (
+		<div>
+			<div style={ANNOTATE_LABEL_STYLE}>Order</div>
+			<Radio.Group
+				value={order}
+				onChange={(e) => onChange(e.target.value)}
+				size="small"
+			>
+				<Radio value="x">X</Radio>
+				<Radio value="y">Y</Radio>
+			</Radio.Group>
+		</div>
+	);
+}
+
+function AnnotateModal({ open, onCancel, onApply }) {
+	const [mode, setMode] = useState("keep");
+	const [order, setOrder] = useState("x");
+	const handleOk = () => {
+		onApply({ mode, order });
+		onCancel();
+	};
+	return (
+		<Modal
+			open={open}
+			title="Annotate schematic"
+			onCancel={onCancel}
+			onOk={handleOk}
+			okText="Apply"
+			cancelText="Cancel"
+			width={320}
+		>
+			<div style={ANNOTATE_BODY_STYLE}>
+				<AnnotateModeSelect mode={mode} onChange={setMode} />
+				<AnnotateOrderSelect order={order} onChange={setOrder} />
+			</div>
+		</Modal>
+	);
+}
+
+function AnnotateButton({ onOpen }) {
+	return (
+		<ToolButton
+			title="Annotate schematic"
+			onClick={onOpen}
+			ariaLabel="Annotate"
+			text="Annotate"
+		/>
+	);
+}
+
+function AnnotateAction({ onApply }) {
+	const [open, setOpen] = useState(false);
+	const close = useCallback(() => setOpen(false), []);
+	const openModal = useCallback(() => setOpen(true), []);
+	return (
+		<>
+			<AnnotateButton onOpen={openModal} />
+			<AnnotateModal open={open} onCancel={close} onApply={onApply} />
+		</>
+	);
+}
+
 function ActionGroup({ state, actions }) {
 	return (
 		<>
@@ -352,6 +472,7 @@ function EditorToolbar({ state, actions }) {
 				save={actions.save}
 				openCommit={actions.openCommit}
 			/>
+			<AnnotateAction onApply={actions.annotate} />
 			<BoardTools
 				ir={state.ir}
 				board={state.board}
@@ -359,6 +480,11 @@ function EditorToolbar({ state, actions }) {
 				disabled={state.activeTab !== "pcb"}
 			/>
 			<ExportButton onExport={actions.exportKiCad} loading={state.exporting} />
+			<BomButton onBom={actions.exportBom} loading={state.bomLoading} />
+			<NetlistButton
+				onNetlist={actions.exportNetlist}
+				loading={state.netlistLoading}
+			/>
 		</div>
 	);
 }
@@ -459,8 +585,7 @@ function useLibraryState() {
 	return { libraryOpen, openLibrary, closeLibrary };
 }
 
-function downloadFile(filename, text) {
-	const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+function downloadBlob(blob, filename) {
 	const url = URL.createObjectURL(blob);
 	const link = document.createElement("a");
 	link.href = url;
@@ -471,11 +596,78 @@ function downloadFile(filename, text) {
 	URL.revokeObjectURL(url);
 }
 
+function downloadFile(filename, text) {
+	downloadBlob(
+		new Blob([text], { type: "text/plain;charset=utf-8" }),
+		filename,
+	);
+}
+
 function downloadFiles(files) {
 	if (!files || typeof files !== "object") return;
 	for (const [name, content] of Object.entries(files)) {
 		downloadFile(name, content);
 	}
+}
+
+async function runDownloadAction(fetcher, filename, defaultErr) {
+	try {
+		const res = await fetcher();
+		if (res?.ok && res.blob) {
+			downloadBlob(res.blob, filename);
+			return;
+		}
+		message.error(res?.error || defaultErr);
+	} catch (err) {
+		message.error(err?.message || defaultErr);
+	}
+}
+
+function useBomExport({ api, ir }) {
+	const [bomLoading, setBomLoading] = useState(false);
+	const exportBom = useCallback(async () => {
+		if (typeof api?.editorBom !== "function") return;
+		setBomLoading(true);
+		try {
+			await runDownloadAction(
+				() => api.editorBom({ ir, name: ir?.name }),
+				`${ir?.name || "design"}-bom.csv`,
+				"Failed to export BOM",
+			);
+		} finally {
+			setBomLoading(false);
+		}
+	}, [api, ir]);
+	return { exportBom, bomLoading };
+}
+
+function useNetlistExport({ api, ir }) {
+	const [netlistLoading, setNetlistLoading] = useState(false);
+	const exportNetlist = useCallback(async () => {
+		if (typeof api?.editorNetlist !== "function") return;
+		setNetlistLoading(true);
+		try {
+			await runDownloadAction(
+				() => api.editorNetlist({ ir, name: ir?.name }),
+				`${ir?.name || "design"}.net`,
+				"Failed to export Netlist",
+			);
+		} finally {
+			setNetlistLoading(false);
+		}
+	}, [api, ir]);
+	return { exportNetlist, netlistLoading };
+}
+
+function useDownloadActions({ api, ir }) {
+	const bom = useBomExport({ api, ir });
+	const netlist = useNetlistExport({ api, ir });
+	return {
+		exportBom: bom.exportBom,
+		bomLoading: bom.bomLoading,
+		exportNetlist: netlist.exportNetlist,
+		netlistLoading: netlist.netlistLoading,
+	};
 }
 
 function useExportAction({ api, ir, board }) {
@@ -493,6 +685,46 @@ function useExportAction({ api, ir, board }) {
 		}
 	}, [api, ir, board]);
 	return { exportKiCad, exporting };
+}
+
+function useDesignExports({ api, ir, board }) {
+	const exp = useExportAction({ api, ir, board });
+	const dl = useDownloadActions({ api, ir });
+	return {
+		exportKiCad: exp.exportKiCad,
+		exporting: exp.exporting,
+		exportBom: dl.exportBom,
+		bomLoading: dl.bomLoading,
+		exportNetlist: dl.exportNetlist,
+		netlistLoading: dl.netlistLoading,
+	};
+}
+
+function applyAnnotateChanges(dispatch, changes) {
+	for (const change of changes) {
+		dispatch({
+			type: "setPartField",
+			partId: change.id,
+			field: "ref",
+			value: change.to,
+		});
+	}
+}
+
+function useAnnotateAction({ ir, dispatch }) {
+	return useCallback(
+		({ mode, order }) => {
+			const res = annotate(ir, { mode, order });
+			const changes = res?.changes ?? [];
+			if (changes.length === 0) {
+				message.success("Nothing to annotate");
+				return;
+			}
+			applyAnnotateChanges(dispatch, changes);
+			message.success(`Annotated ${changes.length} parts`);
+		},
+		[ir, dispatch],
+	);
 }
 
 function extractUsedRefNumbers(parts, regex) {
@@ -646,14 +878,16 @@ function EditorHeader({ activeTab, onTabChange, toolState, actions }) {
 	);
 }
 
-function buildToolState(docState, activeTab, exporting) {
+function buildToolState(docState, activeTab, exports = {}) {
 	return {
 		canUndo: docState.canUndo,
 		canRedo: docState.canRedo,
 		hasSelection: (docState.doc.selection?.length ?? 0) > 0,
 		activeTab,
 		dirty: docState.dirty,
-		exporting,
+		exporting: exports.exporting,
+		bomLoading: exports.bomLoading,
+		netlistLoading: exports.netlistLoading,
 		ir: docState.ir,
 		board: docState.board,
 	};
@@ -716,12 +950,16 @@ function useScreenController({ ir, board, onSave, api, openCommit }) {
 	const { doc, board: curBoard, dispatch } = docState;
 	const onPlace = usePlacePartCallback(doc, dispatch);
 	const onSelectIssue = useIssueSelector(dispatch);
-	const exp = useExportAction({ api, ir: doc.ir, board: curBoard });
+	const exports = useDesignExports({ api, ir: doc.ir, board: curBoard });
+	const annotate = useAnnotateAction({ ir: doc.ir, dispatch });
 	const liveChecks = useLiveChecks({ api, ir: doc.ir, board: curBoard });
 	const onBoardToolsChange = useBoardToolsChange(docState);
 	const actions = useScreenActions(docState, onSave, {
 		openLibrary: lib.openLibrary,
-		exportKiCad: exp.exportKiCad,
+		exportKiCad: exports.exportKiCad,
+		exportBom: exports.exportBom,
+		exportNetlist: exports.exportNetlist,
+		annotate,
 		onBoardToolsChange,
 		openCommit,
 	});
@@ -733,7 +971,7 @@ function useScreenController({ ir, board, onSave, api, openCommit }) {
 		onPlace,
 		onSelectIssue,
 		actions,
-		exporting: exp.exporting,
+		exports,
 		liveChecks,
 	};
 }
@@ -845,7 +1083,7 @@ function useEditorScreen({
 		openCommit: commit.openCommit,
 	});
 	useFocusItem(focusItemId, ctrl.onSelectIssue);
-	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exporting);
+	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exports);
 	const problems = {
 		count: ctrl.liveChecks.issues.length,
 		open: problemsOpen,
