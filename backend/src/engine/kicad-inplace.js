@@ -1,3 +1,5 @@
+import { applyPcbEdits } from "./kicad-pcb-edit.js";
+import { applySchEdits } from "./kicad-sch-edit.js";
 import { parse, serialize } from "./sexpr.js";
 
 const REF_PATTERN = /^[A-Za-z0-9_+-]{1,32}$/;
@@ -201,6 +203,34 @@ function validateRootNode(ast, kind) {
 	return ast[0]?.sym === expected;
 }
 
+const SCH_OPS = new Set([
+	"addSymbol",
+	"deleteSymbol",
+	"setField",
+	"addLabel",
+	"addNoConnect",
+]);
+
+const PCB_OPS = new Set([
+	"addFootprint",
+	"deleteFootprint",
+	"setFootprintField",
+	"setPadNet",
+	"addTrack",
+	"addVia",
+	"deleteTrack",
+]);
+
+const NEW_OPS = new Set([...SCH_OPS, ...PCB_OPS]);
+
+function isLegacyOp(edit) {
+	return edit?.op === "setValue" || edit?.op === "move";
+}
+
+function hasDispatchOp(edits) {
+	return edits.some((e) => NEW_OPS.has(e?.op));
+}
+
 function isSupportedKind(kind) {
 	return kind === "pcb" || kind === "sch";
 }
@@ -209,11 +239,14 @@ function validateInputs(text, options) {
 	if (typeof text !== "string") {
 		return "Input text must be a string";
 	}
-	if (!options || !isSupportedKind(options.kind)) {
-		return "Kind must be 'pcb' or 'sch'";
-	}
-	if (!Array.isArray(options.edits)) {
+	if (!Array.isArray(options?.edits)) {
 		return "Edits must be an array";
+	}
+	if (!options?.kind && options.edits.some((e) => !isLegacyOp(e))) {
+		return "kind required for edit ops";
+	}
+	if (!isSupportedKind(options?.kind)) {
+		return "Kind must be 'pcb' or 'sch'";
 	}
 	return null;
 }
@@ -232,17 +265,39 @@ function parseTextAst(text, kind) {
 	return { ok: true, ast };
 }
 
+function patchInplace(text, kind, edits) {
+	const parsed = parseTextAst(text, kind);
+	if (!parsed.ok) {
+		return parsed;
+	}
+	const itemMap = buildItemIndex(parsed.ast, kind);
+	const { applied, skipped } = applyEdits(itemMap, edits);
+	return { ok: true, text: serialize(parsed.ast), applied, skipped };
+}
+
+function dispatchNewEdits(text, kind, edits, options) {
+	if (kind === "sch") {
+		return applySchEdits(text, edits, options);
+	}
+	return applyPcbEdits(text, edits, options);
+}
+
 export function patchKicadText(text, options) {
 	const inputErr = validateInputs(text, options);
 	if (inputErr) {
 		return { ok: false, error: inputErr };
 	}
-	const parsed = parseTextAst(text, options.kind);
-	if (!parsed.ok) {
-		return parsed;
+	const edits = options.edits;
+	if (!hasDispatchOp(edits)) {
+		return patchInplace(text, options.kind, edits);
 	}
-	const itemMap = buildItemIndex(parsed.ast, options.kind);
-	const { applied, skipped } = applyEdits(itemMap, options.edits);
-	const outText = serialize(parsed.ast);
-	return { ok: true, text: outText, applied, skipped };
+	const legacyEdits = edits.filter(isLegacyOp);
+	const otherEdits = edits.filter((e) => !isLegacyOp(e));
+	let currentText = text;
+	if (legacyEdits.length > 0) {
+		const res = patchInplace(text, options.kind, legacyEdits);
+		if (!res.ok) return res;
+		currentText = res.text;
+	}
+	return dispatchNewEdits(currentText, options.kind, otherEdits, options);
 }
