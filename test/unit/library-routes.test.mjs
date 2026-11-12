@@ -43,6 +43,7 @@ const SAMPLE_FOOTPRINT = {
 
 function createFakeLibrary(overrides = {}) {
 	let isAvailable = overrides.available ?? true;
+	let lastListArgs = null;
 	return {
 		setAvailable(val) {
 			isAvailable = val;
@@ -53,6 +54,19 @@ function createFakeLibrary(overrides = {}) {
 		searchFootprints: async (_q, _opt) => [SAMPLE_FOOTPRINT],
 		getFootprint: async (libId) =>
 			libId === "Resistor_SMD:R_0805" ? SAMPLE_FOOTPRINT : null,
+		listLibraries: async (kind) => [
+			{ name: kind === "symbols" ? "Device" : "Resistor_SMD", count: 1 },
+		],
+		listLibraryItems: async (kind, libName, opt = {}) => {
+			lastListArgs = { kind, libName, ...opt };
+			const matchLib = kind === "symbols" ? "Device" : "Resistor_SMD";
+			if (libName !== matchLib) {
+				return { items: [], total: 0 };
+			}
+			const sample = kind === "symbols" ? SAMPLE_SYMBOL : SAMPLE_FOOTPRINT;
+			return { items: [sample], total: 1 };
+		},
+		getLastListLibraryItemsArgs: () => lastListArgs,
 		...overrides,
 	};
 }
@@ -209,6 +223,17 @@ const VALIDATION_CASES = toNamedCases([
 	],
 ]);
 
+const BROWSE_VALIDATION_CASES = toNamedCases([
+	["invalid lib name traversal", "/api/library/symbols/libraries/..%2F.."],
+	["invalid lib name spaces", "/api/library/symbols/libraries/a%20b"],
+	["bad offset negative", "/api/library/symbols/libraries/Device?offset=-1"],
+	[
+		"bad offset non-numeric",
+		"/api/library/symbols/libraries/Device?offset=abc",
+	],
+	["limit 501 above max", "/api/library/symbols/libraries/Device?limit=501"],
+]);
+
 const UNAVAILABLE_CASES = toNamedCases([
 	["symbols search when unavailable", "/api/library/symbols?q=res"],
 	["symbol get when unavailable", "/api/library/symbols/Device:R"],
@@ -217,6 +242,11 @@ const UNAVAILABLE_CASES = toNamedCases([
 		"footprint get when unavailable",
 		"/api/library/footprints/Resistor_SMD:R_0805",
 	],
+	["symbols libraries when unavailable", "/api/library/symbols/libraries"],
+	[
+		"symbols library items when unavailable",
+		"/api/library/symbols/libraries/Device",
+	],
 ]);
 
 const CACHE_HEADER_CASES = toNamedCases([
@@ -224,6 +254,11 @@ const CACHE_HEADER_CASES = toNamedCases([
 	["symbol get cache header", "/api/library/symbols/Device:R"],
 	["footprints search cache header", "/api/library/footprints?q=0805"],
 	["footprint get cache header", "/api/library/footprints/Resistor_SMD:R_0805"],
+	["symbols libraries cache header", "/api/library/symbols/libraries"],
+	[
+		"symbols library items cache header",
+		"/api/library/symbols/libraries/Device",
+	],
 ]);
 
 const DUAL_CASES = [
@@ -233,6 +268,8 @@ const DUAL_CASES = [
 	["/api/library/symbols?q=res", "symbols", { isArray: true }],
 	["/library/symbols/Device:R", "symbol", { id: "Device:R" }],
 	["/api/library/symbols/Device:R", "symbol", { id: "Device:R" }],
+	["/library/symbols/libraries", "libraries", { isArray: true }],
+	["/api/library/symbols/libraries", "libraries", { isArray: true }],
 ].map(([path, key, extra]) => ({ path, key, ...extra }));
 
 describe("library-routes", () => {
@@ -317,6 +354,77 @@ describe("library-routes", () => {
 
 	describe("400 validation", () => {
 		for (const tc of VALIDATION_CASES) {
+			test(tc.name, async () => {
+				const res = await queryAvailable(port, fakeLibrary, tc.path);
+				assertErrorResponse(res, 400);
+			});
+		}
+	});
+
+	describe("library browsing endpoints", () => {
+		test("GET /api/library/symbols/libraries returns 200 with libraries list", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/symbols/libraries",
+			);
+			assertSuccess(res);
+			assert.ok(Array.isArray(res.json.libraries));
+			assert.equal(res.json.libraries[0].name, "Device");
+		});
+
+		test("GET /api/library/footprints/libraries returns 200 with libraries list", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/footprints/libraries",
+			);
+			assertSuccess(res);
+			assert.ok(Array.isArray(res.json.libraries));
+			assert.equal(res.json.libraries[0].name, "Resistor_SMD");
+		});
+
+		test("GET /api/library/symbols/libraries/:lib returns 200 with paging values passed through", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/symbols/libraries/Device?limit=25&offset=10",
+			);
+			assertSuccess(res);
+			assert.ok(Array.isArray(res.json.items));
+			assert.equal(res.json.total, 1);
+			assert.deepEqual(fakeLibrary.getLastListLibraryItemsArgs(), {
+				kind: "symbols",
+				libName: "Device",
+				limit: 25,
+				offset: 10,
+			});
+		});
+
+		test("GET /api/library/symbols/libraries/:lib returns 404 for unknown lib", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/symbols/libraries/UnknownLib",
+			);
+			assertErrorResponse(res, 404);
+			assert.equal(res.json.error, "Library not found");
+		});
+
+		test("GET /api/library/symbols/libraries is not treated as a libId", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/symbols/libraries",
+			);
+			assertSuccess(res);
+			assert.ok(Array.isArray(res.json.libraries));
+			assert.equal(res.json.error, undefined);
+		});
+	});
+
+	describe("library browsing 400 validation", () => {
+		for (const tc of BROWSE_VALIDATION_CASES) {
 			test(tc.name, async () => {
 				const res = await queryAvailable(port, fakeLibrary, tc.path);
 				assertErrorResponse(res, 400);
