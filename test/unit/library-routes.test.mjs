@@ -59,12 +59,11 @@ function createFakeLibrary(overrides = {}) {
 		],
 		listLibraryItems: async (kind, libName, opt = {}) => {
 			lastListArgs = { kind, libName, ...opt };
-			const matchLib = kind === "symbols" ? "Device" : "Resistor_SMD";
-			if (libName !== matchLib) {
+			const isSym = kind === "symbols";
+			if (libName !== (isSym ? "Device" : "Resistor_SMD")) {
 				return { items: [], total: 0 };
 			}
-			const sample = kind === "symbols" ? SAMPLE_SYMBOL : SAMPLE_FOOTPRINT;
-			return { items: [sample], total: 1 };
+			return { items: [isSym ? SAMPLE_SYMBOL : SAMPLE_FOOTPRINT], total: 1 };
 		},
 		getLastListLibraryItemsArgs: () => lastListArgs,
 		...overrides,
@@ -116,14 +115,21 @@ function assertCacheHeader(res) {
 	assert.equal(res.cacheControl, "public, max-age=3600");
 }
 
-function assertErrorResponse(res, expectedStatus) {
+function assertErrorResponse(res, expectedStatus, expectedError) {
 	assert.equal(res.status, expectedStatus);
 	assert.ok(typeof res.json.error === "string");
+	if (expectedError !== undefined) {
+		assert.equal(res.json.error, expectedError);
+	}
+}
+
+function assertArrayResult(res, key) {
+	assertSuccess(res);
+	assert.ok(Array.isArray(res.json[key]));
 }
 
 function assertSearchMatch(res, key, expectedId) {
-	assertSuccess(res);
-	assert.ok(Array.isArray(res.json[key]));
+	assertArrayResult(res, key);
 	assert.equal(res.json[key][0].libId, expectedId);
 }
 
@@ -141,16 +147,30 @@ function assertUnavailable(res) {
 }
 
 function assertDualCase(res, tc) {
-	assertSuccess(res);
 	if (tc.isArray) {
-		assert.ok(Array.isArray(res.json[tc.key]));
+		assertArrayResult(res, tc.key);
 		return;
 	}
+	assertSuccess(res);
 	if (tc.id) {
 		assert.equal(res.json[tc.key]?.libId, tc.id);
 		return;
 	}
 	assert.equal(res.json[tc.key], tc.expected);
+}
+
+function assertLibraryList(res, tc) {
+	assertArrayResult(res, "libraries");
+	tc.check(res.json);
+}
+
+function runTestCases(cases, queryFn, assertFn) {
+	for (const tc of cases) {
+		test(tc.name, async () => {
+			const res = await queryFn(tc.path);
+			assertFn(res, tc);
+		});
+	}
 }
 
 const toNamedCases = (rows) => rows.map(([name, path]) => ({ name, path }));
@@ -234,43 +254,80 @@ const BROWSE_VALIDATION_CASES = toNamedCases([
 	["limit 501 above max", "/api/library/symbols/libraries/Device?limit=501"],
 ]);
 
-const UNAVAILABLE_CASES = toNamedCases([
-	["symbols search when unavailable", "/api/library/symbols?q=res"],
-	["symbol get when unavailable", "/api/library/symbols/Device:R"],
-	["footprints search when unavailable", "/api/library/footprints?q=0805"],
-	[
-		"footprint get when unavailable",
-		"/api/library/footprints/Resistor_SMD:R_0805",
-	],
-	["symbols libraries when unavailable", "/api/library/symbols/libraries"],
-	[
-		"symbols library items when unavailable",
-		"/api/library/symbols/libraries/Device",
-	],
-]);
+const CORE_ENDPOINTS = [
+	["symbols search", "/api/library/symbols?q=res"],
+	["symbol get", "/api/library/symbols/Device:R"],
+	["footprints search", "/api/library/footprints?q=0805"],
+	["footprint get", "/api/library/footprints/Resistor_SMD:R_0805"],
+	["symbols libraries", "/api/library/symbols/libraries"],
+	["symbols library items", "/api/library/symbols/libraries/Device"],
+];
 
-const CACHE_HEADER_CASES = toNamedCases([
-	["symbols search cache header", "/api/library/symbols?q=res"],
-	["symbol get cache header", "/api/library/symbols/Device:R"],
-	["footprints search cache header", "/api/library/footprints?q=0805"],
-	["footprint get cache header", "/api/library/footprints/Resistor_SMD:R_0805"],
-	["symbols libraries cache header", "/api/library/symbols/libraries"],
-	[
-		"symbols library items cache header",
-		"/api/library/symbols/libraries/Device",
-	],
-]);
+const UNAVAILABLE_CASES = CORE_ENDPOINTS.map(([label, path]) => ({
+	name: `${label} when unavailable`,
+	path,
+}));
 
-const DUAL_CASES = [
+const CACHE_HEADER_CASES = CORE_ENDPOINTS.map(([label, path]) => ({
+	name: `${label} cache header`,
+	path,
+}));
+
+const STATUS_CASES = [
+	{
+		name: "returns available true when library is available",
+		available: true,
+		check: (res) => assert.equal(res.json.available, true),
+	},
+	{
+		name: "GET /api/library/status response header cache-control equals no-store",
+		available: true,
+		check: (res) => assert.equal(res.cacheControl, "no-store"),
+	},
+	{
+		name: "returns available false when library is unavailable",
+		available: false,
+		check: (res, fakeLib) => {
+			assert.equal(res.json.available, false);
+			fakeLib.setAvailable(true);
+		},
+	},
+];
+
+const BROWSE_LIST_CASES = [
+	{
+		name: "GET /api/library/symbols/libraries returns 200 with libraries list",
+		path: "/api/library/symbols/libraries",
+		check: (json) => assert.equal(json.libraries[0].name, "Device"),
+	},
+	{
+		name: "GET /api/library/footprints/libraries returns 200 with libraries list",
+		path: "/api/library/footprints/libraries",
+		check: (json) => assert.equal(json.libraries[0].name, "Resistor_SMD"),
+	},
+	{
+		name: "GET /api/library/symbols/libraries is not treated as a libId",
+		path: "/api/library/symbols/libraries",
+		check: (json) => assert.equal(json.error, undefined),
+	},
+];
+
+const DUAL_BASE = [
 	["/library/status", "available", { expected: true }],
-	["/api/library/status", "available", { expected: true }],
 	["/library/symbols?q=res", "symbols", { isArray: true }],
-	["/api/library/symbols?q=res", "symbols", { isArray: true }],
 	["/library/symbols/Device:R", "symbol", { id: "Device:R" }],
-	["/api/library/symbols/Device:R", "symbol", { id: "Device:R" }],
 	["/library/symbols/libraries", "libraries", { isArray: true }],
-	["/api/library/symbols/libraries", "libraries", { isArray: true }],
-].map(([path, key, extra]) => ({ path, key, ...extra }));
+];
+
+const DUAL_CASES = DUAL_BASE.flatMap(([basePath, key, extra]) => [
+	{ name: `direct router handles ${basePath}`, path: basePath, key, ...extra },
+	{
+		name: `direct router handles /api${basePath}`,
+		path: `/api${basePath}`,
+		key,
+		...extra,
+	},
+]);
 
 describe("library-routes", () => {
 	let server;
@@ -283,115 +340,59 @@ describe("library-routes", () => {
 		fakeLibrary = createFakeLibrary();
 		app.locals.kicadLibrary = fakeLibrary;
 
-		const started = await bootServer(app);
-		server = started.server;
-		port = started.port;
+		({ server, port } = await bootServer(app));
 	});
 
 	after(async () => {
 		await shutdownServer(server);
 	});
 
+	const query = (path) => queryAvailable(port, fakeLibrary, path);
+	const queryUnavail = (path) => queryUnavailable(port, fakeLibrary, path);
+
 	describe("GET /library/status", () => {
-		test("returns available true when library is available", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/status",
-			);
-			assertSuccess(res);
-			assert.equal(res.json.available, true);
-		});
-
-		test("GET /api/library/status response header cache-control equals no-store", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/status",
-			);
-			assertSuccess(res);
-			assert.equal(res.cacheControl, "no-store");
-		});
-
-		test("returns available false when library is unavailable", async () => {
-			const res = await queryUnavailable(
-				port,
-				fakeLibrary,
-				"/api/library/status",
-			);
-			assertSuccess(res);
-			assert.equal(res.json.available, false);
-			fakeLibrary.setAvailable(true);
-		});
+		for (const tc of STATUS_CASES) {
+			test(tc.name, async () => {
+				const queryFn = tc.available ? query : queryUnavail;
+				const res = await queryFn("/api/library/status");
+				assertSuccess(res);
+				tc.check(res, fakeLibrary);
+			});
+		}
 	});
 
 	describe("search endpoints", () => {
-		for (const tc of SEARCH_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertSearchMatch(res, tc.key, tc.expectedId);
-			});
-		}
+		runTestCases(SEARCH_CASES, query, (res, tc) =>
+			assertSearchMatch(res, tc.key, tc.expectedId),
+		);
 	});
 
 	describe("get endpoints", () => {
-		for (const tc of GET_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertGetMatch(res, tc.key, tc.expectedId);
-			});
-		}
+		runTestCases(GET_CASES, query, (res, tc) =>
+			assertGetMatch(res, tc.key, tc.expectedId),
+		);
 	});
 
 	describe("404 not found", () => {
-		for (const tc of NOT_FOUND_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertErrorResponse(res, 404);
-			});
-		}
+		runTestCases(NOT_FOUND_CASES, query, (res) =>
+			assertErrorResponse(res, 404),
+		);
 	});
 
 	describe("400 validation", () => {
-		for (const tc of VALIDATION_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertErrorResponse(res, 400);
-			});
-		}
+		runTestCases(VALIDATION_CASES, query, (res) =>
+			assertErrorResponse(res, 400),
+		);
 	});
 
 	describe("library browsing endpoints", () => {
-		test("GET /api/library/symbols/libraries returns 200 with libraries list", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/symbols/libraries",
-			);
-			assertSuccess(res);
-			assert.ok(Array.isArray(res.json.libraries));
-			assert.equal(res.json.libraries[0].name, "Device");
-		});
-
-		test("GET /api/library/footprints/libraries returns 200 with libraries list", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/footprints/libraries",
-			);
-			assertSuccess(res);
-			assert.ok(Array.isArray(res.json.libraries));
-			assert.equal(res.json.libraries[0].name, "Resistor_SMD");
-		});
+		runTestCases(BROWSE_LIST_CASES, query, assertLibraryList);
 
 		test("GET /api/library/symbols/libraries/:lib returns 200 with paging values passed through", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
+			const res = await query(
 				"/api/library/symbols/libraries/Device?limit=25&offset=10",
 			);
-			assertSuccess(res);
-			assert.ok(Array.isArray(res.json.items));
+			assertArrayResult(res, "items");
 			assert.equal(res.json.total, 1);
 			assert.deepEqual(fakeLibrary.getLastListLibraryItemsArgs(), {
 				kind: "symbols",
@@ -402,52 +403,23 @@ describe("library-routes", () => {
 		});
 
 		test("GET /api/library/symbols/libraries/:lib returns 404 for unknown lib", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/symbols/libraries/UnknownLib",
-			);
-			assertErrorResponse(res, 404);
-			assert.equal(res.json.error, "Library not found");
-		});
-
-		test("GET /api/library/symbols/libraries is not treated as a libId", async () => {
-			const res = await queryAvailable(
-				port,
-				fakeLibrary,
-				"/api/library/symbols/libraries",
-			);
-			assertSuccess(res);
-			assert.ok(Array.isArray(res.json.libraries));
-			assert.equal(res.json.error, undefined);
+			const res = await query("/api/library/symbols/libraries/UnknownLib");
+			assertErrorResponse(res, 404, "Library not found");
 		});
 	});
 
 	describe("library browsing 400 validation", () => {
-		for (const tc of BROWSE_VALIDATION_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertErrorResponse(res, 400);
-			});
-		}
+		runTestCases(BROWSE_VALIDATION_CASES, query, (res) =>
+			assertErrorResponse(res, 400),
+		);
 	});
 
 	describe("503 service unavailable", () => {
-		for (const tc of UNAVAILABLE_CASES) {
-			test(tc.name, async () => {
-				const res = await queryUnavailable(port, fakeLibrary, tc.path);
-				assertUnavailable(res);
-			});
-		}
+		runTestCases(UNAVAILABLE_CASES, queryUnavail, assertUnavailable);
 	});
 
 	describe("cache headers", () => {
-		for (const tc of CACHE_HEADER_CASES) {
-			test(tc.name, async () => {
-				const res = await queryAvailable(port, fakeLibrary, tc.path);
-				assertCacheHeader(res);
-			});
-		}
+		runTestCases(CACHE_HEADER_CASES, query, assertCacheHeader);
 	});
 
 	describe("dual /x and /api/x router mounting", () => {
@@ -458,20 +430,18 @@ describe("library-routes", () => {
 			const directApp = express();
 			directApp.locals.kicadLibrary = createFakeLibrary();
 			directApp.use(createLibraryRouter());
-			const started = await bootServer(directApp);
-			directServer = started.server;
-			directPort = started.port;
+			({ server: directServer, port: directPort } =
+				await bootServer(directApp));
 		});
 
 		after(async () => {
 			await shutdownServer(directServer);
 		});
 
-		for (const tc of DUAL_CASES) {
-			test(`direct router handles ${tc.path}`, async () => {
-				const res = await requestGet(directPort, tc.path);
-				assertDualCase(res, tc);
-			});
-		}
+		runTestCases(
+			DUAL_CASES,
+			(path) => requestGet(directPort, path),
+			assertDualCase,
+		);
 	});
 });
