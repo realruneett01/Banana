@@ -224,8 +224,33 @@ function requireApiKey(envVarName) {
 	return key.trim();
 }
 
-function getGeminiApiKey() {
-	return requireApiKey("GEMINI_API_KEY");
+function isValidApiKey(key) {
+	if (typeof key !== "string") {
+		return false;
+	}
+	const trimmed = key.trim();
+	if (trimmed.length === 0 || trimmed.length > 300) {
+		return false;
+	}
+	return !/\s/.test(trimmed);
+}
+
+function resolveApiKey(byoKey, envVarName) {
+	if (isValidApiKey(byoKey)) {
+		return byoKey.trim();
+	}
+	return requireApiKey(envVarName);
+}
+
+function selectCandidateKey(paramKey, optionKey) {
+	if (isValidApiKey(paramKey)) {
+		return paramKey;
+	}
+	return optionKey;
+}
+
+function getGeminiApiKey(byoKey) {
+	return resolveApiKey(byoKey, "GEMINI_API_KEY");
 }
 
 async function sendModelRequest({
@@ -247,13 +272,14 @@ async function sendModelRequest({
 	}
 }
 
-async function executeGeminiGenerate({ transport, model, params }) {
-	const apiKey = getGeminiApiKey();
+async function executeGeminiGenerate({ transport, model, apiKey, params }) {
+	const activeKey = selectCandidateKey(params?.apiKey, apiKey);
+	const resolvedKey = getGeminiApiKey(activeKey);
 	const url = `${GEMINI_API_BASE}/models/${model}:generateContent`;
 	const body = buildRequestBody(params);
 	const headers = {
 		"Content-Type": "application/json",
-		"x-goog-api-key": apiKey,
+		"x-goog-api-key": resolvedKey,
 	};
 	return sendModelRequest({
 		transport,
@@ -263,18 +289,24 @@ async function executeGeminiGenerate({ transport, model, params }) {
 		signal: params.signal,
 		checkStatus: checkResponseStatus,
 		parseResponse: parseGeminiResponse,
-		apiKey,
+		apiKey: resolvedKey,
 	});
 }
 
 function createGeminiAdapter({
 	transport = defaultTransport,
 	model = "gemini-2.0-flash",
+	apiKey,
 } = {}) {
 	return {
 		provider: "gemini",
 		generate: (params) =>
-			executeGeminiGenerate({ transport, model, params: params || {} }),
+			executeGeminiGenerate({
+				transport,
+				model,
+				apiKey,
+				params: params || {},
+			}),
 	};
 }
 
@@ -543,12 +575,19 @@ function checkClaudeResponseStatus(data) {
 	checkHttpStatus(data.status, data.statusText);
 }
 
-function getClaudeApiKey() {
-	return requireApiKey("ANTHROPIC_API_KEY");
+function getClaudeApiKey(byoKey) {
+	return resolveApiKey(byoKey, "ANTHROPIC_API_KEY");
 }
 
-async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
-	const apiKey = getClaudeApiKey();
+async function executeClaudeGenerate({
+	transport,
+	model,
+	maxTokens,
+	apiKey,
+	params,
+}) {
+	const activeKey = selectCandidateKey(params?.apiKey, apiKey);
+	const resolvedKey = getClaudeApiKey(activeKey);
 	const body = buildClaudeRequestBody({
 		model: params.model || model,
 		maxTokens: params.maxTokens || maxTokens,
@@ -558,7 +597,7 @@ async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
 	});
 	const headers = {
 		"content-type": "application/json",
-		"x-api-key": apiKey,
+		"x-api-key": resolvedKey,
 		"anthropic-version": ANTHROPIC_VERSION,
 	};
 	return sendModelRequest({
@@ -569,7 +608,7 @@ async function executeClaudeGenerate({ transport, model, maxTokens, params }) {
 		signal: params.signal,
 		checkStatus: checkClaudeResponseStatus,
 		parseResponse: parseClaudeResponse,
-		apiKey,
+		apiKey: resolvedKey,
 	});
 }
 
@@ -577,6 +616,7 @@ export function createClaudeAdapter({
 	transport = defaultTransport,
 	model = process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5",
 	maxTokens = 4096,
+	apiKey,
 } = {}) {
 	const resolvedModel =
 		model || process.env.ANTHROPIC_MODEL || "claude-sonnet-5-5";
@@ -587,24 +627,224 @@ export function createClaudeAdapter({
 				transport,
 				model: resolvedModel,
 				maxTokens,
+				apiKey,
 				params: params || {},
 			}),
+	};
+}
+
+const DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434";
+
+function isLocalHostname(hostname) {
+	const clean = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+	return clean === "127.0.0.1" || clean === "localhost" || clean === "::1";
+}
+
+function resolveOllamaUrl() {
+	const raw = process.env.OLLAMA_URL || DEFAULT_OLLAMA_URL;
+	let parsed;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		throw new Error("Ollama URL must point to this machine");
+	}
+	const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+	const isAllowedHost =
+		process.env.OLLAMA_ALLOW_REMOTE === "1" || isLocalHostname(parsed.hostname);
+	if (!isHttp || !isAllowedHost) {
+		throw new Error("Ollama URL must point to this machine");
+	}
+	const base = raw.replace(/\/+$/, "");
+	return `${base}/api/chat`;
+}
+
+function resolveOllamaModel(optionModel, paramModel) {
+	return paramModel || optionModel || process.env.OLLAMA_MODEL || "qwen2.5:7b";
+}
+
+function mapOllamaTool(tool) {
+	return {
+		type: "function",
+		function: {
+			name: tool.name,
+			description: tool.description || "",
+			parameters: resolveToolSchema(tool),
+		},
+	};
+}
+
+function mapOllamaTools(tools) {
+	if (!hasTools(tools)) {
+		return undefined;
+	}
+	return tools.map(mapOllamaTool);
+}
+
+function mapOllamaAssistantCalls(toolCalls) {
+	return toolCalls.map((tc) => ({
+		type: "function",
+		function: {
+			name: tc.name,
+			arguments: tc.input || {},
+		},
+	}));
+}
+
+function mapOllamaMessage(msg) {
+	if (isModelRole(msg.role)) {
+		const out = { role: "assistant", content: msg.content || msg.text || "" };
+		if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
+			out.tool_calls = mapOllamaAssistantCalls(msg.toolCalls);
+		}
+		return out;
+	}
+	if (isToolRole(msg.role)) {
+		return {
+			role: "tool",
+			content: formatToolContent(msg.content),
+		};
+	}
+	return {
+		role: msg.role || "user",
+		content:
+			typeof msg.content === "string"
+				? msg.content
+				: formatToolContent(msg.content ?? ""),
+	};
+}
+
+function mapOllamaMessages(messages, system) {
+	const out = [];
+	if (system) {
+		out.push({ role: "system", content: system });
+	}
+	if (Array.isArray(messages)) {
+		for (const msg of messages) {
+			out.push(mapOllamaMessage(msg));
+		}
+	}
+	return out;
+}
+
+function buildOllamaRequestBody({ model, system, messages, tools }) {
+	const body = {
+		model,
+		messages: mapOllamaMessages(messages, system),
+		stream: false,
+	};
+	const mappedTools = mapOllamaTools(tools);
+	if (mappedTools) {
+		body.tools = mappedTools;
+	}
+	return body;
+}
+
+function parseToolArguments(rawArgs) {
+	if (typeof rawArgs === "object" && rawArgs !== null) {
+		return rawArgs;
+	}
+	if (typeof rawArgs === "string") {
+		try {
+			return JSON.parse(rawArgs);
+		} catch {
+			return {};
+		}
+	}
+	return {};
+}
+
+function extractOllamaToolCall(tc) {
+	const fn = tc?.function || {};
+	const call = {
+		name: fn.name || "",
+		input: parseToolArguments(fn.arguments),
+	};
+	if (tc?.id) {
+		call.id = tc.id;
+	}
+	return call;
+}
+
+function parseOllamaResponse(data) {
+	const msg = data?.message;
+	const text = msg?.content || "";
+	const rawCalls = Array.isArray(msg?.tool_calls) ? msg.tool_calls : [];
+	const toolCalls = rawCalls.map(extractOllamaToolCall);
+	const promptTokens = data?.prompt_eval_count ?? 0;
+	const completionTokens = data?.eval_count ?? 0;
+	const usage = formatUsage(
+		promptTokens,
+		completionTokens,
+		promptTokens + completionTokens,
+	);
+	return formatModelResponse({ text, toolCalls }, usage);
+}
+
+function checkOllamaResponseStatus(data) {
+	if (!data) {
+		return;
+	}
+	checkHttpStatus(data.status, data.statusText);
+	if (data.error) {
+		const message =
+			typeof data.error === "string"
+				? data.error
+				: data.error.message || String(data.error);
+		const err = new Error(`Ollama API error: ${message}`);
+		err.status = data.status || 400;
+		throw err;
+	}
+}
+
+async function executeOllamaGenerate({ transport, model, params }) {
+	const url = resolveOllamaUrl();
+	const resolvedModel = resolveOllamaModel(model, params?.model);
+	const body = buildOllamaRequestBody({
+		model: resolvedModel,
+		system: params.system,
+		messages: params.messages,
+		tools: params.tools,
+	});
+	const headers = {
+		"Content-Type": "application/json",
+	};
+	return sendModelRequest({
+		transport,
+		url,
+		body,
+		headers,
+		signal: params.signal,
+		checkStatus: checkOllamaResponseStatus,
+		parseResponse: parseOllamaResponse,
+	});
+}
+
+export function createOllamaAdapter({
+	transport = defaultTransport,
+	model,
+} = {}) {
+	return {
+		provider: "ollama",
+		generate: (params) =>
+			executeOllamaGenerate({ transport, model, params: params || {} }),
 	};
 }
 
 const PROVIDERS = {
 	gemini: createGeminiAdapter,
 	claude: createClaudeAdapter,
+	ollama: createOllamaAdapter,
 };
 
 export function createModelAdapter({
 	provider = "gemini",
 	transport,
 	model,
+	apiKey,
 } = {}) {
 	const factory = PROVIDERS[provider];
 	if (!factory || typeof factory !== "function") {
 		throw new Error(`unsupported model provider: ${provider}`);
 	}
-	return factory({ transport, model });
+	return factory({ transport, model, apiKey });
 }
