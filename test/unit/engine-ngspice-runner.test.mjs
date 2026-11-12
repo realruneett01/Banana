@@ -63,6 +63,40 @@ Values:
 
 const MULTI_PLOT_RAW = `${CANNED_OP_RAW}\n${CANNED_TRAN_RAW}`;
 
+const PARSE_RAW_CASES = [
+	{
+		name: "parses single-point .op raw text",
+		raw: CANNED_OP_RAW,
+		title: "Simple OP",
+		plotname: "Operating Point",
+		variables: [
+			{ index: 0, name: "v(out)", type: "voltage" },
+			{ index: 1, name: "i(v1)", type: "current" },
+		],
+		points: [[3.3, -0.012]],
+	},
+	{
+		name: "parses multi-point .tran raw text",
+		raw: CANNED_TRAN_RAW,
+		title: "RC Transient",
+		plotname: "Transient Analysis",
+		variablesLength: 3,
+		points: [
+			[0, 5, 0],
+			[0.001, 5, 3.16],
+			[0.002, 5, 4.32],
+		],
+	},
+	{
+		name: "extracts real component from complex values",
+		raw: CANNED_COMPLEX_RAW,
+		points: [
+			[100, 0.99],
+			[1000, 0.75],
+		],
+	},
+];
+
 const GARBAGE_SAMPLES = [
 	{ name: "empty string", input: "" },
 	{ name: "whitespace only", input: "   \n\t  " },
@@ -75,196 +109,26 @@ const GARBAGE_SAMPLES = [
 	},
 ];
 
-describe("parseRawAscii", () => {
-	test("parses single-point .op raw text", () => {
-		const res = parseRawAscii(CANNED_OP_RAW);
-		assert.equal(res.ok, true);
-		assert.equal(res.plots.length, 1);
-		const plot = res.plots[0];
-		assert.equal(plot.title, "Simple OP");
-		assert.equal(plot.plotname, "Operating Point");
-		assert.deepEqual(plot.variables, [
-			{ index: 0, name: "v(out)", type: "voltage" },
-			{ index: 1, name: "i(v1)", type: "current" },
-		]);
-		assert.deepEqual(plot.points, [[3.3, -0.012]]);
-	});
-
-	test("parses multi-point .tran raw text", () => {
-		const res = parseRawAscii(CANNED_TRAN_RAW);
-		assert.equal(res.ok, true);
-		assert.equal(res.plots.length, 1);
-		const plot = res.plots[0];
-		assert.equal(plot.title, "RC Transient");
-		assert.equal(plot.plotname, "Transient Analysis");
-		assert.equal(plot.variables.length, 3);
-		assert.deepEqual(plot.points, [
-			[0, 5, 0],
-			[0.001, 5, 3.16],
-			[0.002, 5, 4.32],
-		]);
-	});
-
-	test("extracts real component from complex values", () => {
-		const res = parseRawAscii(CANNED_COMPLEX_RAW);
-		assert.equal(res.ok, true);
-		assert.equal(res.plots.length, 1);
-		assert.deepEqual(res.plots[0].points, [
-			[100, 0.99],
-			[1000, 0.75],
-		]);
-	});
-
-	test("handles multiple plots in a single raw file", () => {
-		const res = parseRawAscii(MULTI_PLOT_RAW);
-		assert.equal(res.ok, true);
-		assert.equal(res.plots.length, 2);
-		assert.equal(res.plots[0].plotname, "Operating Point");
-		assert.equal(res.plots[1].plotname, "Transient Analysis");
-	});
-
-	for (const { name, input } of GARBAGE_SAMPLES) {
-		test(`returns ok: false for garbage: ${name}`, () => {
-			const res = parseRawAscii(input);
-			assert.equal(res.ok, false);
-			assert.equal(typeof res.error, "string");
-			assert.ok(res.error.length > 0);
-		});
-	}
-});
-
-function makeFakeExec({ onExec }) {
-	let callsCount = 0;
-	const fn = (file, args, options, callback) => {
-		callsCount += 1;
-		if (onExec) {
-			onExec({ file, args, options, callback, callsCount });
-			return;
-		}
-		callback(null, "", "");
-	};
-	fn.getCallsCount = () => callsCount;
-	return fn;
-}
-
-describe("createNgspice available", () => {
-	test("returns true and caches check when ngspice is found", async () => {
-		const fakeExec = makeFakeExec({
-			onExec: ({ file, args, callback }) => {
-				assert.equal(file, "ngspice");
-				assert.deepEqual(args, ["--version"]);
-				callback(null, "ngspice-38\n", "");
-			},
-		});
-
-		const runner = createNgspice({ execFileFn: fakeExec });
-		const first = await runner.available();
-		const second = await runner.available();
-		assert.equal(first, true);
-		assert.equal(second, true);
-		assert.equal(fakeExec.getCallsCount(), 1);
-	});
-
-	test("returns false when binary is missing (ENOENT) and caches check", async () => {
-		const fakeExec = makeFakeExec({
-			onExec: ({ callback }) => {
-				const err = new Error("spawn ngspice ENOENT");
-				err.code = "ENOENT";
-				callback(err, "", "");
-			},
-		});
-
-		const runner = createNgspice({ execFileFn: fakeExec });
-		const first = await runner.available();
-		const second = await runner.available();
-		assert.equal(first, false);
-		assert.equal(second, false);
-		assert.equal(fakeExec.getCallsCount(), 1);
-	});
-});
-
-describe("createNgspice run", () => {
-	test("executes batch mode, parses raw output, and cleans up temp directory", async () => {
-		let capturedDir = null;
-		const fakeExec = makeFakeExec({
-			onExec: ({ args, callback }) => {
-				assert.equal(args[0], "-b");
-				assert.equal(args[1], "-r");
-				const rawPath = args[2];
-				assert.equal(args[3], "-o");
-				const logPath = args[4];
-				const cirPath = args[5];
-
-				capturedDir = path.dirname(rawPath);
-				assert.ok(fs.existsSync(cirPath));
-				assert.equal(
-					fs.readFileSync(cirPath, "utf8"),
-					"* test circuit\n.end\n",
-				);
-
-				fs.writeFileSync(rawPath, CANNED_OP_RAW, "utf8");
-				fs.writeFileSync(logPath, "Simulation completed normally.\n", "utf8");
-				callback(null, "", "");
-			},
-		});
-
-		const tmpBase = os.tmpdir();
-		const runner = createNgspice({ execFileFn: fakeExec, tempDir: tmpBase });
-		const result = await runner.run("* test circuit\n.end\n");
-
-		assert.equal(result.ok, true);
-		assert.equal(result.plots.length, 1);
-		assert.match(result.log, /Simulation completed normally/);
-		assert.ok(capturedDir, "Work directory should have been captured");
-		assert.equal(fs.existsSync(capturedDir), false, "Temp dir must be removed");
-	});
-
-	test("handles timeout/error by returning ok: false with log tail and removing dir", async () => {
-		let capturedDir = null;
-		const lines = Array.from({ length: 30 }, (_, i) => `log line ${i + 1}`);
-		const fakeExec = makeFakeExec({
-			onExec: ({ args, callback }) => {
-				capturedDir = path.dirname(args[2]);
-				fs.writeFileSync(args[4], lines.join("\n"), "utf8");
-				const err = new Error("Command failed: ngspice timed out");
-				callback(err, "", "process killed");
-			},
-		});
-
-		const tmpBase = os.tmpdir();
-		const runner = createNgspice({ execFileFn: fakeExec, tempDir: tmpBase });
-		const result = await runner.run("* test netlist\n.end\n");
-
-		assert.equal(result.ok, false);
-		assert.ok(
-			!result.error.includes("Error:"),
-			"Should not include stack trace",
-		);
-		const errorLines = result.error.split("\n");
-		assert.equal(errorLines.length, 20);
-		assert.equal(errorLines[0], "log line 11");
-		assert.equal(errorLines[19], "log line 30");
-		assert.ok(result.log.includes("log line 1"));
-		assert.ok(capturedDir, "Work directory should have been captured");
-		assert.equal(fs.existsSync(capturedDir), false, "Temp dir must be removed");
-	});
-
-	test("refuses dangerous netlist without executing or creating temp dir", async () => {
-		const fakeExec = makeFakeExec({
-			onExec: () => {
-				assert.fail("execFileFn must not be called for rejected netlists");
-			},
-		});
-		const tmpBase = os.tmpdir();
-		const runner = createNgspice({ execFileFn: fakeExec, tempDir: tmpBase });
-
-		const result = await runner.run(".include /etc/passwd\n.end\n");
-		assert.equal(result.ok, false);
-		assert.equal(typeof result.error, "string");
-		assert.ok(result.error.length > 0);
-		assert.equal(fakeExec.getCallsCount(), 0);
-	});
-});
+const AVAILABLE_CASES = [
+	{
+		name: "returns true and caches check when ngspice is found",
+		onExec: ({ file, args, callback }) => {
+			assert.equal(file, "ngspice");
+			assert.deepEqual(args, ["--version"]);
+			callback(null, "ngspice-38\n", "");
+		},
+		expected: true,
+	},
+	{
+		name: "returns false when binary is missing (ENOENT) and caches check",
+		onExec: ({ callback }) => {
+			const err = new Error("spawn ngspice ENOENT");
+			err.code = "ENOENT";
+			callback(err, "", "");
+		},
+		expected: false,
+	},
+];
 
 const REJECTED_CASES = [
 	{ name: ".control block", netlist: ".control\nrun\n.endc" },
@@ -395,13 +259,178 @@ R1
 	},
 ];
 
+function assertPlotAttributes(plot, tc) {
+	if (tc.title) assert.equal(plot.title, tc.title);
+	if (tc.plotname) assert.equal(plot.plotname, tc.plotname);
+	if (tc.variables) assert.deepEqual(plot.variables, tc.variables);
+	if (tc.variablesLength !== undefined) {
+		assert.equal(plot.variables.length, tc.variablesLength);
+	}
+	assert.deepEqual(plot.points, tc.points);
+}
+
+function assertOkSinglePlot(res) {
+	assert.equal(res.ok, true);
+	assert.equal(res.plots.length, 1);
+	return res.plots[0];
+}
+
+function assertErrorResult(res) {
+	assert.equal(res.ok, false);
+	assert.equal(typeof res.error, "string");
+	assert.ok(res.error.length > 0);
+}
+
+function assertDirCleanedUp(dir) {
+	assert.ok(dir, "Work directory should have been captured");
+	assert.equal(fs.existsSync(dir), false, "Temp dir must be removed");
+}
+
+function assertTimeoutErrorPayload(result) {
+	assert.equal(result.ok, false);
+	assert.ok(!result.error.includes("Error:"), "Should not include stack trace");
+	const errorLines = result.error.split("\n");
+	assert.equal(errorLines.length, 20);
+	assert.equal(errorLines[0], "log line 11");
+	assert.equal(errorLines[19], "log line 30");
+	assert.ok(result.log.includes("log line 1"));
+}
+
+function makeFakeExec({ onExec }) {
+	let callsCount = 0;
+	const fn = (file, args, options, callback) => {
+		callsCount += 1;
+		if (onExec) {
+			onExec({ file, args, options, callback, callsCount });
+			return;
+		}
+		callback(null, "", "");
+	};
+	fn.getCallsCount = () => callsCount;
+	return fn;
+}
+
+function createTestRunner(fakeExec) {
+	return createNgspice({ execFileFn: fakeExec, tempDir: os.tmpdir() });
+}
+
+function handleBatchExec({ args, callback, onCaptureDir }) {
+	assert.equal(args[0], "-b");
+	assert.equal(args[1], "-r");
+	assert.equal(args[3], "-o");
+	const rawPath = args[2];
+	const logPath = args[4];
+	const cirPath = args[5];
+
+	onCaptureDir(path.dirname(rawPath));
+	assert.ok(fs.existsSync(cirPath));
+	assert.equal(fs.readFileSync(cirPath, "utf8"), "* test circuit\n.end\n");
+
+	fs.writeFileSync(rawPath, CANNED_OP_RAW, "utf8");
+	fs.writeFileSync(logPath, "Simulation completed normally.\n", "utf8");
+	callback(null, "", "");
+}
+
+describe("parseRawAscii", () => {
+	for (const tc of PARSE_RAW_CASES) {
+		test(tc.name, () => {
+			const res = parseRawAscii(tc.raw);
+			const plot = assertOkSinglePlot(res);
+			assertPlotAttributes(plot, tc);
+		});
+	}
+
+	test("handles multiple plots in a single raw file", () => {
+		const res = parseRawAscii(MULTI_PLOT_RAW);
+		assert.equal(res.ok, true);
+		assert.deepEqual(
+			res.plots.map((p) => p.plotname),
+			["Operating Point", "Transient Analysis"],
+		);
+		assert.equal(res.plots.length, 2);
+		assert.equal(res.plots[0].plotname, "Operating Point");
+		assert.equal(res.plots[1].plotname, "Transient Analysis");
+	});
+
+	for (const { name, input } of GARBAGE_SAMPLES) {
+		test(`returns ok: false for garbage: ${name}`, () => {
+			assertErrorResult(parseRawAscii(input));
+		});
+	}
+});
+
+describe("createNgspice available", () => {
+	for (const { name, onExec, expected } of AVAILABLE_CASES) {
+		test(name, async () => {
+			const fakeExec = makeFakeExec({ onExec });
+			const runner = createNgspice({ execFileFn: fakeExec });
+			const first = await runner.available();
+			const second = await runner.available();
+			assert.equal(first, expected);
+			assert.equal(second, expected);
+			assert.equal(fakeExec.getCallsCount(), 1);
+		});
+	}
+});
+
+describe("createNgspice run", () => {
+	test("executes batch mode, parses raw output, and cleans up temp directory", async () => {
+		let capturedDir = null;
+		const fakeExec = makeFakeExec({
+			onExec: (ctx) =>
+				handleBatchExec({
+					...ctx,
+					onCaptureDir: (d) => {
+						capturedDir = d;
+					},
+				}),
+		});
+
+		const runner = createTestRunner(fakeExec);
+		const result = await runner.run("* test circuit\n.end\n");
+
+		assertOkSinglePlot(result);
+		assert.match(result.log, /Simulation completed normally/);
+		assertDirCleanedUp(capturedDir);
+	});
+
+	test("handles timeout/error by returning ok: false with log tail and removing dir", async () => {
+		let capturedDir = null;
+		const lines = Array.from({ length: 30 }, (_, i) => `log line ${i + 1}`);
+		const fakeExec = makeFakeExec({
+			onExec: ({ args, callback }) => {
+				capturedDir = path.dirname(args[2]);
+				fs.writeFileSync(args[4], lines.join("\n"), "utf8");
+				const err = new Error("Command failed: ngspice timed out");
+				callback(err, "", "process killed");
+			},
+		});
+
+		const runner = createTestRunner(fakeExec);
+		const result = await runner.run("* test netlist\n.end\n");
+
+		assertTimeoutErrorPayload(result);
+		assertDirCleanedUp(capturedDir);
+	});
+
+	test("refuses dangerous netlist without executing or creating temp dir", async () => {
+		const fakeExec = makeFakeExec({
+			onExec: () => {
+				assert.fail("execFileFn must not be called for rejected netlists");
+			},
+		});
+		const runner = createTestRunner(fakeExec);
+
+		const result = await runner.run(".include /etc/passwd\n.end\n");
+		assertErrorResult(result);
+		assert.equal(fakeExec.getCallsCount(), 0);
+	});
+});
+
 describe("validateNetlist", () => {
 	for (const { name, netlist } of REJECTED_CASES) {
 		test(`rejects dangerous netlist: ${name}`, () => {
-			const res = validateNetlist(netlist);
-			assert.equal(res.ok, false);
-			assert.equal(typeof res.error, "string");
-			assert.ok(res.error.length > 0);
+			assertErrorResult(validateNetlist(netlist));
 		});
 	}
 
