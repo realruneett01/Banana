@@ -220,7 +220,6 @@ const UNAVAILABLE_CASES = toNamedCases([
 ]);
 
 const CACHE_HEADER_CASES = toNamedCases([
-	["status cache header", "/api/library/status"],
 	["symbols search cache header", "/api/library/symbols?q=res"],
 	["symbol get cache header", "/api/library/symbols/Device:R"],
 	["footprints search cache header", "/api/library/footprints?q=0805"],
@@ -263,8 +262,18 @@ describe("library-routes", () => {
 				fakeLibrary,
 				"/api/library/status",
 			);
-			assertCacheHeader(res);
+			assertSuccess(res);
 			assert.equal(res.json.available, true);
+		});
+
+		test("GET /api/library/status response header cache-control equals no-store", async () => {
+			const res = await queryAvailable(
+				port,
+				fakeLibrary,
+				"/api/library/status",
+			);
+			assertSuccess(res);
+			assert.equal(res.cacheControl, "no-store");
 		});
 
 		test("returns available false when library is unavailable", async () => {

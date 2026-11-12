@@ -354,6 +354,7 @@ function useLibrarySearch({ api, activeTab, open, query }) {
 			.then((res) => {
 				if (res.status === 503) setUnavailable(true);
 				if (res.ok) {
+					setUnavailable(false);
 					const list =
 						activeTab === "symbols" ? res.data?.symbols : res.data?.footprints;
 					setItems(list ?? []);
@@ -458,6 +459,8 @@ function useLibraryStatus(api, open, setUnavailable) {
 		api.libraryStatus().then((res) => {
 			if (res.status === 503 || (res.ok && res.data?.available === false)) {
 				setUnavailable(true);
+			} else if (res.ok && res.data?.available === true) {
+				setUnavailable(false);
 			}
 		});
 	}, [api, open, setUnavailable]);

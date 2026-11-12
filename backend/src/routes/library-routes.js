@@ -95,7 +95,8 @@ async function handleStatus(req, res) {
 	try {
 		const library = resolveLibrary(req);
 		const available = Boolean(await library.available());
-		return sendCachedJson(res, { available });
+		res.set("Cache-Control", "no-store");
+		return res.status(200).json({ available });
 	} catch (_err) {
 		// Broad catch to guarantee route never leaks paths or stack traces
 		return res.status(500).json({ error: "Failed to check library status" });
