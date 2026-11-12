@@ -9,6 +9,15 @@ import { registerKicadTools } from "../engine/tools/kicad-tools.js";
 import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { registerRouteTools } from "../engine/tools/route-tools.js";
 
+const ALLOWED_PROVIDERS = new Set(["gemini", "claude"]);
+
+const SSE_HEADERS = {
+	"Content-Type": "text/event-stream",
+	"Cache-Control": "no-cache, no-transform",
+	Connection: "keep-alive",
+	"X-Accel-Buffering": "no",
+};
+
 function isPlainObject(val) {
 	if (!val || typeof val !== "object") {
 		return false;
@@ -40,6 +49,13 @@ function isValidMaxSteps(maxSteps) {
 	return maxSteps >= 1 && maxSteps <= 16;
 }
 
+function isValidProvider(provider) {
+	if (provider === undefined) {
+		return true;
+	}
+	return typeof provider === "string" && ALLOWED_PROVIDERS.has(provider);
+}
+
 function validateAgentRunBody(body) {
 	if (!isPlainObject(body)) {
 		return "Request body must be an object";
@@ -52,6 +68,9 @@ function validateAgentRunBody(body) {
 	}
 	if (!isValidMaxSteps(body.maxSteps)) {
 		return "Invalid maxSteps: must be an integer between 1 and 16";
+	}
+	if (!isValidProvider(body.provider)) {
+		return "Invalid provider";
 	}
 	return null;
 }
@@ -73,11 +92,12 @@ export function buildLocalRegistry(deps = {}) {
 	return registry;
 }
 
-function resolveModel(req) {
+function resolveModel(req, provider) {
+	const options = provider ? { provider } : undefined;
 	if (typeof req.app?.locals?.agentModelFactory === "function") {
-		return req.app.locals.agentModelFactory();
+		return req.app.locals.agentModelFactory(options);
 	}
-	return createModelAdapter();
+	return createModelAdapter(options);
 }
 
 function formatRunResponse(result, events) {
@@ -92,20 +112,37 @@ function formatRunResponse(result, events) {
 	return responseData;
 }
 
-function createEventCollector() {
+function createEventCollector(onStep) {
 	const events = [];
 	const onEvent = (event) => {
 		if (events.length < 200) {
 			events.push(event);
+			onStep?.(event);
 		}
 	};
 	return { events, onEvent };
 }
 
-async function executeAgentRun(req, res, registry) {
-	const { message, approved, maxSteps } = req.body;
-	const { events, onEvent } = createEventCollector();
-	const model = resolveModel(req);
+function canWrite(res) {
+	return Boolean(res.writable && !res.writableEnded && !res.destroyed);
+}
+
+function writeSseFrame(res, eventName, data) {
+	if (canWrite(res)) {
+		res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+	}
+}
+
+function writeSsePing(res) {
+	if (canWrite(res)) {
+		res.write(": ping\n\n");
+	}
+}
+
+async function executeAgentRun(req, res, registry, onStep) {
+	const { message, approved, maxSteps, provider } = req.body;
+	const { events, onEvent } = createEventCollector(onStep);
+	const model = resolveModel(req, provider);
 	const agent = createAgent({ model, registry, maxSteps, onEvent });
 	const abortController = new AbortController();
 	const onDisconnect = () => {
@@ -141,6 +178,31 @@ async function handleAgentRun(req, res, registry) {
 	}
 }
 
+async function handleAgentRunStream(req, res, registry) {
+	const validationError = validateAgentRunBody(req.body);
+	if (validationError) {
+		return res.status(400).json({ error: validationError });
+	}
+	res.writeHead(200, SSE_HEADERS);
+	const pingTimer = setInterval(() => writeSsePing(res), 15000);
+	const stopPing = () => clearInterval(pingTimer);
+	res.on("close", stopPing);
+	try {
+		const onStep = (event) => writeSseFrame(res, "step", event);
+		const responseData = await executeAgentRun(req, res, registry, onStep);
+		writeSseFrame(res, "result", responseData);
+	} catch (_err) {
+		// Broad catch to guarantee route never leaks stack traces or keys
+		writeSseFrame(res, "error", { error: "Agent run failed" });
+	} finally {
+		stopPing();
+		res.off("close", stopPing);
+		if (canWrite(res)) {
+			res.end();
+		}
+	}
+}
+
 export function createAgentRouter() {
 	const router = express.Router();
 	let hostedRegistry = null;
@@ -157,6 +219,10 @@ export function createAgentRouter() {
 
 	router.post(["/agent/run", "/api/agent/run"], (req, res) => {
 		handleAgentRun(req, res, getRegistry(req));
+	});
+
+	router.post(["/agent/run/stream", "/api/agent/run/stream"], (req, res) => {
+		handleAgentRunStream(req, res, getRegistry(req));
 	});
 
 	return router;

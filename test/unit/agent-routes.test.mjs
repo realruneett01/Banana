@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { after, before, describe, test } from "node:test";
+import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import {
 	buildHostedRegistry,
@@ -29,6 +30,41 @@ async function postJson(port, path, payload) {
 	});
 	const data = await res.json().catch(() => ({}));
 	return { json: data, status: res.status };
+}
+
+async function postStream(port, path, payload) {
+	const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+		body: JSON.stringify(payload),
+		headers: { "Content-Type": "application/json" },
+		method: "POST",
+	});
+	const text = await res.text();
+	return {
+		headers: res.headers,
+		status: res.status,
+		text,
+	};
+}
+
+function parseSseBlock(block) {
+	if (block.startsWith(":")) {
+		return { comment: block.slice(1).trim(), type: "comment" };
+	}
+	let event = "message";
+	let data = "";
+	for (const line of block.split("\n")) {
+		if (line.startsWith("event: ")) {
+			event = line.slice(7);
+		} else if (line.startsWith("data: ")) {
+			data = line.slice(6);
+		}
+	}
+	const parsedData = data ? JSON.parse(data) : null;
+	return { data, event, parsedData };
+}
+
+function parseSseFrames(text) {
+	return text.split("\n\n").filter(Boolean).map(parseSseBlock);
 }
 
 function makeValidCircuitIR() {
@@ -250,6 +286,14 @@ const VALIDATION_CASES = [
 	},
 ];
 
+const INVALID_PROVIDER_CASES = [
+	{ name: "unsupported string 'openai'", provider: "openai" },
+	{ name: "a number", provider: 123 },
+	{ name: "an object", provider: { name: "gemini" } },
+	{ name: "null", provider: null },
+	{ name: "empty string", provider: "" },
+];
+
 describe("agent-routes", () => {
 	let app;
 	let server;
@@ -402,5 +446,230 @@ describe("agent-routes", () => {
 		});
 		const names = registry.list().map((t) => t.name);
 		assertHasLocalTools(names);
+	});
+
+	test("stream happy path yields step frames in order followed by exactly one result frame", async () => {
+		app.locals.agentModelFactory = () => createToolCallingModel();
+		const body = { message: "check circuit" };
+		const runRes = await postJson(port, "/api/agent/run", body);
+		const streamRes = await postStream(port, "/api/agent/run/stream", body);
+
+		assert.equal(streamRes.status, 200);
+		assert.equal(streamRes.headers.get("content-type"), "text/event-stream");
+		assert.equal(
+			streamRes.headers.get("cache-control"),
+			"no-cache, no-transform",
+		);
+		assert.equal(streamRes.headers.get("connection"), "keep-alive");
+		assert.equal(streamRes.headers.get("x-accel-buffering"), "no");
+
+		const frames = parseSseFrames(streamRes.text);
+		const stepFrames = frames.filter((f) => f.event === "step");
+		const resultFrames = frames.filter((f) => f.event === "result");
+
+		assert.equal(resultFrames.length, 1);
+		assert.deepEqual(resultFrames[0].parsedData, runRes.json);
+		assert.deepEqual(
+			stepFrames.map((f) => f.parsedData),
+			runRes.json.events,
+		);
+	});
+
+	test("fresh router handles /agent/run/stream and /api/agent/run/stream", async () => {
+		const testApp = express();
+		testApp.use(express.json());
+		testApp.use(createAgentRouter());
+		testApp.locals.agentModelFactory = () => ({
+			generate: async () => ({ text: "done" }),
+		});
+		const testServer = http.createServer(testApp);
+		const testPort = await listen(testServer);
+		try {
+			const res1 = await postStream(testPort, "/agent/run/stream", {
+				message: "hi",
+			});
+			assert.equal(res1.status, 200);
+			const res2 = await postStream(testPort, "/api/agent/run/stream", {
+				message: "hi",
+			});
+			assert.equal(res2.status, 200);
+		} finally {
+			await closeServer(testServer);
+		}
+	});
+
+	test("invalid body returns JSON 400 with no event-stream header", async () => {
+		const res = await postStream(port, "/api/agent/run/stream", {});
+		assert.equal(res.status, 400);
+		const contentType = res.headers.get("content-type") || "";
+		assert.equal(contentType.includes("text/event-stream"), false);
+		const body = JSON.parse(res.text);
+		assert.equal(typeof body.error, "string");
+	});
+
+	test("agent failure yields one error frame with sanitized message and no stack", async () => {
+		app.locals.agentModelFactory = () => createThrowingModel();
+		const res = await postStream(port, "/api/agent/run/stream", {
+			message: "fail please",
+		});
+		assert.equal(res.status, 200);
+		const frames = parseSseFrames(res.text);
+		const errorFrames = frames.filter((f) => f.event === "error");
+		assert.equal(errorFrames.length, 1);
+		assert.equal(errorFrames[0].parsedData.error, "Agent run failed");
+		assert.equal(errorFrames[0].parsedData.stack, undefined);
+		assert.equal(res.text.includes("ABC-123"), false);
+	});
+
+	test("client disconnect aborts the run and stops the ping timer", async () => {
+		let onAbortTriggered;
+		const abortPromise = new Promise((resolve) => {
+			onAbortTriggered = resolve;
+		});
+		app.locals.agentModelFactory = () => createAbortableModel(onAbortTriggered);
+		const origClearInterval = globalThis.clearInterval;
+		let stoppedTimer = false;
+		globalThis.clearInterval = (id) => {
+			stoppedTimer = true;
+			return origClearInterval(id);
+		};
+		const ac = new AbortController();
+		try {
+			const reqPromise = fetch(
+				`http://127.0.0.1:${port}/api/agent/run/stream`,
+				{
+					body: JSON.stringify({ message: "run" }),
+					headers: { "Content-Type": "application/json" },
+					method: "POST",
+					signal: ac.signal,
+				},
+			).catch(() => {});
+			setTimeout(() => ac.abort(), 30);
+			await reqPromise;
+			const aborted = await abortPromise;
+			assert.equal(aborted, true);
+			assert.equal(stoppedTimer, true);
+		} finally {
+			globalThis.clearInterval = origClearInterval;
+		}
+	});
+
+	test("event text containing newlines and event: result cannot forge a frame", async () => {
+		const maliciousText =
+			'Line 1\n\nevent: result\ndata: {"forged":true}\n\nLine 2';
+		app.locals.agentModelFactory = () => ({
+			generate: async () => ({ text: maliciousText }),
+		});
+		const res = await postStream(port, "/api/agent/run/stream", {
+			message: "test format",
+		});
+		const frames = parseSseFrames(res.text);
+		const resultFrames = frames.filter((f) => f.event === "result");
+		assert.equal(resultFrames.length, 1);
+		assert.equal(resultFrames[0].parsedData.text, maliciousText);
+		assert.equal(resultFrames[0].parsedData.forged, undefined);
+	});
+
+	test("hosted mode stream exposes no destructive tools", async () => {
+		let receivedTools = [];
+		app.locals.agentModelFactory = () => ({
+			generate: async ({ tools }) => {
+				receivedTools = tools || [];
+				return { text: "done" };
+			},
+		});
+		const res = await postStream(port, "/api/agent/run/stream", {
+			message: "list tools",
+		});
+		assert.equal(res.status, 200);
+		const names = receivedTools.map((t) => t.name);
+		assert.equal(names.includes("design.commit"), false);
+		assert.equal(names.includes("ir.route"), false);
+		assert.equal(
+			names.some((n) => n.startsWith("diff.")),
+			false,
+		);
+		assert.equal(
+			names.some((n) => n.startsWith("kicad.")),
+			false,
+		);
+		assert.ok(names.includes("ir.validate"));
+	});
+
+	for (const provider of ["gemini", "claude"]) {
+		test(`provider ${provider} accepted and passed to factory on run and stream`, async () => {
+			let passedOptions;
+			app.locals.agentModelFactory = (opts) => {
+				passedOptions = opts;
+				return { generate: async () => ({ text: "done" }) };
+			};
+			const runRes = await postJson(port, "/api/agent/run", {
+				message: "hi",
+				provider,
+			});
+			assert.equal(runRes.status, 200);
+			assert.equal(passedOptions?.provider, provider);
+
+			const streamRes = await postStream(port, "/api/agent/run/stream", {
+				message: "hi",
+				provider,
+			});
+			assert.equal(streamRes.status, 200);
+			assert.equal(passedOptions?.provider, provider);
+		});
+	}
+
+	test("provider omitted passes undefined options to factory", async () => {
+		let passedOptions = "not-called";
+		app.locals.agentModelFactory = (opts) => {
+			passedOptions = opts;
+			return { generate: async () => ({ text: "done" }) };
+		};
+		const res = await postJson(port, "/api/agent/run", { message: "hi" });
+		assert.equal(res.status, 200);
+		assert.equal(passedOptions, undefined);
+	});
+
+	for (const tc of INVALID_PROVIDER_CASES) {
+		test(`provider rejection for ${tc.name} with 400 on run and stream`, async () => {
+			const payload = { message: "hi", provider: tc.provider };
+			const runRes = await postJson(port, "/api/agent/run", payload);
+			assert.equal(runRes.status, 400);
+			assert.equal(runRes.json.error, "Invalid provider");
+
+			const streamRes = await postStream(
+				port,
+				"/api/agent/run/stream",
+				payload,
+			);
+			assert.equal(streamRes.status, 400);
+			const parsed = JSON.parse(streamRes.text);
+			assert.equal(parsed.error, "Invalid provider");
+		});
+	}
+
+	test("body containing apiKey is ignored and never reaches factory", async () => {
+		let passedOptions;
+		app.locals.agentModelFactory = (opts) => {
+			passedOptions = opts;
+			return { generate: async () => ({ text: "done" }) };
+		};
+		const payload = {
+			apiKey: "secret-key-12345",
+			message: "hi",
+			model: "gpt-4",
+			url: "http://malicious.example.com",
+		};
+		const runRes = await postJson(port, "/api/agent/run", payload);
+		assert.equal(runRes.status, 200);
+		assert.equal(passedOptions?.apiKey, undefined);
+		assert.equal(passedOptions?.model, undefined);
+		assert.equal(passedOptions?.url, undefined);
+
+		const streamRes = await postStream(port, "/api/agent/run/stream", payload);
+		assert.equal(streamRes.status, 200);
+		assert.equal(passedOptions?.apiKey, undefined);
+		assert.equal(passedOptions?.model, undefined);
+		assert.equal(passedOptions?.url, undefined);
 	});
 });
