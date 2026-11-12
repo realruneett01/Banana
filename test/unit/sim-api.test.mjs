@@ -618,3 +618,67 @@ describe("runAgentStream streaming client", () => {
 		assert.equal(res.error, "aborted");
 	});
 });
+
+const COMMIT_INPUT = {
+	repoPath: "/path/to/repo",
+	files: [
+		{
+			path: "board.kicad_sch",
+			kind: "sch",
+			edits: [{ op: "setValue", ref: "R1", value: "10k" }],
+		},
+	],
+	message: "Update R1 value",
+};
+
+const COMMIT_ERROR_CASES = [
+	{
+		name: "400 returns ok false with server error text",
+		status: 400,
+		error: "Invalid files format",
+		statusText: "Bad Request",
+	},
+	{
+		name: "403 returns ok false with server error text",
+		status: 403,
+		error: "Saving to KiCad files is only available in the desktop app",
+		statusText: "Forbidden",
+	},
+];
+
+describe("editorCommit endpoint", () => {
+	test("posts to /api/editor/commit with exact JSON body", async () => {
+		const payload = { commit: "a1b2c3d", files: [] };
+		const { api, fakeFetch } = createClient(async () =>
+			mockJsonResponse(200, payload),
+		);
+		await api.editorCommit(COMMIT_INPUT);
+		assertCall(fakeFetch, "/api/editor/commit", "POST", COMMIT_INPUT);
+	});
+
+	test("ok result returns data", async () => {
+		const payload = { commit: "a1b2c3d", files: [] };
+		const { api } = createClient(async () => mockJsonResponse(200, payload));
+		const res = await api.editorCommit(COMMIT_INPUT);
+		assert.equal(res.ok, true);
+		assert.deepEqual(res.data, payload);
+	});
+
+	for (const tc of COMMIT_ERROR_CASES) {
+		test(`HTTP ${tc.name}`, async () => {
+			const body = { error: tc.error };
+			const { api } = createClient(async () =>
+				mockJsonResponse(tc.status, body, tc.statusText),
+			);
+			const res = await api.editorCommit(COMMIT_INPUT);
+			assertFailure(res, { status: tc.status, error: tc.error, data: body });
+		});
+	}
+
+	test("abort signal is passed through", async () => {
+		const controller = new AbortController();
+		const { api, fakeFetch } = createClient(mockOkHandler);
+		await api.editorCommit(COMMIT_INPUT, { signal: controller.signal });
+		assert.equal(fakeFetch.calls[0].signal, controller.signal);
+	});
+});
