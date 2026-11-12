@@ -203,18 +203,18 @@ function formatFootprints(board) {
 	return board.footprints.map(formatFootprint);
 }
 
+function removeDirSafely(dirPath) {
+	if (!dirPath || !fs.existsSync(dirPath)) {
+		return;
+	}
+	fs.rmSync(dirPath, { recursive: true, force: true });
+}
+
 function cleanupTempDir(dirPath) {
 	try {
-		if (dirPath && fs.existsSync(dirPath)) {
-			fs.rmSync(dirPath, { recursive: true, force: true });
-		}
+		removeDirSafely(dirPath);
 	} catch (err) {
-		// Best-effort cleanup: do not throw if directory removal fails
-		try {
-			console.warn("Failed to clean up temp directory:", dirPath, err?.message);
-		} catch (_) {
-			// Ignore logging errors to ensure cleanup never throws
-		}
+		console.warn("Failed to clean up temp directory:", dirPath, err?.message);
 	}
 }
 
