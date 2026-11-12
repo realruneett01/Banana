@@ -17,55 +17,71 @@ function makePart(spec) {
 	};
 }
 
+function makeResistor(id, ref) {
+	return makePart({
+		id,
+		ref,
+		value: "10k",
+		symbol: "Device:R",
+		footprint: "Resistor_SMD:R_0603_1608Metric",
+	});
+}
+
+function makeCapacitor(id, ref) {
+	return makePart({
+		id,
+		ref,
+		value: "100n",
+		symbol: "Device:C",
+		footprint: "Capacitor_SMD:C_0402_1005Metric",
+	});
+}
+
+const SAMPLE_CIRCUIT_NETS = [
+	{
+		id: "n_gnd",
+		name: "GND",
+		pins: [
+			{ partId: "p_r1", pin: "1" },
+			{ partId: "p_unknown", pin: "99" },
+		],
+	},
+	{
+		id: "n_empty",
+		name: "",
+		pins: [{ partId: "p_r2", pin: "1" }],
+	},
+];
+
 function buildSampleCircuitIR() {
 	return {
 		schemaVersion: 1,
 		name: "SampleBoard",
 		parts: [
+			makeResistor("p_r1", "R1"),
+			makeResistor("p_r10", "R10"),
+			makeResistor("p_r2", "R2"),
+			makeCapacitor("p_c1", "C1"),
+		],
+		nets: SAMPLE_CIRCUIT_NETS,
+		constraints: [],
+	};
+}
+
+function makeSinglePartIR(val, name = "Test") {
+	return {
+		schemaVersion: 1,
+		name,
+		parts: [
 			makePart({
-				id: "p_r1",
+				id: "p1",
 				ref: "R1",
-				value: "10k",
+				value: val,
 				symbol: "Device:R",
-				footprint: "Resistor_SMD:R_0603_1608Metric",
-			}),
-			makePart({
-				id: "p_r10",
-				ref: "R10",
-				value: "10k",
-				symbol: "Device:R",
-				footprint: "Resistor_SMD:R_0603_1608Metric",
-			}),
-			makePart({
-				id: "p_r2",
-				ref: "R2",
-				value: "10k",
-				symbol: "Device:R",
-				footprint: "Resistor_SMD:R_0603_1608Metric",
-			}),
-			makePart({
-				id: "p_c1",
-				ref: "C1",
-				value: "100n",
-				symbol: "Device:C",
-				footprint: "Capacitor_SMD:C_0402_1005Metric",
+				footprint: "R_0603",
 			}),
 		],
-		nets: [
-			{
-				id: "n_gnd",
-				name: "GND",
-				pins: [
-					{ partId: "p_r1", pin: "1" },
-					{ partId: "p_unknown", pin: "99" },
-				],
-			},
-			{
-				id: "n_empty",
-				name: "",
-				pins: [{ partId: "p_r2", pin: "1" }],
-			},
-		],
+		nets: [],
 		constraints: [],
 	};
 }
@@ -91,14 +107,6 @@ const BOM_ROW_CASES = [
 	},
 ];
 
-function assertBomRow(actualRow, tc) {
-	assert.deepStrictEqual(actualRow.refs, tc.expectedRefs);
-	assert.strictEqual(actualRow.qty, tc.expectedQty);
-	assert.strictEqual(actualRow.value, tc.expectedValue);
-	assert.strictEqual(actualRow.footprint, tc.expectedFp);
-	assert.strictEqual(actualRow.symbol, tc.expectedSym);
-}
-
 describe("irToBomRows grouping and natural ordering", () => {
 	const ir = buildSampleCircuitIR();
 	const rows = irToBomRows(ir);
@@ -108,8 +116,20 @@ describe("irToBomRows grouping and natural ordering", () => {
 	});
 
 	for (const tc of BOM_ROW_CASES) {
-		test(`row ${tc.rowIdx} matches group starting with ${tc.firstRef}`, () => {
-			assertBomRow(rows[tc.rowIdx], tc);
+		test(`row ${tc.rowIdx} matches refs (${tc.firstRef})`, () => {
+			assert.deepStrictEqual(rows[tc.rowIdx].refs, tc.expectedRefs);
+		});
+		test(`row ${tc.rowIdx} matches qty (${tc.firstRef})`, () => {
+			assert.strictEqual(rows[tc.rowIdx].qty, tc.expectedQty);
+		});
+		test(`row ${tc.rowIdx} matches value (${tc.firstRef})`, () => {
+			assert.strictEqual(rows[tc.rowIdx].value, tc.expectedValue);
+		});
+		test(`row ${tc.rowIdx} matches footprint (${tc.firstRef})`, () => {
+			assert.strictEqual(rows[tc.rowIdx].footprint, tc.expectedFp);
+		});
+		test(`row ${tc.rowIdx} matches symbol (${tc.firstRef})`, () => {
+			assert.strictEqual(rows[tc.rowIdx].symbol, tc.expectedSym);
 		});
 	}
 });
@@ -123,33 +143,31 @@ const CSV_FORMULA_CASES = [
 ];
 
 describe("irToBomCsv formatting, quoting and injection protection", () => {
-	test("emits CRLF endings and header line", () => {
+	test("emits header line with CRLF", () => {
 		const ir = buildSampleCircuitIR();
 		const csv = irToBomCsv(ir);
 		assert.ok(csv.startsWith("Reference,Qty,Value,Footprint,Symbol\r\n"));
+	});
+
+	test("emits CRLF ending", () => {
+		const ir = buildSampleCircuitIR();
+		const csv = irToBomCsv(ir);
 		assert.ok(csv.endsWith("\r\n"));
-		const noCrlf = csv.replaceAll("\r\n", "");
+	});
+
+	test("contains no bare LF characters", () => {
+		const noCrlf = irToBomCsv(buildSampleCircuitIR()).replaceAll("\r\n", "");
 		assert.strictEqual(noCrlf.includes("\n"), false);
+	});
+
+	test("contains no bare CR characters", () => {
+		const noCrlf = irToBomCsv(buildSampleCircuitIR()).replaceAll("\r\n", "");
 		assert.strictEqual(noCrlf.includes("\r"), false);
 	});
 
 	for (const tc of CSV_FORMULA_CASES) {
 		test(`handles ${tc.label} safely`, () => {
-			const ir = {
-				schemaVersion: 1,
-				name: "Test",
-				parts: [
-					makePart({
-						id: "p1",
-						ref: "R1",
-						value: tc.val,
-						symbol: "Device:R",
-						footprint: "R_0603",
-					}),
-				],
-				nets: [],
-				constraints: [],
-			};
+			const ir = makeSinglePartIR(tc.val);
 			const csv = irToBomCsv(ir);
 			assert.ok(csv.includes(tc.expected));
 		});
@@ -166,8 +184,11 @@ describe("irToKicadNetlist component and net structure", () => {
 	const ir = buildSampleCircuitIR();
 	const netlist = irToKicadNetlist(ir);
 
-	test("contains design header and source", () => {
+	test("contains export version header", () => {
 		assert.ok(netlist.includes('(export (version "E")'));
+	});
+
+	test("contains design source and tool", () => {
 		assert.ok(
 			netlist.includes('(design (source "SampleBoard") (tool "Banana"))'),
 		);
@@ -189,17 +210,23 @@ describe("irToKicadNetlist component and net structure", () => {
 		assert.ok(netlist.includes(expectedComp));
 	});
 
-	test("numbers nets from 1 and names empty net /N-1", () => {
+	test("names empty net /N-1 with code 1", () => {
 		const expectedNet1 =
 			'(net (code "1") (name "/N-1") (node (ref "R2") (pin "1")))';
+		assert.ok(netlist.includes(expectedNet1));
+	});
+
+	test("numbers GND net with code 2", () => {
 		const expectedNet2 =
 			'(net (code "2") (name "GND") (node (ref "R1") (pin "1")))))';
-		assert.ok(netlist.includes(expectedNet1));
 		assert.ok(netlist.includes(expectedNet2));
 	});
 
-	test("skips pins whose partId is unknown", () => {
+	test("skips unknown partId in nets", () => {
 		assert.strictEqual(netlist.includes("p_unknown"), false);
+	});
+
+	test("skips pins whose partId is unknown", () => {
 		assert.strictEqual(netlist.includes('(pin "99")'), false);
 	});
 });
@@ -218,25 +245,16 @@ const ESCAPE_NETLIST_CASES = [
 ];
 
 describe("irToKicadNetlist escaping and purity", () => {
+	test("escapes quotes and backslash in design source name", () => {
+		const ir = makeSinglePartIR("10k", 'Test"Board\\1');
+		const netlist = irToKicadNetlist(ir);
+		assert.ok(netlist.includes('(source "Test\\"Board\\\\1")'));
+	});
+
 	for (const tc of ESCAPE_NETLIST_CASES) {
 		test(`escapes ${tc.label}`, () => {
-			const ir = {
-				schemaVersion: 1,
-				name: 'Test"Board\\1',
-				parts: [
-					makePart({
-						id: "p1",
-						ref: "R1",
-						value: tc.val,
-						symbol: "Device:R",
-						footprint: "R_0603",
-					}),
-				],
-				nets: [],
-				constraints: [],
-			};
+			const ir = makeSinglePartIR(tc.val);
 			const netlist = irToKicadNetlist(ir);
-			assert.ok(netlist.includes('(source "Test\\"Board\\\\1")'));
 			assert.ok(netlist.includes(tc.expectedSnippet));
 		});
 	}
