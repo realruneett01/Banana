@@ -23,138 +23,90 @@ function assertPadProperties(actual, expected) {
 	}
 }
 
-const PAD_SHAPE_TABLE = [
-	{
-		name: "rect pad shape and rotation",
-		number: "1",
-		type: "smd",
-		shape: "rect",
-		at: [1, 2, 45],
-		size: [1.5, 2.5],
-		layers: ["F.Cu"],
+const PAD_SHAPE_CASES = [
+	[
+		"rect pad shape and rotation",
+		"1",
+		"smd",
+		"rect",
+		[1, 2, 45],
+		[1.5, 2.5],
+		["F.Cu"],
+	],
+	[
+		"roundrect pad with default rot",
+		"2",
+		"smd",
+		"roundrect",
+		[-0.95, 0],
+		[1, 1.45],
+		["F.Cu", "F.Mask"],
+	],
+	[
+		"circle pad shape",
+		"3",
+		"thru_hole",
+		"circle",
+		[0, 0, 0],
+		[1.2, 1.2],
+		["*.Cu"],
+	],
+	["oval pad shape", "4", "smd", "oval", [2, -1, 90], [3, 1], ["F.Cu"]],
+].map(([name, number, type, shape, at, size, layers]) => ({
+	name,
+	pad: { number, type, shape, at, size, layers },
+	expected: {
+		type: "pad",
+		number,
+		shape,
+		center: [at[0], at[1]],
+		size,
+		rot: at[2] ?? 0,
+		layers,
 	},
-	{
-		name: "roundrect pad with default rot",
-		number: "2",
-		type: "smd",
-		shape: "roundrect",
-		at: [-0.95, 0],
-		size: [1, 1.45],
-		layers: ["F.Cu", "F.Mask"],
-	},
-	{
-		name: "circle pad shape",
-		number: "3",
-		type: "thru_hole",
-		shape: "circle",
-		at: [0, 0, 0],
-		size: [1.2, 1.2],
-		layers: ["*.Cu"],
-	},
-	{
-		name: "oval pad shape",
-		number: "4",
-		type: "smd",
-		shape: "oval",
-		at: [2, -1, 90],
-		size: [3, 1],
-		layers: ["F.Cu"],
-	},
-];
+}));
 
-function makePadShapeCase(tc) {
-	return {
-		name: tc.name,
-		pad: {
-			number: tc.number,
-			type: tc.type,
-			shape: tc.shape,
-			at: tc.at,
-			size: tc.size,
-			layers: tc.layers,
-		},
-		expected: {
-			type: "pad",
-			number: tc.number,
-			shape: tc.shape,
-			center: [tc.at[0], tc.at[1]],
-			size: tc.size,
-			rot: tc.at[2] ?? 0,
-			layers: tc.layers,
-		},
-	};
+function makeSideBPad(shape, center, size, layers) {
+	return [makePad({ number: "1", shape, center, size, rot: 0, layers })];
 }
 
-const PAD_SHAPE_CASES = PAD_SHAPE_TABLE.map(makePadShapeCase);
-
-const SIDE_B_TABLE = [
+const SIDE_B_CASES = [
 	{
 		name: "mirrors X and maps F.Cu to B.Cu at origin",
 		placement: { x: 0, y: 0, rot: 0, side: "B" },
-		pad: {
-			shape: "rect",
-			center: [2, 3],
-			size: [1, 1],
-			layers: ["F.Cu", "F.Mask"],
-		},
-		graphic: {
-			type: "line",
-			layer: "F.SilkS",
-			width: 0.15,
-			start: [-1, -2],
-			end: [3, 4],
-		},
-		expectedPad: { center: [-2, 3], layers: ["B.Cu", "B.Mask"] },
-		expectedLine: { start: [1, -2], end: [-3, 4], layer: "B.SilkS" },
+		inputPads: makeSideBPad("rect", [2, 3], [1, 1], ["F.Cu", "F.Mask"]),
+		inputGraphics: [
+			{
+				type: "line",
+				layer: "F.SilkS",
+				width: 0.15,
+				start: [-1, -2],
+				end: [3, 4],
+			},
+		],
+		expectedPadCenter: [-2, 3],
+		expectedPadLayers: ["B.Cu", "B.Mask"],
+		expectedLineStart: [1, -2],
+		expectedLineEnd: [-3, 4],
+		expectedLineLayer: "B.SilkS",
 	},
 	{
 		name: "preserves *.Cu through-hole layer on side B",
 		placement: { x: 10, y: 20, rot: 0, side: "B" },
-		pad: {
-			shape: "circle",
-			center: [1, 2],
-			size: [1.5, 1.5],
-			layers: ["*.Cu"],
-		},
-		expectedPad: { center: [9, 22], layers: ["*.Cu"] },
+		inputPads: makeSideBPad("circle", [1, 2], [1.5, 1.5], ["*.Cu"]),
+		inputGraphics: [],
+		expectedPadCenter: [9, 22],
+		expectedPadLayers: ["*.Cu"],
 	},
 	{
 		name: "mirrors and rotates 90 deg on side B",
 		placement: { x: 10, y: 20, rot: 90, side: "B" },
-		pad: {
-			shape: "rect",
-			center: [2, 0],
-			size: [1, 2],
-			layers: ["F.Cu"],
-		},
-		expectedPad: { center: [10, 18], layers: ["B.Cu"] },
+		inputPads: makeSideBPad("rect", [2, 0], [1, 2], ["F.Cu"]),
+		inputGraphics: [],
+		expectedPadCenter: [10, 18],
+		expectedPadLayers: ["B.Cu"],
 	},
 ];
-
-function makeSideBCase(tc) {
-	return {
-		name: tc.name,
-		placement: tc.placement,
-		inputPads: [
-			makePad({
-				number: "1",
-				shape: tc.pad.shape,
-				center: tc.pad.center,
-				size: tc.pad.size,
-				rot: 0,
-				layers: tc.pad.layers,
-			}),
-		],
-		inputGraphics: tc.graphic ? [tc.graphic] : [],
-		expectedPadCenter: tc.expectedPad.center,
-		expectedPadLayers: tc.expectedPad.layers,
-		expectedLineStart: tc.expectedLine?.start ?? null,
-		expectedLineEnd: tc.expectedLine?.end ?? null,
-		expectedLineLayer: tc.expectedLine?.layer ?? null,
-	};
-}
-
-const SIDE_B_CASES = SIDE_B_TABLE.map(makeSideBCase);
 
 function assertSideBResult(res, tc) {
 	const pad = res.pads[0];
@@ -185,19 +137,13 @@ const PAD_WORLD_CASES = [
 		name: "front side with translation and rotation",
 		fp: TWO_PAD_FP,
 		placement: { x: 50, y: 30, rot: 90, side: "F" },
-		expected: {
-			1: [50, 29],
-			2: [50, 31],
-		},
+		expected: { 1: [50, 29], 2: [50, 31] },
 	},
 	{
 		name: "back side mirrors X coordinates",
 		fp: TWO_PAD_FP,
 		placement: { x: 50, y: 30, rot: 0, side: "B" },
-		expected: {
-			1: [51, 30],
-			2: [49, 30],
-		},
+		expected: { 1: [51, 30], 2: [49, 30] },
 	},
 	{
 		name: "empty or null footprint returns empty object",
@@ -207,7 +153,14 @@ const PAD_WORLD_CASES = [
 	},
 ];
 
-const HIT_TEST_TABLE = [
+const CIRCLE_PAD = {
+	number: "C1",
+	shape: "circle",
+	center: [0, 0],
+	size: [2, 2],
+};
+
+const HIT_TEST_CASES = [
 	{
 		name: "hits center of rect pad",
 		pads: [
@@ -219,13 +172,13 @@ const HIT_TEST_TABLE = [
 	},
 	{
 		name: "hits edge of circle pad",
-		pads: [{ number: "C1", shape: "circle", center: [0, 0], size: [2, 2] }],
+		pads: [CIRCLE_PAD],
 		point: [0.9, 0],
 		expected: "C1",
 	},
 	{
 		name: "misses outside circle pad",
-		pads: [{ number: "C1", shape: "circle", center: [0, 0], size: [2, 2] }],
+		pads: [CIRCLE_PAD],
 		point: [1.2, 0],
 		expected: null,
 	},
@@ -249,38 +202,43 @@ const HIT_TEST_TABLE = [
 		point: [0.98, 0.98],
 		expected: null,
 	},
-];
-
-function makeHitCase(tc) {
-	return {
-		name: tc.name,
-		prims: { pads: tc.pads.map(makePad) },
-		point: tc.point,
-		expected: tc.expected,
-	};
-}
-
-const HIT_TEST_CASES = HIT_TEST_TABLE.map(makeHitCase);
+].map((tc) => ({
+	name: tc.name,
+	prims: { pads: tc.pads.map(makePad) },
+	point: tc.point,
+	expected: tc.expected,
+}));
 
 function makeArcNode(spec) {
-	if (spec.mid) {
-		return [
-			{ sym: "fp_arc" },
-			[{ sym: "start" }, ...spec.start],
-			[{ sym: "mid" }, ...spec.mid],
-			[{ sym: "end" }, ...spec.end],
-			[{ sym: "layer" }, spec.layer],
-			[{ sym: "stroke" }, [{ sym: "width" }, spec.width]],
-		];
-	}
+	const middle = spec.mid
+		? [
+				[{ sym: "mid" }, ...spec.mid],
+				[{ sym: "end" }, ...spec.end],
+			]
+		: [
+				[{ sym: "end" }, ...spec.end],
+				[{ sym: "angle" }, spec.angle],
+			];
+	const stroke = spec.mid
+		? [{ sym: "stroke" }, [{ sym: "width" }, spec.width]]
+		: [{ sym: "width" }, spec.width];
 	return [
 		{ sym: "fp_arc" },
 		[{ sym: "start" }, ...spec.start],
-		[{ sym: "end" }, ...spec.end],
-		[{ sym: "angle" }, spec.angle],
+		...middle,
 		[{ sym: "layer" }, spec.layer],
-		[{ sym: "width" }, spec.width],
+		stroke,
 	];
+}
+
+function makeArcExpected(width) {
+	return {
+		expectedType: "arc",
+		expectedLayer: "F.SilkS",
+		expectedWidth: width,
+		expectedRadius: 1,
+		expectedCenter: [0, 0],
+	};
 }
 
 const ARC_CONVERSION_CASES = [
@@ -293,11 +251,7 @@ const ARC_CONVERSION_CASES = [
 			layer: "F.SilkS",
 			width: 0.15,
 		}),
-		expectedType: "arc",
-		expectedLayer: "F.SilkS",
-		expectedWidth: 0.15,
-		expectedRadius: 1,
-		expectedCenter: [0, 0],
+		...makeArcExpected(0.15),
 	},
 	{
 		name: "converts KiCad v5 angle arc",
@@ -308,18 +262,17 @@ const ARC_CONVERSION_CASES = [
 			layer: "F.SilkS",
 			width: 0.12,
 		}),
-		expectedType: "arc",
-		expectedLayer: "F.SilkS",
-		expectedWidth: 0.12,
-		expectedRadius: 1,
-		expectedCenter: [0, 0],
+		...makeArcExpected(0.12),
 	},
 ];
 
-function assertArcResult(g, tc) {
+function assertArcAttributes(g, tc) {
 	assert.equal(g.type, tc.expectedType);
 	assert.equal(g.layer, tc.expectedLayer);
 	assert.equal(g.width, tc.expectedWidth);
+}
+
+function assertArcGeometry(g, tc) {
 	assert.equal(Math.round(g.radius * 100) / 100, tc.expectedRadius);
 	assert.deepEqual(
 		[Math.round(g.center[0]), Math.round(g.center[1])],
@@ -328,56 +281,53 @@ function assertArcResult(g, tc) {
 	assert.ok(typeof g.d === "string" && g.d.startsWith("M"));
 }
 
+function runCases(cases, fn) {
+	for (const tc of cases) {
+		test(tc.name, () => fn(tc));
+	}
+}
+
 describe("footprintRender", () => {
 	describe("pad shapes and rotation", () => {
-		for (const tc of PAD_SHAPE_CASES) {
-			test(tc.name, () => {
-				const res = footprintToPrimitives({ pads: [tc.pad], graphics: [] });
-				assert.equal(res.pads.length, 1);
-				assertPadProperties(res.pads[0], tc.expected);
-			});
-		}
+		runCases(PAD_SHAPE_CASES, (tc) => {
+			const res = footprintToPrimitives({ pads: [tc.pad], graphics: [] });
+			assert.equal(res.pads.length, 1);
+			assertPadProperties(res.pads[0], tc.expected);
+		});
 	});
 
 	describe("side B mirroring and layer mapping", () => {
-		for (const tc of SIDE_B_CASES) {
-			test(tc.name, () => {
-				const prims = { pads: tc.inputPads, graphics: tc.inputGraphics };
-				const res = transformPrimitives(prims, tc.placement);
-				assertSideBResult(res, tc);
-			});
-		}
+		runCases(SIDE_B_CASES, (tc) => {
+			const prims = { pads: tc.inputPads, graphics: tc.inputGraphics };
+			const res = transformPrimitives(prims, tc.placement);
+			assertSideBResult(res, tc);
+		});
 	});
 
 	describe("pad world positions", () => {
-		for (const tc of PAD_WORLD_CASES) {
-			test(tc.name, () => {
-				const positions = padWorldPositions(tc.fp, tc.placement);
-				assert.deepEqual(positions, tc.expected);
-			});
-		}
+		runCases(PAD_WORLD_CASES, (tc) => {
+			const positions = padWorldPositions(tc.fp, tc.placement);
+			assert.deepEqual(positions, tc.expected);
+		});
 	});
 
 	describe("padHitTest", () => {
-		for (const tc of HIT_TEST_CASES) {
-			test(tc.name, () => {
-				const hit = padHitTest(tc.prims, tc.point);
-				assert.equal(hit, tc.expected);
-			});
-		}
+		runCases(HIT_TEST_CASES, (tc) => {
+			const hit = padHitTest(tc.prims, tc.point);
+			assert.equal(hit, tc.expected);
+		});
 	});
 
 	describe("arc conversion", () => {
-		for (const tc of ARC_CONVERSION_CASES) {
-			test(tc.name, () => {
-				const prims = footprintToPrimitives({
-					pads: [],
-					graphics: [tc.rawNode],
-				});
-				assert.equal(prims.graphics.length, 1);
-				assertArcResult(prims.graphics[0], tc);
+		runCases(ARC_CONVERSION_CASES, (tc) => {
+			const prims = footprintToPrimitives({
+				pads: [],
+				graphics: [tc.rawNode],
 			});
-		}
+			assert.equal(prims.graphics.length, 1);
+			assertArcAttributes(prims.graphics[0], tc);
+			assertArcGeometry(prims.graphics[0], tc);
+		});
 
 		test("arcToSvgPath formats valid SVG path string", () => {
 			const arc = {
