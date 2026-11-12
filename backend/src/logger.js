@@ -49,8 +49,12 @@ function sanitizeString(str) {
 	return result;
 }
 
+function isObject(val) {
+	return val !== null && typeof val === "object";
+}
+
 function isErrorLike(val) {
-	if (!val || typeof val !== "object") return false;
+	if (!isObject(val)) return false;
 	return val instanceof Error || typeof val.message === "string";
 }
 
@@ -110,7 +114,7 @@ function redactObject(obj, ctx) {
 }
 
 function redactValue(val, ctx) {
-	if (val === null || typeof val !== "object") {
+	if (!isObject(val)) {
 		return redactPrimitive(val);
 	}
 	if (ctx.seen.has(val)) {
@@ -125,20 +129,32 @@ function redactValue(val, ctx) {
 	return redactObject(val, ctx);
 }
 
+function normalizeStringArgs(msg, extra) {
+	const fields = isObject(extra) ? { ...extra } : {};
+	return { msg, fields };
+}
+
+function normalizeErrorArgs(err, fallbackMsg) {
+	const msg = typeof fallbackMsg === "string" ? fallbackMsg : err.message;
+	return { msg, fields: { err } };
+}
+
+function normalizeObjectArgs(obj, fallbackMsg) {
+	const fields = { ...obj };
+	const msg = typeof fallbackMsg === "string" ? fallbackMsg : fields.msg || "";
+	delete fields.msg;
+	return { msg, fields };
+}
+
 function normalizeLogArgs(arg1, arg2) {
 	if (typeof arg1 === "string") {
-		const fields = arg2 && typeof arg2 === "object" ? { ...arg2 } : {};
-		return { msg: arg1, fields };
+		return normalizeStringArgs(arg1, arg2);
 	}
 	if (isErrorLike(arg1)) {
-		const msg = typeof arg2 === "string" ? arg2 : arg1.message;
-		return { msg, fields: { err: arg1 } };
+		return normalizeErrorArgs(arg1, arg2);
 	}
-	if (arg1 && typeof arg1 === "object") {
-		const fields = { ...arg1 };
-		const msg = typeof arg2 === "string" ? arg2 : fields.msg || "";
-		delete fields.msg;
-		return { msg, fields };
+	if (isObject(arg1)) {
+		return normalizeObjectArgs(arg1, arg2);
 	}
 	return { msg: String(arg1 ?? ""), fields: {} };
 }
@@ -160,8 +176,8 @@ function resolveTime(clock) {
 function serializePayload(payload) {
 	try {
 		return JSON.stringify(payload);
-	} catch {
-		// Logger must never throw: serialize fallback placeholder
+	} catch (_err) {
+		// Safe to ignore: logger must never throw, serialize fallback placeholder on failure
 		return JSON.stringify({
 			time: payload.time,
 			level: payload.level,
@@ -176,11 +192,14 @@ function writeToSink(sink, line) {
 		const out = `${line}\n`;
 		if (typeof sink === "function") {
 			sink(out);
-		} else if (Array.isArray(sink)) {
+			return;
+		}
+		if (Array.isArray(sink)) {
 			sink.push(out);
 		}
-	} catch {
-		// Logger must never throw: swallow failing sink
+	} catch (_err) {
+		// Safe to ignore: logger must never throw or crash the host application on failing sink
+		return;
 	}
 }
 
@@ -243,27 +262,31 @@ function createRequestMiddleware(logFn) {
 	};
 }
 
+function writePayload(raw, state) {
+	const ctx = { depth: 0, seen: new Set(), isProd: state.isProd };
+	const payload = redactObject(raw, ctx);
+	writeToSink(state.sink, serializePayload(payload));
+}
+
 function emitLog(callLevel, arg1, arg2, state) {
 	if (!shouldLog(callLevel, state.currentLevel)) return;
 	const { msg, fields } = normalizeLogArgs(arg1, arg2);
 	const time = resolveTime(state.clock);
-	const raw = { time, level: callLevel, msg, ...state.base, ...fields };
-	const ctx = { depth: 0, seen: new Set(), isProd: state.isProd };
-	const payload = redactObject(raw, ctx);
-	writeToSink(state.sink, serializePayload(payload));
+	writePayload(
+		{ time, level: callLevel, msg, ...state.base, ...fields },
+		state,
+	);
 }
 
 function emitMetric(name, value, tags, state) {
 	if (typeof value !== "number" || !Number.isFinite(value)) return;
 	const time = resolveTime(state.clock);
 	const metricFields = { name: String(name), value, ...state.base };
-	if (tags && typeof tags === "object") {
+	if (isObject(tags)) {
 		Object.assign(metricFields, tags);
 		metricFields.tags = tags;
 	}
-	const ctx = { depth: 0, seen: new Set(), isProd: state.isProd };
-	const payload = redactObject({ time, level: "metric", ...metricFields }, ctx);
-	writeToSink(state.sink, serializePayload(payload));
+	writePayload({ time, level: "metric", ...metricFields }, state);
 }
 
 export function createLogger({
