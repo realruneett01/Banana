@@ -9,6 +9,17 @@ import {
 	SCHEMATIC_HOTKEYS,
 } from "../../frontend/src/editor/hotkeys.js";
 
+const MODIFIER_CASES = [
+	["Control", "ctrlKey"],
+	["Shift", "shiftKey"],
+	["Alt", "altKey"],
+	["Meta", "metaKey"],
+].map(([key, prop]) => ({
+	event: { key, [prop]: true },
+	expected: "",
+	name: `modifier-only ${key}`,
+}));
+
 const KEY_SPEC_CASES = [
 	{ event: { key: "a" }, expected: "a", name: "plain key" },
 	{ event: { key: "s", ctrlKey: true }, expected: "ctrl+s", name: "ctrl" },
@@ -22,26 +33,7 @@ const KEY_SPEC_CASES = [
 		expected: "shift+alt+b",
 		name: "shift+alt ordering",
 	},
-	{
-		event: { key: "Control", ctrlKey: true },
-		expected: "",
-		name: "modifier-only Control",
-	},
-	{
-		event: { key: "Shift", shiftKey: true },
-		expected: "",
-		name: "modifier-only Shift",
-	},
-	{
-		event: { key: "Alt", altKey: true },
-		expected: "",
-		name: "modifier-only Alt",
-	},
-	{
-		event: { key: "Meta", metaKey: true },
-		expected: "",
-		name: "modifier-only Meta",
-	},
+	...MODIFIER_CASES,
 	{ event: { key: " " }, expected: "space", name: "space mapped to space" },
 	{
 		event: { key: " ", ctrlKey: true },
@@ -98,91 +90,76 @@ describe("mergeBindings", () => {
 	});
 });
 
+function dispatchCase({ bindings, handlerValue, eventProps }) {
+	let invokedAction = null;
+	let prevented = false;
+	const handlers =
+		handlerValue !== undefined
+			? { placeWire: handlerValue }
+			: {
+					placeWire: () => {
+						invokedAction = "placeWire";
+					},
+				};
+	const dispatch = createHotkeyDispatcher(bindings, handlers);
+	const event = {
+		preventDefault: () => {
+			prevented = true;
+		},
+		...eventProps,
+	};
+	const result = dispatch(event);
+	return { result, invokedAction, prevented };
+}
+
+const DISPATCHER_CASES = [
+	{
+		name: "calls matching handler and preventDefault",
+		bindings: { placeWire: "w", move: "m" },
+		eventProps: { key: "w" },
+		expectedResult: true,
+		expectedAction: "placeWire",
+		expectedPrevented: true,
+	},
+	{
+		name: "returns false for unbound key and leaves preventDefault uncalled",
+		bindings: { placeWire: "w" },
+		handlerValue: () => {},
+		eventProps: { key: "m" },
+	},
+	{
+		name: "ignores typing targets and returns false",
+		bindings: { placeWire: "w" },
+		eventProps: { key: "w", target: { tagName: "INPUT" } },
+	},
+	{
+		name: "returns false when handler for matching action is not a function",
+		bindings: { placeWire: "w" },
+		handlerValue: null,
+		eventProps: { key: "w" },
+	},
+];
+
 describe("createHotkeyDispatcher", () => {
-	test("calls matching handler and preventDefault", () => {
-		let invokedAction = null;
-		let prevented = false;
-		const bindings = { placeWire: "w", move: "m" };
-		const handlers = {
-			placeWire: () => {
-				invokedAction = "placeWire";
-			},
-		};
-		const dispatch = createHotkeyDispatcher(bindings, handlers);
-		const event = {
-			key: "w",
-			preventDefault: () => {
-				prevented = true;
-			},
-		};
-
-		const result = dispatch(event);
-		assert.equal(result, true);
-		assert.equal(invokedAction, "placeWire");
-		assert.equal(prevented, true);
-	});
-
-	test("returns false for unbound key and leaves preventDefault uncalled", () => {
-		let prevented = false;
-		const bindings = { placeWire: "w" };
-		const handlers = { placeWire: () => {} };
-		const dispatch = createHotkeyDispatcher(bindings, handlers);
-		const event = {
-			key: "m",
-			preventDefault: () => {
-				prevented = true;
-			},
-		};
-
-		const result = dispatch(event);
-		assert.equal(result, false);
-		assert.equal(prevented, false);
-	});
-
-	test("ignores typing targets and returns false", () => {
-		let invoked = false;
-		const bindings = { placeWire: "w" };
-		const handlers = {
-			placeWire: () => {
-				invoked = true;
-			},
-		};
-		const dispatch = createHotkeyDispatcher(bindings, handlers);
-		const event = {
-			key: "w",
-			target: { tagName: "INPUT" },
-			preventDefault: () => {},
-		};
-
-		const result = dispatch(event);
-		assert.equal(result, false);
-		assert.equal(invoked, false);
-	});
-
-	test("returns false when handler for matching action is not a function", () => {
-		let prevented = false;
-		const bindings = { placeWire: "w" };
-		const handlers = { placeWire: null };
-		const dispatch = createHotkeyDispatcher(bindings, handlers);
-		const event = {
-			key: "w",
-			preventDefault: () => {
-				prevented = true;
-			},
-		};
-
-		const result = dispatch(event);
-		assert.equal(result, false);
-		assert.equal(prevented, false);
-	});
+	for (const tc of DISPATCHER_CASES) {
+		test(tc.name, () => {
+			const { result, invokedAction, prevented } = dispatchCase(tc);
+			assert.equal(result, tc.expectedResult ?? false);
+			assert.equal(invokedAction, tc.expectedAction ?? null);
+			assert.equal(prevented, tc.expectedPrevented ?? false);
+		});
+	}
 });
 
 describe("hotkey constants", () => {
-	test("SCHEMATIC_HOTKEYS and PCB_HOTKEYS are frozen and contain expected bindings", () => {
+	test("SCHEMATIC_HOTKEYS is frozen and contains expected bindings", () => {
 		assert.equal(Object.isFrozen(SCHEMATIC_HOTKEYS), true);
-		assert.equal(Object.isFrozen(PCB_HOTKEYS), true);
 		assert.equal(SCHEMATIC_HOTKEYS.placeWire, "w");
 		assert.equal(SCHEMATIC_HOTKEYS.placeGlobalLabel, "ctrl+l");
+	});
+
+	test("PCB_HOTKEYS is frozen and contains expected bindings", () => {
+		assert.equal(Object.isFrozen(PCB_HOTKEYS), true);
 		assert.equal(PCB_HOTKEYS.routeTrack, "x");
 		assert.equal(PCB_HOTKEYS.unfillZones, "ctrl+b");
 	});
