@@ -125,6 +125,65 @@ async function loadKicadFile(loop, file) {
 	}
 }
 
+async function fetchGitFile(loop, repoPath, filePath) {
+	try {
+		const res = await loop.api.gitFileContent({ repoPath, filePath });
+		if (!res?.ok) {
+			const err = res?.error || res?.data?.error || "Could not read file";
+			message.error(err);
+			return null;
+		}
+		return res.text;
+	} catch (err) {
+		message.error(err?.message || "Could not read file");
+		return null;
+	}
+}
+
+async function importAndOpenDesign(loop, kind, text) {
+	try {
+		const imp = await loop.api.editorImport({ kind, text });
+		if (!imp?.ok) {
+			const err = imp?.data?.error || imp?.error || "Could not import file";
+			message.error(err);
+			return;
+		}
+		const tab = kind === "pcb" ? "pcb" : "schematic";
+		const opened = loop.openDesign({
+			ir: imp.data?.ir,
+			board: imp.data?.board,
+			tab,
+		});
+		if (opened === false) {
+			message.error("File did not contain a valid design");
+		}
+	} catch (err) {
+		message.error(err?.message || "Could not import file");
+	}
+}
+
+async function runEditCurrentFile(loop, repo) {
+	const filePath = repo?.schPath || repo?.pcbPath;
+	if (!repo?.repoPath || !filePath) {
+		return;
+	}
+	const text = await fetchGitFile(loop, repo.repoPath, filePath);
+	if (text === null || text === undefined) {
+		return;
+	}
+	const kind = filePath.endsWith(".kicad_pcb") ? "pcb" : "sch";
+	await importAndOpenDesign(loop, kind, text);
+}
+
+export function useEditCurrentFile(loop, repo) {
+	const hasFile = Boolean(repo?.schPath || repo?.pcbPath);
+	const canEdit = Boolean(repo?.repoPath && hasFile);
+	const onEdit = useCallback(() => {
+		runEditCurrentFile(loop, repo);
+	}, [loop, repo]);
+	return { canEdit, onEdit, editCurrentFile: onEdit };
+}
+
 function useOpenKicadFile(loop) {
 	const fileInputRef = useRef(null);
 	const openFileDialog = useCallback(() => {
@@ -146,7 +205,7 @@ function useOpenKicadFile(loop) {
 	return { fileInputRef, openFileDialog, handleFileChosen };
 }
 
-function StartButtons({ loop, compact, openFileDialog }) {
+function StartButtons({ loop, compact, openFileDialog, editState }) {
 	const size = compact ? "small" : undefined;
 	return (
 		<Space size="small">
@@ -159,6 +218,11 @@ function StartButtons({ loop, compact, openFileDialog }) {
 			<Button size={size} onClick={openFileDialog}>
 				Open KiCad file
 			</Button>
+			{editState?.canEdit && (
+				<Button size={size} onClick={editState.onEdit}>
+					Edit this file
+				</Button>
+			)}
 		</Space>
 	);
 }
@@ -175,18 +239,33 @@ function HiddenFileInput({ inputRef, onChange }) {
 	);
 }
 
-function DesignStartPanel({ loop, compact }) {
-	const { fileInputRef, openFileDialog, handleFileChosen } =
-		useOpenKicadFile(loop);
+function EmptyDesignPlaceholder({ fileInput, buttons }) {
+	return (
+		<div style={EMPTY_PANEL_STYLE}>
+			{fileInput}
+			<Empty description="No design yet - start a new schematic or PCB, or open a KiCad file">
+				{buttons}
+			</Empty>
+		</div>
+	);
+}
+
+function DesignStartPanel({ loop, compact, repo }) {
+	const fileChooser = useOpenKicadFile(loop);
+	const editState = useEditCurrentFile(loop, repo);
 	const buttons = (
 		<StartButtons
 			loop={loop}
 			compact={compact}
-			openFileDialog={openFileDialog}
+			openFileDialog={fileChooser.openFileDialog}
+			editState={editState}
 		/>
 	);
 	const fileInput = (
-		<HiddenFileInput inputRef={fileInputRef} onChange={handleFileChosen} />
+		<HiddenFileInput
+			inputRef={fileChooser.fileInputRef}
+			onChange={fileChooser.handleFileChosen}
+		/>
 	);
 
 	if (compact) {
@@ -198,14 +277,7 @@ function DesignStartPanel({ loop, compact }) {
 		);
 	}
 
-	return (
-		<div style={EMPTY_PANEL_STYLE}>
-			{fileInput}
-			<Empty description="No design yet - start a new schematic or PCB, or open a KiCad file">
-				{buttons}
-			</Empty>
-		</div>
-	);
+	return <EmptyDesignPlaceholder fileInput={fileInput} buttons={buttons} />;
 }
 
 function buildEditorRepo(ws) {
@@ -260,9 +332,11 @@ function StudioDrawer({ loop }) {
 	);
 }
 
-function EditorDrawer({ loop, repo, ws }) {
-	const resolvedRepo = repo ?? buildEditorRepo(ws);
-	const content = loop.ir ? (
+function EditorDrawerContent({ loop, repo }) {
+	if (!loop.ir) {
+		return <DesignStartPanel loop={loop} repo={repo} />;
+	}
+	return (
 		<EditorScreen
 			key={loop.docKey}
 			ir={loop.ir}
@@ -271,23 +345,25 @@ function EditorDrawer({ loop, repo, ws }) {
 			onSave={loop.saveFromEditor}
 			focusItemId={loop.focusItemId}
 			api={loop.api}
-			repo={resolvedRepo}
+			repo={repo}
 		/>
-	) : (
-		<DesignStartPanel loop={loop} />
 	);
+}
+
+function EditorDrawer({ loop, repo, ws }) {
+	const resolvedRepo = repo ?? buildEditorRepo(ws);
 	return (
 		<Drawer
 			title="Editor"
 			open={loop.editorOpen}
 			onClose={loop.closeEditor}
-			extra={<DesignStartPanel loop={loop} compact />}
+			extra={<DesignStartPanel loop={loop} compact repo={resolvedRepo} />}
 			width="100%"
 			destroyOnHidden={false}
 			className="bn-drawer"
 			styles={{ body: { padding: 0, height: "100%" } }}
 		>
-			{content}
+			<EditorDrawerContent loop={loop} repo={resolvedRepo} />
 		</Drawer>
 	);
 }

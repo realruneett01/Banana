@@ -108,6 +108,20 @@ async function executeRequest(fetchImpl, url, options, signal) {
 	}
 }
 
+async function executeTextRequest(fetchImpl, url, options, signal) {
+	try {
+		const response = await fetchImpl(url, { ...options, signal });
+		if (!response.ok) {
+			const parsed = await parseResponseBody(response);
+			return buildFailureResult(response, parsed);
+		}
+		const text = (await readResponseText(response)) ?? "";
+		return { ok: true, status: response.status, text };
+	} catch (err) {
+		return handleFetchError(err, signal);
+	}
+}
+
 function buildAgentPayload(params) {
 	const { message, approved, maxSteps, provider } = params || {};
 	const body = { message };
@@ -469,6 +483,32 @@ function buildEditorMethods(send, h) {
 	};
 }
 
+function buildGitFileQuery({ repoPath, filePath, commit } = {}) {
+	const params = new URLSearchParams();
+	if (repoPath) {
+		params.set("repoPath", repoPath);
+	}
+	if (filePath) {
+		params.set("filePath", filePath);
+	}
+	if (commit) {
+		params.set("commit", commit);
+	}
+	const qs = params.toString();
+	return qs ? `?${qs}` : "";
+}
+
+function buildGitMethods(sendText, h) {
+	return {
+		gitFileContent: ({ repoPath, filePath, commit } = {}, { signal } = {}) =>
+			sendText(
+				`/api/git/file${buildGitFileQuery({ repoPath, filePath, commit })}`,
+				{ method: "GET", headers: h },
+				signal,
+			),
+	};
+}
+
 export function createSimApi({
 	baseUrl = "",
 	fetchImpl = globalThis.fetch,
@@ -478,6 +518,8 @@ export function createSimApi({
 	const h = { "Content-Type": "application/json", ...headers };
 	const send = (p, opt, sig) =>
 		executeRequest(fetchImpl, `${base}${p}`, opt, sig);
+	const sendText = (p, opt, sig) =>
+		executeTextRequest(fetchImpl, `${base}${p}`, opt, sig);
 	const runStream = (params, opt) =>
 		executeAgentStream(
 			fetchImpl,
@@ -492,5 +534,6 @@ export function createSimApi({
 		...buildCircuitMethods(send, h),
 		...buildLibraryMethods(send, h),
 		...buildEditorMethods(send, h),
+		...buildGitMethods(sendText, h),
 	};
 }
