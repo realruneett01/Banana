@@ -12,6 +12,7 @@ import {
 import { Button, Space, Tabs, Tooltip } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import IssuesPanel from "../components/IssuesPanel.jsx";
+import { emitCommitCreated } from "../designEvents.js";
 import BoardTools from "./BoardTools.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
@@ -779,15 +780,23 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 	);
 }
 
-function useCommitController(save) {
+function useCommitController(save, getContext) {
 	const [open, setOpen] = useState(false);
 	const saveRef = useRef(save);
 	saveRef.current = save;
+	const contextRef = useRef(getContext);
+	contextRef.current = getContext;
 	const openCommit = useCallback(() => setOpen(true), []);
 	const closeCommit = useCallback(() => setOpen(false), []);
-	const onCommitted = useCallback(() => {
+	const onCommitted = useCallback((data) => {
 		saveRef.current?.();
 		setOpen(false);
+		const ctx = contextRef.current?.() ?? {};
+		emitCommitCreated({
+			repoPath: ctx.repoPath,
+			filePath: ctx.filePath,
+			commit: data?.commit,
+		});
 	}, []);
 	return { open, openCommit, closeCommit, onCommitted };
 }
@@ -807,13 +816,27 @@ function CommitDialog(props) {
 	);
 }
 
-function useEditorScreen({ ir, board, onSave, api, focusItemId, initialTab }) {
+function useEditorScreen({
+	ir,
+	board,
+	onSave,
+	api,
+	focusItemId,
+	repo,
+	initialTab,
+}) {
 	const [activeTab, setActiveTab] = useState(
 		initialTab === "pcb" ? "pcb" : "schematic",
 	);
 	const [problemsOpen, setProblemsOpen] = useState(false);
 	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
-	const commit = useCommitController(() => ctrl.actions.save());
+	const commit = useCommitController(
+		() => ctrl.actions.save(),
+		() => ({
+			repoPath: repo?.repoPath,
+			filePath: activeTab === "pcb" ? repo?.pcbPath : repo?.schPath,
+		}),
+	);
 	const ctrl = useScreenController({
 		ir,
 		board,
@@ -881,6 +904,7 @@ export default function EditorScreen({
 		onSave,
 		api,
 		focusItemId,
+		repo,
 		initialTab,
 	});
 	return <EditorView s={s} ir={ir} api={api} repo={repo} />;
