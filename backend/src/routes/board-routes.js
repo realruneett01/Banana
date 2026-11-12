@@ -25,9 +25,6 @@ const ROOT_OR_DRIVE_PATTERN = /^[a-zA-Z]:|^[/\\]/;
 const NETWORK_OR_DEVICE_PATTERN = /^[/\\]{2}/;
 const TRAVERSAL_SEGMENT_PATTERN = /(^|[/\\])\.\.([/\\]|$)/;
 const ALLOWED_BOARD_EXTENSIONS = [".kicad_pcb", ".kicad_sch"];
-const SENSITIVE_PATH_PATTERN =
-	/^([a-zA-Z]:)?[/\\]?(etc|windows|system32|proc|sys|dev)([/\\]|$)/i;
-const SENSITIVE_FILE_PATTERN = /\.(ini|conf|passwd|shadow|exe|dll|sys)$/i;
 
 function hasHostileString(val) {
 	if (typeof val !== "string" || val.length === 0) {
@@ -66,13 +63,7 @@ function isValidRepoPath(repoPath) {
 	if (typeof repoPath !== "string" || repoPath.trim().length === 0) {
 		return false;
 	}
-	if (hasHostileString(repoPath)) {
-		return false;
-	}
-	if (SENSITIVE_PATH_PATTERN.test(repoPath)) {
-		return false;
-	}
-	return !SENSITIVE_FILE_PATTERN.test(repoPath);
+	return !hasHostileString(repoPath);
 }
 
 function hasValidFileInputs(boardReq) {

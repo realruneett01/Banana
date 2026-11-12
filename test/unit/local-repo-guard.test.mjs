@@ -195,8 +195,12 @@ const HOSTILE_PATHS = [
 	{ label: "\\\\?\\C:\\x", val: "\\\\?\\C:\\x" },
 	{ label: "\\\\.\\pipe\\x", val: "\\\\.\\pipe\\x" },
 	{ label: "a path with a NUL character", val: "board\0.kicad_pcb" },
-	{ label: "C:\\Windows\\system.ini", val: "C:\\Windows\\system.ini" },
-	{ label: "/etc/passwd", val: "/etc/passwd" },
+	{
+		label: "C:\\Windows\\system.ini",
+		val: "C:\\Windows\\system.ini",
+		fileOnly: true,
+	},
+	{ label: "/etc/passwd", val: "/etc/passwd", fileOnly: true },
 	{ label: "../../x", val: "../../x" },
 ];
 
@@ -227,14 +231,20 @@ const BOARD_FIELD_TARGETS = [
 	},
 ];
 
+function isApplicableHostile(targetField, hostile) {
+	return !hostile.fileOnly || targetField !== "repoPath";
+}
+
 function buildHostileCases(routes, fieldTargets, hostilePaths) {
 	return routes.flatMap((route) =>
 		fieldTargets.flatMap((target) =>
-			hostilePaths.map((hostile) => ({
-				name: `${route} ${target.field} rejects "${hostile.label}" in <1000ms`,
-				route,
-				body: target.buildBody(hostile.val),
-			})),
+			hostilePaths
+				.filter((hostile) => isApplicableHostile(target.field, hostile))
+				.map((hostile) => ({
+					name: `${route} ${target.field} rejects "${hostile.label}" in <1000ms`,
+					route,
+					body: target.buildBody(hostile.val),
+				})),
 		),
 	);
 }
@@ -253,6 +263,25 @@ function runHostileTests(cases, getPort) {
 		});
 	}
 }
+
+const LEGITIMATE_REPO_PATHS = [
+	"C:\\dev\\my-board",
+	"/home/me/dev/board",
+	"D:\\sys\\pcb",
+	"C:\\work\\notes.conf",
+];
+
+const LEGITIMATE_REPO_CASES = BOARD_ROUTES.flatMap((route) =>
+	LEGITIMATE_REPO_PATHS.map((repoPath) => ({
+		name: `${route} does not reject repoPath "${repoPath}" with invalid path error`,
+		route,
+		body: {
+			repoPath,
+			commit: SHA_A,
+			relativeFilePath: PCB_FILE,
+		},
+	})),
+);
 
 describe("local repository guards and input validation", () => {
 	let disabled;
@@ -305,6 +334,15 @@ describe("local repository guards and input validation", () => {
 			test(c.name, async () => {
 				const { status } = await postJson(enabled.port, c.route, c.body);
 				assertNotGuarded(status, c.name);
+			});
+		}
+	});
+
+	describe("legitimate repo paths are not rejected by path validation", () => {
+		for (const c of LEGITIMATE_REPO_CASES) {
+			test(c.name, async () => {
+				const { json } = await postJson(enabled.port, c.route, c.body);
+				assert.notEqual(json.error, "Invalid repository path");
 			});
 		}
 	});
