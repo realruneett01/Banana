@@ -1,7 +1,9 @@
 import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
+import { kicadPcbToIr } from "../engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
+import { kicadSchToIr } from "../engine/kicad-sch-to-ir.js";
 import { irToKicadSch } from "../engine/kicad-sch-writer.js";
 import { createRegistry } from "../engine/tool-registry.js";
 import { registerPatchTools } from "../engine/tools/patch-tools.js";
@@ -230,6 +232,56 @@ async function handleCommit(req, res, options = {}) {
 	}
 }
 
+const IMPORT_CONFIG = {
+	sch: {
+		header: "(kicad_sch",
+		error: "File is not a KiCad schematic",
+		convert: (text) => kicadSchToIr(text),
+	},
+	pcb: {
+		header: "(kicad_pcb",
+		error: "File is not a KiCad board",
+		convert: (text) => kicadPcbToIr(text),
+	},
+};
+
+function resolveImportConfig(kind) {
+	return typeof kind === "string" && Object.hasOwn(IMPORT_CONFIG, kind)
+		? IMPORT_CONFIG[kind]
+		: null;
+}
+
+function handleImport(req, res) {
+	try {
+		const config = resolveImportConfig(req.query?.kind);
+		if (!config) {
+			return res
+				.status(400)
+				.json({ error: "Query parameter kind must be sch or pcb" });
+		}
+		const text = req.body;
+		if (
+			typeof text !== "string" ||
+			!text.trimStart().startsWith(config.header)
+		) {
+			return res.status(400).json({ error: config.error });
+		}
+		const result = config.convert(text);
+		if (!result.ok) {
+			const errors = (result.errors || []).slice(0, 5);
+			return res.status(422).json({ error: "Could not import file", errors });
+		}
+		return res.status(200).json({
+			ir: result.ir,
+			board: result.board ?? null,
+			warnings: result.warnings ?? [],
+		});
+	} catch (_err) {
+		// Broad catch to guarantee route never leaks stack traces
+		return res.status(500).json({ error: "Editor import failed" });
+	}
+}
+
 const passThrough = (_req, _res, next) => next();
 
 export function createEditorRouter({
@@ -253,6 +305,12 @@ export function createEditorRouter({
 		["/editor/commit", "/api/editor/commit"],
 		routeLimiter,
 		(req, res) => handleCommit(req, res, { patchDeps, isLocalAllowed }),
+	);
+	router.post(
+		["/editor/import", "/api/editor/import"],
+		routeLimiter,
+		express.text({ type: "text/plain", limit: "20mb" }),
+		handleImport,
 	);
 	return router;
 }

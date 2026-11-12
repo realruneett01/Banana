@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import express from "express";
@@ -98,6 +100,35 @@ async function postJson(port, path, body) {
 	};
 }
 
+async function postText(
+	targetPort,
+	endpoint,
+	body,
+	contentType = "text/plain",
+) {
+	const headers = {};
+	if (contentType) {
+		headers["content-type"] = contentType;
+	}
+	const targetUrl = `http://127.0.0.1:${targetPort}${endpoint}`;
+	const res = await fetch(targetUrl, {
+		method: "POST",
+		headers,
+		body,
+	});
+	let payload = {};
+	try {
+		payload = await res.json();
+	} catch {
+		payload = {};
+	}
+	return {
+		status: res.status,
+		headers: res.headers,
+		json: payload,
+	};
+}
+
 const createCase = (name, body, expected = 400) => ({ name, body, expected });
 
 const CHECK_INVALID_CASES = [
@@ -131,6 +162,80 @@ const SAMPLE_SCH = `(kicad_sch
 		(property "Value" "10k")
 	)
 )`;
+
+const SAMPLE_PCB = `(kicad_pcb
+	(version 20240108)
+	(generator "banana")
+	(footprint "Resistor_SMD:R_0603"
+		(layer "F.Cu")
+		(at 10 20 45)
+		(property "Reference" "R1")
+		(property "Value" "10k")
+	)
+)`;
+
+const IMPORT_INVALID_CASES = [
+	{
+		name: "missing kind",
+		endpoint: "/api/editor/import",
+		body: SAMPLE_SCH,
+		expected: "Query parameter kind must be sch or pcb",
+	},
+	{
+		name: "invalid kind",
+		endpoint: "/api/editor/import?kind=xml",
+		body: SAMPLE_SCH,
+		expected: "Query parameter kind must be sch or pcb",
+	},
+	{
+		name: "constructor kind",
+		endpoint: "/api/editor/import?kind=constructor",
+		body: SAMPLE_SCH,
+		expected: "Query parameter kind must be sch or pcb",
+	},
+	{
+		name: "array kind",
+		endpoint: "/api/editor/import?kind=sch&kind=pcb",
+		body: SAMPLE_SCH,
+		expected: "Query parameter kind must be sch or pcb",
+	},
+	{
+		name: "wrong header for sch",
+		endpoint: "/api/editor/import?kind=sch",
+		body: SAMPLE_PCB,
+		expected: "File is not a KiCad schematic",
+	},
+	{
+		name: "wrong header for pcb",
+		endpoint: "/api/editor/import?kind=pcb",
+		body: SAMPLE_SCH,
+		expected: "File is not a KiCad board",
+	},
+	{
+		name: "garbage text for sch",
+		endpoint: "/api/editor/import?kind=sch",
+		body: "not a kicad schematic",
+		expected: "File is not a KiCad schematic",
+	},
+	{
+		name: "garbage text for pcb",
+		endpoint: "/api/editor/import?kind=pcb",
+		body: "not a kicad board",
+		expected: "File is not a KiCad board",
+	},
+	{
+		name: "empty body for sch",
+		endpoint: "/api/editor/import?kind=sch",
+		body: "",
+		expected: "File is not a KiCad schematic",
+	},
+	{
+		name: "empty body for pcb",
+		endpoint: "/api/editor/import?kind=pcb",
+		body: "",
+		expected: "File is not a KiCad board",
+	},
+];
 
 const REPO_DIR = path.resolve("/fake/repo");
 const COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
@@ -303,8 +408,17 @@ describe("editor-routes", () => {
 	let app;
 	let server;
 	let port;
+	let fixtureDir;
+	let schFixturePath;
+	let pcbFixturePath;
 
 	before(async () => {
+		fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "kicad-test-"));
+		schFixturePath = path.join(fixtureDir, "sample.kicad_sch");
+		pcbFixturePath = path.join(fixtureDir, "sample.kicad_pcb");
+		fs.writeFileSync(schFixturePath, SAMPLE_SCH, "utf8");
+		fs.writeFileSync(pcbFixturePath, SAMPLE_PCB, "utf8");
+
 		app = createApp();
 		app.locals.allowLocalRepos = true;
 		const started = await bootServer(app);
@@ -313,6 +427,9 @@ describe("editor-routes", () => {
 	});
 
 	after(async () => {
+		if (fixtureDir) {
+			fs.rmSync(fixtureDir, { recursive: true, force: true });
+		}
 		await shutdownServer(server);
 	});
 
@@ -363,6 +480,50 @@ describe("editor-routes", () => {
 			const board = makeClearanceBoard(ir.nets[0].id, ir.nets[1].id);
 			const res = await postJson(port, "/api/editor/export", { ir, board });
 			assertExportTracksAndWarnings(res, board.tracks);
+		});
+	});
+
+	describe("POST /api/editor/import", () => {
+		for (const tc of IMPORT_INVALID_CASES) {
+			test(`rejects ${tc.name} with 400`, async () => {
+				const res = await postText(port, tc.endpoint, tc.body);
+				assert.strictEqual(res.status, 400);
+				assert.strictEqual(res.json.error, tc.expected);
+			});
+		}
+
+		test("sch happy path returns 200 and ir.parts is an array", async () => {
+			const schText = fs.readFileSync(schFixturePath, "utf8");
+			const res = await postText(port, "/api/editor/import?kind=sch", schText);
+			assert.strictEqual(res.status, 200);
+			assert.ok(Array.isArray(res.json.ir?.parts));
+			assert.strictEqual(res.json.board, null);
+			assert.ok(Array.isArray(res.json.warnings));
+		});
+
+		test("pcb happy path returns 200 and board is an object", async () => {
+			const pcbText = fs.readFileSync(pcbFixturePath, "utf8");
+			const res = await postText(port, "/api/editor/import?kind=pcb", pcbText);
+			assert.strictEqual(res.status, 200);
+			assert.ok(typeof res.json.board === "object" && res.json.board !== null);
+			assert.ok(Array.isArray(res.json.warnings));
+		});
+
+		test("accepts valid fixture padded with trailing spaces past 100kb", async () => {
+			const schText = fs.readFileSync(schFixturePath, "utf8");
+			const padded = schText + " ".repeat(120 * 1024);
+			assert.ok(padded.length > 100 * 1024);
+			const res = await postText(port, "/api/editor/import?kind=sch", padded);
+			assert.strictEqual(res.status, 200);
+			assert.ok(Array.isArray(res.json.ir?.parts));
+		});
+
+		test("returns 422 with errors when file content cannot be imported", async () => {
+			const unclosed = "(kicad_sch (unclosed";
+			const res = await postText(port, "/api/editor/import?kind=sch", unclosed);
+			assert.strictEqual(res.status, 422);
+			assert.strictEqual(res.json.error, "Could not import file");
+			assert.ok(Array.isArray(res.json.errors));
 		});
 	});
 
