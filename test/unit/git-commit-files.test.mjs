@@ -56,9 +56,8 @@ async function postCommit(baseUrl, body) {
 }
 
 function cleanDir(dir) {
-	if (dir && fs.existsSync(dir)) {
-		fs.rmSync(dir, { recursive: true, force: true });
-	}
+	if (!dir) return;
+	fs.rmSync(dir, { recursive: true, force: true });
 }
 
 function commitBody(repoPath, overrides = {}) {
@@ -97,46 +96,44 @@ const ERROR_RESPONSE_CASES = [
 	},
 ];
 
-describe("POST /commit-files", () => {
-	let disabledServer;
-	let enabledServer;
-	let repoDir;
-
-	before(async () => {
-		repoDir = initTempRepo();
-		[disabledServer, enabledServer] = await Promise.all([
-			createTestServer(false),
-			createTestServer(true),
-		]);
+function addValidationTest(getContext, tc) {
+	test(`returns 400 on ${tc.name}`, async () => {
+		const { enabledServer, repoDir } = getContext();
+		const res = await postCommit(
+			enabledServer.url,
+			commitBody(repoDir, tc.payload),
+		);
+		assert.equal(res.status, 400);
+		assert.equal(typeof res.json?.error, "string");
+		assert.equal(res.json.error.includes(repoDir), false);
 	});
+}
 
-	after(async () => {
-		await Promise.all([disabledServer?.close(), enabledServer?.close()]);
-		cleanDir(repoDir);
-	});
-
+function registerValidationTests(getContext) {
 	for (const tc of VALIDATION_CASES) {
-		test(`returns 400 on ${tc.name}`, async () => {
-			const res = await postCommit(
-				enabledServer.url,
-				commitBody(repoDir, tc.payload),
-			);
-			assert.equal(res.status, 400);
-			assert.equal(typeof res.json?.error, "string");
-			assert.equal(res.json.error.includes(repoDir), false);
-		});
+		addValidationTest(getContext, tc);
 	}
+}
 
+function addErrorTest(getContext, tc) {
+	test(tc.name, async () => {
+		const { disabledServer, enabledServer, repoDir } = getContext();
+		const server = tc.useDisabledServer ? disabledServer : enabledServer;
+		const res = await postCommit(server.url, commitBody(repoDir, tc.payload));
+		assert.equal(res.status, tc.expectedStatus);
+		assert.deepEqual(res.json, { error: tc.expectedError });
+	});
+}
+
+function registerErrorTests(getContext) {
 	for (const tc of ERROR_RESPONSE_CASES) {
-		test(tc.name, async () => {
-			const server = tc.useDisabledServer ? disabledServer : enabledServer;
-			const res = await postCommit(server.url, commitBody(repoDir, tc.payload));
-			assert.equal(res.status, tc.expectedStatus);
-			assert.deepEqual(res.json, { error: tc.expectedError });
-		});
+		addErrorTest(getContext, tc);
 	}
+}
 
+function registerSuccessTest(getContext) {
 	test("returns 200 with short sha and commits modified file", async () => {
+		const { enabledServer, repoDir } = getContext();
 		const schFile = path.join(repoDir, "board.kicad_sch");
 		fs.writeFileSync(schFile, "(kicad_sch (version 20230121) (mod 1))", "utf8");
 		const res = await postCommit(
@@ -151,4 +148,28 @@ describe("POST /commit-files", () => {
 			.trim();
 		assert.equal(logMsg, "update schematic");
 	});
+}
+
+describe("POST /commit-files", () => {
+	const ctx = {};
+
+	before(async () => {
+		ctx.repoDir = initTempRepo();
+		[ctx.disabledServer, ctx.enabledServer] = await Promise.all([
+			createTestServer(false),
+			createTestServer(true),
+		]);
+	});
+
+	after(async () => {
+		await Promise.all([
+			ctx.disabledServer?.close(),
+			ctx.enabledServer?.close(),
+		]);
+		cleanDir(ctx.repoDir);
+	});
+
+	registerValidationTests(() => ctx);
+	registerErrorTests(() => ctx);
+	registerSuccessTest(() => ctx);
 });
