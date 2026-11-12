@@ -21,12 +21,16 @@ const makePart = (overrides = {}) => ({ ...BASE_PART, ...overrides });
 const makeNet = (overrides = {}) => ({ ...BASE_NET, ...overrides });
 const makeDesign = (parts = [], nets = []) => ({ parts, nets });
 
-function diffParts(before = [], after = []) {
-	return diffIr(makeDesign(before), makeDesign(after));
-}
+const diffParts = (before = [], after = []) =>
+	diffIr(makeDesign(before), makeDesign(after));
 
-function diffNets(before = [], after = []) {
-	return diffIr(makeDesign([], before), makeDesign([], after));
+const diffNets = (before = [], after = []) =>
+	diffIr(makeDesign([], before), makeDesign([], after));
+
+function runSingleItemCase(group, bucket, before, after, spec) {
+	const diffFn = group === "parts" ? diffParts : diffNets;
+	const result = diffFn(before, after);
+	assertSingleItem(result, group, bucket, spec);
 }
 
 function assertSingleItem(result, group, bucket, spec) {
@@ -57,8 +61,10 @@ function assertSingleNetChange(result, checks) {
 	assert.equal(result.nets.changed.length, 1);
 	const changed = result.nets.changed[0];
 	if (checks.pinKey) {
-		assert.equal(changed[checks.pinKey].length, 1);
-		assert.deepEqual(changed[checks.pinKey][0], checks.pin);
+		const pinList = changed[checks.pinKey];
+		assert.deepEqual(pinList[0], checks.pin);
+		const pinCount = pinList.length;
+		assert.equal(pinCount, 1);
 	}
 	if (checks.name !== undefined) {
 		assert.equal(changed.name, checks.name);
@@ -70,8 +76,9 @@ function assertSingleNetChange(result, checks) {
 }
 
 function assertEmptyDiff(result) {
-	assert.equal(result.isEmpty, true);
 	assert.equal(result.summary, "No changes");
+	const emptyStatus = result.isEmpty;
+	assert.equal(emptyStatus, true);
 }
 
 function assertNoDiffCounts(result) {
@@ -82,24 +89,65 @@ function assertNoDiffCounts(result) {
 	}
 }
 
-describe("irDiff - parts", () => {
-	test("detects added part", () => {
-		const result = diffParts([], [makePart({ id: "part_added", ref: "C1" })]);
-		assertSingleItem(result, "parts", "added", {
-			key: "ref",
-			value: "C1",
-			summary: "1 part added",
-		});
-	});
+function makeMultiChangeBefore() {
+	return {
+		parts: [
+			makePart({ id: "p_rm", ref: "R9" }),
+			makePart({ id: "p_mod", ref: "R1", value: "10k" }),
+		],
+		nets: [
+			makeNet({
+				id: "n_mod",
+				name: "SIG",
+				pins: [
+					{ partId: "p1", pin: "1" },
+					{ partId: "p2", pin: "2" },
+				],
+			}),
+		],
+	};
+}
 
-	test("detects removed part", () => {
-		const result = diffParts([makePart({ id: "part_rm", ref: "R1" })], []);
-		assertSingleItem(result, "parts", "removed", {
-			key: "ref",
-			value: "R1",
-			summary: "1 part removed",
+function makeMultiChangeAfter() {
+	return {
+		parts: [
+			makePart({ id: "p_mod", ref: "R1", value: "20k" }),
+			makePart({ id: "p_add1", ref: "C1" }),
+			makePart({ id: "p_add2", ref: "C2" }),
+		],
+		nets: [
+			makeNet({
+				id: "n_mod",
+				name: "SIG",
+				pins: [{ partId: "p1", pin: "1" }],
+			}),
+		],
+	};
+}
+
+describe("irDiff - parts", () => {
+	const PART_ITEM_CASES = [
+		{
+			title: "detects added part",
+			bucket: "added",
+			before: [],
+			after: [makePart({ id: "part_added", ref: "C1" })],
+			spec: { key: "ref", value: "C1", summary: "1 part added" },
+		},
+		{
+			title: "detects removed part",
+			bucket: "removed",
+			before: [makePart({ id: "part_rm", ref: "R1" })],
+			after: [],
+			spec: { key: "ref", value: "R1", summary: "1 part removed" },
+		},
+	];
+
+	for (const tc of PART_ITEM_CASES) {
+		test(tc.title, () => {
+			runSingleItemCase("parts", tc.bucket, tc.before, tc.after, tc.spec);
 		});
-	});
+	}
 
 	test("detects changed part metadata", () => {
 		const result = diffParts(
@@ -143,10 +191,23 @@ describe("irDiff - parts", () => {
 			after: { tolerance: "1%" },
 			summary: "1 prop changed",
 		},
+		{
+			title: "detects deep placement changes",
+			field: "placement",
+			before: { x: 10, y: 20, rot: 0, side: "F" },
+			after: { x: 10, y: 20, rot: 90, side: "F" },
+		},
+		{
+			title: "detects deep props changes",
+			field: "props",
+			before: { sub: { key: "v1" } },
+			after: { sub: { key: "v2" } },
+		},
 	];
 
 	for (const tc of FIELD_CASES) {
-		test(`detects compared field change: ${tc.field}`, () => {
+		const title = tc.title ?? `detects compared field change: ${tc.field}`;
+		test(title, () => {
 			const result = diffParts(
 				[makePart({ [tc.field]: tc.before })],
 				[makePart({ [tc.field]: tc.after })],
@@ -154,89 +215,70 @@ describe("irDiff - parts", () => {
 			assertPartFieldChange(result, tc);
 		});
 	}
-
-	test("detects deep placement changes", () => {
-		const result = diffParts(
-			[makePart({ placement: { x: 10, y: 20, rot: 0, side: "F" } })],
-			[makePart({ placement: { x: 10, y: 20, rot: 90, side: "F" } })],
-		);
-		assertPartFieldChange(result, {
-			field: "placement",
-			before: { x: 10, y: 20, rot: 0, side: "F" },
-			after: { x: 10, y: 20, rot: 90, side: "F" },
-		});
-	});
-
-	test("detects deep props changes", () => {
-		const result = diffParts(
-			[makePart({ props: { sub: { key: "v1" } } })],
-			[makePart({ props: { sub: { key: "v2" } } })],
-		);
-		assertPartFieldChange(result, {
-			field: "props",
-			before: { sub: { key: "v1" } },
-			after: { sub: { key: "v2" } },
-		});
-	});
 });
 
 describe("irDiff - nets", () => {
-	test("detects added net", () => {
-		const result = diffNets([], [makeNet({ id: "net_vcc", name: "VCC" })]);
-		assertSingleItem(result, "nets", "added", {
-			key: "name",
-			value: "VCC",
-			summary: "1 net added",
-		});
-	});
+	const NET_ITEM_CASES = [
+		{
+			title: "detects added net",
+			bucket: "added",
+			before: [],
+			after: [makeNet({ id: "net_vcc", name: "VCC" })],
+			spec: { key: "name", value: "VCC", summary: "1 net added" },
+		},
+		{
+			title: "detects removed net",
+			bucket: "removed",
+			before: [makeNet({ id: "net_vcc", name: "VCC" })],
+			after: [],
+			spec: { key: "name", value: "VCC", summary: "1 net removed" },
+		},
+	];
 
-	test("detects removed net", () => {
-		const result = diffNets([makeNet({ id: "net_vcc", name: "VCC" })], []);
-		assertSingleItem(result, "nets", "removed", {
-			key: "name",
-			value: "VCC",
-			summary: "1 net removed",
+	for (const tc of NET_ITEM_CASES) {
+		test(tc.title, () => {
+			runSingleItemCase("nets", tc.bucket, tc.before, tc.after, tc.spec);
 		});
-	});
+	}
 
-	test("detects added pin on net", () => {
-		const result = diffNets(
-			[makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
-			[
-				makeNet({
-					pins: [
-						{ partId: "part_1", pin: "1" },
-						{ partId: "part_2", pin: "1" },
-					],
-				}),
-			],
-		);
-		assertSingleNetChange(result, {
-			pinKey: "addedPins",
-			pin: { partId: "part_2", pin: "1" },
-			renamedFrom: undefined,
-			summary: "1 connection added",
-		});
-	});
+	const PINS_SINGLE = [{ partId: "part_1", pin: "1" }];
+	const PINS_PAIR = [
+		{ partId: "part_1", pin: "1" },
+		{ partId: "part_2", pin: "1" },
+	];
+	const PIN_CHANGE_CASES = [
+		{
+			title: "detects added pin on net",
+			before: PINS_SINGLE,
+			after: PINS_PAIR,
+			checks: {
+				pinKey: "addedPins",
+				pin: { partId: "part_2", pin: "1" },
+				renamedFrom: undefined,
+				summary: "1 connection added",
+			},
+		},
+		{
+			title: "detects removed pin on net",
+			before: PINS_PAIR,
+			after: PINS_SINGLE,
+			checks: {
+				pinKey: "removedPins",
+				pin: { partId: "part_2", pin: "1" },
+				summary: "1 connection removed",
+			},
+		},
+	];
 
-	test("detects removed pin on net", () => {
-		const result = diffNets(
-			[
-				makeNet({
-					pins: [
-						{ partId: "part_1", pin: "1" },
-						{ partId: "part_2", pin: "1" },
-					],
-				}),
-			],
-			[makeNet({ pins: [{ partId: "part_1", pin: "1" }] })],
-		);
-		assertSingleNetChange(result, {
-			pinKey: "removedPins",
-			pin: { partId: "part_2", pin: "1" },
-			summary: "1 connection removed",
+	for (const tc of PIN_CHANGE_CASES) {
+		test(tc.title, () => {
+			const result = diffNets(
+				[makeNet({ pins: tc.before })],
+				[makeNet({ pins: tc.after })],
+			);
+			assertSingleNetChange(result, tc.checks);
 		});
-	});
+	}
 
 	test("detects net rename", () => {
 		const result = diffNets(
@@ -260,14 +302,15 @@ describe("irDiff - edge cases and invariants", () => {
 		assertNoDiffCounts(diffIr(design, design));
 	});
 
+	const EMPTY_INPUT_PAIRS = [
+		[null, null],
+		[undefined, undefined],
+		["invalid", 42],
+		[null, { parts: [], nets: [] }],
+	];
+
 	test("null and non-object inputs treated as empty design", () => {
-		const cases = [
-			[null, null],
-			[undefined, undefined],
-			["invalid", 42],
-			[null, { parts: [], nets: [] }],
-		];
-		for (const [before, after] of cases) {
+		for (const [before, after] of EMPTY_INPUT_PAIRS) {
 			assertEmptyDiff(diffIr(before, after));
 		}
 	});
@@ -321,38 +364,7 @@ describe("irDiff - edge cases and invariants", () => {
 	});
 
 	test("summarizeIrDiff formats complex multi-change sentence", () => {
-		const before = {
-			parts: [
-				makePart({ id: "p_rm", ref: "R9" }),
-				makePart({ id: "p_mod", ref: "R1", value: "10k" }),
-			],
-			nets: [
-				makeNet({
-					id: "n_mod",
-					name: "SIG",
-					pins: [
-						{ partId: "p1", pin: "1" },
-						{ partId: "p2", pin: "2" },
-					],
-				}),
-			],
-		};
-		const after = {
-			parts: [
-				makePart({ id: "p_mod", ref: "R1", value: "20k" }),
-				makePart({ id: "p_add1", ref: "C1" }),
-				makePart({ id: "p_add2", ref: "C2" }),
-			],
-			nets: [
-				makeNet({
-					id: "n_mod",
-					name: "SIG",
-					pins: [{ partId: "p1", pin: "1" }],
-				}),
-			],
-		};
-		const result = diffIr(before, after);
-
+		const result = diffIr(makeMultiChangeBefore(), makeMultiChangeAfter());
 		assert.equal(
 			result.summary,
 			"2 parts added, 1 part removed, 1 value changed, 1 connection removed",
