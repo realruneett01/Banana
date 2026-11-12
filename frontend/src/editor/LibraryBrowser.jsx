@@ -1,5 +1,6 @@
 import { Alert, AutoComplete, Button, Input, Modal, Spin, Tabs } from "antd";
 import { useCallback, useEffect, useState } from "react";
+import LibraryTree from "./LibraryTree.jsx";
 
 const TAB_ITEMS = [
 	{ key: "symbols", label: "Symbols" },
@@ -544,6 +545,7 @@ function useBrowserController({ api, open, onClose, onPlace }) {
 		setSelectedItem(items.length > 0 ? items[0] : null);
 	}, [items]);
 	return {
+		api,
 		searchTerm,
 		setSearchTerm,
 		activeTab,
@@ -581,31 +583,53 @@ function BrowserFooter({ onClose, onPlace, hasSelection }) {
 	);
 }
 
+function BrowserLeftPane({ ctrl }) {
+	if (ctrl.searchTerm.trim() === "") {
+		return (
+			<LibraryTree
+				api={ctrl.api}
+				kind={ctrl.activeTab}
+				selectedId={ctrl.selectedItem?.libId}
+				onSelect={ctrl.setSelectedItem}
+			/>
+		);
+	}
+	return (
+		<ResultList
+			items={ctrl.items}
+			selectedId={ctrl.selectedItem?.libId}
+			onSelect={ctrl.setSelectedItem}
+			loading={ctrl.loading}
+		/>
+	);
+}
+
+function BrowserRightPane({ ctrl }) {
+	return (
+		<div style={RIGHT_PANE_STYLE}>
+			<PreviewSection
+				activeTab={ctrl.activeTab}
+				item={ctrl.selectedItem}
+				detail={ctrl.detail}
+				loading={ctrl.detailLoading}
+			/>
+			{ctrl.activeTab === "symbols" && ctrl.selectedItem && (
+				<FootprintPickerField
+					value={ctrl.selectedFootprint}
+					onChange={ctrl.setSelectedFootprint}
+					onSearch={ctrl.handleFpSearch}
+					options={ctrl.fpOptions}
+				/>
+			)}
+		</div>
+	);
+}
+
 function BrowserPanes({ ctrl }) {
 	return (
 		<div style={TWO_PANE_STYLE}>
-			<ResultList
-				items={ctrl.items}
-				selectedId={ctrl.selectedItem?.libId}
-				onSelect={ctrl.setSelectedItem}
-				loading={ctrl.loading}
-			/>
-			<div style={RIGHT_PANE_STYLE}>
-				<PreviewSection
-					activeTab={ctrl.activeTab}
-					item={ctrl.selectedItem}
-					detail={ctrl.detail}
-					loading={ctrl.detailLoading}
-				/>
-				{ctrl.activeTab === "symbols" && ctrl.selectedItem && (
-					<FootprintPickerField
-						value={ctrl.selectedFootprint}
-						onChange={ctrl.setSelectedFootprint}
-						onSearch={ctrl.handleFpSearch}
-						options={ctrl.fpOptions}
-					/>
-				)}
-			</div>
+			<BrowserLeftPane ctrl={ctrl} />
+			<BrowserRightPane ctrl={ctrl} />
 		</div>
 	);
 }
