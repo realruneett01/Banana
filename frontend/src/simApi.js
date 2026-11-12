@@ -366,6 +366,32 @@ function buildLibrarySearchQuery(q, limit) {
 	return qs ? `?${qs}` : "";
 }
 
+const VALID_LIBRARY_KINDS = new Set(["symbols", "footprints"]);
+
+function isInvalidLibraryKind(kind) {
+	return !VALID_LIBRARY_KINDS.has(kind);
+}
+
+function invalidKindResult() {
+	return Promise.resolve({
+		ok: false,
+		status: 400,
+		data: { error: "Invalid kind" },
+	});
+}
+
+function buildLibraryItemsQuery(limit, offset) {
+	const params = new URLSearchParams();
+	if (limit !== undefined && limit !== null && limit !== "") {
+		params.set("limit", String(limit));
+	}
+	if (offset !== undefined && offset !== null && offset !== "") {
+		params.set("offset", String(offset));
+	}
+	const qs = params.toString();
+	return qs ? `?${qs}` : "";
+}
+
 function buildLibraryMethods(send, h) {
 	return {
 		libraryStatus: ({ signal } = {}) =>
@@ -394,6 +420,27 @@ function buildLibraryMethods(send, h) {
 				{ method: "GET", headers: h },
 				signal,
 			),
+		listLibraries: (kind, { signal } = {}) => {
+			if (isInvalidLibraryKind(kind)) {
+				return invalidKindResult();
+			}
+			return send(
+				`/api/library/${kind}/libraries`,
+				{ method: "GET", headers: h },
+				signal,
+			);
+		},
+		listLibraryItems: (kind, lib, { limit, offset, signal } = {}) => {
+			if (isInvalidLibraryKind(kind)) {
+				return invalidKindResult();
+			}
+			const qs = buildLibraryItemsQuery(limit, offset);
+			return send(
+				`/api/library/${kind}/libraries/${encodeURIComponent(lib)}${qs}`,
+				{ method: "GET", headers: h },
+				signal,
+			);
+		},
 	};
 }
 
