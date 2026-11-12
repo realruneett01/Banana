@@ -385,13 +385,12 @@ function resolveUniqueRef(ref, refMap, ctx) {
 		n++;
 		candidate = `${ref}_${n}`;
 	}
-	ctx.warnings.push(`renamed unannotated reference ${ref} to ${candidate}`);
+	ctx.warnings.push(`renamed duplicate reference ${ref} to ${candidate}`);
 	return candidate;
 }
 
 function resolvePartRef(ref, refMap, ctx) {
 	if (!refMap.has(ref)) return ref;
-	if (isAnnotatedRef(ref)) return ref;
 	return resolveUniqueRef(ref, refMap, ctx);
 }
 

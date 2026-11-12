@@ -72,11 +72,6 @@ describe("kicadSchToIr garbage and invalid input", () => {
 		{ name: "whitespace only", input: "   \n\t  " },
 		{ name: "unbalanced sexpr", input: "(kicad_sch (version 20250114)" },
 		{ name: "wrong root symbol", input: "(not_kicad_sch (version 1))" },
-		{
-			name: "duplicate reference in parts",
-			input:
-				'(kicad_sch (version 20250114) (symbol (lib_id "Device:R") (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603")) (symbol (lib_id "Device:R") (property "Reference" "R1") (property "Value" "20k") (property "Footprint" "R_0603")))',
-		},
 	];
 
 	for (const { name, input } of GARBAGE_CASES) {
@@ -459,6 +454,32 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 		)
 	)`;
 
+	const DUPLICATE_ANNOTATED_SCH = `(kicad_sch
+		(version 20250114)
+		(lib_symbols
+			(symbol "Device:R"
+				(pin passive line (at -5 0 0) (number "1"))
+				(pin passive line (at 5 0 0) (number "2"))
+			)
+		)
+		(symbol
+			(lib_id "Device:R")
+			(at 30 30 0)
+			(unit 1)
+			(property "Reference" "R1")
+			(property "Value" "10k")
+			(property "Footprint" "R_0603")
+		)
+		(symbol
+			(lib_id "Device:R")
+			(at 60 30 0)
+			(unit 1)
+			(property "Reference" "R1")
+			(property "Value" "20k")
+			(property "Footprint" "R_0603")
+		)
+	)`;
+
 	const TEST_CASES = [
 		{
 			name: "multi-unit symbol instances merge into one part with unit-specific and common pins",
@@ -480,7 +501,16 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 			expectedParts: ["R?", "R?_2"],
 			expectedNets: [],
 			expectedWarningCount: 1,
-			expectedWarningSubstring: "renamed unannotated reference",
+			expectedWarningSubstring: "renamed duplicate reference",
+		},
+		{
+			name: "duplicate annotated references receive unique suffixes and push warning",
+			sch: DUPLICATE_ANNOTATED_SCH,
+			expectedOk: true,
+			expectedParts: ["R1", "R1_2"],
+			expectedNets: [],
+			expectedWarningCount: 1,
+			expectedWarningSubstring: "renamed duplicate reference",
 		},
 	];
 
