@@ -108,8 +108,22 @@ function applyAgentCatch(err, state) {
 	state.setError(err?.message || "Agent execution failed");
 }
 
+function hasAgentMethod(api) {
+	return (
+		typeof api?.runAgentStream === "function" ||
+		typeof api?.runAgent === "function"
+	);
+}
+
+function invokeAgent(api, payload, signal, onStep) {
+	if (typeof api.runAgentStream === "function") {
+		return api.runAgentStream(payload, { signal, onStep });
+	}
+	return api.runAgent(payload, { signal });
+}
+
 async function runAgentRequest(api, payload, signal, state) {
-	if (!api || typeof api.runAgent !== "function") {
+	if (!hasAgentMethod(api)) {
 		state.setStatus("error");
 		state.setError("API client is required");
 		return;
@@ -118,7 +132,8 @@ async function runAgentRequest(api, payload, signal, state) {
 	state.setError(null);
 	state.setPendingApproval(null);
 	try {
-		const res = await api.runAgent(payload, { signal });
+		const onStep = (step) => state.setEvents((prev) => [...prev, step]);
+		const res = await invokeAgent(api, payload, signal, onStep);
 		if (signal.aborted) return;
 		if (res.ok) {
 			applyAgentSuccess(res.data, state);
@@ -156,16 +171,25 @@ function useAgentState() {
 	};
 }
 
-function useAgentActions(api, state) {
+function attachProvider(payload, provider) {
+	const body = { ...payload };
+	if (typeof provider === "string" && provider.trim()) {
+		body.provider = provider.trim();
+	}
+	return body;
+}
+
+function useAgentActions(api, state, provider) {
 	const { lastMessageRef, abortRef, setStatus, setMessages } = state;
 	const start = useCallback(
 		(payload) => {
 			abortRef.current?.abort();
 			const controller = new AbortController();
 			abortRef.current = controller;
-			runAgentRequest(api, payload, controller.signal, state);
+			const body = attachProvider(payload, provider);
+			runAgentRequest(api, body, controller.signal, state);
 		},
-		[api, state, abortRef],
+		[api, state, abortRef, provider],
 	);
 	const send = useCallback(
 		(text) => {
@@ -200,11 +224,11 @@ function clearAgentState(state) {
 	state.setEvents([]);
 }
 
-export function useDesignAgent({ api } = {}) {
+export function useDesignAgent({ api, provider } = {}) {
 	const state = useAgentState();
 	const ir = useMemo(() => deriveIr(state.events), [state.events]);
 	const issues = useMemo(() => deriveIssues(state.events), [state.events]);
-	const actions = useAgentActions(api, state);
+	const actions = useAgentActions(api, state, provider);
 	const reset = useCallback(() => clearAgentState(state), [state]);
 
 	useEffect(() => {

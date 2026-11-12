@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createSimApi } from "../../frontend/src/simApi.js";
+import { createSimApi, parseSseChunk } from "../../frontend/src/simApi.js";
 
 function createFakeFetch(handler) {
 	const calls = [];
@@ -407,5 +407,214 @@ describe("createSimApi configuration and options", () => {
 		);
 		const res = await api.getKinds();
 		assertFailure(res, { status: 500, error: "Internal crash" });
+	});
+});
+
+function mockStreamResponse(status, chunks, statusText = "OK") {
+	const encoder = new TextEncoder();
+	const stream = new ReadableStream({
+		start(controller) {
+			for (const chunk of chunks) {
+				controller.enqueue(
+					typeof chunk === "string" ? encoder.encode(chunk) : chunk,
+				);
+			}
+			controller.close();
+		},
+	});
+	return {
+		ok: status >= 200 && status < 300,
+		status,
+		statusText,
+		body: stream,
+		text: async () => chunks.join(""),
+		json: async () => {
+			throw new SyntaxError("Not JSON");
+		},
+	};
+}
+
+const PARSE_SSE_CASES = [
+	{
+		name: "single frame",
+		input: 'event: step\ndata: {"action":"inspect"}\n\n',
+		expected: {
+			frames: [{ event: "step", data: { action: "inspect" } }],
+			rest: "",
+		},
+	},
+	{
+		name: "two frames in one chunk",
+		input: 'event: step\ndata: {"n":1}\n\nevent: step\ndata: {"n":2}\n\n',
+		expected: {
+			frames: [
+				{ event: "step", data: { n: 1 } },
+				{ event: "step", data: { n: 2 } },
+			],
+			rest: "",
+		},
+	},
+	{
+		name: "CRLF line endings",
+		input: 'event: step\r\ndata: {"ok":true}\r\n\r\n',
+		expected: {
+			frames: [{ event: "step", data: { ok: true } }],
+			rest: "",
+		},
+	},
+	{
+		name: "comment lines ignored",
+		input: ': keepalive\nevent: step\n: comment\ndata: {"n":1}\n\n',
+		expected: {
+			frames: [{ event: "step", data: { n: 1 } }],
+			rest: "",
+		},
+	},
+	{
+		name: "unknown event ignored",
+		input:
+			'event: ping\ndata: {"n":0}\n\nevent: result\ndata: {"text":"done"}\n\n',
+		expected: {
+			frames: [{ event: "result", data: { text: "done" } }],
+			rest: "",
+		},
+	},
+];
+
+describe("parseSseChunk incremental parser", () => {
+	for (const tc of PARSE_SSE_CASES) {
+		test(`parseSseChunk: ${tc.name}`, () => {
+			const res = parseSseChunk(tc.input);
+			assert.deepEqual(res, tc.expected);
+		});
+	}
+
+	test("parseSseChunk: frame split across chunks", () => {
+		const chunk1 = 'event: step\ndata: {"status":';
+		const res1 = parseSseChunk(chunk1);
+		assert.deepEqual(res1.frames, []);
+		assert.equal(res1.rest, chunk1);
+
+		const chunk2 = '"ok"}\n\n';
+		const res2 = parseSseChunk(res1.rest + chunk2);
+		assert.deepEqual(res2.frames, [{ event: "step", data: { status: "ok" } }]);
+		assert.equal(res2.rest, "");
+	});
+});
+
+describe("runAgentStream streaming client", () => {
+	test("happy path calls onStep in order and resolves with result data", async () => {
+		const chunks = [
+			'event: step\ndata: {"seq":1}\n\n',
+			'event: step\ndata: {"seq":2}\n\n',
+			'event: result\ndata: {"text":"finished","events":[{"seq":1},{"seq":2}]}\n\n',
+		];
+		const { api } = createClient(async () => mockStreamResponse(200, chunks));
+		const steps = [];
+		const res = await api.runAgentStream(
+			{ message: "stream test" },
+			{ onStep: (ev) => steps.push(ev) },
+		);
+		assert.equal(res.ok, true);
+		assert.deepEqual(steps, [{ seq: 1 }, { seq: 2 }]);
+		assert.equal(res.data.text, "finished");
+	});
+
+	test("handles error frame", async () => {
+		const chunks = [
+			'event: step\ndata: {"seq":1}\n\n',
+			'event: error\ndata: {"error":"Tool execution crashed"}\n\n',
+		];
+		const { api } = createClient(async () => mockStreamResponse(200, chunks));
+		const res = await api.runAgentStream({ message: "error test" });
+		assert.equal(res.ok, false);
+		assert.equal(res.error, "Tool execution crashed");
+	});
+
+	test("handles non-200 JSON error", async () => {
+		const { api } = createClient(async () =>
+			mockJsonResponse(
+				400,
+				{ error: "Prompt validation failed" },
+				"Bad Request",
+			),
+		);
+		const res = await api.runAgentStream({ message: "" });
+		assert.equal(res.ok, false);
+		assert.equal(res.status, 400);
+		assert.equal(res.error, "Prompt validation failed");
+	});
+
+	test("handles malformed JSON in frame", async () => {
+		const chunks = ["event: step\ndata: {not-valid-json\n\n"];
+		const { api } = createClient(async () => mockStreamResponse(200, chunks));
+		const res = await api.runAgentStream({ message: "bad json" });
+		assert.equal(res.ok, false);
+		assert.ok(typeof res.error === "string" && res.error.length > 0);
+	});
+
+	test("handles stream ends early without result frame", async () => {
+		const chunks = ['event: step\ndata: {"seq":1}\n\n'];
+		const { api } = createClient(async () => mockStreamResponse(200, chunks));
+		const res = await api.runAgentStream({ message: "early end" });
+		assert.equal(res.ok, false);
+		assert.ok(typeof res.error === "string" && res.error.length > 0);
+	});
+
+	test("falls back to runAgent on 404", async () => {
+		const { api, fakeFetch } = createClient(async (url) => {
+			if (url.endsWith("/stream")) {
+				return mockJsonResponse(404, { error: "Not Found" }, "Not Found");
+			}
+			return mockJsonResponse(200, { text: "fallback success" });
+		});
+		const res = await api.runAgentStream({ message: "fallback test" });
+		assert.equal(res.ok, true);
+		assert.equal(res.data.text, "fallback success");
+		assert.equal(fakeFetch.calls.length, 2);
+		assert.ok(fakeFetch.calls[0].url.endsWith("/api/agent/run/stream"));
+		assert.ok(fakeFetch.calls[1].url.endsWith("/api/agent/run"));
+	});
+
+	test("falls back to runAgent on 405", async () => {
+		const { api, fakeFetch } = createClient(async (url) => {
+			if (url.endsWith("/stream")) {
+				return mockJsonResponse(
+					405,
+					{ error: "Method Not Allowed" },
+					"Method Not Allowed",
+				);
+			}
+			return mockJsonResponse(200, { text: "fallback from 405" });
+		});
+		const res = await api.runAgentStream({ message: "fallback 405 test" });
+		assert.equal(res.ok, true);
+		assert.equal(res.data.text, "fallback from 405");
+		assert.equal(fakeFetch.calls.length, 2);
+	});
+
+	test("passes provider in request body for runAgent and runAgentStream", async () => {
+		const { api, fakeFetch } = createClient(async () =>
+			mockStreamResponse(200, ['event: result\ndata: {"text":"ok"}\n\n']),
+		);
+		await api.runAgent({ message: "p1", provider: "anthropic" });
+		assert.equal(JSON.parse(fakeFetch.calls[0].body).provider, "anthropic");
+
+		await api.runAgentStream({ message: "p2", provider: "google" });
+		assert.equal(JSON.parse(fakeFetch.calls[1].body).provider, "google");
+	});
+
+	test("handles abort signal without throwing", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const { api } = createClient(async () =>
+			mockStreamResponse(200, ["event: result\ndata: {}\n\n"]),
+		);
+		const res = await api.runAgentStream(
+			{ message: "aborted" },
+			{ signal: controller.signal },
+		);
+		assert.equal(res.ok, false);
+		assert.equal(res.error, "aborted");
 	});
 });
