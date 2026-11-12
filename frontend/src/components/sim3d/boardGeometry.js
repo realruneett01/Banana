@@ -29,34 +29,216 @@ export function boardSize(ir) {
 	return { width, height, w: width, h: height, boardW: width, boardH: height };
 }
 
-function parsePoint(p) {
-	if (Array.isArray(p)) return [p[0] ?? 0, p[1] ?? 0, 0];
-	return [p?.x ?? 0, p?.y ?? 0, 0];
+export const BOARD_THICKNESS = 1.6;
+
+function isBackLayer(layer) {
+	return typeof layer === "string" && layer.toLowerCase().startsWith("b");
 }
 
-function trackToSegment(t) {
-	const netId = t?.netId ?? "";
-	const widthMm = t?.widthMm ?? 0.25;
+function layerZ(layer) {
+	return isBackLayer(layer) ? -BOARD_THICKNESS : 0;
+}
+
+function toFiniteCoord(val) {
+	if (typeof val !== "number") return null;
+	return Number.isFinite(val) ? val : null;
+}
+
+function parsePointWithZ(p, z) {
+	const rawX = Array.isArray(p) ? p[0] : p?.x;
+	const rawY = Array.isArray(p) ? p[1] : p?.y;
+	const x = toFiniteCoord(rawX);
+	const y = toFiniteCoord(rawY);
+	if (x === null || y === null) return null;
+	return [x, y, z];
+}
+
+function extractPointsList(points, z) {
+	const pts = [];
+	for (const p of points) {
+		const pt = parsePointWithZ(p, z);
+		if (!pt) return null;
+		pts.push(pt);
+	}
+	return pts;
+}
+
+function extractTrackPoints(t, z) {
 	if (Array.isArray(t?.points) && t.points.length >= 2) {
-		return { netId, points: t.points.map(parsePoint), widthMm };
+		return extractPointsList(t.points, z);
 	}
 	if (t?.start && t?.end) {
-		return {
-			netId,
-			points: [parsePoint(t.start), parsePoint(t.end)],
-			widthMm,
-		};
+		const p1 = parsePointWithZ(t.start, z);
+		const p2 = parsePointWithZ(t.end, z);
+		return p1 && p2 ? [p1, p2] : null;
 	}
 	return null;
 }
 
-function tracksToSegments(tracks) {
-	const segments = [];
-	for (const t of tracks) {
-		const seg = trackToSegment(t);
-		if (seg) segments.push(seg);
+function isValidNetId(id) {
+	if (typeof id === "string") return id.length > 0;
+	return typeof id === "number" && Number.isFinite(id);
+}
+
+function isKnownNet(id, knownNets) {
+	if (!isValidNetId(id)) return false;
+	return knownNets ? knownNets.has(id) : true;
+}
+
+function splitIntoPairs(pts, meta) {
+	const segs = [];
+	for (let i = 0; i < pts.length - 1; i++) {
+		segs.push({
+			netId: meta.netId,
+			points: [pts[i], pts[i + 1]],
+			widthMm: meta.widthMm,
+		});
 	}
-	return segments;
+	return segs;
+}
+
+function parseTrackSegment(t, knownNets) {
+	if (!isKnownNet(t?.netId, knownNets)) return null;
+	const z = layerZ(t?.layer);
+	const points = extractTrackPoints(t, z);
+	if (!points) return null;
+	const rawWidth = t?.widthMm ?? t?.width;
+	const widthMm = toFiniteCoord(rawWidth) ?? 0.25;
+	return { netId: t.netId, points, widthMm };
+}
+
+function viaCoords(v) {
+	if (v?.at) return v.at;
+	if (typeof v?.x === "number" && typeof v?.y === "number") {
+		return [v.x, v.y];
+	}
+	return null;
+}
+
+function parseViaSegment(v, knownNets) {
+	if (!isKnownNet(v?.netId, knownNets)) return null;
+	const at = viaCoords(v);
+	const pTop = parsePointWithZ(at, 0);
+	const pBot = parsePointWithZ(at, -BOARD_THICKNESS);
+	if (!pTop || !pBot) return null;
+	const rawWidth = v?.widthMm ?? v?.sizeMm;
+	const widthMm = toFiniteCoord(rawWidth) ?? 0.25;
+	return { netId: v.netId, points: [pTop, pBot], widthMm };
+}
+
+function dist3d(p1, p2) {
+	const dx = p1[0] - p2[0];
+	const dy = p1[1] - p2[1];
+	const dz = p1[2] - p2[2];
+	return Math.hypot(dx, dy, dz);
+}
+
+function sharePt(p1, p2) {
+	return dist3d(p1, p2) <= 0.01;
+}
+
+function tryAttach(pts, segPts) {
+	const head = pts[0];
+	const tail = pts[pts.length - 1];
+	const [s0, s1] = segPts;
+	if (sharePt(tail, s0)) {
+		pts.push(s1);
+		return true;
+	}
+	if (sharePt(tail, s1)) {
+		pts.push(s0);
+		return true;
+	}
+	if (sharePt(head, s1)) {
+		pts.unshift(s0);
+		return true;
+	}
+	if (sharePt(head, s0)) {
+		pts.unshift(s1);
+		return true;
+	}
+	return false;
+}
+
+function extendPolylineOnce(pts, remaining) {
+	for (let i = 0; i < remaining.length; i++) {
+		if (tryAttach(pts, remaining[i].points)) {
+			const [attached] = remaining.splice(i, 1);
+			return attached;
+		}
+	}
+	return null;
+}
+
+function growPolyline(seed, remaining) {
+	const pts = [...seed.points];
+	let widthMm = seed.widthMm;
+	while (true) {
+		const attached = extendPolylineOnce(pts, remaining);
+		if (!attached) break;
+		widthMm = widthMm || attached.widthMm;
+	}
+	return { points: pts, widthMm };
+}
+
+function assembleNetPolylines(netId, segs) {
+	const remaining = [...segs];
+	const polylines = [];
+	while (remaining.length > 0) {
+		const seed = remaining.shift();
+		const { points, widthMm } = growPolyline(seed, remaining);
+		polylines.push({
+			netId,
+			points,
+			widthMm,
+			width: widthMm,
+			real: true,
+		});
+	}
+	return polylines;
+}
+
+function buildKnownNets(ir) {
+	if (!Array.isArray(ir?.nets) || ir.nets.length === 0) {
+		return null;
+	}
+	const set = new Set();
+	for (const net of ir.nets) {
+		if (isValidNetId(net?.id)) set.add(net.id);
+	}
+	return set;
+}
+
+function addSegsToMap(map, segs) {
+	for (const seg of segs) {
+		if (!map.has(seg.netId)) map.set(seg.netId, []);
+		map.get(seg.netId).push(seg);
+	}
+}
+
+function collectBoardSegments(board, knownNets) {
+	const map = new Map();
+	for (const t of board?.tracks ?? []) {
+		const seg = parseTrackSegment(t, knownNets);
+		if (seg) addSegsToMap(map, splitIntoPairs(seg.points, seg));
+	}
+	for (const v of board?.vias ?? []) {
+		const seg = parseViaSegment(v, knownNets);
+		if (seg) addSegsToMap(map, [seg]);
+	}
+	return map;
+}
+
+function appendSyntheticNets(ir, routedNetIds, results) {
+	const nets = Array.isArray(ir?.nets) ? ir.nets : [];
+	const parts = Array.isArray(ir?.parts) ? ir.parts : [];
+	const partMap = new Map(parts.map((p) => [p.id, p]));
+	for (const net of nets) {
+		if (!routedNetIds.has(net.id)) {
+			const centres = netPartCentres(net, partMap);
+			results.push(...centresToSegments(net.id, centres));
+		}
+	}
 }
 
 function netPartCentres(net, partMap) {
@@ -100,10 +282,19 @@ function ratsnestSegments(ir) {
 
 export function netSegments(ir, board) {
 	const tracks = board?.tracks;
-	if (Array.isArray(tracks) && tracks.length > 0) {
-		return tracksToSegments(tracks);
+	if (!Array.isArray(tracks) || tracks.length === 0) {
+		return ratsnestSegments(ir);
 	}
-	return ratsnestSegments(ir);
+	const knownNets = buildKnownNets(ir);
+	const segsByNet = collectBoardSegments(board, knownNets);
+	const results = [];
+	const routedNets = new Set();
+	for (const [netId, segs] of segsByNet) {
+		routedNets.add(netId);
+		results.push(...assembleNetPolylines(netId, segs));
+	}
+	appendSyntheticNets(ir, routedNets, results);
+	return results;
 }
 
 function computeNetCurrent(net, partCurrents) {
