@@ -17,6 +17,19 @@ function makeFsError(code, message) {
 	return err;
 }
 
+function resolvePath(dirSet, fileMap, p) {
+	const res = path.resolve(p);
+	if (dirSet.has(res) || fileMap.has(res)) return res;
+	throw makeFsError("ENOENT", `realpath '${p}'`);
+}
+
+function statPath(dirSet, fileMap, p) {
+	const res = path.resolve(p);
+	if (dirSet.has(res)) return { isDirectory: () => true };
+	if (fileMap.has(res)) return { isDirectory: () => false };
+	throw makeFsError("ENOENT", `stat '${p}'`);
+}
+
 function createFakeFs({ dirs = [], files = {}, failWrite = false } = {}) {
 	const dirSet = new Set(dirs.map((d) => path.resolve(d)));
 	const fileMap = new Map(
@@ -25,17 +38,8 @@ function createFakeFs({ dirs = [], files = {}, failWrite = false } = {}) {
 	const writes = [];
 	return {
 		writes,
-		async realpath(p) {
-			const res = path.resolve(p);
-			if (dirSet.has(res) || fileMap.has(res)) return res;
-			throw makeFsError("ENOENT", `realpath '${p}'`);
-		},
-		async stat(p) {
-			const res = path.resolve(p);
-			if (dirSet.has(res)) return { isDirectory: () => true };
-			if (fileMap.has(res)) return { isDirectory: () => false };
-			throw makeFsError("ENOENT", `stat '${p}'`);
-		},
+		realpath: async (p) => resolvePath(dirSet, fileMap, p),
+		stat: async (p) => statPath(dirSet, fileMap, p),
 		async mkdir(p) {
 			const res = path.resolve(p);
 			if (dirSet.has(res)) throw makeFsError("EEXIST", `mkdir '${p}'`);
@@ -87,10 +91,51 @@ async function postJson(port, routePath, body) {
 	try {
 		json = JSON.parse(text);
 	} catch (_err) {
-		// Response may not be JSON format
 		json = null;
 	}
 	return { status: res.status, json };
+}
+
+async function createProjectServer({
+	dirs = [VALID_PARENT],
+	files = {},
+	failWrite = false,
+	failGit = false,
+	isLocalAllowed,
+	allowLocal = true,
+} = {}) {
+	const fakeFs = createFakeFs({ dirs, files, failWrite });
+	const fakeGit = createFakeGit({ fail: failGit });
+	const router = createProjectRouter({
+		isLocalAllowed,
+		fsImpl: fakeFs,
+		runGit: fakeGit.runGit,
+	});
+	const srv = await startServer(router, allowLocal);
+	return { srv, fakeFs, fakeGit };
+}
+
+async function runCreateRequest(options) {
+	const { srv, fakeFs, fakeGit } = await createProjectServer(options?.setup);
+	try {
+		const res = await postJson(srv.port, "/api/projects/create", options.body);
+		return { res, fakeFs, fakeGit };
+	} finally {
+		await srv.close();
+	}
+}
+
+function assertErrorResponse(res, status, error) {
+	assert.equal(res.status, status);
+	assert.equal(res.json?.error, error);
+}
+
+function assertSuccessResponse(res, expectedTarget, expectedFiles) {
+	assert.equal(res.status, 201);
+	assert.equal(res.json?.projectRoot, expectedTarget);
+	if (expectedFiles) {
+		assert.deepEqual(res.json?.files, expectedFiles);
+	}
 }
 
 function verifyWrites(writes, target, base) {
@@ -179,43 +224,82 @@ const INVALID_CASES = [
 	},
 ];
 
-describe("project routes", () => {
-	test("returns 403 when local repos are not allowed", async () => {
-		const fakeFs = createFakeFs({ dirs: [VALID_PARENT] });
-		const fakeGit = createFakeGit();
-		const router = createProjectRouter({
+const ROUTE_ERROR_CASES = [
+	{
+		title: "returns 403 when local repos are not allowed",
+		setup: {
+			dirs: [VALID_PARENT],
 			isLocalAllowed: () => false,
-			fsImpl: fakeFs,
-			runGit: fakeGit.runGit,
+			allowLocal: false,
+		},
+		body: { parentDir: VALID_PARENT, name: "demo-proj" },
+		status: 403,
+		error: "Creating projects is only available in the desktop app",
+		checkZeroWrites: true,
+		checkZeroGit: true,
+	},
+	{
+		title: "returns 409 when target project directory already exists",
+		setup: { dirs: [VALID_PARENT, EXISTING_TARGET] },
+		body: { parentDir: VALID_PARENT, name: "existing-project" },
+		status: 409,
+		error: "A folder with that name already exists",
+	},
+	{
+		title: "returns 500 when writeFile fails after mkdir",
+		setup: { dirs: [VALID_PARENT], failWrite: true },
+		body: { parentDir: VALID_PARENT, name: "fail_write_proj" },
+		status: 500,
+		error: "Could not create project",
+		checkZeroGit: true,
+	},
+];
+
+const HAPPY_PATH_CASES = [
+	{
+		title: "writes 3 files with flag wx and runs 3 git commands",
+		name: "my_board",
+		body: { parentDir: VALID_PARENT, name: "my_board" },
+		expectedFiles: [
+			"my_board.kicad_pro",
+			"my_board.kicad_sch",
+			"my_board.kicad_pcb",
+		],
+	},
+	{
+		title: "with boardW 120 and boardH 80",
+		name: "custom_board",
+		body: {
+			parentDir: VALID_PARENT,
+			name: "custom_board",
+			boardW: 120,
+			boardH: 80,
+		},
+	},
+];
+
+describe("project routes", () => {
+	for (const tc of ROUTE_ERROR_CASES) {
+		test(tc.title, async () => {
+			const { res, fakeFs, fakeGit } = await runCreateRequest(tc);
+			assertErrorResponse(res, tc.status, tc.error);
+			if (tc.checkZeroWrites) {
+				assert.equal(fakeFs.writes.length, 0);
+			}
+			if (tc.checkZeroGit) {
+				assert.equal(fakeGit.calls.length, 0);
+			}
 		});
-		const srv = await startServer(router, false);
-		try {
-			const body = { parentDir: VALID_PARENT, name: "demo-proj" };
-			const res = await postJson(srv.port, "/api/projects/create", body);
-			assert.equal(res.status, 403);
-			assert.equal(
-				res.json?.error,
-				"Creating projects is only available in the desktop app",
-			);
-			assert.equal(fakeFs.writes.length, 0);
-			assert.equal(fakeGit.calls.length, 0);
-		} finally {
-			await srv.close();
-		}
-	});
+	}
 
 	describe("validation 400 cases", () => {
 		let srv;
 		before(async () => {
-			const fakeFs = createFakeFs({
+			const started = await createProjectServer({
 				dirs: [VALID_PARENT],
 				files: { [FILE_PARENT]: "content" },
 			});
-			const router = createProjectRouter({
-				fsImpl: fakeFs,
-				runGit: createFakeGit().runGit,
-			});
-			srv = await startServer(router, true);
+			srv = started.srv;
 		});
 
 		after(async () => {
@@ -225,105 +309,23 @@ describe("project routes", () => {
 		for (const { label, body, expectedError } of INVALID_CASES) {
 			test(`returns 400 when ${label}`, async () => {
 				const res = await postJson(srv.port, "/api/projects/create", body);
-				assert.equal(res.status, 400);
-				assert.equal(res.json?.error, expectedError);
+				assertErrorResponse(res, 400, expectedError);
 			});
 		}
 	});
 
-	test("returns 409 when target project directory already exists", async () => {
-		const fakeFs = createFakeFs({
-			dirs: [VALID_PARENT, EXISTING_TARGET],
+	for (const tc of HAPPY_PATH_CASES) {
+		test(`happy path 201 ${tc.title}`, async () => {
+			const { res, fakeFs, fakeGit } = await runCreateRequest({
+				setup: { dirs: [VALID_PARENT] },
+				body: tc.body,
+			});
+			const expectedTarget = path.join(VALID_PARENT, tc.name);
+			assertSuccessResponse(res, expectedTarget, tc.expectedFiles);
+			verifyWrites(fakeFs.writes, expectedTarget, tc.name);
+			verifyGitCalls(fakeGit.calls, expectedTarget, tc.name);
 		});
-		const fakeGit = createFakeGit();
-		const router = createProjectRouter({
-			fsImpl: fakeFs,
-			runGit: fakeGit.runGit,
-		});
-		const srv = await startServer(router, true);
-		try {
-			const body = { parentDir: VALID_PARENT, name: "existing-project" };
-			const res = await postJson(srv.port, "/api/projects/create", body);
-			assert.equal(res.status, 409);
-			assert.equal(res.json?.error, "A folder with that name already exists");
-		} finally {
-			await srv.close();
-		}
-	});
-
-	test("happy path 201 writes 3 files with flag wx and runs 3 git commands", async () => {
-		const fakeFs = createFakeFs({ dirs: [VALID_PARENT] });
-		const fakeGit = createFakeGit();
-		const router = createProjectRouter({
-			fsImpl: fakeFs,
-			runGit: fakeGit.runGit,
-		});
-		const srv = await startServer(router, true);
-		try {
-			const body = { parentDir: VALID_PARENT, name: "my_board" };
-			const res = await postJson(srv.port, "/api/projects/create", body);
-			assert.equal(res.status, 201);
-			const expectedTarget = path.join(VALID_PARENT, "my_board");
-			assert.equal(res.json?.projectRoot, expectedTarget);
-			assert.deepEqual(res.json?.files, [
-				"my_board.kicad_pro",
-				"my_board.kicad_sch",
-				"my_board.kicad_pcb",
-			]);
-			verifyWrites(fakeFs.writes, expectedTarget, "my_board");
-			verifyGitCalls(fakeGit.calls, expectedTarget, "my_board");
-		} finally {
-			await srv.close();
-		}
-	});
-
-	test("happy path 201 with boardW 120 and boardH 80", async () => {
-		const fakeFs = createFakeFs({ dirs: [VALID_PARENT] });
-		const fakeGit = createFakeGit();
-		const router = createProjectRouter({
-			fsImpl: fakeFs,
-			runGit: fakeGit.runGit,
-		});
-		const srv = await startServer(router, true);
-		try {
-			const body = {
-				parentDir: VALID_PARENT,
-				name: "custom_board",
-				boardW: 120,
-				boardH: 80,
-			};
-			const res = await postJson(srv.port, "/api/projects/create", body);
-			assert.equal(res.status, 201);
-			const expectedTarget = path.join(VALID_PARENT, "custom_board");
-			assert.equal(res.json?.projectRoot, expectedTarget);
-			verifyWrites(fakeFs.writes, expectedTarget, "custom_board");
-			verifyGitCalls(fakeGit.calls, expectedTarget, "custom_board");
-		} finally {
-			await srv.close();
-		}
-	});
-
-	test("returns 500 when writeFile fails after mkdir", async () => {
-		const fakeFs = createFakeFs({
-			dirs: [VALID_PARENT],
-			failWrite: true,
-		});
-		const fakeGit = createFakeGit();
-		const router = createProjectRouter({
-			fsImpl: fakeFs,
-			runGit: fakeGit.runGit,
-		});
-		const srv = await startServer(router, true);
-		try {
-			const body = { parentDir: VALID_PARENT, name: "fail_write_proj" };
-			const res = await postJson(srv.port, "/api/projects/create", body);
-			assert.equal(res.status, 500);
-			assert.equal(res.json?.error, "Could not create project");
-			assert.equal(fakeGit.calls.length, 0);
-		} finally {
-			await srv.close();
-		}
-	});
+	}
 
 	test("app integrates projectRouter under /api/projects/create", async () => {
 		const app = createApp();
