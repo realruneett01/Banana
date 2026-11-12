@@ -579,6 +579,14 @@ function getClaudeApiKey(byoKey) {
 	return resolveApiKey(byoKey, "ANTHROPIC_API_KEY");
 }
 
+function buildClaudeHeaders(apiKey) {
+	return {
+		"content-type": "application/json",
+		"x-api-key": apiKey,
+		"anthropic-version": ANTHROPIC_VERSION,
+	};
+}
+
 async function executeClaudeGenerate({
 	transport,
 	model,
@@ -595,16 +603,11 @@ async function executeClaudeGenerate({
 		messages: params.messages,
 		tools: params.tools,
 	});
-	const headers = {
-		"content-type": "application/json",
-		"x-api-key": resolvedKey,
-		"anthropic-version": ANTHROPIC_VERSION,
-	};
 	return sendModelRequest({
 		transport,
 		url: CLAUDE_API_URL,
 		body,
-		headers,
+		headers: buildClaudeHeaders(resolvedKey),
 		signal: params.signal,
 		checkStatus: checkClaudeResponseStatus,
 		parseResponse: parseClaudeResponse,
@@ -719,14 +722,16 @@ function mapOllamaUserMessage(msg) {
 	};
 }
 
+const OLLAMA_ROLE_HANDLERS = {
+	assistant: mapOllamaAssistantMessage,
+	model: mapOllamaAssistantMessage,
+	tool: mapOllamaToolMessage,
+	function: mapOllamaToolMessage,
+};
+
 function mapOllamaMessage(msg) {
-	if (isModelRole(msg.role)) {
-		return mapOllamaAssistantMessage(msg);
-	}
-	if (isToolRole(msg.role)) {
-		return mapOllamaToolMessage(msg);
-	}
-	return mapOllamaUserMessage(msg);
+	const handler = OLLAMA_ROLE_HANDLERS[msg.role];
+	return handler ? handler(msg) : mapOllamaUserMessage(msg);
 }
 
 function mapOllamaMessages(messages, system) {
