@@ -4,20 +4,21 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { createApp } from "../../backend/src/app.js";
 import defaultRouter from "../../backend/src/routes/agent-routes.js";
 
-function listen(server) {
-	return new Promise((resolve) => {
-		server.listen(0, "127.0.0.1", () => {
-			resolve(server.address().port);
-		});
+async function startServer() {
+	const app = createApp();
+	const server = http.createServer(app);
+	const port = await new Promise((resolve) => {
+		server.listen(0, "127.0.0.1", () => resolve(server.address().port));
 	});
+	return {
+		app,
+		port,
+		stop: () => new Promise((resolve) => server.close(resolve)),
+	};
 }
 
-function closeServer(server) {
-	return new Promise((resolve) => server.close(resolve));
-}
-
-async function sendPost(port, path, payload, headers = {}) {
-	return fetch(`http://127.0.0.1:${port}${path}`, {
+async function requestEndpoint(port, path, payload, headers = {}) {
+	const res = await fetch(`http://127.0.0.1:${port}${path}`, {
 		body: JSON.stringify(payload),
 		headers: {
 			"Content-Type": "application/json",
@@ -25,23 +26,19 @@ async function sendPost(port, path, payload, headers = {}) {
 		},
 		method: "POST",
 	});
-}
-
-async function postJson(port, path, payload, headers) {
-	const res = await sendPost(port, path, payload, headers);
-	const text = await res.text();
-	const json = text ? JSON.parse(text) : {};
-	return { json, rawText: text, status: res.status };
-}
-
-async function postStream(port, path, payload, headers) {
-	const res = await sendPost(port, path, payload, headers);
-	const text = await res.text();
-	return { rawText: text, status: res.status };
+	const rawText = await res.text();
+	let json = {};
+	try {
+		json = JSON.parse(rawText);
+	} catch {
+		// Non-JSON response body (e.g. streaming SSE text)
+	}
+	return { json, rawText, status: res.status };
 }
 
 function assertOptionsMatch(actual, expected) {
 	assert.ok(actual, "expected factory options to be defined");
+	assert.equal(typeof actual, "object");
 	for (const [k, v] of Object.entries(expected)) {
 		assert.equal(actual[k], v);
 	}
@@ -54,10 +51,12 @@ function assertKeyIgnored(res, actualOptions) {
 
 function assertError(res, expectedStatus, expectedError) {
 	assert.equal(res.status, expectedStatus);
+	assert.ok(res.json !== undefined, "expected json to be defined");
 	assert.equal(res.json?.error, expectedError);
 }
 
 function assertKeyNeverEchoed(rawText, secretKey) {
+	assert.ok(rawText !== undefined, "expected rawText to be defined");
 	assert.equal(rawText.includes(secretKey), false);
 }
 
@@ -86,149 +85,168 @@ const UNKNOWN_PROVIDER_CASES = [
 	{ name: "number", provider: 999 },
 ];
 
+const REJECTED_REQUEST_CASES = [
+	...BAD_MODEL_CASES.map((tc) => ({
+		error: "Invalid model",
+		name: `bad model (${tc.name})`,
+		payload: { message: "test", model: tc.model, provider: "gemini" },
+	})),
+	...UNKNOWN_PROVIDER_CASES.map((tc) => ({
+		error: "Invalid provider",
+		name: `unknown provider (${tc.name})`,
+		payload: { message: "test", provider: tc.provider },
+	})),
+];
+
+const VALID_PASSTHROUGH_CASES = [
+	{
+		expected: {
+			apiKey: "test-gemini-key-123456789",
+			provider: "gemini",
+		},
+		headers: { "x-model-api-key": "test-gemini-key-123456789" },
+		name: "header key passed through for gemini",
+		payload: { message: "test", provider: "gemini" },
+	},
+	{
+		expected: {
+			model: "qwen2.5:7b",
+			provider: "ollama",
+		},
+		headers: {},
+		name: "provider ollama accepted with model 'qwen2.5:7b'",
+		payload: {
+			message: "test",
+			model: "qwen2.5:7b",
+			provider: "ollama",
+		},
+	},
+];
+
+const SECRET_KEY = "SUPER-SECRET-API-KEY-VALUE-ABC-999";
+
+const SECRET_LEAK_CASES = [
+	{
+		expectedStatus: 200,
+		name: "response body never contains secret key",
+		path: "/api/agent/run",
+		payload: { message: "test", provider: "gemini" },
+	},
+	{
+		expectedStatus: 200,
+		name: "stream response never contains secret key",
+		path: "/api/agent/run/stream",
+		payload: { message: "test", provider: "gemini" },
+	},
+	{
+		expectedStatus: 400,
+		name: "error response never leaks secret key from header",
+		path: "/api/agent/run",
+		payload: { message: "test", model: "invalid model with spaces" },
+	},
+	{
+		expectedStatus: 500,
+		name: "throwing model 500 error response never leaks secret key",
+		path: "/api/agent/run",
+		payload: { message: "test", provider: "gemini" },
+		setup: (app) => {
+			app.locals.agentModelFactory = () => ({
+				generate: async () => {
+					throw new Error("Model failure");
+				},
+			});
+		},
+	},
+];
+
 describe("agent routes BYOK and ollama", () => {
-	let app;
-	let server;
-	let port;
+	let harness;
 	let capturedOptions;
 
 	before(async () => {
-		app = createApp();
-		server = http.createServer(app);
-		port = await listen(server);
+		harness = await startServer();
 	});
 
 	after(async () => {
-		await closeServer(server);
+		await harness.stop();
 	});
 
 	beforeEach(() => {
 		capturedOptions = undefined;
 		defaultRouter.limiter?.store?.clear();
-		app.locals.agentModelFactory = (opts) => {
+		harness.app.locals.agentModelFactory = (opts) => {
 			capturedOptions = opts;
 			return { generate: async () => ({ steps: 1, text: "ok" }) };
 		};
 	});
 
-	test("header key passed through for gemini on run and stream", async () => {
-		const key = "test-gemini-key-123456789";
-		const headers = { "x-model-api-key": key };
-		const payload = { message: "test", provider: "gemini" };
-
-		const runRes = await postJson(port, "/api/agent/run", payload, headers);
-		assert.equal(runRes.status, 200);
-		assertOptionsMatch(capturedOptions, { apiKey: key, provider: "gemini" });
-
-		capturedOptions = undefined;
-		const streamRes = await postStream(
-			port,
-			"/api/agent/run/stream",
-			payload,
-			headers,
-		);
-		assert.equal(streamRes.status, 200);
-		assertOptionsMatch(capturedOptions, { apiKey: key, provider: "gemini" });
-	});
+	for (const tc of VALID_PASSTHROUGH_CASES) {
+		for (const path of ["/api/agent/run", "/api/agent/run/stream"]) {
+			test(`${tc.name} on ${path}`, async () => {
+				capturedOptions = undefined;
+				const res = await requestEndpoint(
+					harness.port,
+					path,
+					tc.payload,
+					tc.headers,
+				);
+				assert.equal(res.status, 200);
+				assert.ok(res.rawText !== undefined);
+				assertOptionsMatch(capturedOptions, tc.expected);
+			});
+		}
+	}
 
 	for (const tc of INVALID_KEY_CASES) {
 		test(`ignores ${tc.name} and leaves apiKey undefined`, async () => {
 			const headers = { "x-model-api-key": tc.key };
 			const payload = { message: "test", provider: "gemini" };
-			const res = await postJson(port, "/api/agent/run", payload, headers);
+			const res = await requestEndpoint(
+				harness.port,
+				"/api/agent/run",
+				payload,
+				headers,
+			);
 			assertKeyIgnored(res, capturedOptions);
 			assert.equal(capturedOptions?.provider, "gemini");
+			assert.ok(capturedOptions !== undefined);
 		});
 	}
 
-	test("provider ollama accepted with model 'qwen2.5:7b' on run and stream", async () => {
-		const payload = {
-			message: "test",
-			model: "qwen2.5:7b",
-			provider: "ollama",
-		};
+	for (const tc of REJECTED_REQUEST_CASES) {
+		test(`rejects ${tc.name} with 400 on run and stream`, async () => {
+			const runRes = await requestEndpoint(
+				harness.port,
+				"/api/agent/run",
+				tc.payload,
+			);
+			assertError(runRes, 400, tc.error);
 
-		const runRes = await postJson(port, "/api/agent/run", payload);
-		assert.equal(runRes.status, 200);
-		assertOptionsMatch(capturedOptions, {
-			model: "qwen2.5:7b",
-			provider: "ollama",
-		});
-
-		capturedOptions = undefined;
-		const streamRes = await postStream(port, "/api/agent/run/stream", payload);
-		assert.equal(streamRes.status, 200);
-		assertOptionsMatch(capturedOptions, {
-			model: "qwen2.5:7b",
-			provider: "ollama",
-		});
-	});
-
-	for (const tc of BAD_MODEL_CASES) {
-		test(`rejects bad model (${tc.name}) with 400 on run and stream`, async () => {
-			const payload = { message: "test", model: tc.model, provider: "gemini" };
-			const runRes = await postJson(port, "/api/agent/run", payload);
-			assertError(runRes, 400, "Invalid model");
-
-			const streamRes = await postJson(port, "/api/agent/run/stream", payload);
-			assertError(streamRes, 400, "Invalid model");
+			const streamRes = await requestEndpoint(
+				harness.port,
+				"/api/agent/run/stream",
+				tc.payload,
+			);
+			assertError(streamRes, 400, tc.error);
 		});
 	}
 
-	for (const tc of UNKNOWN_PROVIDER_CASES) {
-		test(`rejects unknown provider (${tc.name}) with 400 on run and stream`, async () => {
-			const payload = { message: "test", provider: tc.provider };
-			const runRes = await postJson(port, "/api/agent/run", payload);
-			assertError(runRes, 400, "Invalid provider");
-
-			const streamRes = await postJson(port, "/api/agent/run/stream", payload);
-			assertError(streamRes, 400, "Invalid provider");
+	for (const tc of SECRET_LEAK_CASES) {
+		test(tc.name, async () => {
+			if (tc.setup) {
+				tc.setup(harness.app);
+			}
+			const headers = { "x-model-api-key": SECRET_KEY };
+			const res = await requestEndpoint(
+				harness.port,
+				tc.path,
+				tc.payload,
+				headers,
+			);
+			assert.equal(res.status, tc.expectedStatus);
+			assertKeyNeverEchoed(res.rawText, SECRET_KEY);
 		});
 	}
-
-	test("response body and stream never contain secret key", async () => {
-		const secret = "SUPER-SECRET-API-KEY-VALUE-ABC-999";
-		const headers = { "x-model-api-key": secret };
-		const payload = { message: "test", provider: "gemini" };
-
-		const runRes = await postJson(port, "/api/agent/run", payload, headers);
-		assert.equal(runRes.status, 200);
-		assertKeyNeverEchoed(runRes.rawText, secret);
-
-		const streamRes = await postStream(
-			port,
-			"/api/agent/run/stream",
-			payload,
-			headers,
-		);
-		assert.equal(streamRes.status, 200);
-		assertKeyNeverEchoed(streamRes.rawText, secret);
-	});
-
-	test("error response never leaks secret key from header", async () => {
-		const secret = "SUPER-SECRET-API-KEY-VALUE-ABC-999";
-		const headers = { "x-model-api-key": secret };
-		const payload = { message: "test", model: "invalid model with spaces" };
-
-		const runRes = await postJson(port, "/api/agent/run", payload, headers);
-		assert.equal(runRes.status, 400);
-		assertKeyNeverEchoed(runRes.rawText, secret);
-	});
-
-	test("throwing model 500 error response never leaks secret key", async () => {
-		const secret = "SUPER-SECRET-API-KEY-VALUE-ABC-999";
-		const headers = { "x-model-api-key": secret };
-		app.locals.agentModelFactory = () => ({
-			generate: async () => {
-				throw new Error("Model failure");
-			},
-		});
-		const payload = { message: "test", provider: "gemini" };
-
-		const runRes = await postJson(port, "/api/agent/run", payload, headers);
-		assert.equal(runRes.status, 500);
-		assertKeyNeverEchoed(runRes.rawText, secret);
-	});
 
 	test("apiKey in body or query is ignored", async () => {
 		const payload = {
@@ -236,12 +254,13 @@ describe("agent routes BYOK and ollama", () => {
 			message: "test",
 			provider: "gemini",
 		};
-		const runRes = await postJson(
-			port,
+		const runRes = await requestEndpoint(
+			harness.port,
 			"/api/agent/run?apiKey=query-key-12345&x-model-api-key=query-key-12345",
 			payload,
 		);
 		assert.equal(runRes.status, 200);
 		assert.equal(capturedOptions?.apiKey, undefined);
+		assert.equal(capturedOptions?.provider, "gemini");
 	});
 });
