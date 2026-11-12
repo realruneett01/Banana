@@ -22,8 +22,7 @@ function createBaseSchematic() {
 		nets: [],
 		constraints: [],
 	};
-	const { text } = irToKicadSch(ir, { title: "BananaTest" });
-	return text;
+	return irToKicadSch(ir, { title: "BananaTest" }).text;
 }
 
 function makeAddEdit(ref, val, x, y) {
@@ -40,34 +39,52 @@ function makeAddEdit(ref, val, x, y) {
 	};
 }
 
+function findChild(node, tag) {
+	return node?.find?.((c) => Array.isArray(c) && c[0]?.sym === tag);
+}
+
+function findChildren(node, tag) {
+	return Array.isArray(node)
+		? node.filter((c) => Array.isArray(c) && c[0]?.sym === tag)
+		: [];
+}
+
+function isPlacedSymbol(node) {
+	if (!Array.isArray(node) || node[0]?.sym !== "symbol") {
+		return false;
+	}
+	const second = node[1];
+	return typeof second !== "string" && second?.sym !== "symbol";
+}
+
 function findPlacedSymbols(root) {
-	return root.filter(
-		(child) =>
-			Array.isArray(child) &&
-			child[0]?.sym === "symbol" &&
-			typeof child[1] !== "string" &&
-			child[1]?.sym !== "symbol",
-	);
+	return root.filter(isPlacedSymbol);
+}
+
+function nodeValue(node, index = 1) {
+	const val = node?.[index];
+	return typeof val === "object" ? val?.sym : (val ?? null);
 }
 
 function findSymbolProp(symNode, name) {
-	const prop = symNode.find(
+	const prop = symNode?.find?.(
 		(c) => Array.isArray(c) && c[0]?.sym === "property" && c[1] === name,
 	);
-	return prop ? (typeof prop[2] === "string" ? prop[2] : prop[2]?.sym) : null;
+	return nodeValue(prop, 2);
 }
 
 function findInstancesRef(symNode) {
-	const inst = symNode.find(
-		(c) => Array.isArray(c) && c[0]?.sym === "instances",
+	const target = ["instances", "project", "path", "reference"].reduce(
+		findChild,
+		symNode,
 	);
-	if (!inst) return null;
-	const proj = inst.find((c) => Array.isArray(c) && c[0]?.sym === "project");
-	if (!proj) return null;
-	const path = proj.find((c) => Array.isArray(c) && c[0]?.sym === "path");
-	if (!path) return null;
-	const ref = path.find((c) => Array.isArray(c) && c[0]?.sym === "reference");
-	return ref ? (typeof ref[1] === "string" ? ref[1] : ref[1]?.sym) : null;
+	return nodeValue(target, 1);
+}
+
+function getLibSymbols(ast, symbolId) {
+	const container = findChild(ast, "lib_symbols");
+	const symbols = findChildren(container, "symbol");
+	return symbolId ? symbols.filter((s) => s[1] === symbolId) : symbols;
 }
 
 function assertSymbolProps(placed, ref, val, fp) {
@@ -77,10 +94,10 @@ function assertSymbolProps(placed, ref, val, fp) {
 }
 
 function assertPinUuids(placed, count) {
-	const pins = placed.filter((c) => Array.isArray(c) && c[0]?.sym === "pin");
+	const pins = findChildren(placed, "pin");
 	assert.equal(pins.length, count);
 	for (const p of pins) {
-		assert.ok(p.find((c) => c[0]?.sym === "uuid"));
+		assert.ok(findChild(p, "uuid"));
 	}
 }
 
@@ -88,7 +105,15 @@ function assertHiddenProperty(symNode, name) {
 	const prop = symNode.find(
 		(c) => Array.isArray(c) && c[0]?.sym === "property" && c[1] === name,
 	);
-	assert.ok(prop.find((c) => Array.isArray(c) && c[0]?.sym === "hide"));
+	assert.ok(findChild(prop, "hide"));
+}
+
+function assertRejectedEdit(edits) {
+	const base = createBaseSchematic();
+	const res = applySchEdits(base, edits);
+	assert.equal(res.ok, false);
+	assert.equal(typeof res.error, "string");
+	assert.ok(res.error.length > 0);
 }
 
 describe("kicad-sch-edit", () => {
@@ -100,15 +125,8 @@ describe("kicad-sch-edit", () => {
 		assert.equal(res.ok, true);
 
 		const ast = parse(res.text);
-		const libSymbols = ast.find(
-			(c) => Array.isArray(c) && c[0]?.sym === "lib_symbols",
-		);
-		assert.ok(
-			libSymbols.find(
-				(c) =>
-					Array.isArray(c) && c[0]?.sym === "symbol" && c[1] === "Device:R",
-			),
-		);
+		const [devR] = getLibSymbols(ast, "Device:R");
+		assert.ok(devR);
 
 		const placed = findPlacedSymbols(ast);
 		assert.equal(placed.length, 1);
@@ -126,46 +144,47 @@ describe("kicad-sch-edit", () => {
 		assert.equal(res.ok, true);
 
 		const ast = parse(res.text);
-		const libSymbols = ast.find(
-			(c) => Array.isArray(c) && c[0]?.sym === "lib_symbols",
-		);
-		const matches = libSymbols.filter(
-			(c) => Array.isArray(c) && c[0]?.sym === "symbol" && c[1] === "Device:R",
-		);
+		const matches = getLibSymbols(ast, "Device:R");
 		assert.equal(matches.length, 1);
-		assert.equal(findPlacedSymbols(ast).length, 2);
+		const placed = findPlacedSymbols(ast);
+		assert.equal(placed.length, 2);
 	});
 
-	it("setField updates Reference and instances block", () => {
-		const base = createBaseSchematic();
-		const edits = [
-			makeAddEdit("R1", "10k", 10, 20),
-			{ op: "setField", ref: "R1", name: "Reference", value: "R5" },
-		];
-		const res = applySchEdits(base, edits);
-		assert.equal(res.ok, true);
+	const fieldUpdateCases = [
+		{
+			name: "Reference and instances block",
+			edits: [{ op: "setField", ref: "R1", name: "Reference", value: "R5" }],
+			verify(placed) {
+				assert.equal(placed.length, 1);
+				assert.equal(findInstancesRef(placed[0]), "R5");
+				assert.equal(findSymbolProp(placed[0], "Reference"), "R5");
+			},
+		},
+		{
+			name: "Footprint and creates missing hidden property",
+			edits: [
+				{ op: "setField", ref: "R1", name: "Footprint", value: "R_0603" },
+				{ op: "setField", ref: "R1", name: "Tolerance", value: "1%" },
+			],
+			verify(placed) {
+				assert.equal(findSymbolProp(placed[0], "Footprint"), "R_0603");
+				assertHiddenProperty(placed[0], "Tolerance");
+				assert.equal(findSymbolProp(placed[0], "Tolerance"), "1%");
+			},
+		},
+	];
 
-		const placed = findPlacedSymbols(parse(res.text));
-		assert.equal(placed.length, 1);
-		assert.equal(findSymbolProp(placed[0], "Reference"), "R5");
-		assert.equal(findInstancesRef(placed[0]), "R5");
-	});
+	for (const tc of fieldUpdateCases) {
+		it(`setField updates ${tc.name}`, () => {
+			const base = createBaseSchematic();
+			const edits = [makeAddEdit("R1", "10k", 10, 20), ...tc.edits];
+			const res = applySchEdits(base, edits);
+			assert.equal(res.ok, true);
 
-	it("setField updates Footprint and creates missing hidden property", () => {
-		const base = createBaseSchematic();
-		const edits = [
-			makeAddEdit("R1", "10k", 10, 20),
-			{ op: "setField", ref: "R1", name: "Footprint", value: "R_0603" },
-			{ op: "setField", ref: "R1", name: "Tolerance", value: "1%" },
-		];
-		const res = applySchEdits(base, edits);
-		assert.equal(res.ok, true);
-
-		const placed = findPlacedSymbols(parse(res.text));
-		assert.equal(findSymbolProp(placed[0], "Footprint"), "R_0603");
-		assert.equal(findSymbolProp(placed[0], "Tolerance"), "1%");
-		assertHiddenProperty(placed[0], "Tolerance");
-	});
+			const placed = findPlacedSymbols(parse(res.text));
+			tc.verify(placed);
+		});
+	}
 
 	it("deleteSymbol removes placed symbol and preserves lib_symbols", () => {
 		const base = createBaseSchematic();
@@ -178,15 +197,8 @@ describe("kicad-sch-edit", () => {
 
 		const ast = parse(res.text);
 		assert.equal(findPlacedSymbols(ast).length, 0);
-		const libSymbols = ast.find(
-			(c) => Array.isArray(c) && c[0]?.sym === "lib_symbols",
-		);
-		assert.ok(
-			libSymbols.find(
-				(c) =>
-					Array.isArray(c) && c[0]?.sym === "symbol" && c[1] === "Device:R",
-			),
-		);
+		const [devR] = getLibSymbols(ast, "Device:R");
+		assert.ok(devR);
 	});
 
 	it("addLabel and addNoConnect insert entries with fresh uuid", () => {
@@ -202,11 +214,9 @@ describe("kicad-sch-edit", () => {
 		const label = ast.find(
 			(c) => Array.isArray(c) && c[0]?.sym === "label" && c[1] === "SPI_MOSI",
 		);
-		assert.ok(label?.find((c) => c[0]?.sym === "uuid"));
-		const noConn = ast.find(
-			(c) => Array.isArray(c) && c[0]?.sym === "no_connect",
-		);
-		assert.ok(noConn?.find((c) => c[0]?.sym === "uuid"));
+		assert.ok(findChild(label, "uuid"));
+		const noConn = findChild(ast, "no_connect");
+		assert.ok(findChild(noConn, "uuid"));
 	});
 
 	it("round-trips edited schematic successfully through parse and serialize", () => {
@@ -217,30 +227,25 @@ describe("kicad-sch-edit", () => {
 		];
 		const res = applySchEdits(base, edits);
 		assert.equal(res.ok, true);
+		assert.equal(typeof res.text, "string");
 
 		const parsedAgain = parse(res.text);
+		assert.equal(parsedAgain?.[0]?.sym, "kicad_sch");
 		assert.ok(Array.isArray(parsedAgain));
-		assert.equal(parsedAgain[0]?.sym, "kicad_sch");
 	});
 
-	const errorCases = [
-		{ name: "unknown operation", edits: [{ op: "rotateSymbol", ref: "R1" }] },
-		{ name: "deleteSymbol missing ref", edits: [{ op: "deleteSymbol" }] },
-		{
-			name: "deleteSymbol unknown ref",
-			edits: [{ op: "deleteSymbol", ref: "R999" }],
-		},
-		{
-			name: "setField missing ref",
-			edits: [{ op: "setField", name: "Value", value: "1k" }],
-		},
-		{
-			name: "setField unknown ref",
-			edits: [{ op: "setField", ref: "R999", name: "Value", value: "1k" }],
-		},
-		{
-			name: "addSymbol non-finite x",
-			edits: [
+	const invalidEditCases = [
+		["unknown operation", [{ op: "rotateSymbol", ref: "R1" }]],
+		["deleteSymbol missing ref", [{ op: "deleteSymbol" }]],
+		["deleteSymbol unknown ref", [{ op: "deleteSymbol", ref: "R999" }]],
+		["setField missing ref", [{ op: "setField", name: "Value", value: "1k" }]],
+		[
+			"setField unknown ref",
+			[{ op: "setField", ref: "R999", name: "Value", value: "1k" }],
+		],
+		[
+			"addSymbol non-finite x",
+			[
 				{
 					op: "addSymbol",
 					libId: "Device:R",
@@ -250,26 +255,20 @@ describe("kicad-sch-edit", () => {
 					y: 10,
 				},
 			],
-		},
-		{
-			name: "addLabel non-finite y",
-			edits: [
-				{ op: "addLabel", net: "CLK", x: 10, y: Number.POSITIVE_INFINITY },
-			],
-		},
-		{
-			name: "addNoConnect non-finite coord",
-			edits: [{ op: "addNoConnect", x: "invalid", y: 10 }],
-		},
+		],
+		[
+			"addLabel non-finite y",
+			[{ op: "addLabel", net: "CLK", x: 10, y: Number.POSITIVE_INFINITY }],
+		],
+		[
+			"addNoConnect non-finite coord",
+			[{ op: "addNoConnect", x: "invalid", y: 10 }],
+		],
 	];
 
-	for (const tc of errorCases) {
-		it(`rejects invalid edit: ${tc.name}`, () => {
-			const base = createBaseSchematic();
-			const res = applySchEdits(base, tc.edits);
-			assert.equal(res.ok, false);
-			assert.equal(typeof res.error, "string");
-			assert.ok(res.error.length > 0);
+	for (const [name, edits] of invalidEditCases) {
+		it(`rejects invalid edit: ${name}`, () => {
+			assertRejectedEdit(edits);
 		});
 	}
 });
