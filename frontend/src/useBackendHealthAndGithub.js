@@ -16,28 +16,41 @@ async function fetchBackendHealthStatus() {
 	return { status: "unhealthy", version: "" };
 }
 
+const HANDOFF_CODE_RE = /^[0-9a-fA-F]{64}$/;
+
 function parseUrlAuthParams() {
 	if (typeof window === "undefined" || !window.location) {
-		return { token: null, error: null };
+		return { handoff: null, error: null };
 	}
 	const hashParams = new URLSearchParams(
 		window.location.hash ? window.location.hash.replace(/^#\/?/, "") : "",
 	);
-	const searchParams = new URLSearchParams(window.location.search);
-	const hashToken = hashParams.get("github_token");
-	const hashError = hashParams.get("github_error");
-	if (hashToken || hashError) {
-		return { token: hashToken, error: hashError };
-	}
 	return {
-		token: searchParams.get("github_token"),
-		error: searchParams.get("github_error"),
+		handoff: hashParams.get("github_handoff"),
+		error: hashParams.get("github_error"),
 	};
 }
 
 function clearUrlAuthParams() {
 	if (typeof window !== "undefined" && window.history) {
 		window.history.replaceState({}, document.title, window.location.pathname);
+	}
+}
+
+async function exchangeHandoffCode(code) {
+	try {
+		const res = await fetch(`${API_BASE_URL}/api/auth/github/handoff`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ code }),
+		});
+		if (!res.ok) return null;
+		const data = await res.json();
+		return data?.token || null;
+	} catch (err) {
+		// Network or JSON parse failure during handoff
+		console.warn("[Banana] GitHub handoff exchange error:", err?.message);
+		return null;
 	}
 }
 
@@ -71,24 +84,44 @@ function saveAuthSession(token, setGithubToken, setSourceMode) {
 	saveStoredSourceMode("github");
 }
 
-function handleUrlAuthCallback({
+async function completeHandoff(
+	handoff,
+	{ setGithubToken, setSourceMode, verifyGithubToken },
+) {
+	if (!HANDOFF_CODE_RE.test(handoff)) {
+		message.error("GitHub sign-in failed");
+		return;
+	}
+	const token = await exchangeHandoffCode(handoff);
+	if (!token) {
+		message.error("GitHub sign-in failed");
+		return;
+	}
+	saveAuthSession(token, setGithubToken, setSourceMode);
+	verifyGithubToken(token);
+	message.success("GitHub OAuth login successful!");
+}
+
+async function handleUrlAuthCallback({
 	setGithubToken,
 	setSourceMode,
 	verifyGithubToken,
 	existingToken,
 }) {
-	const { token: tokenFromUrl, error: errorFromUrl } = parseUrlAuthParams();
+	const { handoff, error } = parseUrlAuthParams();
 
-	if (tokenFromUrl) {
-		saveAuthSession(tokenFromUrl, setGithubToken, setSourceMode);
-		verifyGithubToken(tokenFromUrl);
+	if (error !== null) {
 		clearUrlAuthParams();
-		message.success("GitHub OAuth login successful!");
+		message.error("GitHub sign-in failed");
 		return;
 	}
-	if (errorFromUrl) {
-		message.error(`GitHub login error: ${errorFromUrl}`);
+	if (handoff !== null) {
 		clearUrlAuthParams();
+		await completeHandoff(handoff, {
+			setGithubToken,
+			setSourceMode,
+			verifyGithubToken,
+		});
 		return;
 	}
 	if (existingToken) {
