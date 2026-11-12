@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { patchKicadText } from "../kicad-inplace.js";
+import { createKicadLibrary } from "../kicad-library.js";
 import {
 	commitFiles,
 	ensureGitWorkTree,
@@ -141,16 +142,65 @@ function validateFiles(repoPath, files) {
 	return targets;
 }
 
-async function readAndPatchFile(fsImpl, patchFn, target) {
+function stripClientFields(edit) {
+	if (!edit || typeof edit !== "object") {
+		return edit;
+	}
+	const { libSymbol, source, parentLibSymbol, ...rest } = edit;
+	return rest;
+}
+
+async function resolveSymbolEdit(edit, library) {
+	const src = await library.getSymbolSource(edit.libId);
+	if (!src?.text) {
+		throw new Error(`Library item not found: ${edit.libId}`);
+	}
+	const resolved = { ...edit, libSymbol: src.text };
+	if (src.parentText) {
+		resolved.parentLibSymbol = src.parentText;
+	}
+	return resolved;
+}
+
+async function resolveFootprintEdit(edit, library) {
+	const src = await library.getFootprintSource(edit.libId);
+	if (!src?.text) {
+		throw new Error(`Library item not found: ${edit.libId}`);
+	}
+	return { ...edit, source: src.text };
+}
+
+async function mapSingleEdit(edit, library) {
+	const stripped = stripClientFields(edit);
+	if (stripped?.op === "addSymbol") {
+		return await resolveSymbolEdit(stripped, library);
+	}
+	if (stripped?.op === "addFootprint") {
+		return await resolveFootprintEdit(stripped, library);
+	}
+	return stripped;
+}
+
+async function mapFileEdits(edits, library) {
+	const mapped = [];
+	for (const edit of edits) {
+		mapped.push(await mapSingleEdit(edit, library));
+	}
+	return mapped;
+}
+
+async function readAndPatchFile(deps, target) {
 	const { file, resolvedPath } = target;
+	const edits = await mapFileEdits(file.edits, deps.library);
 	let content;
 	try {
-		content = await fsImpl.readFile(resolvedPath, "utf8");
+		content = await deps.fsImpl.readFile(resolvedPath, "utf8");
 	} catch {
 		// Avoid leaking system paths or raw filesystem error in message
 		throw new Error(`Failed to read file: ${file.path}`);
 	}
-	const res = patchFn(content, { kind: file.kind, edits: file.edits });
+	const kind = file.path.endsWith(".kicad_sch") ? "sch" : "pcb";
+	const res = deps.patchFn(content, { kind, edits });
 	if (!res?.ok) {
 		const reason = res?.error || "unknown patch failure";
 		throw new Error(`Failed to patch ${file.path}: ${reason}`);
@@ -159,16 +209,16 @@ async function readAndPatchFile(fsImpl, patchFn, target) {
 		relPath: file.path,
 		resolvedPath,
 		text: res.text,
-		applied: res.applied,
-		skipped: res.skipped,
+		applied: res.applied ?? edits.length,
+		skipped: res.skipped ?? [],
 	};
 }
 
-async function processPatchTargets(fsImpl, patchFn, targets) {
+async function processPatchTargets(deps, targets) {
 	const results = [];
 	let totalApplied = 0;
 	for (const target of targets) {
-		const item = await readAndPatchFile(fsImpl, patchFn, target);
+		const item = await readAndPatchFile(deps, target);
 		totalApplied += item.applied;
 		results.push(item);
 	}
@@ -226,7 +276,7 @@ async function validateRealPaths(fsImpl, repoPath, targets) {
 }
 
 function createPatchHandler(deps) {
-	const { execFileFn, fsImpl, patchFn } = deps;
+	const { execFileFn, fsImpl } = deps;
 	return async (input) => {
 		validateRepoPath(input.repoPath);
 		validateMessage(input.message);
@@ -234,7 +284,7 @@ function createPatchHandler(deps) {
 		await validateRealPaths(fsImpl, input.repoPath, targets);
 		await ensureGitWorkTree(execFileFn, input.repoPath);
 
-		const results = await processPatchTargets(fsImpl, patchFn, targets);
+		const results = await processPatchTargets(deps, targets);
 		await writeAllPatchedFiles(fsImpl, results);
 		return await commitPatchedFiles(
 			execFileFn,
@@ -249,11 +299,13 @@ export function registerPatchTools(registry, deps = {}) {
 	const execFileFn = deps.execFileFn ?? promisify(execFile);
 	const fsImpl = deps.fsImpl ?? fs.promises;
 	const patchFn = deps.patchKicadText ?? patchKicadText;
+	const library = deps.library ?? createKicadLibrary();
 
 	const handler = createPatchHandler({
 		execFileFn,
 		fsImpl,
 		patchFn,
+		library,
 	});
 
 	registry.register({
