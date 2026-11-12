@@ -159,3 +159,14 @@ export const config = {
 		explicitAllowLocalRepos = typeof val === "boolean" ? val : null;
 	},
 };
+
+export function resolveListenHost(env = process.env) {
+	const trimmedHost = typeof env?.HOST === "string" ? env.HOST.trim() : "";
+	if (trimmedHost) {
+		return trimmedHost;
+	}
+	if (env?.BANANA_ALLOW_LOCAL_REPOS === "1") {
+		return "127.0.0.1";
+	}
+	return "0.0.0.0";
+}
