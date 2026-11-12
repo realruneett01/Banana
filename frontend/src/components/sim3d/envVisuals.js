@@ -11,26 +11,39 @@ const PRESET_LABELS = Object.freeze({
 	office: "Office desk: mild indoor conditions at 20-25 C",
 });
 
+const DEFAULT_LIGHTING = Object.freeze({
+	skyColor: "#0a0c14",
+	fogDensity: 0,
+	lightColor: "#ffffff",
+	lightIntensity: 0.8,
+});
+
+const LIGHTING_CONDITIONS = [
+	[(m) => m.alt >= 8000, "#050711", 0.001, "#f5f8ff", 1.2],
+	[(m) => m.maxT > 60, "#221610", 0.006, "#ffe8d6", 1.1],
+	[(m) => m.minT < 0, "#0c1626", 0.005, "#d8eeff", 0.9],
+	[(m) => m.maxHum > 80, "#0d181c", 0.008, "#e0f2fe", 0.85],
+];
+
 function getAmbient(env) {
 	return env?.ambientC ?? env?.env?.ambientC ?? env;
 }
 
-export function worstCaseAmbient(env) {
+function resolveAmbientBound(env, firstKey, secondKey) {
 	if (!env) return 25;
 	const amb = getAmbient(env);
 	if (typeof amb === "number") return amb;
-	if (typeof amb?.max === "number") return amb.max;
-	if (typeof amb?.min === "number") return amb.min;
+	if (typeof amb?.[firstKey] === "number") return amb[firstKey];
+	if (typeof amb?.[secondKey] === "number") return amb[secondKey];
 	return 25;
 }
 
+export function worstCaseAmbient(env) {
+	return resolveAmbientBound(env, "max", "min");
+}
+
 function getMinAmbient(env) {
-	if (!env) return 25;
-	const amb = getAmbient(env);
-	if (typeof amb === "number") return amb;
-	if (typeof amb?.min === "number") return amb.min;
-	if (typeof amb?.max === "number") return amb.max;
-	return 25;
+	return resolveAmbientBound(env, "min", "max");
 }
 
 function getMaxHumidity(env) {
@@ -51,6 +64,12 @@ function getAltitude(env) {
 
 function getAirflow(env) {
 	return env?.airflowMs ?? env?.env?.airflowMs ?? 0;
+}
+
+function hasShaking(env, vib) {
+	if (vib?.psdG2Hz > 0) return true;
+	const shock = vib?.shockG ?? env?.shockG ?? 0;
+	return shock > 0;
 }
 
 function computeShake(vib) {
@@ -76,45 +95,19 @@ function computeDroplets(maxHum) {
 	return Math.min(150, Math.round((maxHum - 80) * 5));
 }
 
-function resolveLighting(maxT, minT, alt, maxHum) {
-	if (alt >= 8000) {
-		return {
-			skyColor: "#050711",
-			fogDensity: 0.001,
-			lightColor: "#f5f8ff",
-			lightIntensity: 1.2,
-		};
+function resolveLighting(metrics) {
+	for (const [
+		match,
+		skyColor,
+		fogDensity,
+		lightColor,
+		lightIntensity,
+	] of LIGHTING_CONDITIONS) {
+		if (match(metrics)) {
+			return { skyColor, fogDensity, lightColor, lightIntensity };
+		}
 	}
-	if (maxT > 60) {
-		return {
-			skyColor: "#221610",
-			fogDensity: 0.006,
-			lightColor: "#ffe8d6",
-			lightIntensity: 1.1,
-		};
-	}
-	if (minT < 0) {
-		return {
-			skyColor: "#0c1626",
-			fogDensity: 0.005,
-			lightColor: "#d8eeff",
-			lightIntensity: 0.9,
-		};
-	}
-	if (maxHum > 80) {
-		return {
-			skyColor: "#0d181c",
-			fogDensity: 0.008,
-			lightColor: "#e0f2fe",
-			lightIntensity: 0.85,
-		};
-	}
-	return {
-		skyColor: "#0a0c14",
-		fogDensity: 0,
-		lightColor: "#ffffff",
-		lightIntensity: 0.8,
-	};
+	return DEFAULT_LIGHTING;
 }
 
 function resolvePresetLabel(env) {
@@ -123,53 +116,63 @@ function resolvePresetLabel(env) {
 	return PRESET_LABELS[key] ?? null;
 }
 
-function buildCustomLabel(env, maxT, minT) {
+function collectLabelParts(metrics) {
+	const parts = [];
+	if (metrics.maxT > 60) parts.push(`up to ${metrics.maxT} C`);
+	if (metrics.minT < 0) parts.push(`freezing down to ${metrics.minT} C`);
+	if (metrics.vib?.psdG2Hz > 0) parts.push("constant shaking");
+	if (metrics.maxHum > 80) parts.push("high humidity");
+	return parts;
+}
+
+function buildCustomLabel(env, metrics) {
 	const preset = resolvePresetLabel(env);
 	if (preset) return preset;
-	const parts = [];
-	if (maxT > 60) parts.push(`up to ${maxT} C`);
-	if (minT < 0) parts.push(`freezing down to ${minT} C`);
-	const vib = getVibration(env);
-	if (vib?.psdG2Hz > 0) parts.push("constant shaking");
-	const hum = getMaxHumidity(env);
-	if (hum > 80) parts.push("high humidity");
+	const parts = collectLabelParts(metrics);
 	const name =
 		env?.name ?? env?.label ?? env?.env?.name ?? "Custom environment";
 	if (parts.length === 0) return `${name}: benign conditions`;
 	return `${name}: ${parts.join(" and ")}`;
 }
 
+const BADGE_CHECKS = [
+	[(m) => m.maxT > 60, "Very hot"],
+	[(m) => m.maxT > 40 && m.maxT <= 60, "Warm"],
+	[(m) => m.minT < 0, "Freezing"],
+	[(m) => hasShaking(m.env, m.vib), "Shaking"],
+	[(m) => m.maxHum > 80, "Humid"],
+	[(m) => m.alt >= 5000, "High altitude"],
+	[(m) => m.air > 0, "Airflow"],
+];
+
+function extractEnvMetrics(env) {
+	return {
+		env,
+		maxT: worstCaseAmbient(env),
+		minT: getMinAmbient(env),
+		vib: getVibration(env),
+		maxHum: getMaxHumidity(env),
+		alt: getAltitude(env),
+		air: getAirflow(env),
+	};
+}
+
 export function envBadges(env) {
 	if (!env) return [];
+	const metrics = extractEnvMetrics(env);
 	const badges = [];
-	const maxT = worstCaseAmbient(env);
-	const minT = getMinAmbient(env);
-	const vib = getVibration(env);
-	const maxHum = getMaxHumidity(env);
-	const alt = getAltitude(env);
-	const air = getAirflow(env);
-
-	if (maxT > 60) badges.push("Very hot");
-	else if (maxT > 40) badges.push("Warm");
-
-	if (minT < 0) badges.push("Freezing");
-	if (vib?.psdG2Hz > 0 || (vib?.shockG ?? env?.shockG ?? 0) > 0) {
-		badges.push("Shaking");
+	for (const [matches, badge] of BADGE_CHECKS) {
+		if (matches(metrics)) {
+			badges.push(badge);
+		}
 	}
-	if (maxHum > 80) badges.push("Humid");
-	if (alt >= 5000) badges.push("High altitude");
-	if (air > 0) badges.push("Airflow");
-
 	return badges;
 }
 
 export function envToVisuals(env) {
 	if (!env) {
 		return {
-			skyColor: "#0a0c14",
-			fogDensity: 0,
-			lightColor: "#ffffff",
-			lightIntensity: 0.8,
+			...DEFAULT_LIGHTING,
 			shake: { amplitudeMm: 0, frequencyHz: 0 },
 			droplets: 0,
 			frost: false,
@@ -177,18 +180,13 @@ export function envToVisuals(env) {
 			label: "Standard environment: benign conditions",
 		};
 	}
-	const maxT = worstCaseAmbient(env);
-	const minT = getMinAmbient(env);
-	const alt = getAltitude(env);
-	const maxHum = getMaxHumidity(env);
-	const lighting = resolveLighting(maxT, minT, alt, maxHum);
-	const vib = getVibration(env);
+	const metrics = extractEnvMetrics(env);
 	return {
-		...lighting,
-		shake: computeShake(vib),
-		droplets: computeDroplets(maxHum),
-		frost: minT < 0,
-		heatShimmer: maxT > 60,
-		label: buildCustomLabel(env, maxT, minT),
+		...resolveLighting(metrics),
+		shake: computeShake(metrics.vib),
+		droplets: computeDroplets(metrics.maxHum),
+		frost: metrics.minT < 0,
+		heatShimmer: metrics.maxT > 60,
+		label: buildCustomLabel(env, metrics),
 	};
 }
