@@ -5,6 +5,23 @@ const LIB_ID_REGEX = /^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+ -]+$/;
 const CACHE_CONTROL_HEADER = "public, max-age=3600";
 const UNAVAILABLE_ERROR = "KiCad libraries are not installed on this server";
 
+const ENTITIES = [
+	{
+		kind: "symbols",
+		single: "symbol",
+		title: "Symbol",
+		search: "searchSymbols",
+		get: "getSymbol",
+	},
+	{
+		kind: "footprints",
+		single: "footprint",
+		title: "Footprint",
+		search: "searchFootprints",
+		get: "getFootprint",
+	},
+];
+
 let lazyLibrary = null;
 
 function resolveLibrary(req) {
@@ -21,12 +38,17 @@ function isValidQueryString(q) {
 	return trimmed.length >= 1 && q.length <= 100;
 }
 
+function isValidLimit(num) {
+	if (!Number.isInteger(num)) return false;
+	return num >= 1 && num <= 100;
+}
+
 function parseLimit(rawLimit) {
 	if (rawLimit === undefined || rawLimit === "") {
 		return { ok: true, limit: 50 };
 	}
 	const num = Number(rawLimit);
-	if (!Number.isInteger(num) || num < 1 || num > 100) {
+	if (!isValidLimit(num)) {
 		return {
 			ok: false,
 			error: "Query parameter 'limit' must be an integer between 1 and 100",
@@ -60,120 +82,84 @@ async function ensureAvailable(library, res) {
 	return true;
 }
 
+function sendCachedJson(res, body) {
+	res.set("Cache-Control", CACHE_CONTROL_HEADER);
+	return res.status(200).json(body);
+}
+
 async function handleStatus(req, res) {
 	try {
 		const library = resolveLibrary(req);
 		const available = Boolean(await library.available());
-		res.set("Cache-Control", CACHE_CONTROL_HEADER);
-		return res.status(200).json({ available });
+		return sendCachedJson(res, { available });
 	} catch (_err) {
 		// Broad catch to guarantee route never leaks paths or stack traces
 		return res.status(500).json({ error: "Failed to check library status" });
 	}
 }
 
-async function handleSearchSymbols(req, res) {
-	const library = resolveLibrary(req);
-	if (!(await ensureAvailable(library, res))) return;
+function createSearchHandler(entity) {
+	return async (req, res) => {
+		const library = resolveLibrary(req);
+		if (!(await ensureAvailable(library, res))) return;
 
-	const val = validateSearch(req.query);
-	if (!val.ok) {
-		return res.status(400).json({ error: val.error });
-	}
-
-	try {
-		const symbols = await library.searchSymbols(req.query.q, {
-			limit: val.limit,
-		});
-		res.set("Cache-Control", CACHE_CONTROL_HEADER);
-		return res.status(200).json({ symbols });
-	} catch (_err) {
-		// Broad catch to guarantee route never leaks paths or stack traces
-		return res.status(500).json({ error: "Failed to search symbols" });
-	}
-}
-
-async function handleGetSymbol(req, res) {
-	const library = resolveLibrary(req);
-	if (!(await ensureAvailable(library, res))) return;
-
-	const { libId } = req.params;
-	if (!isValidLibId(libId)) {
-		return res.status(400).json({ error: "Invalid library identifier" });
-	}
-
-	try {
-		const symbol = await library.getSymbol(libId);
-		if (!symbol) {
-			return res.status(404).json({ error: `Symbol not found: ${libId}` });
+		const val = validateSearch(req.query);
+		if (!val.ok) {
+			return res.status(400).json({ error: val.error });
 		}
-		res.set("Cache-Control", CACHE_CONTROL_HEADER);
-		return res.status(200).json({ symbol });
-	} catch (_err) {
-		// Broad catch to guarantee route never leaks paths or stack traces
-		return res.status(500).json({ error: "Failed to get symbol" });
-	}
-}
 
-async function handleSearchFootprints(req, res) {
-	const library = resolveLibrary(req);
-	if (!(await ensureAvailable(library, res))) return;
-
-	const val = validateSearch(req.query);
-	if (!val.ok) {
-		return res.status(400).json({ error: val.error });
-	}
-
-	try {
-		const footprints = await library.searchFootprints(req.query.q, {
-			limit: val.limit,
-		});
-		res.set("Cache-Control", CACHE_CONTROL_HEADER);
-		return res.status(200).json({ footprints });
-	} catch (_err) {
-		// Broad catch to guarantee route never leaks paths or stack traces
-		return res.status(500).json({ error: "Failed to search footprints" });
-	}
-}
-
-async function handleGetFootprint(req, res) {
-	const library = resolveLibrary(req);
-	if (!(await ensureAvailable(library, res))) return;
-
-	const { libId } = req.params;
-	if (!isValidLibId(libId)) {
-		return res.status(400).json({ error: "Invalid library identifier" });
-	}
-
-	try {
-		const footprint = await library.getFootprint(libId);
-		if (!footprint) {
-			return res.status(404).json({ error: `Footprint not found: ${libId}` });
+		try {
+			const items = await library[entity.search](req.query.q, {
+				limit: val.limit,
+			});
+			return sendCachedJson(res, { [entity.kind]: items });
+		} catch (_err) {
+			// Broad catch to guarantee route never leaks paths or stack traces
+			return res.status(500).json({ error: `Failed to search ${entity.kind}` });
 		}
-		res.set("Cache-Control", CACHE_CONTROL_HEADER);
-		return res.status(200).json({ footprint });
-	} catch (_err) {
-		// Broad catch to guarantee route never leaks paths or stack traces
-		return res.status(500).json({ error: "Failed to get footprint" });
-	}
+	};
+}
+
+function createGetHandler(entity) {
+	return async (req, res) => {
+		const library = resolveLibrary(req);
+		if (!(await ensureAvailable(library, res))) return;
+
+		const { libId } = req.params;
+		if (!isValidLibId(libId)) {
+			return res.status(400).json({ error: "Invalid library identifier" });
+		}
+
+		try {
+			const item = await library[entity.get](libId);
+			if (!item) {
+				return res
+					.status(404)
+					.json({ error: `${entity.title} not found: ${libId}` });
+			}
+			return sendCachedJson(res, { [entity.single]: item });
+		} catch (_err) {
+			// Broad catch to guarantee route never leaks paths or stack traces
+			return res.status(500).json({ error: `Failed to get ${entity.single}` });
+		}
+	};
 }
 
 export function createLibraryRouter() {
 	const router = express.Router();
 	router.get(["/library/status", "/api/library/status"], handleStatus);
-	router.get(["/library/symbols", "/api/library/symbols"], handleSearchSymbols);
-	router.get(
-		["/library/symbols/:libId", "/api/library/symbols/:libId"],
-		handleGetSymbol,
-	);
-	router.get(
-		["/library/footprints", "/api/library/footprints"],
-		handleSearchFootprints,
-	);
-	router.get(
-		["/library/footprints/:libId", "/api/library/footprints/:libId"],
-		handleGetFootprint,
-	);
+
+	for (const entity of ENTITIES) {
+		router.get(
+			[`/library/${entity.kind}`, `/api/library/${entity.kind}`],
+			createSearchHandler(entity),
+		);
+		router.get(
+			[`/library/${entity.kind}/:libId`, `/api/library/${entity.kind}/:libId`],
+			createGetHandler(entity),
+		);
+	}
+
 	return router;
 }
 
