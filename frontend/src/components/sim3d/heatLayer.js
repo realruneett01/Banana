@@ -1,41 +1,46 @@
 import * as THREE from "three";
 import { clamp, temperatureColor } from "./flowModel.js";
 
-function resolveToScene(fn) {
-	if (typeof fn !== "function") {
-		return (x, y = 0, z = 0) =>
-			Array.isArray(x) ? [x[0], x[1], x[2]] : [x, y, z];
+function toCoord(x, y = 0, z = 0) {
+	return Array.isArray(x) ? [x[0], x[1], x[2]] : [x, y, z];
+}
+
+function extractPoint(res, fallback) {
+	if (Array.isArray(res)) return res;
+	if (typeof res?.x === "number") {
+		return [res.x, res.y, res.z];
 	}
+	return fallback;
+}
+
+function resolveToScene(fn) {
+	if (typeof fn !== "function") return toCoord;
 	return (x, y = 0, z = 0) => {
-		const px = Array.isArray(x) ? x[0] : x;
-		const py = Array.isArray(x) ? x[1] : y;
-		const pz = Array.isArray(x) ? x[2] : z;
-		const res = fn(px, py, pz);
-		if (Array.isArray(res)) return res;
-		if (res && typeof res.x === "number") {
-			return [res.x, res.y, res.z];
-		}
-		return [px, py, pz];
+		const pt = toCoord(x, y, z);
+		return extractPoint(fn(pt[0], pt[1], pt[2]), pt);
 	};
 }
 
+function makeDataTexture(data, width, height) {
+	const tex = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+	tex.magFilter = THREE.LinearFilter;
+	tex.minFilter = THREE.LinearFilter;
+	tex.needsUpdate = true;
+	return tex;
+}
+
 function createHeatTexture(grid) {
-	const cols = grid.cols;
-	const rows = grid.rows;
+	const { cols, rows, values } = grid;
 	const data = new Uint8Array(cols * rows * 4);
-	for (let i = 0; i < grid.values.length; i++) {
-		const [r, g, b] = temperatureColor(grid.values[i]);
+	for (let i = 0; i < values.length; i++) {
+		const [r, g, b] = temperatureColor(values[i]);
 		const idx = i * 4;
 		data[idx] = Math.round(clamp(r, 0, 1) * 255);
 		data[idx + 1] = Math.round(clamp(g, 0, 1) * 255);
 		data[idx + 2] = Math.round(clamp(b, 0, 1) * 255);
 		data[idx + 3] = 255;
 	}
-	const tex = new THREE.DataTexture(data, cols, rows, THREE.RGBAFormat);
-	tex.magFilter = THREE.LinearFilter;
-	tex.minFilter = THREE.LinearFilter;
-	tex.needsUpdate = true;
-	return tex;
+	return makeDataTexture(data, cols, rows);
 }
 
 function buildQuadPositions(c0, c1, c2, c3) {
@@ -86,11 +91,12 @@ function createHeatPlane(grid, toScene) {
 }
 
 function disposeMesh(mesh, parent) {
-	if (!mesh) return null;
-	parent.remove(mesh);
-	mesh.geometry?.dispose();
-	mesh.material?.map?.dispose();
-	mesh.material?.dispose();
+	if (mesh) {
+		parent.remove(mesh);
+		mesh.geometry?.dispose();
+		mesh.material?.map?.dispose();
+		mesh.material?.dispose();
+	}
 	return null;
 }
 
@@ -98,24 +104,20 @@ function createRingTexture() {
 	const size = 32;
 	const data = new Uint8Array(size * size * 4);
 	const center = 15.5;
-	for (let y = 0; y < size; y++) {
-		for (let x = 0; x < size; x++) {
-			const idx = (y * size + x) * 4;
-			const dist = Math.abs(Math.hypot(x - center, y - center) - 11);
-			if (dist < 3.5) {
-				const alpha = 1 - dist / 3.5;
-				data[idx] = 255;
-				data[idx + 1] = 30;
-				data[idx + 2] = 30;
-				data[idx + 3] = Math.round(alpha * 255);
-			}
+	for (let i = 0; i < size * size; i++) {
+		const x = i % size;
+		const y = Math.floor(i / size);
+		const dist = Math.abs(Math.hypot(x - center, y - center) - 11);
+		if (dist < 3.5) {
+			const idx = i * 4;
+			const alpha = 1 - dist / 3.5;
+			data[idx] = 255;
+			data[idx + 1] = 30;
+			data[idx + 2] = 30;
+			data[idx + 3] = Math.round(alpha * 255);
 		}
 	}
-	const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
-	tex.magFilter = THREE.LinearFilter;
-	tex.minFilter = THREE.LinearFilter;
-	tex.needsUpdate = true;
-	return tex;
+	return makeDataTexture(data, size, size);
 }
 
 function createHotSprite(part, toScene, ringTex, mmScale) {
@@ -134,20 +136,20 @@ function createHotSprite(part, toScene, ringTex, mmScale) {
 	return { sprite, mat, baseScale };
 }
 
+function calcMmScale(toScene) {
+	const p0 = toScene(0, 0, 0);
+	const p10 = toScene(10, 0, 0);
+	const d = Math.hypot(p10[0] - p0[0], p10[1] - p0[1], p10[2] - p0[2]);
+	return d / 10 || 0.1;
+}
+
 function createHotSprites(grid, toScene, ringTex) {
 	const placements = Array.isArray(grid?.placements) ? grid.placements : [];
 	const hotParts = placements.filter(
 		(p) => Number(p?.tempC ?? p?.temp ?? 0) >= 85,
 	);
-	const p0 = toScene(0, 0, 0);
-	const p10 = toScene(10, 0, 0);
-	const mmScale =
-		Math.hypot(p10[0] - p0[0], p10[1] - p0[1], p10[2] - p0[2]) / 10 || 0.1;
-	const rings = [];
-	for (const p of hotParts) {
-		rings.push(createHotSprite(p, toScene, ringTex, mmScale));
-	}
-	return rings;
+	const mmScale = calcMmScale(toScene);
+	return hotParts.map((p) => createHotSprite(p, toScene, ringTex, mmScale));
 }
 
 function updateRings(rings, time) {
@@ -160,11 +162,11 @@ function updateRings(rings, time) {
 }
 
 function disposeRings(rings, parent) {
-	for (const r of rings) {
+	while (rings.length > 0) {
+		const r = rings.pop();
 		parent.remove(r.sprite);
 		r.mat.dispose();
 	}
-	rings.length = 0;
 }
 
 function createLayerManager(root, toScene, ringTex) {
@@ -172,9 +174,13 @@ function createLayerManager(root, toScene, ringTex) {
 	const rings = [];
 	let animTime = 0;
 
-	const setGrid = (grid) => {
+	const clear = () => {
 		planeMesh = disposeMesh(planeMesh, root);
 		disposeRings(rings, root);
+	};
+
+	const setGrid = (grid) => {
+		clear();
 		planeMesh = createHeatPlane(grid, toScene);
 		if (planeMesh) root.add(planeMesh);
 		const newRings = createHotSprites(grid, toScene, ringTex);
@@ -188,8 +194,7 @@ function createLayerManager(root, toScene, ringTex) {
 	};
 
 	const dispose = () => {
-		planeMesh = disposeMesh(planeMesh, root);
-		disposeRings(rings, root);
+		clear();
 	};
 
 	return { setGrid, update, dispose };
