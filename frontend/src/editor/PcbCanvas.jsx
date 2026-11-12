@@ -1,4 +1,13 @@
+import { message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { setOutlineTool, useOutlineTool } from "./BoardTools.jsx";
+import {
+	outlineToPolygon,
+	polygonBBox,
+	rectOutline,
+	roundedRectOutline,
+} from "./boardOutline.js";
+import { get as getEditorStatus } from "./editorStatus.js";
 import {
 	arcToSvgPath,
 	footprintToPrimitives,
@@ -35,6 +44,7 @@ import {
 	fitToBounds,
 	panBy,
 	screenToWorld,
+	snapPoint,
 	zoomAt,
 } from "./viewport.js";
 
@@ -351,6 +361,10 @@ function isTextInput(target) {
 function handleShortcuts(e, ctx) {
 	if (isTextInput(e.target)) return;
 	const key = e.key.toLowerCase();
+	if (key === "escape" && ctx.cancelOutline?.()) {
+		e.preventDefault();
+		return;
+	}
 	if (handleHistoryShortcuts(e, key, ctx)) return;
 	if (handleLayerShortcuts(e, ctx)) return;
 	handleToolKeys(e, key, ctx);
@@ -374,16 +388,43 @@ function collectFootprintPoints(parts) {
 	return pts;
 }
 
+function getOutlineBBox(outline) {
+	if (outline[0]?.type) {
+		const res = outlineToPolygon(outline);
+		if (res.ok) return polygonBBox(res.polygon);
+	}
+	return bboxOfPoints(outline);
+}
+
 function getSceneBounds(board, ir) {
-	if (Array.isArray(board?.outline) && board.outline.length >= 3) {
-		return bboxOfPoints(board.outline);
+	if (isValidOutline(board?.outline)) {
+		const box = getOutlineBBox(board.outline);
+		if (box) return box;
 	}
 	return bboxOfPoints(collectFootprintPoints(ir?.parts));
 }
 
-function EdgeCutsLayer({ outline }) {
+function formatPt(pt) {
+	if (Array.isArray(pt)) return `${pt[0]},${pt[1]}`;
+	if (pt && typeof pt.x === "number" && typeof pt.y === "number") {
+		return `${pt.x},${pt.y}`;
+	}
+	return null;
+}
+
+function outlinePoints(outline) {
 	if (!isValidOutline(outline)) return null;
-	const pts = outline.map((p) => `${p[0]},${p[1]}`).join(" ");
+	if (outline[0]?.type) {
+		const res = outlineToPolygon(outline);
+		if (!res.ok) return null;
+		return res.polygon.map(formatPt).filter(Boolean).join(" ");
+	}
+	return outline.map(formatPt).filter(Boolean).join(" ");
+}
+
+function EdgeCutsLayer({ outline }) {
+	const pts = outlinePoints(outline);
+	if (!pts) return null;
 	return (
 		<polygon
 			points={pts}
@@ -1705,6 +1746,7 @@ function buildShortcuts(ctx) {
 		jumpCopper: ctx.layers.onJumpCopper,
 		stepCopper: ctx.layers.onStepCopper,
 		fitHome: ctx.fitHome,
+		cancelOutline: ctx.outlineDrawing?.cancelOutline,
 	};
 }
 
@@ -1851,30 +1893,210 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 	));
 }
 
-function useSvgPointerHandlers(pan, drag, route, sceneData) {
+function getDragBBox(start, current) {
+	return {
+		x: Math.min(start.x, current.x),
+		y: Math.min(start.y, current.y),
+		w: Math.abs(current.x - start.x),
+		h: Math.abs(current.y - start.y),
+	};
+}
+
+function createOutlineShapes(tool, start, current, radius) {
+	const { x, y, w, h } = getDragBBox(start, current);
+	if (w === 0 || h === 0) return null;
+	if (tool === "rounded_rect") {
+		return roundedRectOutline(x, y, w, h, radius ?? 1);
+	}
+	return rectOutline(x, y, w, h);
+}
+
+function commitOutline(drag, outlineTool, board, pushBoard) {
+	const shapes = createOutlineShapes(
+		outlineTool.activeTool,
+		drag.start,
+		drag.current,
+		outlineTool.radius,
+	);
+	if (!shapes) return;
+	const res = outlineToPolygon(shapes);
+	if (!res.ok) {
+		message.error(res.error || "Failed to create board outline");
+		return;
+	}
+	pushBoard({ ...board, outline: shapes });
+}
+
+function OutlinePreview({ drag, activeTool, radius }) {
+	if (!drag || !activeTool) return null;
+	const shapes = createOutlineShapes(
+		activeTool,
+		drag.start,
+		drag.current,
+		radius,
+	);
+	if (!shapes) return null;
+	const res = outlineToPolygon(shapes);
+	if (!res.ok) return null;
+	const pts = res.polygon.map(formatPt).filter(Boolean).join(" ");
+	const color = getLayerColor(PCB_THEME, "Edge.Cuts");
+	return (
+		<polygon
+			points={pts}
+			fill="none"
+			stroke={color}
+			strokeWidth={0.5}
+			strokeDasharray="2,2"
+		/>
+	);
+}
+
+function useOutlinePointer({ activeTool, isDragging, svgRef, view, setDrag }) {
+	const onPointerDown = useCallback(
+		(e) => {
+			if (e.button !== 0 || !activeTool) return false;
+			const [rx, ry] = screenToBoardCoords(e, svgRef.current, view);
+			const grid = getEditorStatus()?.grid || 0.25;
+			const pt = snapPoint({ x: rx, y: ry }, grid);
+			setDrag({ start: pt, current: pt });
+			return true;
+		},
+		[activeTool, svgRef, view, setDrag],
+	);
+
+	const onPointerMove = useCallback(
+		(e) => {
+			if (!isDragging) return false;
+			const [rx, ry] = screenToBoardCoords(e, svgRef.current, view);
+			const grid = getEditorStatus()?.grid || 0.25;
+			const pt = snapPoint({ x: rx, y: ry }, grid);
+			setDrag((prev) => (prev ? { ...prev, current: pt } : null));
+			return true;
+		},
+		[isDragging, svgRef, view, setDrag],
+	);
+
+	return { onPointerDown, onPointerMove };
+}
+
+function useOutlineCommit({ drag, outlineTool, board, pushBoard, setDrag }) {
+	const onPointerUp = useCallback(() => {
+		if (!drag || !outlineTool.activeTool) return false;
+		commitOutline(drag, outlineTool, board, pushBoard);
+		setDrag(null);
+		return true;
+	}, [drag, outlineTool, board, pushBoard, setDrag]);
+
+	const cancelOutline = useCallback(() => {
+		if (drag) {
+			setDrag(null);
+			return true;
+		}
+		if (outlineTool.activeTool) {
+			setOutlineTool({ activeTool: null });
+			return true;
+		}
+		return false;
+	}, [drag, outlineTool.activeTool, setDrag]);
+
+	return { onPointerUp, cancelOutline };
+}
+
+function useOutlineDrawing({ board, pushBoard, svgRef, view }) {
+	const outlineTool = useOutlineTool();
+	const [drag, setDrag] = useState(null);
+	const ptr = useOutlinePointer({
+		activeTool: outlineTool.activeTool,
+		isDragging: Boolean(drag),
+		svgRef,
+		view,
+		setDrag,
+	});
+	const actions = useOutlineCommit({
+		drag,
+		outlineTool,
+		board,
+		pushBoard,
+		setDrag,
+	});
+	return {
+		drag,
+		activeTool: outlineTool.activeTool,
+		radius: outlineTool.radius,
+		...ptr,
+		...actions,
+	};
+}
+
+function useSvgPointerHandlers({
+	pan,
+	drag,
+	route,
+	sceneData,
+	outlineDrawing,
+}) {
 	const onPointerDown = useCallback(
 		(e) => {
 			if (pan.onPanStart(e)) return;
+			if (outlineDrawing.onPointerDown(e)) return;
 			sceneData.onPointerDown(e);
 		},
-		[pan, sceneData],
+		[pan, outlineDrawing, sceneData],
 	);
 	const onPointerMove = useCallback(
 		(e) => {
 			if (pan.onPanMove(e)) return;
+			if (outlineDrawing.onPointerMove(e)) return;
 			drag.onPointerMove(e);
 			route.onPointerMove(e);
 		},
-		[pan, drag, route],
+		[pan, outlineDrawing, drag, route],
 	);
 	const onPointerUp = useCallback(
 		(e) => {
 			pan.onPanEnd();
+			if (outlineDrawing.onPointerUp(e)) return;
 			drag.onDropDrag(e);
 		},
-		[pan, drag],
+		[pan, outlineDrawing, drag],
 	);
 	return { onPointerDown, onPointerMove, onPointerUp };
+}
+
+function PcbSvgContent({
+	order,
+	sceneData,
+	layerState,
+	drag,
+	showVias,
+	route,
+	markers,
+	outlineDrawing,
+}) {
+	return (
+		<>
+			<PcbLayerStack
+				order={order}
+				sceneData={sceneData}
+				layerState={layerState}
+				drag={drag}
+			/>
+			{showVias && <ViasLayer vias={sceneData.board?.vias} />}
+			<RatsnestLayer lines={sceneData.rnLines} />
+			<RoutingPreviewLayer
+				points={route.points}
+				proposed={route.proposedRoute}
+				activeLayer={layerState.active}
+				widthMm={route.widthMm}
+			/>
+			<MarkersOverlay markers={markers} />
+			<OutlinePreview
+				drag={outlineDrawing.drag}
+				activeTool={outlineDrawing.activeTool}
+				radius={outlineDrawing.radius}
+			/>
+		</>
+	);
 }
 
 function PcbSvgScene({
@@ -1886,11 +2108,18 @@ function PcbSvgScene({
 	drag,
 	pan,
 	markers,
+	outlineDrawing,
 }) {
 	const order = useMemo(() => drawOrder(layerState), [layerState]);
 	const showVias =
 		isVisible(layerState, "F.Cu") || isVisible(layerState, "B.Cu");
-	const ptr = useSvgPointerHandlers(pan, drag, route, sceneData);
+	const ptr = useSvgPointerHandlers({
+		pan,
+		drag,
+		route,
+		sceneData,
+		outlineDrawing,
+	});
 	const transform = `translate(${view.pan.x},${view.pan.y}) scale(${view.zoom})`;
 	return (
 		/* biome-ignore lint/a11y/useKeyWithClickEvents: Keyboard handled on parent region */
@@ -1905,24 +2134,33 @@ function PcbSvgScene({
 		>
 			<title>PCB Canvas</title>
 			<g transform={transform}>
-				<PcbLayerStack
+				<PcbSvgContent
 					order={order}
 					sceneData={sceneData}
 					layerState={layerState}
 					drag={drag}
+					showVias={showVias}
+					route={route}
+					markers={markers}
+					outlineDrawing={outlineDrawing}
 				/>
-				{showVias && <ViasLayer vias={sceneData.board?.vias} />}
-				<RatsnestLayer lines={sceneData.rnLines} />
-				<RoutingPreviewLayer
-					points={route.points}
-					proposed={route.proposedRoute}
-					activeLayer={layerState.active}
-					widthMm={route.widthMm}
-				/>
-				<MarkersOverlay markers={markers} />
 			</g>
 		</svg>
 	);
+}
+
+function useCanvasView(board, ir, svgRef) {
+	const [view, setView] = useState(() =>
+		fitToBounds(getSceneBounds(board, ir), { width: 800, height: 600 }),
+	);
+	useWheelZoom(svgRef, setView);
+	const pan = useCanvasPan(setView);
+	const fitHome = useCallback(() => {
+		const rect = svgRef.current?.getBoundingClientRect();
+		const size = { width: rect?.width || 800, height: rect?.height || 600 };
+		setView(fitToBounds(getSceneBounds(board, ir), size));
+	}, [board, ir, svgRef]);
+	return { view, setView, pan, fitHome };
 }
 
 function usePcbCanvasState({
@@ -1934,11 +2172,7 @@ function usePcbCanvasState({
 }) {
 	const svgRef = useRef(null);
 	const ir = editor?.state?.ir;
-	const [view, setView] = useState(() =>
-		fitToBounds(getSceneBounds(board, ir), { width: 800, height: 600 }),
-	);
-	useWheelZoom(svgRef, setView);
-	const pan = useCanvasPan(setView);
+	const { view, pan, fitHome } = useCanvasView(board, ir, svgRef);
 	const layers = useCanvasLayers(board);
 	const fpCache = useFootprintCache(ir?.parts, fetchFootprint);
 	const history = useBoardHistory(board, onBoardChange);
@@ -1958,6 +2192,12 @@ function usePcbCanvasState({
 		padPositions,
 		view,
 	});
+	const outlineDrawing = useOutlineDrawing({
+		board,
+		pushBoard: history.pushBoard,
+		svgRef,
+		view,
+	});
 	const rnLines = useMemo(() => ratsnest(ir, padPositions), [ir, padPositions]);
 	const onPointerDown = usePointerDownHandler({
 		route,
@@ -1967,11 +2207,6 @@ function usePcbCanvasState({
 		svgRef,
 		view,
 	});
-	const fitHome = useCallback(() => {
-		const rect = svgRef.current?.getBoundingClientRect();
-		const size = { width: rect?.width || 800, height: rect?.height || 600 };
-		setView(fitToBounds(getSceneBounds(board, ir), size));
-	}, [board, ir]);
 	const shortcuts = buildShortcuts({
 		editor,
 		sel,
@@ -1979,6 +2214,7 @@ function usePcbCanvasState({
 		route,
 		history,
 		fitHome,
+		outlineDrawing,
 	});
 	const sceneData = buildSceneData({
 		board,
@@ -1988,7 +2224,17 @@ function usePcbCanvasState({
 		onPointerDown,
 		fpCache,
 	});
-	return { svgRef, view, layers, route, sceneData, drag, pan, shortcuts };
+	return {
+		svgRef,
+		view,
+		layers,
+		route,
+		sceneData,
+		drag,
+		pan,
+		shortcuts,
+		outlineDrawing,
+	};
 }
 
 export default function PcbCanvas({
@@ -2035,6 +2281,7 @@ export default function PcbCanvas({
 				drag={s.drag}
 				pan={s.pan}
 				markers={markers}
+				outlineDrawing={s.outlineDrawing}
 			/>
 			<LayerListOverlay
 				layerState={s.layers.layerState}

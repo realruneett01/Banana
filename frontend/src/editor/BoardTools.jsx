@@ -1,6 +1,22 @@
 import { BorderOutlined, SyncOutlined } from "@ant-design/icons";
-import { Button, Checkbox, Modal, message, Select, Space, Tooltip } from "antd";
-import { useCallback, useMemo, useState } from "react";
+import {
+	Button,
+	Checkbox,
+	InputNumber,
+	Modal,
+	message,
+	Select,
+	Space,
+	Tooltip,
+} from "antd";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useState,
+	useSyncExternalStore,
+} from "react";
+import { outlineToPolygon, polygonBBox } from "./boardOutline.js";
 import { removeOrphans, syncBoardFromIr } from "./syncModel.js";
 import { addZone, rectZonePoints, validateZone } from "./zoneModel.js";
 
@@ -15,6 +31,41 @@ const LAYER_OPTIONS = [
 	{ value: "F.Cu", label: "F.Cu" },
 	{ value: "B.Cu", label: "B.Cu" },
 ];
+
+const DEFAULT_OUTLINE_TOOL = Object.freeze({
+	activeTool: null,
+	radius: 1,
+});
+
+let outlineToolState = DEFAULT_OUTLINE_TOOL;
+const outlineListeners = new Set();
+
+function notifyOutlineTool() {
+	for (const listener of outlineListeners) {
+		listener(outlineToolState);
+	}
+}
+
+export function getOutlineTool() {
+	return outlineToolState;
+}
+
+export function subscribeOutlineTool(listener) {
+	outlineListeners.add(listener);
+	return () => {
+		outlineListeners.delete(listener);
+	};
+}
+
+export function setOutlineTool(patch) {
+	const next = typeof patch === "function" ? patch(outlineToolState) : patch;
+	outlineToolState = { ...outlineToolState, ...next };
+	notifyOutlineTool();
+}
+
+export function useOutlineTool() {
+	return useSyncExternalStore(subscribeOutlineTool, getOutlineTool);
+}
 
 function getSafeBoard(board) {
 	if (!board) return EMPTY_BOARD;
@@ -34,8 +85,17 @@ function getPoint(pt) {
 	return [x, y];
 }
 
-function getOutlineBounds(outline) {
-	if (!Array.isArray(outline) || outline.length < 3) return null;
+function getShapeBounds(outline) {
+	const res = outlineToPolygon(outline);
+	if (!res.ok) return null;
+	const b = polygonBBox(res.polygon);
+	return [
+		[b.minX, b.minY],
+		[b.maxX, b.maxY],
+	];
+}
+
+function getPointsBounds(outline) {
 	let minX = Infinity;
 	let minY = Infinity;
 	let maxX = -Infinity;
@@ -53,6 +113,12 @@ function getOutlineBounds(outline) {
 		[minX, minY],
 		[maxX, maxY],
 	];
+}
+
+function getOutlineBounds(outline) {
+	if (!Array.isArray(outline) || outline.length < 3) return null;
+	if (outline[0]?.type) return getShapeBounds(outline);
+	return getPointsBounds(outline);
 }
 
 function getPartsBounds(parts, margin = 5) {
@@ -387,13 +453,111 @@ function PourAction({ disabled, pour, board, ir }) {
 	);
 }
 
+function OutlineRectButton({ disabled, active, onClick }) {
+	return (
+		<Tooltip title="Draw rectangle board outline">
+			<Button
+				size="small"
+				type={active ? "primary" : "default"}
+				disabled={disabled}
+				onClick={onClick}
+				aria-label="Rectangle board outline"
+			>
+				Rectangle
+			</Button>
+		</Tooltip>
+	);
+}
+
+function OutlineRoundedButton({ disabled, active, onClick }) {
+	return (
+		<Tooltip title="Draw rounded rectangle board outline">
+			<Button
+				size="small"
+				type={active ? "primary" : "default"}
+				disabled={disabled}
+				onClick={onClick}
+				aria-label="Rounded rectangle board outline"
+			>
+				Rounded rectangle
+			</Button>
+		</Tooltip>
+	);
+}
+
+function OutlineRadiusInput({ disabled, value, onChange }) {
+	return (
+		<Tooltip title="Corner radius (default 1 mm)">
+			<InputNumber
+				size="small"
+				min={0.1}
+				step={0.5}
+				value={value}
+				disabled={disabled}
+				onChange={onChange}
+				style={{ width: 60 }}
+				aria-label="Corner radius"
+			/>
+		</Tooltip>
+	);
+}
+
+function OutlineToolGroup({ disabled, toolState }) {
+	const { activeTool, radius } = toolState;
+	const toggleRect = useCallback(() => {
+		setOutlineTool((s) => ({
+			...s,
+			activeTool: s.activeTool === "rect" ? null : "rect",
+		}));
+	}, []);
+	const toggleRounded = useCallback(() => {
+		setOutlineTool((s) => ({
+			...s,
+			activeTool: s.activeTool === "rounded_rect" ? null : "rounded_rect",
+		}));
+	}, []);
+	const handleRadiusChange = useCallback((val) => {
+		setOutlineTool((s) => ({ ...s, radius: Number(val) || 1 }));
+	}, []);
+
+	return (
+		<Space size={4} aria-label="Board outline">
+			<span style={{ fontSize: "12px", color: "#8a91a3" }}>Board outline:</span>
+			<OutlineRectButton
+				disabled={disabled}
+				active={activeTool === "rect"}
+				onClick={toggleRect}
+			/>
+			<OutlineRoundedButton
+				disabled={disabled}
+				active={activeTool === "rounded_rect"}
+				onClick={toggleRounded}
+			/>
+			<OutlineRadiusInput
+				disabled={disabled}
+				value={radius}
+				onChange={handleRadiusChange}
+			/>
+		</Space>
+	);
+}
+
 export default function BoardTools({ ir, board, onChange, disabled }) {
 	const sync = useBoardSync({ ir, board, onChange });
 	const pour = useCopperPour({ board, ir, onChange });
+	const toolState = useOutlineTool();
+
+	useEffect(() => {
+		if (disabled && toolState.activeTool) {
+			setOutlineTool({ activeTool: null });
+		}
+	}, [disabled, toolState.activeTool]);
+
 	return (
 		<Space size={4}>
 			<SyncAction disabled={disabled} sync={sync} />
 			<PourAction disabled={disabled} pour={pour} board={board} ir={ir} />
+			<OutlineToolGroup disabled={disabled} toolState={toolState} />
 		</Space>
 	);
 }
