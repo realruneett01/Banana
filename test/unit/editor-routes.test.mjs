@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import http from "node:http";
+import path from "node:path";
 import { after, before, describe, test } from "node:test";
+import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import { newId } from "../../backend/src/engine/ids.js";
 import { createEditorRouter } from "../../backend/src/routes/editor-routes.js";
@@ -119,6 +121,127 @@ const EXPORT_INVALID_CASES = [
 	createCase("empty body", {}),
 	createCase("null ir", { ir: null }),
 	createCase("invalid ir schema", { ir: { schemaVersion: 2 } }),
+];
+
+const SAMPLE_SCH = `(kicad_sch
+	(version 20240108)
+	(generator "banana")
+	(symbol (lib_id "Device:R") (at 30 40 90)
+		(property "Reference" "R1")
+		(property "Value" "10k")
+	)
+)`;
+
+const REPO_DIR = path.resolve("/fake/repo");
+const COMMIT_HASH = "0123456789abcdef0123456789abcdef01234567";
+
+function createFakeFs(initialFiles = {}) {
+	const files = new Map(Object.entries(initialFiles));
+	const written = new Map();
+	const readFile = async (p) => {
+		if (!files.has(p)) {
+			throw new Error(`ENOENT: ${p}`);
+		}
+		return files.get(p);
+	};
+	const writeFile = async (p, data) => {
+		written.set(p, data);
+	};
+	return { files, written, fsImpl: { readFile, writeFile } };
+}
+
+function createFakeExecFile(options = {}) {
+	const calls = [];
+	const isWorkTree = options.isWorkTree ?? true;
+	const commitHash = options.commitHash ?? COMMIT_HASH;
+	const execFileFn = async (cmd, args, opts) => {
+		calls.push({ cmd, args, opts });
+		if (args.includes("--is-inside-work-tree")) {
+			return { stdout: isWorkTree ? "true\n" : "false\n" };
+		}
+		if (args.includes("HEAD")) {
+			return { stdout: `${commitHash}\n` };
+		}
+		return { stdout: "" };
+	};
+	return { calls, execFileFn };
+}
+
+function assertNoWritesOrCommits(fakeFs, fakeExec) {
+	assert.strictEqual(fakeFs.written.size, 0);
+	const commits = fakeExec.calls.filter((c) => c.args.includes("commit"));
+	assert.strictEqual(commits.length, 0);
+}
+
+function makeValidCommitBody(overrides = {}) {
+	return {
+		repoPath: REPO_DIR,
+		files: [
+			{
+				path: "hardware/board.kicad_sch",
+				kind: "sch",
+				edits: [{ ref: "R1", op: "setValue", value: "22k" }],
+			},
+		],
+		message: "Update R1 value",
+		...overrides,
+	};
+}
+
+const COMMIT_INVALID_CASES = [
+	createCase("empty body", {}),
+	createCase("null repoPath", makeValidCommitBody({ repoPath: null })),
+	createCase("non-string repoPath", makeValidCommitBody({ repoPath: 123 })),
+	createCase("empty repoPath", makeValidCommitBody({ repoPath: "" })),
+	createCase(
+		"overly long repoPath",
+		makeValidCommitBody({ repoPath: "x".repeat(1025) }),
+	),
+	createCase("null message", makeValidCommitBody({ message: null })),
+	createCase("empty message", makeValidCommitBody({ message: "" })),
+	createCase(
+		"overly long message",
+		makeValidCommitBody({ message: "m".repeat(201) }),
+	),
+	createCase("non-array files", makeValidCommitBody({ files: "not-array" })),
+	createCase("empty files array", makeValidCommitBody({ files: [] })),
+	createCase(
+		"too many files",
+		makeValidCommitBody({
+			files: [
+				{ path: "a.kicad_sch", kind: "sch", edits: [] },
+				{ path: "b.kicad_pcb", kind: "pcb", edits: [] },
+				{ path: "c.kicad_sch", kind: "sch", edits: [] },
+			],
+		}),
+	),
+	createCase("invalid file entry type", makeValidCommitBody({ files: [null] })),
+	createCase(
+		"missing file path",
+		makeValidCommitBody({ files: [{ kind: "sch", edits: [] }] }),
+	),
+	createCase(
+		"empty file path",
+		makeValidCommitBody({ files: [{ path: "", kind: "sch", edits: [] }] }),
+	),
+	createCase(
+		"invalid file kind",
+		makeValidCommitBody({
+			files: [{ path: "a.kicad_sch", kind: "csv", edits: [] }],
+		}),
+	),
+	createCase(
+		"edits not array",
+		makeValidCommitBody({
+			files: [{ path: "a.kicad_sch", kind: "sch", edits: "none" }],
+		}),
+	),
+	createCase(
+		"edits too large",
+		makeValidCommitBody({
+			files: [{ path: "a.kicad_sch", kind: "sch", edits: new Array(501) }],
+		}),
+	),
 ];
 
 function assertErrorResponse(res, expectedStatus) {
@@ -243,6 +366,146 @@ describe("editor-routes", () => {
 		});
 	});
 
+	describe("POST /api/editor/commit", () => {
+		let commitApp;
+		let commitServer;
+		let commitPort;
+		let fakeFs;
+		let fakeExec;
+
+		function resetHarness() {
+			const schPath = path.resolve(REPO_DIR, "hardware/board.kicad_sch");
+			fakeFs = createFakeFs({ [schPath]: SAMPLE_SCH });
+			fakeExec = createFakeExecFile();
+			commitApp.locals.allowLocalRepos = true;
+		}
+
+		before(async () => {
+			commitApp = express();
+			commitApp.use(express.json());
+			resetHarness();
+			const router = createEditorRouter({
+				patchDeps: {
+					fsImpl: {
+						readFile: (p, enc) => fakeFs.fsImpl.readFile(p, enc),
+						writeFile: (p, data, enc) => fakeFs.fsImpl.writeFile(p, data, enc),
+					},
+					execFileFn: (cmd, args, opts) => fakeExec.execFileFn(cmd, args, opts),
+				},
+			});
+			commitApp.use(router);
+			const started = await bootServer(commitApp);
+			commitServer = started.server;
+			commitPort = started.port;
+		});
+
+		after(async () => {
+			await shutdownServer(commitServer);
+		});
+
+		test("refuses with 403 in hosted mode without calling fs or git", async () => {
+			resetHarness();
+			commitApp.locals.allowLocalRepos = false;
+			const res = await postJson(
+				commitPort,
+				"/api/editor/commit",
+				makeValidCommitBody(),
+			);
+			assert.strictEqual(res.status, 403);
+			assert.strictEqual(
+				res.json.error,
+				"Saving to KiCad files is only available in the desktop app",
+			);
+			assertNoWritesOrCommits(fakeFs, fakeExec);
+			assert.strictEqual(fakeExec.calls.length, 0);
+		});
+
+		test("desktop happy path returns commit hash and per-file counts", async () => {
+			resetHarness();
+			const res = await postJson(
+				commitPort,
+				"/api/editor/commit",
+				makeValidCommitBody(),
+			);
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(res.json.commit, COMMIT_HASH);
+			assert.deepStrictEqual(res.json.files, [
+				{ path: "hardware/board.kicad_sch", applied: 1, skipped: [] },
+			]);
+			assert.strictEqual(fakeFs.written.size, 1);
+		});
+
+		for (const { name, body } of COMMIT_INVALID_CASES) {
+			test(`rejects ${name} with 400 and writes nothing`, async () => {
+				resetHarness();
+				const res = await postJson(commitPort, "/api/editor/commit", body);
+				assertErrorResponse(res, 400);
+				assertNoWritesOrCommits(fakeFs, fakeExec);
+			});
+		}
+
+		test("rejects traversal path with 400 and writes nothing", async () => {
+			resetHarness();
+			const body = makeValidCommitBody({
+				files: [
+					{
+						path: "../secret.kicad_sch",
+						kind: "sch",
+						edits: [{ ref: "R1", op: "setValue", value: "22k" }],
+					},
+				],
+			});
+			const res = await postJson(commitPort, "/api/editor/commit", body);
+			assertErrorResponse(res, 400);
+			assertNoWritesOrCommits(fakeFs, fakeExec);
+		});
+
+		test("returns 400 when tool applies zero edits", async () => {
+			resetHarness();
+			const body = makeValidCommitBody({
+				files: [
+					{
+						path: "hardware/board.kicad_sch",
+						kind: "sch",
+						edits: [{ ref: "R999", op: "setValue", value: "22k" }],
+					},
+				],
+			});
+			const res = await postJson(commitPort, "/api/editor/commit", body);
+			assert.strictEqual(res.status, 400);
+			assert.strictEqual(res.json.error, "No edits were applied");
+			assertNoWritesOrCommits(fakeFs, fakeExec);
+		});
+
+		test("returns 500 on unexpected throw without leaking absolute path", async () => {
+			resetHarness();
+			const secretPath = path.resolve("/secret/storage/leak.txt");
+			fakeFs.fsImpl.writeFile = async () => {
+				throw new Error(`Write failed at ${secretPath}: broken disk`);
+			};
+			const res = await postJson(
+				commitPort,
+				"/api/editor/commit",
+				makeValidCommitBody(),
+			);
+			assert.strictEqual(res.status, 500);
+			assert.strictEqual(res.json.error, "Editor commit failed");
+			assert.strictEqual(res.json.stack, undefined);
+			assert.strictEqual(JSON.stringify(res.json).includes(secretPath), false);
+		});
+
+		test("responds successfully at /editor/commit", async () => {
+			resetHarness();
+			const res = await postJson(
+				commitPort,
+				"/editor/commit",
+				makeValidCommitBody(),
+			);
+			assert.strictEqual(res.status, 200);
+			assert.strictEqual(res.json.commit, COMMIT_HASH);
+		});
+	});
+
 	describe("rate limiting and local mode", () => {
 		test("does not break local mode with allowLocalRepos = true", async () => {
 			const ir = makeTestIR("LocalModeTest", 2);
@@ -267,6 +530,23 @@ describe("editor-routes", () => {
 			} finally {
 				app.locals.allowLocalRepos = true;
 			}
+		});
+
+		test("enforces rate limiter headers on commit route when allowLocalRepos is false", async () => {
+			app.locals.allowLocalRepos = false;
+			try {
+				const res = await postJson(port, "/api/editor/commit", {});
+				assert.strictEqual(res.status, 403);
+				assert.strictEqual(res.headers.get("ratelimit-limit"), "120");
+				assert.notStrictEqual(res.headers.get("ratelimit-remaining"), null);
+			} finally {
+				app.locals.allowLocalRepos = true;
+			}
+		});
+
+		test("does not rate limit commit route when allowLocalRepos is true", async () => {
+			const res = await postJson(port, "/api/editor/commit", {});
+			assert.strictEqual(res.headers.get("ratelimit-limit"), null);
 		});
 	});
 });

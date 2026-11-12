@@ -3,12 +3,27 @@ import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
 import { irToKicadSch } from "../engine/kicad-sch-writer.js";
+import { createRegistry } from "../engine/tool-registry.js";
+import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
 const MAX_TRACKS = 20000;
 const MAX_NAME_LENGTH = 64;
 const DEFAULT_NAME = "circuit";
 const TRACK_WARNING = "tracks not yet written by pcb writer";
+const PATCH_TOOL_ERRORS = [
+	"path must",
+	"path resolves outside",
+	"unsupported kind",
+	"edits must",
+	"file entry must",
+	"files must",
+	"repoPath must",
+	"message must",
+	"No edits were applied",
+	"Failed to patch",
+	"Failed to read file",
+];
 
 function sanitizeName(raw) {
 	if (typeof raw !== "string") {
@@ -101,9 +116,127 @@ function handleExport(req, res) {
 	}
 }
 
+function isPlainObject(val) {
+	if (!val || typeof val !== "object") {
+		return false;
+	}
+	return !Array.isArray(val);
+}
+
+function isValidRepoPath(repoPath) {
+	if (typeof repoPath !== "string") {
+		return false;
+	}
+	return repoPath.length >= 1 && repoPath.length <= 1024;
+}
+
+function isValidMessage(message) {
+	if (typeof message !== "string") {
+		return false;
+	}
+	return message.length >= 1 && message.length <= 200;
+}
+
+function isValidFilesList(files) {
+	if (!Array.isArray(files)) {
+		return false;
+	}
+	return files.length >= 1 && files.length <= 2;
+}
+
+function isValidFileEntry(file) {
+	if (!isPlainObject(file)) {
+		return false;
+	}
+	if (typeof file.path !== "string" || file.path.length === 0) {
+		return false;
+	}
+	if (file.kind !== "sch" && file.kind !== "pcb") {
+		return false;
+	}
+	return Array.isArray(file.edits) && file.edits.length <= 500;
+}
+
+function validateCommitBody(body) {
+	if (!isPlainObject(body)) {
+		return "Request body must be an object";
+	}
+	if (!isValidRepoPath(body.repoPath)) {
+		return "repoPath must be a non-empty string of at most 1024 characters";
+	}
+	if (!isValidMessage(body.message)) {
+		return "message must be a non-empty string of at most 200 characters";
+	}
+	if (!isValidFilesList(body.files)) {
+		return "files must be an array of 1 or 2 file objects";
+	}
+	if (!body.files.every(isValidFileEntry)) {
+		return "Each file must have a valid path, kind ('sch' or 'pcb'), and edits array (max 500)";
+	}
+	return null;
+}
+
+function isValidationOrPatchError(msg) {
+	if (typeof msg !== "string") {
+		return false;
+	}
+	return PATCH_TOOL_ERRORS.some((prefix) => msg.startsWith(prefix));
+}
+
+function checkLocalAllowed(req, isLocalAllowed) {
+	if (typeof isLocalAllowed === "function") {
+		return isLocalAllowed(req);
+	}
+	return req?.app?.locals?.allowLocalRepos === true;
+}
+
+async function executeCommit(reqBody, patchDeps) {
+	const registry = createRegistry();
+	registerPatchTools(registry, patchDeps);
+	const { repoPath, files, message } = reqBody;
+	return await registry.call(
+		"design.patch",
+		{ repoPath, files, message },
+		{ approved: true },
+	);
+}
+
+function dispatchCommitResult(res, result) {
+	if (result.ok) {
+		return res.status(200).json(result.output);
+	}
+	if (isValidationOrPatchError(result.error)) {
+		return res.status(400).json({ error: result.error });
+	}
+	return res.status(500).json({ error: "Editor commit failed" });
+}
+
+async function handleCommit(req, res, options = {}) {
+	try {
+		if (!checkLocalAllowed(req, options.isLocalAllowed)) {
+			return res.status(403).json({
+				error: "Saving to KiCad files is only available in the desktop app",
+			});
+		}
+		const validationError = validateCommitBody(req.body);
+		if (validationError) {
+			return res.status(400).json({ error: validationError });
+		}
+		const result = await executeCommit(req.body, options.patchDeps);
+		return dispatchCommitResult(res, result);
+	} catch (_err) {
+		// Broad catch to guarantee route never leaks stack traces or absolute paths
+		return res.status(500).json({ error: "Editor commit failed" });
+	}
+}
+
 const passThrough = (_req, _res, next) => next();
 
-export function createEditorRouter({ limiter } = {}) {
+export function createEditorRouter({
+	limiter,
+	patchDeps,
+	isLocalAllowed,
+} = {}) {
 	const router = express.Router();
 	const routeLimiter = limiter ?? passThrough;
 	router.post(
@@ -115,6 +248,11 @@ export function createEditorRouter({ limiter } = {}) {
 		["/editor/export", "/api/editor/export"],
 		routeLimiter,
 		handleExport,
+	);
+	router.post(
+		["/editor/commit", "/api/editor/commit"],
+		routeLimiter,
+		(req, res) => handleCommit(req, res, { patchDeps, isLocalAllowed }),
 	);
 	return router;
 }
