@@ -725,6 +725,56 @@ async function getFootprintFromDisk(ctx, libId) {
 	};
 }
 
+function extractSymbolExtends(blockText) {
+	const openIdx = blockText.indexOf("(");
+	if (openIdx === -1) return null;
+	const head = readTokenAt(blockText, openIdx + 1);
+	const name = head ? readTokenAt(blockText, head.nextIndex) : null;
+	if (!name) return null;
+	let parent = null;
+	forEachChildBlock(
+		blockText,
+		name.nextIndex,
+		blockText.length - 1,
+		(h, next) => {
+			if (h === "extends") {
+				parent = readTokenAt(blockText, next)?.value ?? null;
+				return true;
+			}
+			return false;
+		},
+	);
+	return parent;
+}
+
+async function getSymbolSourceFromDisk(ctx, libId) {
+	if (!isValidLibId(libId)) return null;
+	const filePath = resolveSymbolPath(ctx.symbolDir, libId);
+	if (!filePath) return null;
+	const content = await readCachedText(filePath, ctx.fsImpl, ctx.fileCache);
+	if (!content) return null;
+
+	const colonIdx = libId.indexOf(":");
+	const symbolName = libId.slice(colonIdx + 1);
+	const text = extractSymbolSlice(content, symbolName);
+	if (!text) return null;
+
+	const parentName = extractSymbolExtends(text);
+	const parentText = parentName
+		? extractSymbolSlice(content, parentName)
+		: null;
+	return { libId, text, parentText };
+}
+
+async function getFootprintSourceFromDisk(ctx, libId) {
+	if (!isValidLibId(libId)) return null;
+	const filePath = resolveFootprintPath(ctx.footprintDir, libId);
+	if (!filePath) return null;
+	const text = await readCachedText(filePath, ctx.fsImpl, ctx.fileCache);
+	if (!text) return null;
+	return { libId, text };
+}
+
 function lazyLoader(factory) {
 	let promise = null;
 	return () => {
@@ -858,6 +908,8 @@ function createLibraryApi(ctx, loaders) {
 			),
 		getSymbol: (libId) =>
 			safeExecute(() => getSymbolFromDisk(ctx, libId), null),
+		getSymbolSource: (libId) =>
+			safeExecute(() => getSymbolSourceFromDisk(ctx, libId), null),
 		searchFootprints: (q, opt = {}) =>
 			safeExecute(
 				async () => searchItems(await loaders.getFpIndex(), q, opt.limit),
@@ -865,6 +917,8 @@ function createLibraryApi(ctx, loaders) {
 			),
 		getFootprint: (libId) =>
 			safeExecute(() => getFootprintFromDisk(ctx, libId), null),
+		getFootprintSource: (libId) =>
+			safeExecute(() => getFootprintSourceFromDisk(ctx, libId), null),
 		listLibraries: (kind) => queryGrouped(kind, summarizeLibraries, []),
 		listLibraryItems: (kind, libName, opt = {}) =>
 			queryGrouped(kind, (g) => paginateLibraryItems(g, libName, opt), {

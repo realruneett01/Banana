@@ -104,6 +104,32 @@ const SYMBOL_TRANSISTOR_CONTENT = buildSymbolLib(
 	}),
 );
 
+const SYMBOL_GATE_BASE_TEXT = `(symbol "Gate_Base"
+\t\t(property "Reference" "U" (at 0 0 0))
+\t\t(property "Value" "Gate_Base" (at 0 0 0))
+\t\t(property "Description" "Base logic gate" (at 0 0 0))
+\t\t(symbol "Gate_Base_0_1"
+\t\t\t(polyline (pts (xy 0 1) (xy 0 -1)))
+\t\t)
+\t)`;
+
+const SYMBOL_GATE_EXT_TEXT = `(symbol "Gate_Ext"
+\t\t(extends "Gate_Base")
+\t\t(property "Reference" "U" (at 0 0 0))
+\t\t(property "Value" "Gate_Ext" (at 0 0 0))
+\t\t(symbol "Gate_Ext_1_1"
+\t\t\t(pin input line (at 0 0 0) (length 2.54)
+\t\t\t\t(name "in \\"(active(inverted)\\"")
+\t\t\t\t(number "1")
+\t\t\t)
+\t\t)
+\t)`;
+
+const SYMBOL_GATE_CONTENT = buildSymbolLib([
+	`\t${SYMBOL_GATE_BASE_TEXT}`,
+	`\t${SYMBOL_GATE_EXT_TEXT}`,
+]);
+
 const FP_R0805_CONTENT = buildFootprint({
 	name: "R_0805",
 	descr: "Resistor SMD 0805 metric",
@@ -128,6 +154,17 @@ const FP_R1206_CONTENT = buildFootprint({
 		{ num: "2", at: "1.4 0", size: "1.1 1.8" },
 	],
 	line: { start: "-2.2 -1.2", end: "2.2 -1.2" },
+});
+
+const FP_LED0603_CONTENT = buildFootprint({
+	name: "LED_0603",
+	descr: "LED SMD 0603 metric",
+	tags: "led 0603 smd",
+	pads: [
+		{ num: "1", at: "-0.75 0", size: "0.8 0.8" },
+		{ num: "2", at: "0.75 0 90", size: "0.8 0.8" },
+	],
+	line: { start: "-1.2 -0.8", end: "1.2 -0.8" },
 });
 
 const INVALID_LIB_IDS = [
@@ -232,16 +269,22 @@ describe("kicad-library", () => {
 		tempRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "kicad-lib-"));
 		symbolDir = path.join(tempRoot, "symbols");
 		footprintDir = path.join(tempRoot, "footprints");
-		const prettyDir = path.join(footprintDir, "Resistor_SMD.pretty");
+		const rDir = path.join(footprintDir, "Resistor_SMD.pretty");
+		const ledDir = path.join(footprintDir, "LED_SMD.pretty");
 
-		await fs.promises.mkdir(symbolDir, { recursive: true });
-		await fs.promises.mkdir(prettyDir, { recursive: true });
+		await Promise.all([
+			fs.promises.mkdir(symbolDir, { recursive: true }),
+			fs.promises.mkdir(rDir, { recursive: true }),
+			fs.promises.mkdir(ledDir, { recursive: true }),
+		]);
 
 		const fixtureFiles = [
 			[symbolDir, "Device.kicad_sym", SYMBOL_DEVICE_CONTENT],
+			[symbolDir, "Gate.kicad_sym", SYMBOL_GATE_CONTENT],
 			[symbolDir, "Transistor.kicad_sym", SYMBOL_TRANSISTOR_CONTENT],
-			[prettyDir, "R_0805.kicad_mod", FP_R0805_CONTENT],
-			[prettyDir, "R_1206.kicad_mod", FP_R1206_CONTENT],
+			[rDir, "R_0805.kicad_mod", FP_R0805_CONTENT],
+			[rDir, "R_1206.kicad_mod", FP_R1206_CONTENT],
+			[ledDir, "LED_0603.kicad_mod", FP_LED0603_CONTENT],
 		];
 		for (const [dir, file, content] of fixtureFiles) {
 			await fs.promises.writeFile(path.join(dir, file), content, "utf8");
@@ -346,7 +389,9 @@ describe("kicad-library", () => {
 		assert.deepEqual(await missingLib.searchSymbols("R"), []);
 		assert.deepEqual(await missingLib.searchFootprints("R"), []);
 		assert.equal(await missingLib.getSymbol("Device:R"), null);
+		assert.equal(await missingLib.getSymbolSource("Gate:Gate_Ext"), null);
 		assert.equal(await missingLib.getFootprint("Resistor_SMD:R_0805"), null);
+		assert.equal(await missingLib.getFootprintSource("LED_SMD:LED_0603"), null);
 		assert.deepEqual(await missingLib.listLibraries("symbols"), []);
 		assert.deepEqual(await missingLib.listLibraryItems("symbols", "Device"), {
 			items: [],
@@ -359,12 +404,16 @@ describe("kicad-library", () => {
 			kind: "symbols",
 			expected: [
 				{ name: "Device", count: 2 },
+				{ name: "Gate", count: 2 },
 				{ name: "Transistor", count: 1 },
 			],
 		},
 		{
 			kind: "footprints",
-			expected: [{ name: "Resistor_SMD", count: 2 }],
+			expected: [
+				{ name: "LED_SMD", count: 1 },
+				{ name: "Resistor_SMD", count: 2 },
+			],
 		},
 		{
 			kind: "bogus",
@@ -397,6 +446,55 @@ describe("kicad-library", () => {
 		test(`listLibraryItems('${tc.kind}', '${tc.libName}') returns empty`, async () => {
 			const actual = await lib.listLibraryItems(tc.kind, tc.libName);
 			assert.deepEqual(actual, { items: [], total: 0 });
+		});
+	}
+
+	const symbolSourceCases = [
+		{
+			id: "Gate:Gate_Ext",
+			expected: {
+				libId: "Gate:Gate_Ext",
+				text: SYMBOL_GATE_EXT_TEXT,
+				parentText: SYMBOL_GATE_BASE_TEXT,
+			},
+		},
+		{
+			id: "Gate:Gate_Base",
+			expected: {
+				libId: "Gate:Gate_Base",
+				text: SYMBOL_GATE_BASE_TEXT,
+				parentText: null,
+			},
+		},
+		{ id: "Gate:NonExistent", expected: null },
+		{ id: "../x:y", expected: null },
+		{ id: "a:..\\b", expected: null },
+	];
+
+	for (const tc of symbolSourceCases) {
+		test(`getSymbolSource('${tc.id}') returns expected result`, async () => {
+			const res = await lib.getSymbolSource(tc.id);
+			assert.deepEqual(res, tc.expected);
+		});
+	}
+
+	const footprintSourceCases = [
+		{
+			id: "LED_SMD:LED_0603",
+			expected: {
+				libId: "LED_SMD:LED_0603",
+				text: FP_LED0603_CONTENT,
+			},
+		},
+		{ id: "LED_SMD:NonExistent", expected: null },
+		{ id: "../x:y", expected: null },
+		{ id: "a:..\\b", expected: null },
+	];
+
+	for (const tc of footprintSourceCases) {
+		test(`getFootprintSource('${tc.id}') returns expected result`, async () => {
+			const res = await lib.getFootprintSource(tc.id);
+			assert.deepEqual(res, tc.expected);
 		});
 	}
 });
