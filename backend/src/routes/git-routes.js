@@ -1,10 +1,19 @@
-import { execFile } from "child_process";
+import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
-import fs from "fs";
-import os from "os";
-import path from "path";
 
 const router = express.Router();
+
+router.use((req, res, next) => {
+	if (req.app?.locals?.allowLocalRepos !== true) {
+		return res
+			.status(403)
+			.json({ error: "Local repositories are disabled on this server" });
+	}
+	next();
+});
 
 function getGitBranches(repoPath) {
 	return new Promise((resolve) => {
@@ -188,7 +197,7 @@ function validateRepoPath(repoPath) {
 	}
 	const normalizedPath = repoPath.trim();
 	if (!fs.existsSync(normalizedPath)) {
-		return { error: `Path does not exist on disk: "${normalizedPath}"` };
+		return { error: "Path does not exist on disk" };
 	}
 	const gitDir = path.join(normalizedPath, ".git");
 	if (!fs.existsSync(gitDir)) {
@@ -413,6 +422,86 @@ router.get("/evolution", async (req, res) => {
 			error: "Failed to retrieve commit evolution path",
 			details: err.message,
 		});
+	}
+});
+
+function hasValidExtension(filePath) {
+	if (typeof filePath !== "string" || !filePath) return false;
+	if (filePath.includes("\0")) return false;
+	return filePath.endsWith(".kicad_sch") || filePath.endsWith(".kicad_pcb");
+}
+
+function isRelativeFile(filePath) {
+	if (filePath.startsWith("/") || filePath.startsWith("\\")) return false;
+	if (path.isAbsolute(filePath) || /^[a-zA-Z]:/.test(filePath)) return false;
+	return !filePath.split(/[/\\]/).includes("..");
+}
+
+function staysWithinRepo(repo, filePath) {
+	const rel = path.relative(repo, path.resolve(repo, filePath));
+	if (rel.startsWith("..")) return false;
+	return !path.isAbsolute(rel);
+}
+
+function isValidCommit(commit) {
+	if (commit === undefined) return true;
+	if (typeof commit !== "string") return false;
+	return /^[0-9a-fA-F]{4,40}$/.test(commit);
+}
+
+function validateFileQuery(repo, filePath, commit) {
+	if (!hasValidExtension(filePath)) return false;
+	if (!isRelativeFile(filePath)) return false;
+	if (!staysWithinRepo(repo, filePath)) return false;
+	return isValidCommit(commit);
+}
+
+function readGitFile(repoPath, commit, filePath) {
+	const gitPath = filePath.replace(/\\/g, "/");
+	return new Promise((resolve, reject) => {
+		execFile(
+			"git",
+			["show", `${commit}:${gitPath}`],
+			{ cwd: repoPath, maxBuffer: 50 * 1024 * 1024 },
+			(error, stdout) => {
+				if (error) return reject(error);
+				resolve(stdout);
+			},
+		);
+	});
+}
+
+async function readWorkingTreeFile(repoPath, filePath) {
+	const resolved = path.resolve(repoPath, filePath);
+	const [repoReal, fileReal] = await Promise.all([
+		fs.promises.realpath(repoPath),
+		fs.promises.realpath(resolved),
+	]);
+	const rel = path.relative(repoReal, fileReal);
+	if (rel.startsWith("..") || path.isAbsolute(rel)) {
+		throw new Error("File outside repository");
+	}
+	return fs.promises.readFile(fileReal, "utf8");
+}
+
+router.get("/file", async (req, res) => {
+	const { repoPath, filePath, commit } = req.query;
+	const pathCheck = validateRepoPath(repoPath);
+	if (pathCheck.error) {
+		return res.status(400).json({ error: pathCheck.error });
+	}
+	if (!validateFileQuery(pathCheck.normalizedPath, filePath, commit)) {
+		return res.status(400).json({ error: "Invalid request parameters" });
+	}
+	try {
+		const content = commit
+			? await readGitFile(pathCheck.normalizedPath, commit, filePath)
+			: await readWorkingTreeFile(pathCheck.normalizedPath, filePath);
+		res.setHeader("Content-Type", "text/plain; charset=utf-8");
+		res.status(200).send(content);
+	} catch {
+		// Git or fs read failure returns generic 404 without leaking paths or stderr
+		res.status(404).json({ error: "File not found" });
 	}
 });
 
