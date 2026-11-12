@@ -8,13 +8,64 @@ import {
 	SqliteStateStore,
 } from "../../backend/src/oauth-state-sqlite.js";
 
+function assertValidStateToken(token) {
+	assert.equal(typeof token, "string");
+	assert.equal(token.length, 32);
+	assert.match(token, /^[0-9a-f]{32}$/);
+}
+
+function createClockedStore(options = {}) {
+	let currentTime = 1_000_000;
+	const store = createSqliteStateStore({
+		filename: ":memory:",
+		now: () => currentTime,
+		...options,
+	});
+	return {
+		store,
+		advance: (ms) => {
+			currentTime += ms;
+			return currentTime;
+		},
+		tick: () => currentTime++,
+	};
+}
+
+function seedStore(store, keys, tick) {
+	for (const key of keys) {
+		store.set(key, tick ? tick() : undefined);
+	}
+}
+
+function assertConsumeAll(store, cases) {
+	for (const [key, expected, desc] of cases) {
+		assert.equal(store.consume(key), expected, desc);
+	}
+}
+
+function assertValidAndConsumed(store, state, options = {}) {
+	assert.equal(store.validate(state), true, options.validMsg);
+	assert.equal(store.consume(state), true, options.consumeMsg);
+	assert.equal(store.size, 0);
+}
+
+function assertRejectedAndCleared(store, checkFn, desc) {
+	assert.equal(checkFn(), false, desc);
+	assert.equal(store.size, 0);
+}
+
+function assertInvalidInputRejected(store, val) {
+	assert.equal(store.validate(val), false);
+	assert.equal(store.consume(val), false);
+	store.set(val);
+	assert.equal(store.size, 0);
+}
+
 describe("SqliteStateStore", () => {
 	it("issues 32-character hex state", () => {
 		const store = new SqliteStateStore({ filename: ":memory:" });
 		const state = store.generate();
-		assert.equal(typeof state, "string");
-		assert.equal(state.length, 32);
-		assert.match(state, /^[0-9a-f]{32}$/);
+		assertValidStateToken(state);
 		assert.equal(store.size, 1);
 		store.close();
 	});
@@ -22,94 +73,73 @@ describe("SqliteStateStore", () => {
 	it("accepts state once, rejects on reuse or unknown", () => {
 		const store = createSqliteStateStore({ filename: ":memory:" });
 		const state = store.generate();
-		assert.equal(store.validate(state), true, "valid before consume");
 		assert.equal(store.size, 1);
-		assert.equal(store.consume(state), true, "first consume accepted");
-		assert.equal(store.size, 0);
-		assert.equal(store.consume(state), false, "rejected on reuse");
-		assert.equal(
-			store.consume("unknown-state-xyz"),
-			false,
-			"rejected on unknown",
-		);
+		assertValidAndConsumed(store, state, {
+			validMsg: "valid before consume",
+			consumeMsg: "first consume accepted",
+		});
+		assertConsumeAll(store, [
+			[state, false, "rejected on reuse"],
+			["unknown-state-xyz", false, "rejected on unknown"],
+		]);
 		store.close();
 	});
 
 	it("rejects expired states on validate and consume", () => {
-		let nowTime = 1_000_000;
-		const store = createSqliteStateStore({
-			filename: ":memory:",
-			ttlMs: 60_000,
-			now: () => nowTime,
-		});
+		const { store, advance } = createClockedStore({ ttlMs: 60_000 });
 		const state1 = store.generate();
-		nowTime += 70_000;
-		assert.equal(store.validate(state1), false, "expired on validate");
-		assert.equal(store.size, 0, "validate deleted expired state");
+		advance(70_000);
+		assertRejectedAndCleared(
+			store,
+			() => store.validate(state1),
+			"expired on validate",
+		);
 
 		const state2 = store.generate();
-		nowTime += 70_000;
-		assert.equal(store.consume(state2), false, "expired on consume");
-		assert.equal(store.size, 0);
+		advance(70_000);
+		assertRejectedAndCleared(
+			store,
+			() => store.consume(state2),
+			"expired on consume",
+		);
 		store.close();
 	});
 
 	it("purges expired rows on generate", () => {
-		let nowTime = 1_000_000;
-		const store = createSqliteStateStore({
-			filename: ":memory:",
-			ttlMs: 60_000,
-			now: () => nowTime,
-		});
-		store.set("old-1");
-		store.set("old-2");
+		const { store, advance } = createClockedStore({ ttlMs: 60_000 });
+		seedStore(store, ["old-1", "old-2"]);
 		assert.equal(store.size, 2);
-		nowTime += 70_000;
+		advance(70_000);
 		const fresh = store.generate();
 		assert.equal(store.size, 1);
-		assert.equal(store.consume(fresh), true);
+		assertConsumeAll(store, [[fresh, true]]);
 		store.close();
 	});
 
 	it("evicts oldest row when full and preserves newer entries", () => {
-		let nowTime = 1_000_000;
-		const store = createSqliteStateStore({
-			filename: ":memory:",
-			maxEntries: 3,
-			now: () => nowTime,
-		});
-		store.set("state-1", nowTime++);
-		store.set("state-2", nowTime++);
-		store.set("state-3", nowTime++);
+		const { store, tick } = createClockedStore({ maxEntries: 3 });
+		seedStore(store, ["state-1", "state-2", "state-3"], tick);
 		assert.equal(store.size, 3);
-		store.set("state-4", nowTime++);
+		seedStore(store, ["state-4"], tick);
 		assert.equal(store.size, 3);
 
-		const evictionCases = [
+		assertConsumeAll(store, [
 			["state-1", false, "oldest evicted"],
 			["state-2", true, "newer preserved"],
 			["state-3", true, "newer preserved"],
 			["state-4", true, "newest preserved"],
-		];
-		for (const [key, expected, desc] of evictionCases) {
-			assert.equal(store.consume(key), expected, desc);
-		}
+		]);
 		store.close();
 	});
 
 	it("does not evict when updating existing state", () => {
-		let nowTime = 1_000_000;
-		const store = createSqliteStateStore({
-			filename: ":memory:",
-			maxEntries: 2,
-			now: () => nowTime,
-		});
-		store.set("state-a", nowTime++);
-		store.set("state-b", nowTime++);
-		store.set("state-a", nowTime++);
+		const { store, tick } = createClockedStore({ maxEntries: 2 });
+		seedStore(store, ["state-a", "state-b", "state-a"], tick);
 		assert.equal(store.size, 2);
-		assert.equal(store.consume("state-b"), true);
-		assert.equal(store.consume("state-a"), true);
+		assertConsumeAll(store, [
+			["state-b", true],
+			["state-a", true],
+		]);
 		store.close();
 	});
 
@@ -121,18 +151,14 @@ describe("SqliteStateStore", () => {
 	for (const tc of invalidInputs) {
 		it(`rejects invalid input: ${tc.label}`, () => {
 			const store = createSqliteStateStore({ filename: ":memory:" });
-			assert.equal(store.validate(tc.value), false);
-			assert.equal(store.consume(tc.value), false);
-			store.set(tc.value);
-			assert.equal(store.size, 0);
+			assertInvalidInputRejected(store, tc.value);
 			store.close();
 		});
 	}
 
 	it("clears all states", () => {
 		const store = createSqliteStateStore({ filename: ":memory:" });
-		store.set("state-1");
-		store.set("state-2");
+		seedStore(store, ["state-1", "state-2"]);
 		assert.equal(store.size, 2);
 		store.clear();
 		assert.equal(store.size, 0);
@@ -146,30 +172,21 @@ describe("SqliteStateStore", () => {
 		);
 
 		after(() => {
-			try {
-				if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
-			} catch (_err) {
-				// Cleanup failure ignored in temp directory
-			}
+			fs.rmSync(dbPath, { force: true });
 		});
 
 		it("persists states across two store instances on the same file", () => {
-			const store1 = createSqliteStateStore({
-				filename: dbPath,
-				ttlMs: 60_000,
-			});
+			const openStore = () =>
+				createSqliteStateStore({ filename: dbPath, ttlMs: 60_000 });
+
+			const store1 = openStore();
 			const state = store1.generate();
 			assert.equal(store1.size, 1);
 			store1.close();
 
-			const store2 = createSqliteStateStore({
-				filename: dbPath,
-				ttlMs: 60_000,
-			});
+			const store2 = openStore();
 			assert.equal(store2.size, 1);
-			assert.equal(store2.validate(state), true);
-			assert.equal(store2.consume(state), true);
-			assert.equal(store2.size, 0);
+			assertValidAndConsumed(store2, state);
 			store2.close();
 		});
 	});
