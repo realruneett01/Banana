@@ -16,6 +16,7 @@ import BoardTools from "./BoardTools.jsx";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
+import SaveCommitDialog from "./SaveCommitDialog.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
 import { useEditorDocument } from "./useEditorDocument.js";
 import { useLiveChecks } from "./useLiveChecks.js";
@@ -249,7 +250,20 @@ function EditActionButtons({ hasSelection, rotate, flip, remove }) {
 	);
 }
 
-function ModeButtons({ activeTab, dirty, route, save }) {
+function SaveCommitButton({ dirty, onOpen }) {
+	return (
+		<ToolButton
+			title="Save and commit"
+			icon={<SaveOutlined />}
+			disabled={!dirty}
+			onClick={onOpen}
+			ariaLabel="Save and commit"
+			text="Save and commit"
+		/>
+	);
+}
+
+function ModeButtons({ activeTab, dirty, route, save, openCommit }) {
 	const items = [
 		{
 			title: "Route Track (X) - PCB tab",
@@ -272,6 +286,7 @@ function ModeButtons({ activeTab, dirty, route, save }) {
 			{items.map((it) => (
 				<ToolButton key={it.title} {...it} />
 			))}
+			<SaveCommitButton dirty={dirty} onOpen={openCommit} />
 		</Space>
 	);
 }
@@ -334,6 +349,7 @@ function EditorToolbar({ state, actions }) {
 				dirty={state.dirty}
 				route={actions.route}
 				save={actions.save}
+				openCommit={actions.openCommit}
 			/>
 			<BoardTools
 				ir={state.ir}
@@ -692,7 +708,7 @@ function useBoardToolsChange(docState) {
 	);
 }
 
-function useScreenController({ ir, board, onSave, api }) {
+function useScreenController({ ir, board, onSave, api, openCommit }) {
 	const docState = useEditorDocument({ ir, board });
 	const lib = useLibraryState();
 	const fetchers = useCanvasFetchers(api);
@@ -706,6 +722,7 @@ function useScreenController({ ir, board, onSave, api }) {
 		openLibrary: lib.openLibrary,
 		exportKiCad: exp.exportKiCad,
 		onBoardToolsChange,
+		openCommit,
 	});
 	return {
 		docState,
@@ -762,11 +779,46 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 	);
 }
 
-export default function EditorScreen({ ir, board, onSave, api, focusItemId }) {
+function useCommitController(save) {
+	const [open, setOpen] = useState(false);
+	const saveRef = useRef(save);
+	saveRef.current = save;
+	const openCommit = useCallback(() => setOpen(true), []);
+	const closeCommit = useCallback(() => setOpen(false), []);
+	const onCommitted = useCallback(() => {
+		saveRef.current?.();
+		setOpen(false);
+	}, []);
+	return { open, openCommit, closeCommit, onCommitted };
+}
+
+function CommitDialog(props) {
+	const { commit, ir, docIr, api, repo } = props;
+	return (
+		<SaveCommitDialog
+			open={commit.open}
+			onClose={commit.closeCommit}
+			beforeIr={ir}
+			afterIr={docIr}
+			api={api}
+			repo={repo}
+			onCommitted={commit.onCommitted}
+		/>
+	);
+}
+
+function useEditorScreen({ ir, board, onSave, api, focusItemId }) {
 	const [activeTab, setActiveTab] = useState("schematic");
 	const [problemsOpen, setProblemsOpen] = useState(false);
 	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
-	const ctrl = useScreenController({ ir, board, onSave, api });
+	const commit = useCommitController(() => ctrl.actions.save());
+	const ctrl = useScreenController({
+		ir,
+		board,
+		onSave,
+		api,
+		openCommit: commit.openCommit,
+	});
 	useFocusItem(focusItemId, ctrl.onSelectIssue);
 	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exporting);
 	const problems = {
@@ -774,21 +826,52 @@ export default function EditorScreen({ ir, board, onSave, api, focusItemId }) {
 		open: problemsOpen,
 		toggle,
 	};
+	return {
+		activeTab,
+		setActiveTab,
+		problemsOpen,
+		ctrl,
+		toolState,
+		problems,
+		commit,
+	};
+}
+
+function EditorView({ s, ir, api, repo }) {
 	return (
 		<main style={ROOT_STYLE} aria-label="Editor screen">
 			<EditorMainContent
-				ctrl={ctrl}
-				activeTab={activeTab}
-				toolState={toolState}
-				onTabChange={setActiveTab}
+				ctrl={s.ctrl}
+				activeTab={s.activeTab}
+				toolState={s.toolState}
+				onTabChange={s.setActiveTab}
 			/>
-			<EditorPanels problemsOpen={problemsOpen} ctrl={ctrl} api={api} />
+			<EditorPanels problemsOpen={s.problemsOpen} ctrl={s.ctrl} api={api} />
+			<CommitDialog
+				commit={s.commit}
+				ir={ir}
+				docIr={s.ctrl.docState.ir}
+				api={api}
+				repo={repo}
+			/>
 			<StatusBar
-				doc={ctrl.docState.doc}
-				activeTab={activeTab}
-				dirty={ctrl.docState.dirty}
-				problems={problems}
+				doc={s.ctrl.docState.doc}
+				activeTab={s.activeTab}
+				dirty={s.ctrl.docState.dirty}
+				problems={s.problems}
 			/>
 		</main>
 	);
+}
+
+export default function EditorScreen({
+	ir,
+	board,
+	onSave,
+	api,
+	focusItemId,
+	repo,
+}) {
+	const s = useEditorScreen({ ir, board, onSave, api, focusItemId });
+	return <EditorView s={s} ir={ir} api={api} repo={repo} />;
 }

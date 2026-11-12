@@ -122,6 +122,16 @@ function EmptyDesignNotice({ onStartEmpty }) {
 	);
 }
 
+function buildEditorRepo(ws) {
+	const localProps = ws?.sidebarProps?.localProps;
+	const repoPath = localProps?.repoPath || undefined;
+	const file =
+		ws?.viewportProps?.relativeFilePath || localProps?.relativeFilePath;
+	const schPath = file?.endsWith(".kicad_sch") ? file : undefined;
+	const pcbPath = file?.endsWith(".kicad_pcb") ? file : undefined;
+	return { repoPath, schPath, pcbPath };
+}
+
 function handleStudioApplyFix(loop, fix) {
 	const result = loop.applyFix(fix);
 	if (result?.ok) {
@@ -164,7 +174,8 @@ function StudioDrawer({ loop }) {
 	);
 }
 
-function EditorDrawer({ loop }) {
+function EditorDrawer({ loop, repo, ws }) {
+	const resolvedRepo = repo ?? buildEditorRepo(ws);
 	return (
 		<Drawer
 			title="Editor"
@@ -181,6 +192,8 @@ function EditorDrawer({ loop }) {
 					board={null}
 					onSave={loop.saveFromEditor}
 					focusItemId={loop.focusItemId}
+					api={loop.api}
+					repo={resolvedRepo}
 				/>
 			) : (
 				<EmptyDesignNotice onStartEmpty={() => loop.setIr(createEmptyIr())} />
@@ -189,7 +202,7 @@ function EditorDrawer({ loop }) {
 	);
 }
 
-function DesignDrawers({ loop, commit }) {
+function DesignDrawers({ loop, commit, repo, ws }) {
 	const handleSimulate = (ir) => {
 		loop.closeAgent();
 		loop.openSimulation(ir);
@@ -222,7 +235,7 @@ function DesignDrawers({ loop, commit }) {
 				onSelectItem={loop.focusInEditor}
 			/>
 			<StudioDrawer loop={loop} />
-			<EditorDrawer loop={loop} />
+			<EditorDrawer loop={loop} repo={repo} ws={ws} />
 		</>
 	);
 }
@@ -230,6 +243,7 @@ function DesignDrawers({ loop, commit }) {
 function AppLayout({ ws, compact }) {
 	const loop = useDesignLoop();
 	const { setLeftCollapsed, setRightCollapsed } = ws.edgeTabsProps;
+	const repo = buildEditorRepo(ws);
 
 	return (
 		<Layout style={{ minHeight: "100vh", background: "var(--bn-bg)" }}>
@@ -254,7 +268,12 @@ function AppLayout({ ws, compact }) {
 			</Layout>
 			<ChatbotDrawer {...ws.copilotProps} />
 			<GithubConnectModal {...ws.githubModalProps} />
-			<DesignDrawers loop={loop} commit={ws.viewportProps?.targetCommit} />
+			<DesignDrawers
+				loop={loop}
+				commit={ws.viewportProps?.targetCommit}
+				repo={repo}
+				ws={ws}
+			/>
 		</Layout>
 	);
 }
