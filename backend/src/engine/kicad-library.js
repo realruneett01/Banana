@@ -6,6 +6,7 @@ import { parse } from "./sexpr.js";
 const LIB_ID_REGEX = /^[A-Za-z0-9_.+-]+:[A-Za-z0-9_.+ -]+$/;
 const MAX_CACHED_FILES = 16;
 const INDEX_CONCURRENCY = 24;
+const ATOM_DELIMITERS = new Set([40, 41]);
 
 const FP_METADATA_HEADS = new Set([
 	"version",
@@ -53,21 +54,36 @@ const STANDARD_LIBRARY_CANDIDATES = {
 	],
 };
 
+const SYMBOL_ENV_VARS = [
+	"KICAD_SYMBOL_DIR",
+	"KICAD10_SYMBOL_DIR",
+	"KICAD9_SYMBOL_DIR",
+];
+const FOOTPRINT_ENV_VARS = [
+	"KICAD_FOOTPRINT_DIR",
+	"KICAD10_FOOTPRINT_DIR",
+	"KICAD9_FOOTPRINT_DIR",
+];
+
+function getCliAssetCandidates(subDir) {
+	if (!process.env.KICAD_CLI_PATH) return [];
+	const cliDir = path.dirname(process.env.KICAD_CLI_PATH);
+	return [
+		path.resolve(cliDir, "..", "share", "kicad", subDir),
+		path.resolve(cliDir, "..", "SharedSupport", subDir),
+	];
+}
+
 function detectDefaultAssetDir(envVars, subDir) {
 	for (const key of envVars) {
 		const val = process.env[key];
 		if (val && fs.existsSync(val)) return val;
 	}
-	const candidates = [];
-	if (process.env.KICAD_CLI_PATH) {
-		const cliDir = path.dirname(process.env.KICAD_CLI_PATH);
-		candidates.push(
-			path.resolve(cliDir, "..", "share", "kicad", subDir),
-			path.resolve(cliDir, "..", "SharedSupport", subDir),
-		);
-	}
 	const osBuilder = STANDARD_LIBRARY_CANDIDATES[os.platform()];
-	if (osBuilder) candidates.push(...osBuilder(subDir));
+	const candidates = [
+		...getCliAssetCandidates(subDir),
+		...(osBuilder ? osBuilder(subDir) : []),
+	];
 	return candidates.find((dir) => fs.existsSync(dir)) || undefined;
 }
 
@@ -266,7 +282,6 @@ function collectFootprintGraphics(fpNode) {
 	return filterChildGraphics(fpNode, FP_METADATA_HEADS);
 }
 
-// Fast paren-aware scanner helpers to avoid allocating multi-GB ASTs across 390+ MB of KiCad libs
 function skipWs(text, i) {
 	while (i < text.length && text.charCodeAt(i) <= 32) {
 		i++;
@@ -274,38 +289,47 @@ function skipWs(text, i) {
 	return i;
 }
 
+function skipQuoted(text, start) {
+	let i = start + 1;
+	while (i < text.length) {
+		const code = text.charCodeAt(i);
+		if (code === 34) return i + 1;
+		if (code === 92) i++;
+		i++;
+	}
+	return text.length;
+}
+
+const ESCAPE_MAP = { n: "\n", r: "\r", t: "\t" };
+
 function unescapeChar(c) {
-	if (c === "n") return "\n";
-	if (c === "r") return "\r";
-	if (c === "t") return "\t";
-	return c;
+	return ESCAPE_MAP[c] ?? c;
 }
 
 function readQuotedAt(text, start) {
 	let val = "";
 	let i = start + 1;
 	while (i < text.length) {
-		const ch = text[i];
-		if (ch === '"') {
-			return { value: val, nextIndex: i + 1 };
-		}
-		if (ch === "\\") {
-			i++;
-			if (i >= text.length) break;
-			val += unescapeChar(text[i]);
-		} else {
+		const ch = text[i++];
+		if (ch === '"') return { value: val, nextIndex: i };
+		if (ch !== "\\") {
 			val += ch;
+			continue;
 		}
-		i++;
+		if (i >= text.length) break;
+		val += unescapeChar(text[i++]);
 	}
 	return { value: val, nextIndex: i };
+}
+
+function isAtomTerminator(code) {
+	return code <= 32 || ATOM_DELIMITERS.has(code);
 }
 
 function readAtomAt(text, start) {
 	let i = start;
 	while (i < text.length) {
-		const code = text.charCodeAt(i);
-		if (code <= 32 || code === 40 || code === 41) break;
+		if (isAtomTerminator(text.charCodeAt(i))) break;
 		i++;
 	}
 	return { value: text.slice(start, i), nextIndex: i };
@@ -321,27 +345,48 @@ function readTokenAt(text, start) {
 
 function findBlockEnd(text, openIdx) {
 	let depth = 0;
-	let inString = false;
 	let i = openIdx;
 	while (i < text.length) {
 		const code = text.charCodeAt(i);
-		if (inString) {
-			if (code === 92) {
-				i += 2;
-				continue;
-			}
-			if (code === 34) inString = false;
-		} else {
-			if (code === 34) inString = true;
-			else if (code === 40) depth++;
-			else if (code === 41) {
-				depth--;
-				if (depth === 0) return i + 1;
-			}
+		if (code === 34) {
+			i = skipQuoted(text, i);
+			continue;
 		}
+		if (code === 40) depth++;
+		if (code === 41 && --depth === 0) return i + 1;
 		i++;
 	}
 	return text.length;
+}
+
+function findRootBodyStart(text) {
+	const rootOpen = text.indexOf("(");
+	if (rootOpen === -1) return -1;
+	const rootHead = readTokenAt(text, rootOpen + 1);
+	return rootHead ? rootHead.nextIndex : -1;
+}
+
+function forEachChildBlock(text, start, end, onBlock) {
+	let i = skipWs(text, start);
+	while (i < end) {
+		const ch = text[i];
+		if (ch === "(") {
+			const blockEnd = findBlockEnd(text, i);
+			const headTok = readTokenAt(text, i + 1);
+			const stop = onBlock(
+				headTok?.value,
+				headTok?.nextIndex ?? i + 1,
+				i,
+				blockEnd,
+			);
+			if (stop) return;
+			i = skipWs(text, blockEnd);
+		} else if (ch === '"') {
+			i = skipWs(text, skipQuoted(text, i));
+		} else {
+			i = skipWs(text, i + 1);
+		}
+	}
 }
 
 function scanSymbolBlockProps(text, bodyStart, blockEnd) {
@@ -352,118 +397,82 @@ function scanSymbolBlockProps(text, bodyStart, blockEnd) {
 		ki_keywords: "",
 		Footprint: "",
 	};
-	let i = skipWs(text, bodyStart);
-	while (i < blockEnd) {
-		if (text[i] === "(") {
-			const childEnd = findBlockEnd(text, i);
-			const headTok = readTokenAt(text, i + 1);
-			if (headTok?.value === "property") {
-				const keyTok = readTokenAt(text, headTok.nextIndex);
-				const valTok = keyTok ? readTokenAt(text, keyTok.nextIndex) : null;
-				if (keyTok && valTok) {
-					props[keyTok.value] = valTok.value;
-				}
-			}
-			i = skipWs(text, childEnd);
-		} else if (text[i] === '"') {
-			i = skipWs(text, readQuotedAt(text, i).nextIndex);
-		} else {
-			i = skipWs(text, i + 1);
+	forEachChildBlock(text, bodyStart, blockEnd, (head, nextIdx) => {
+		if (head !== "property") return false;
+		const keyTok = readTokenAt(text, nextIdx);
+		const valTok = keyTok ? readTokenAt(text, keyTok.nextIndex) : null;
+		if (keyTok && valTok) {
+			props[keyTok.value] = valTok.value;
 		}
-	}
+		return false;
+	});
 	return props;
 }
 
-function findRootBodyStart(text) {
-	const rootOpen = text.indexOf("(");
-	if (rootOpen === -1) return -1;
-	const rootHead = readTokenAt(text, rootOpen + 1);
-	return rootHead ? rootHead.nextIndex : -1;
-}
-
 function scanSymbolFileEntries(text, fileBase, index) {
-	let i = findRootBodyStart(text);
-	if (i === -1) return;
-	i = skipWs(text, i);
-	while (i < text.length) {
-		if (text[i] === "(") {
-			const blockEnd = findBlockEnd(text, i);
-			const headTok = readTokenAt(text, i + 1);
-			if (headTok?.value === "symbol") {
-				const nameTok = readTokenAt(text, headTok.nextIndex);
-				if (nameTok?.value && !isSubUnit(nameTok.value)) {
-					const properties = scanSymbolBlockProps(
-						text,
-						nameTok.nextIndex,
-						blockEnd,
-					);
-					index.push({
-						libId: `${fileBase}:${nameTok.value}`,
-						name: nameTok.value,
-						description: properties.Description || "",
-						keywords: properties.ki_keywords || "",
-						properties,
-					});
-				}
-			}
-			i = skipWs(text, blockEnd);
-		} else if (text[i] === '"') {
-			i = skipWs(text, readQuotedAt(text, i).nextIndex);
-		} else {
-			i = skipWs(text, i + 1);
-		}
-	}
+	const start = findRootBodyStart(text);
+	if (start === -1) return;
+	forEachChildBlock(
+		text,
+		start,
+		text.length,
+		(head, nextIdx, _start, blockEnd) => {
+			if (head !== "symbol") return false;
+			const nameTok = readTokenAt(text, nextIdx);
+			if (!nameTok?.value || isSubUnit(nameTok.value)) return false;
+			const properties = scanSymbolBlockProps(
+				text,
+				nameTok.nextIndex,
+				blockEnd,
+			);
+			index.push({
+				libId: `${fileBase}:${nameTok.value}`,
+				name: nameTok.value,
+				description: properties.Description || "",
+				keywords: properties.ki_keywords || "",
+				properties,
+			});
+			return false;
+		},
+	);
 }
 
 function extractSymbolSlice(text, targetName) {
-	let i = findRootBodyStart(text);
-	if (i === -1) return null;
-	i = skipWs(text, i);
-	while (i < text.length) {
-		if (text[i] === "(") {
-			const blockEnd = findBlockEnd(text, i);
-			const headTok = readTokenAt(text, i + 1);
-			if (headTok?.value === "symbol") {
-				const nameTok = readTokenAt(text, headTok.nextIndex);
-				if (nameTok?.value === targetName) {
-					return text.slice(i, blockEnd);
-				}
+	const start = findRootBodyStart(text);
+	if (start === -1) return null;
+	let slice = null;
+	forEachChildBlock(
+		text,
+		start,
+		text.length,
+		(head, nextIdx, blockStart, blockEnd) => {
+			if (head !== "symbol") return false;
+			const nameTok = readTokenAt(text, nextIdx);
+			if (nameTok?.value === targetName) {
+				slice = text.slice(blockStart, blockEnd);
+				return true;
 			}
-			i = skipWs(text, blockEnd);
-		} else if (text[i] === '"') {
-			i = skipWs(text, readQuotedAt(text, i).nextIndex);
-		} else {
-			i = skipWs(text, i + 1);
-		}
-	}
-	return null;
+			return false;
+		},
+	);
+	return slice;
 }
 
 function scanFootprintMetadata(text) {
+	const start = findRootBodyStart(text);
+	if (start === -1) return { descr: "", tags: "" };
 	let descr = "";
 	let tags = "";
-	let i = findRootBodyStart(text);
-	if (i === -1) return { descr, tags };
-	i = skipWs(text, i);
-	while (i < text.length) {
-		if (text[i] === "(") {
-			const blockEnd = findBlockEnd(text, i);
-			const headTok = readTokenAt(text, i + 1);
-			if (headTok?.value === "descr") {
-				const valTok = readTokenAt(text, headTok.nextIndex);
-				if (valTok) descr = valTok.value;
-			} else if (headTok?.value === "tags") {
-				const valTok = readTokenAt(text, headTok.nextIndex);
-				if (valTok) tags = valTok.value;
-			}
-			if (descr && tags) break;
-			i = skipWs(text, blockEnd);
-		} else if (text[i] === '"') {
-			i = skipWs(text, readQuotedAt(text, i).nextIndex);
-		} else {
-			i = skipWs(text, i + 1);
+	forEachChildBlock(text, start, text.length, (head, nextIdx) => {
+		if (head === "descr") {
+			const tok = readTokenAt(text, nextIdx);
+			if (tok) descr = tok.value;
+		} else if (head === "tags") {
+			const tok = readTokenAt(text, nextIdx);
+			if (tok) tags = tok.value;
 		}
-	}
+		return Boolean(descr && tags);
+	});
 	return { descr, tags };
 }
 
@@ -483,6 +492,7 @@ async function readCachedText(filePath, fsImpl, textCache) {
 		textCache.set(filePath, content);
 		return content;
 	} catch {
+		// File read error returns null
 		return null;
 	}
 }
@@ -582,6 +592,7 @@ async function indexSymbolFile(ctx, fileName, index) {
 		scanSymbolFileEntries(content, fileBase, index);
 	} catch {
 		// Skip unreadable symbol library files
+		return;
 	}
 }
 
@@ -610,6 +621,7 @@ async function indexFootprintFile(ctx, fileInfo, index) {
 		});
 	} catch {
 		// Skip unreadable footprint files
+		return;
 	}
 }
 
@@ -649,29 +661,38 @@ function parseSingleSymbolSlice(content, symbolName) {
 		const ast = parse(slice);
 		return Array.isArray(ast) ? ast : null;
 	} catch {
+		// Invalid sexpr returns null
 		return null;
 	}
 }
 
-function resolveInheritedSymbol(content, symbolNode, libId, symbolName) {
-	const properties = extractSymbolProperties(symbolNode);
-	let pins = collectSymbolPins(symbolNode);
-	let graphics = collectSymbolGraphics(symbolNode);
-
-	const parentName = extractSubProp(symbolNode, "extends");
-	if (parentName) {
-		const parentNode = parseSingleSymbolSlice(content, parentName);
-		if (parentNode) {
-			const parentProps = extractSymbolProperties(parentNode);
-			for (const [k, v] of Object.entries(parentProps)) {
-				if (!properties[k]) properties[k] = v;
-			}
-			if (pins.length === 0) pins = collectSymbolPins(parentNode);
-			if (graphics.length === 0) graphics = collectSymbolGraphics(parentNode);
-		}
+function inheritParentProps(properties, parentProps) {
+	for (const [k, v] of Object.entries(parentProps)) {
+		if (!properties[k]) properties[k] = v;
 	}
+}
 
-	return { libId, name: symbolName, properties, pins, graphics };
+function applyParentSymbol(content, parentName, target) {
+	if (!parentName) return;
+	const parentNode = parseSingleSymbolSlice(content, parentName);
+	if (!parentNode) return;
+	inheritParentProps(target.properties, extractSymbolProperties(parentNode));
+	if (target.pins.length === 0) target.pins = collectSymbolPins(parentNode);
+	if (target.graphics.length === 0) {
+		target.graphics = collectSymbolGraphics(parentNode);
+	}
+}
+
+function resolveInheritedSymbol(content, symbolNode, libId, symbolName) {
+	const result = {
+		libId,
+		name: symbolName,
+		properties: extractSymbolProperties(symbolNode),
+		pins: collectSymbolPins(symbolNode),
+		graphics: collectSymbolGraphics(symbolNode),
+	};
+	applyParentSymbol(content, extractSubProp(symbolNode, "extends"), result);
+	return result;
 }
 
 async function getSymbolFromDisk(ctx, libId) {
@@ -803,43 +824,33 @@ function paginateLibraryItems(grouped, libName, opt = {}) {
 	};
 }
 
-export function createKicadLibrary(options = {}) {
+function resolveLibraryDirs(options) {
 	const symbolDir =
 		"symbolDir" in options
 			? options.symbolDir
-			: detectDefaultAssetDir(
-					["KICAD_SYMBOL_DIR", "KICAD10_SYMBOL_DIR", "KICAD9_SYMBOL_DIR"],
-					"symbols",
-				);
+			: detectDefaultAssetDir(SYMBOL_ENV_VARS, "symbols");
 	const footprintDir =
 		"footprintDir" in options
 			? options.footprintDir
-			: detectDefaultAssetDir(
-					[
-						"KICAD_FOOTPRINT_DIR",
-						"KICAD10_FOOTPRINT_DIR",
-						"KICAD9_FOOTPRINT_DIR",
-					],
-					"footprints",
-				);
-	const fsImpl = options.fsImpl ?? fs.promises;
-	const ctx = {
-		symbolDir,
-		footprintDir,
-		fsImpl,
-		fileCache: new Map(),
-		groupCache: new Map(),
-	};
-	const loaders = createIndexLoaders(ctx);
+			: detectDefaultAssetDir(FOOTPRINT_ENV_VARS, "footprints");
+	return { symbolDir, footprintDir };
+}
 
-	function indexFor(kind) {
+function createLibraryApi(ctx, loaders) {
+	const indexFor = (kind) => {
 		if (kind === "symbols") return loaders.getSymIndex();
 		if (kind === "footprints") return loaders.getFpIndex();
 		return null;
-	}
+	};
+	const queryGrouped = (kind, handler, fallback) =>
+		safeExecute(async () => {
+			const grouped = await getGroupedLibraries(ctx, kind, indexFor(kind));
+			return handler(grouped);
+		}, fallback);
 
 	return {
-		available: () => checkAvailable(symbolDir, footprintDir, fsImpl),
+		available: () =>
+			checkAvailable(ctx.symbolDir, ctx.footprintDir, ctx.fsImpl),
 		searchSymbols: (q, opt = {}) =>
 			safeExecute(
 				async () => searchItems(await loaders.getSymIndex(), q, opt.limit),
@@ -854,18 +865,23 @@ export function createKicadLibrary(options = {}) {
 			),
 		getFootprint: (libId) =>
 			safeExecute(() => getFootprintFromDisk(ctx, libId), null),
-		listLibraries: (kind) =>
-			safeExecute(async () => {
-				const grouped = await getGroupedLibraries(ctx, kind, indexFor(kind));
-				return summarizeLibraries(grouped);
-			}, []),
+		listLibraries: (kind) => queryGrouped(kind, summarizeLibraries, []),
 		listLibraryItems: (kind, libName, opt = {}) =>
-			safeExecute(
-				async () => {
-					const grouped = await getGroupedLibraries(ctx, kind, indexFor(kind));
-					return paginateLibraryItems(grouped, libName, opt);
-				},
-				{ items: [], total: 0 },
-			),
+			queryGrouped(kind, (g) => paginateLibraryItems(g, libName, opt), {
+				items: [],
+				total: 0,
+			}),
 	};
+}
+
+export function createKicadLibrary(options = {}) {
+	const { symbolDir, footprintDir } = resolveLibraryDirs(options);
+	const ctx = {
+		symbolDir,
+		footprintDir,
+		fsImpl: options.fsImpl ?? fs.promises,
+		fileCache: new Map(),
+		groupCache: new Map(),
+	};
+	return createLibraryApi(ctx, createIndexLoaders(ctx));
 }
