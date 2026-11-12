@@ -56,6 +56,19 @@ function createSimpleNet(name, p1, p2, netId) {
 	);
 }
 
+function createTwoPartIr({
+	p1Placement = { x: 50, y: 50, rot: 0, side: "F" },
+	p2Placement = { x: 50, y: 50, rot: 0, side: "F" },
+	netName,
+	netId,
+	name = "B",
+} = {}) {
+	const p1 = createPart("R1", { placement: p1Placement });
+	const p2 = createPart("R2", { placement: p2Placement });
+	const nets = netName ? [createSimpleNet(netName, p1, p2, netId)] : [];
+	return { ir: createIr({ name, parts: [p1, p2], nets }), p1, p2 };
+}
+
 function createRectOutline(x1 = 0, y1 = 0, x2 = 100, y2 = 100) {
 	return [
 		[x1, y1],
@@ -74,6 +87,10 @@ function createTrack(overrides = {}) {
 		widthMm: 0.25,
 		...overrides,
 	};
+}
+
+function createHorizTrack(netId, y, layer = "F.Cu") {
+	return createTrack({ netId, layer, start: [10, y], end: [20, y] });
 }
 
 function createIr({ parts = [], nets = [], name = "B" } = {}) {
@@ -99,9 +116,13 @@ function assertMetricCount(res, metric, count) {
 	return matched;
 }
 
-function assertSingleViolation(res, metric, messageSubstring) {
+function assertMetricViolation(res, metric, count) {
 	assertValidIssues(res.issues);
-	const matched = assertMetricCount(res, metric, 1);
+	return assertMetricCount(res, metric, count);
+}
+
+function assertSingleViolation(res, metric, messageSubstring) {
+	const matched = assertMetricViolation(res, metric, 1);
 	assert.ok(matched[0].message.includes(messageSubstring));
 	assert.equal(res.markers.length, 1);
 }
@@ -122,11 +143,13 @@ function runOutlineCheck(outline, partPos, trackSeg, rules) {
 }
 
 function checkTwoPinRouting(tracksFn) {
-	const p1 = createPart("R1", { placement: { x: 10, y: 10 } });
-	const p2 = createPart("R2", { placement: { x: 40, y: 10 } });
 	const netId = newId("net");
-	const net = createSimpleNet("NET1", p1, p2, netId);
-	const ir = createIr({ parts: [p1, p2], nets: [net] });
+	const { ir, p1, p2 } = createTwoPartIr({
+		p1Placement: { x: 10, y: 10, rot: 0, side: "F" },
+		p2Placement: { x: 40, y: 10, rot: 0, side: "F" },
+		netName: "NET1",
+		netId,
+	});
 	const board = {
 		pads: [
 			{ partId: p1.id, pin: "1", at: [10, 10] },
@@ -138,15 +161,10 @@ function checkTwoPinRouting(tracksFn) {
 }
 
 function checkOverlappingParts(side) {
-	const p1 = createPart("R1", {
-		footprint: "R_0603_1608Metric",
-		placement: { x: 20, y: 20, rot: 0, side: "F" },
+	const { ir } = createTwoPartIr({
+		p1Placement: { x: 20, y: 20, rot: 0, side: "F" },
+		p2Placement: { x: 20.5, y: 20.2, rot: 0, side },
 	});
-	const p2 = createPart("R2", {
-		footprint: "R_0603_1608Metric",
-		placement: { x: 20.5, y: 20.2, rot: 0, side },
-	});
-	const ir = createIr({ parts: [p1, p2] });
 	return runLiveChecks({ ir });
 }
 
@@ -157,10 +175,14 @@ function isClearanceViolation(a, b, clearanceMm) {
 	return clearance < clearanceMm - 1e-9;
 }
 
+function formatTrackPair(t1, t2) {
+	return [t1.id, t2.id].sort().join(":");
+}
+
 function collectPairsForTrack(tracks, i, clearanceMm, pairs) {
 	for (let j = i + 1; j < tracks.length; j++) {
 		if (isClearanceViolation(tracks[i], tracks[j], clearanceMm)) {
-			pairs.push(`${i}:${j}`);
+			pairs.push(formatTrackPair(tracks[i], tracks[j]));
 		}
 	}
 }
@@ -196,6 +218,18 @@ function createBenchmarkBoard(count, seed, area) {
 	return { tracks: generateRandomTracks(count, rng, area) };
 }
 
+function extractDrcClearancePairs(res) {
+	return res.issues
+		.filter((i) => i.metric === "clearance")
+		.map((i) => i.itemIds.slice().sort().join(":"))
+		.sort();
+}
+
+function getErcIssues(ir) {
+	const res = runLiveChecks({ ir });
+	return { res, ercIssues: res.issues.filter((i) => i.source === "erc") };
+}
+
 describe("DRC Lite - ERC Integration", () => {
 	test("reports ERC issues for invalid IR (positive)", () => {
 		const ir = createIr({
@@ -203,204 +237,137 @@ describe("DRC Lite - ERC Integration", () => {
 			parts: [createPart("R1")],
 			nets: [{ id: newId("net"), name: "N1", pins: [] }],
 		});
-		const res = runLiveChecks({ ir });
+		const { res, ercIssues } = getErcIssues(ir);
 		assertValidIssues(res.issues);
-		const ercIssues = res.issues.filter((i) => i.source === "erc");
 		assert.ok(ercIssues.length > 0);
 	});
 
 	test("reports no ERC issues for clean IR (negative)", () => {
-		const part1 = createPart("R1", { placement: { x: 10, y: 10 } });
-		const part2 = createPart("R2", { placement: { x: 20, y: 20 } });
-		const ir = createIr({
+		const { ir } = createTwoPartIr({
 			name: "CleanIR",
-			parts: [part1, part2],
-			nets: [createSimpleNet("SIG1", part1, part2)],
+			p1Placement: { x: 10, y: 10, rot: 0, side: "F" },
+			p2Placement: { x: 20, y: 20, rot: 0, side: "F" },
+			netName: "SIG1",
 		});
-		const res = runLiveChecks({ ir });
-		const ercIssues = res.issues.filter((i) => i.source === "erc");
+		const { ercIssues } = getErcIssues(ir);
 		assert.equal(ercIssues.length, 0);
 	});
 });
 
 describe("DRC Lite - Track Clearance", () => {
-	const CASES = [
-		{
-			name: "detects clearance violation between different nets on same layer",
-			buildTracks: (net1, net2) => [
-				createTrack({ netId: net1, start: [10, 10], end: [20, 10] }),
-				createTrack({ netId: net2, start: [10, 10.3], end: [20, 10.3] }),
+	test("detects clearance violation between different nets on same layer", () => {
+		const board = {
+			tracks: [
+				createHorizTrack(newId("net"), 10),
+				createHorizTrack(newId("net"), 10.3),
 			],
-			verify: (res) => assertSingleViolation(res, "clearance", "too close"),
-		},
-		{
-			name: "ignores tracks on same net or different layers",
-			buildTracks: (net1, net2) => [
-				createTrack({
-					netId: net1,
-					layer: "F.Cu",
-					start: [10, 10],
-					end: [20, 10],
-				}),
-				createTrack({
-					netId: net1,
-					layer: "F.Cu",
-					start: [10, 10.1],
-					end: [20, 10.1],
-				}),
-				createTrack({
-					netId: net2,
-					layer: "B.Cu",
-					start: [10, 10.1],
-					end: [20, 10.1],
-				}),
-			],
-			verify: (res) => assertMetricCount(res, "clearance", 0),
-		},
-	];
+		};
+		const res = runLiveChecks({ board, rules: { clearanceMm: 0.2 } });
+		assertSingleViolation(res, "clearance", "too close");
+	});
 
-	for (const { name, buildTracks, verify } of CASES) {
-		test(name, () => {
-			const board = { tracks: buildTracks(newId("net"), newId("net")) };
-			const res = runLiveChecks({ board, rules: { clearanceMm: 0.2 } });
-			verify(res);
-		});
-	}
+	test("ignores tracks on same net or different layers", () => {
+		const net1 = newId("net");
+		const net2 = newId("net");
+		const board = {
+			tracks: [
+				createHorizTrack(net1, 10),
+				createHorizTrack(net1, 10.1),
+				createHorizTrack(net2, 10.1, "B.Cu"),
+			],
+		};
+		const res = runLiveChecks({ board, rules: { clearanceMm: 0.2 } });
+		assertMetricCount(res, "clearance", 0);
+	});
 });
 
 describe("DRC Lite - Track Width", () => {
-	const CASES = [
-		{
-			name: "detects track narrower than minTrackWidthMm",
-			widthMm: 0.1,
-			verify: (res) => assertSingleViolation(res, "minTrackWidth", "too thin"),
-		},
-		{
-			name: "accepts track with sufficient width",
-			widthMm: 0.25,
-			verify: (res) => assertMetricCount(res, "minTrackWidth", 0),
-		},
-	];
+	test("detects track narrower than minTrackWidthMm", () => {
+		const res = checkTrackWidth(0.1);
+		assertSingleViolation(res, "minTrackWidth", "too thin");
+	});
 
-	for (const { name, widthMm, verify } of CASES) {
-		test(name, () => {
-			const res = checkTrackWidth(widthMm);
-			verify(res);
-		});
-	}
+	test("accepts track with sufficient width", () => {
+		const res = checkTrackWidth(0.25);
+		assertMetricCount(res, "minTrackWidth", 0);
+	});
 });
 
 describe("DRC Lite - Outline and Edge Clearance", () => {
 	const outline = createRectOutline(0, 0, 100, 100);
-	const CASES = [
-		{
-			name: "detects track and part outside board outline",
-			partPos: [120, 50],
-			trackSeg: [
+
+	test("detects track and part outside board outline", () => {
+		const res = runOutlineCheck(
+			outline,
+			[120, 50],
+			[
 				[-5, 50],
 				[-1, 50],
 			],
-			rules: undefined,
-			verify: (res) => {
-				assertValidIssues(res.issues);
-				assertMetricCount(res, "boardOutline", 2);
-			},
-		},
-		{
-			name: "detects track and part closer than edgeClearanceMm",
-			partPos: [0.1, 50],
-			trackSeg: [
+		);
+		assertMetricViolation(res, "boardOutline", 2);
+	});
+
+	test("detects track and part closer than edgeClearanceMm", () => {
+		const res = runOutlineCheck(
+			outline,
+			[0.1, 50],
+			[
 				[50, 0.1],
 				[60, 0.1],
 			],
-			rules: { edgeClearanceMm: 0.3 },
-			verify: (res) => {
-				assertValidIssues(res.issues);
-				assertMetricCount(res, "edgeClearance", 2);
-			},
-		},
-		{
-			name: "accepts elements safely inside outline",
-			partPos: [50, 50],
-			trackSeg: [
+			{ edgeClearanceMm: 0.3 },
+		);
+		assertMetricViolation(res, "edgeClearance", 2);
+	});
+
+	test("accepts elements safely inside outline", () => {
+		const res = runOutlineCheck(
+			outline,
+			[50, 50],
+			[
 				[40, 40],
 				[60, 40],
 			],
-			rules: { edgeClearanceMm: 0.3 },
-			verify: (res) => {
-				const issues = res.issues.filter(
-					(i) => i.metric === "boardOutline" || i.metric === "edgeClearance",
-				);
-				assert.equal(issues.length, 0);
-			},
-		},
-	];
-
-	for (const { name, partPos, trackSeg, rules, verify } of CASES) {
-		test(name, () => {
-			const res = runOutlineCheck(outline, partPos, trackSeg, rules);
-			verify(res);
-		});
-	}
+			{ edgeClearanceMm: 0.3 },
+		);
+		const issues = res.issues.filter(
+			(i) => i.metric === "boardOutline" || i.metric === "edgeClearance",
+		);
+		assert.equal(issues.length, 0);
+	});
 });
 
 describe("DRC Lite - Unrouted Connections", () => {
-	const CASES = [
-		{
-			name: "detects unrouted connections when pins lack continuous tracks",
-			tracks: () => [],
-			verify: (res) => {
-				assertValidIssues(res.issues);
-				assertMetricCount(res, "unrouted", 1);
-			},
-		},
-		{
-			name: "accepts connected pins snapping within 0.05 mm",
-			tracks: (netId) => [
-				createTrack({ netId, start: [10.02, 10], end: [39.98, 10] }),
-			],
-			verify: (res) => assertMetricCount(res, "unrouted", 0),
-		},
-	];
+	test("detects unrouted connections when pins lack continuous tracks", () => {
+		const res = checkTwoPinRouting(() => []);
+		assertMetricViolation(res, "unrouted", 1);
+	});
 
-	for (const { name, tracks, verify } of CASES) {
-		test(name, () => {
-			const res = checkTwoPinRouting(tracks);
-			verify(res);
-		});
-	}
+	test("accepts connected pins snapping within 0.05 mm", () => {
+		const res = checkTwoPinRouting((netId) => [
+			createTrack({ netId, start: [10.02, 10], end: [39.98, 10] }),
+		]);
+		assertMetricCount(res, "unrouted", 0);
+	});
 
 	test("skips unrouted check when board is missing", () => {
-		const p1 = createPart("R1");
-		const p2 = createPart("R2");
-		const net = createSimpleNet("N", p1, p2);
-		const ir = createIr({ parts: [p1, p2], nets: [net] });
+		const { ir } = createTwoPartIr({ netName: "N" });
 		const res = runLiveChecks({ ir });
 		assertMetricCount(res, "unrouted", 0);
 	});
 });
 
 describe("DRC Lite - Overlapping Parts", () => {
-	const CASES = [
-		{
-			name: "detects overlapping parts on same side",
-			side: "F",
-			verify: (res) =>
-				assertSingleViolation(res, "overlap", "physically collide"),
-		},
-		{
-			name: "allows overlapping parts on opposite sides (F vs B)",
-			side: "B",
-			verify: (res) => assertMetricCount(res, "overlap", 0),
-		},
-	];
+	test("detects overlapping parts on same side", () => {
+		const res = checkOverlappingParts("F");
+		assertSingleViolation(res, "overlap", "physically collide");
+	});
 
-	for (const { name, side, verify } of CASES) {
-		test(name, () => {
-			const res = checkOverlappingParts(side);
-			verify(res);
-		});
-	}
+	test("allows overlapping parts on opposite sides (F vs B)", () => {
+		const res = checkOverlappingParts("B");
+		assertMetricCount(res, "overlap", 0);
+	});
 });
 
 describe("DRC Lite - Robustness and Determinism", () => {
@@ -421,9 +388,10 @@ describe("DRC Lite - Robustness and Determinism", () => {
 	});
 
 	test("deterministic idFn gives repeatable IDs", () => {
-		const p1 = createPart("R1", { placement: { x: 20, y: 20, side: "F" } });
-		const p2 = createPart("R2", { placement: { x: 20.2, y: 20, side: "F" } });
-		const ir = createIr({ parts: [p1, p2] });
+		const { ir } = createTwoPartIr({
+			p1Placement: { x: 20, y: 20, side: "F" },
+			p2Placement: { x: 20.2, y: 20, side: "F" },
+		});
 		const runWithCounter = () =>
 			runLiveChecks({ ir, idFn: makeIdCounter() }).issues.map((i) => i.id);
 		assert.deepEqual(runWithCounter(), runWithCounter());
@@ -434,18 +402,12 @@ describe("DRC Lite - Spatial Index and Performance", () => {
 	test("spatial index finds same clearance violations as brute force", () => {
 		const rng = makeSeededRandom(12345);
 		const tracks = generateRandomTracks(300, rng, 50);
-		const board = { tracks };
-		const res = runLiveChecks({ board, rules: { clearanceMm: 0.25 } });
-		const drcPairs = res.issues
-			.filter((i) => i.metric === "clearance")
-			.map((i) => i.itemIds.slice().sort().join(":"))
-			.sort();
-		const expectedPairs = bruteForceClearancePairs(tracks, 0.25)
-			.map((p) => {
-				const [a, b] = p.split(":").map(Number);
-				return [tracks[a].id, tracks[b].id].sort().join(":");
-			})
-			.sort();
+		const res = runLiveChecks({
+			board: { tracks },
+			rules: { clearanceMm: 0.25 },
+		});
+		const drcPairs = extractDrcClearancePairs(res);
+		const expectedPairs = bruteForceClearancePairs(tracks, 0.25);
 		assert.equal(drcPairs.length, expectedPairs.length);
 		assert.deepEqual(drcPairs, expectedPairs);
 	});
