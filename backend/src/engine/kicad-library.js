@@ -738,6 +738,71 @@ async function checkAvailable(symbolDir, footprintDir, fsImpl) {
 	}, false);
 }
 
+function libNameOf(libId) {
+	if (typeof libId !== "string") return "";
+	const colonIdx = libId.indexOf(":");
+	return colonIdx === -1 ? "" : libId.slice(0, colonIdx);
+}
+
+function groupItemsByLibrary(items) {
+	const map = new Map();
+	if (!Array.isArray(items)) return map;
+	for (const item of items) {
+		const lib = libNameOf(item.libId);
+		if (!lib) continue;
+		let group = map.get(lib);
+		if (!group) {
+			group = [];
+			map.set(lib, group);
+		}
+		group.push(item);
+	}
+	for (const list of map.values()) {
+		list.sort((a, b) => a.name.localeCompare(b.name));
+	}
+	return map;
+}
+
+async function getGroupedLibraries(ctx, kind, indexPromise) {
+	if (!indexPromise) return null;
+	if (!ctx.groupCache) {
+		ctx.groupCache = new Map();
+	}
+	if (!ctx.groupCache.has(kind)) {
+		ctx.groupCache.set(
+			kind,
+			indexPromise.then((items) => groupItemsByLibrary(items)),
+		);
+	}
+	return ctx.groupCache.get(kind);
+}
+
+function summarizeLibraries(grouped) {
+	if (!grouped) return [];
+	const result = [];
+	for (const [name, items] of grouped.entries()) {
+		result.push({ name, count: items.length });
+	}
+	result.sort((a, b) => a.name.localeCompare(b.name));
+	return result;
+}
+
+function paginateLibraryItems(grouped, libName, opt = {}) {
+	if (!grouped || typeof libName !== "string") {
+		return { items: [], total: 0 };
+	}
+	const list = grouped.get(libName);
+	if (!list) {
+		return { items: [], total: 0 };
+	}
+	const limit = Math.max(0, opt.limit ?? 500);
+	const offset = Math.max(0, opt.offset ?? 0);
+	return {
+		items: list.slice(offset, offset + limit),
+		total: list.length,
+	};
+}
+
 export function createKicadLibrary(options = {}) {
 	const symbolDir =
 		"symbolDir" in options
@@ -758,8 +823,20 @@ export function createKicadLibrary(options = {}) {
 					"footprints",
 				);
 	const fsImpl = options.fsImpl ?? fs.promises;
-	const ctx = { symbolDir, footprintDir, fsImpl, fileCache: new Map() };
+	const ctx = {
+		symbolDir,
+		footprintDir,
+		fsImpl,
+		fileCache: new Map(),
+		groupCache: new Map(),
+	};
 	const loaders = createIndexLoaders(ctx);
+
+	function indexFor(kind) {
+		if (kind === "symbols") return loaders.getSymIndex();
+		if (kind === "footprints") return loaders.getFpIndex();
+		return null;
+	}
 
 	return {
 		available: () => checkAvailable(symbolDir, footprintDir, fsImpl),
@@ -777,5 +854,18 @@ export function createKicadLibrary(options = {}) {
 			),
 		getFootprint: (libId) =>
 			safeExecute(() => getFootprintFromDisk(ctx, libId), null),
+		listLibraries: (kind) =>
+			safeExecute(async () => {
+				const grouped = await getGroupedLibraries(ctx, kind, indexFor(kind));
+				return summarizeLibraries(grouped);
+			}, []),
+		listLibraryItems: (kind, libName, opt = {}) =>
+			safeExecute(
+				async () => {
+					const grouped = await getGroupedLibraries(ctx, kind, indexFor(kind));
+					return paginateLibraryItems(grouped, libName, opt);
+				},
+				{ items: [], total: 0 },
+			),
 	};
 }

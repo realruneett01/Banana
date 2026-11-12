@@ -347,5 +347,56 @@ describe("kicad-library", () => {
 		assert.deepEqual(await missingLib.searchFootprints("R"), []);
 		assert.equal(await missingLib.getSymbol("Device:R"), null);
 		assert.equal(await missingLib.getFootprint("Resistor_SMD:R_0805"), null);
+		assert.deepEqual(await missingLib.listLibraries("symbols"), []);
+		assert.deepEqual(await missingLib.listLibraryItems("symbols", "Device"), {
+			items: [],
+			total: 0,
+		});
 	});
+
+	const listLibrariesCases = [
+		{
+			kind: "symbols",
+			expected: [
+				{ name: "Device", count: 2 },
+				{ name: "Transistor", count: 1 },
+			],
+		},
+		{
+			kind: "footprints",
+			expected: [{ name: "Resistor_SMD", count: 2 }],
+		},
+		{
+			kind: "bogus",
+			expected: [],
+		},
+	];
+	for (const tc of listLibrariesCases) {
+		test(`listLibraries('${tc.kind}') returns expected libraries`, async () => {
+			const actual = await lib.listLibraries(tc.kind);
+			assert.deepEqual(actual, tc.expected);
+		});
+	}
+
+	test("listLibraryItems paging (limit 1 offset 1) and total", async () => {
+		const page = await lib.listLibraryItems("symbols", "Device", {
+			limit: 1,
+			offset: 1,
+		});
+		assert.equal(page.total, 2);
+		assert.equal(page.items.length, 1);
+		assert.equal(page.items[0].name, "R_Small");
+		assert.equal(page.items[0].libId, "Device:R_Small");
+	});
+
+	const emptyLibraryItemsCases = [
+		{ kind: "symbols", libName: "Unknown" },
+		{ kind: "bogus", libName: "Device" },
+	];
+	for (const tc of emptyLibraryItemsCases) {
+		test(`listLibraryItems('${tc.kind}', '${tc.libName}') returns empty`, async () => {
+			const actual = await lib.listLibraryItems(tc.kind, tc.libName);
+			assert.deepEqual(actual, { items: [], total: 0 });
+		});
+	}
 });
