@@ -37,7 +37,8 @@
 		],
 		"asar": true,
 		"asarUnpack": [
-			"backend/src/**/*"
+			"backend/src/**/*",
+			"**/node_modules/koffi/**/*"
 		],
 		"win": {
 			"target": [
