@@ -2,91 +2,76 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { applyFixToIr } from "../../frontend/src/designFixes.js";
 
+function makeResistor(id, ref, value) {
+	return {
+		id,
+		ref,
+		value,
+		footprint: "Resistor_SMD:R_0805",
+		symbol: "Device:R",
+		props: {},
+	};
+}
+
 function makeTestIr() {
 	return {
 		schemaVersion: 1,
 		name: "test-circuit",
 		parts: [
-			{
-				id: "part_r1",
-				ref: "R1",
-				value: "10k",
-				footprint: "Resistor_SMD:R_0805",
-				symbol: "Device:R",
-				props: {},
-			},
-			{
-				id: "part_r2",
-				ref: "R2",
-				value: "1k",
-				footprint: "Resistor_SMD:R_0805",
-				symbol: "Device:R",
-				props: {},
-			},
+			makeResistor("part_r1", "R1", "10k"),
+			makeResistor("part_r2", "R2", "1k"),
 		],
 		nets: [],
 	};
 }
 
+function createSetValueFix(id, assignments) {
+	return {
+		id,
+		commands: assignments.map(([partId, value]) => ({
+			type: "setPartField",
+			partId,
+			field: "value",
+			value,
+		})),
+	};
+}
+
+function assertPartValues(res, expectedValues) {
+	assert.equal(res.ok, true);
+	for (let i = 0; i < expectedValues.length; i++) {
+		assert.equal(res.ir.parts[i].value, expectedValues[i]);
+	}
+}
+
+function assertFixFailure(res, { checkUndefinedIr = false, desc } = {}) {
+	assert.equal(res.ok, false, desc);
+	assert.equal(typeof res.error, "string", desc);
+	if (checkUndefinedIr) {
+		assert.equal(res.ir, undefined, desc);
+	}
+}
+
 describe("applyFixToIr", () => {
 	test("a value-change fix changes only that part", () => {
-		const ir = makeTestIr();
-		const fix = {
-			id: "fix_1",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "part_r1",
-					field: "value",
-					value: "220",
-				},
-			],
-		};
-		const res = applyFixToIr(ir, fix);
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts[0].value, "220");
-		assert.equal(res.ir.parts[1].value, "1k");
+		const fix = createSetValueFix("fix_1", [["part_r1", "220"]]);
+		const res = applyFixToIr(makeTestIr(), fix);
+		assertPartValues(res, ["220", "1k"]);
 	});
 
 	test("a multi-command fix applies all commands in order", () => {
-		const ir = makeTestIr();
-		const fix = {
-			id: "fix_multi",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "part_r1",
-					field: "value",
-					value: "220",
-				},
-				{
-					type: "setPartField",
-					partId: "part_r2",
-					field: "value",
-					value: "330",
-				},
-			],
-		};
-		const res = applyFixToIr(ir, fix);
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts[0].value, "220");
-		assert.equal(res.ir.parts[1].value, "330");
+		const fix = createSetValueFix("fix_multi", [
+			["part_r1", "220"],
+			["part_r2", "330"],
+		]);
+		const res = applyFixToIr(makeTestIr(), fix);
+		assertPartValues(res, ["220", "330"]);
 	});
 
 	test("input ir is not mutated", () => {
 		const ir = makeTestIr();
 		const cloneBefore = structuredClone(ir);
-		const fix = {
-			id: "fix_1",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "part_r1",
-					field: "value",
-					value: "220",
-				},
-			],
-		};
+		const fix = createSetValueFix("fix_1", [["part_r1", "220"]]);
 		applyFixToIr(ir, fix);
 		assert.deepEqual(ir, cloneBefore);
 	});
@@ -100,85 +85,39 @@ describe("applyFixToIr", () => {
 			{ fix: { commands: "invalid" }, desc: "non-array commands" },
 		];
 		for (const c of cases) {
-			const res = applyFixToIr(ir, c.fix);
-			assert.equal(res.ok, false, c.desc);
-			assert.equal(typeof res.error, "string", c.desc);
+			assertFixFailure(applyFixToIr(ir, c.fix), { desc: c.desc });
 		}
 	});
 
 	test("non-IR input returns ok:false with string error", () => {
-		const fix = {
-			id: "fix_1",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "part_r1",
-					field: "value",
-					value: "220",
-				},
-			],
-		};
+		const fix = createSetValueFix("fix_1", [["part_r1", "220"]]);
 		const cases = [null, undefined, "invalid", 123, [], {}, { parts: null }];
 		for (const badIr of cases) {
-			const res = applyFixToIr(badIr, fix);
-			assert.equal(res.ok, false);
-			assert.equal(typeof res.error, "string");
+			assertFixFailure(applyFixToIr(badIr, fix));
 		}
 	});
 
 	test("a failing command returns ok:false with string error and no partial change", () => {
-		const ir = makeTestIr();
-		const fix = {
-			id: "fix_fail",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "nonexistent_part",
-					field: "value",
-					value: "220",
-				},
-			],
-		};
-		const res = applyFixToIr(ir, fix);
-		assert.equal(res.ok, false);
-		assert.equal(typeof res.error, "string");
-		assert.equal(res.ir, undefined);
+		const fix = createSetValueFix("fix_fail", [["nonexistent_part", "220"]]);
+		const res = applyFixToIr(makeTestIr(), fix);
+		assertFixFailure(res, { checkUndefinedIr: true });
 	});
 
 	test("multi-command fix with one failing command makes no partial changes", () => {
-		const ir = makeTestIr();
-		const fix = {
-			id: "fix_partial_fail",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "part_r1",
-					field: "value",
-					value: "220",
-				},
-				{
-					type: "setPartField",
-					partId: "nonexistent_part",
-					field: "value",
-					value: "330",
-				},
-			],
-		};
-		const res = applyFixToIr(ir, fix);
-		assert.equal(res.ok, false);
-		assert.equal(typeof res.error, "string");
-		assert.equal(res.ir, undefined);
+		const fix = createSetValueFix("fix_partial_fail", [
+			["part_r1", "220"],
+			["nonexistent_part", "330"],
+		]);
+		const res = applyFixToIr(makeTestIr(), fix);
+		assertFixFailure(res, { checkUndefinedIr: true });
 	});
 
 	test("unknown command type returns ok:false with string error", () => {
-		const ir = makeTestIr();
-		const fix = {
+		const res = applyFixToIr(makeTestIr(), {
 			id: "fix_unknown",
 			commands: [{ type: "unknownCommand" }],
-		};
-		const res = applyFixToIr(ir, fix);
-		assert.equal(res.ok, false);
-		assert.equal(typeof res.error, "string");
+		});
+		assertFixFailure(res);
 	});
 
 	test("command throwing an error returns ok:false with string error", () => {
@@ -191,19 +130,8 @@ describe("applyFixToIr", () => {
 				},
 			],
 		};
-		const fix = {
-			id: "fix_throw",
-			commands: [
-				{
-					type: "setPartField",
-					partId: "p1",
-					field: "value",
-					value: "1k",
-				},
-			],
-		};
+		const fix = createSetValueFix("fix_throw", [["p1", "1k"]]);
 		const res = applyFixToIr(badIr, fix);
-		assert.equal(res.ok, false);
-		assert.equal(typeof res.error, "string");
+		assertFixFailure(res);
 	});
 });
