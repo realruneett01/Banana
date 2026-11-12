@@ -9,6 +9,7 @@ import circuitRouter from "./routes/circuit-routes.js";
 import editorRouter from "./routes/editor-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import libraryRouter from "./routes/library-routes.js";
+import projectRouter from "./routes/project-routes.js";
 import simRouter from "./routes/sim-routes.js";
 
 function setupStaticServing(expressApp, customStaticDir) {
@@ -151,6 +152,7 @@ export function createApp(options = {}) {
 	app.use("/api", circuitRouter);
 	app.use("/api", editorRouter);
 	app.use("/api", libraryRouter);
+	app.use("/api", projectRouter);
 
 	// Static files
 	setupStaticServing(app, options.staticDir);
