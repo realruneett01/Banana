@@ -2,7 +2,10 @@ import path from "node:path";
 import express from "express";
 import { config } from "../config.js";
 import { executeDiffPipeline } from "../diff-pipeline.js";
-import { extractFileFromCommit } from "../git-extractor.js";
+import {
+	extractFileFromCommit,
+	extractWorkingTreeFile,
+} from "../git-extractor.js";
 import { downloadRepoFile } from "../github-service.js";
 
 const router = express.Router();
@@ -18,7 +21,11 @@ function sanitizeFilePath(filePath) {
 }
 
 function buildTempFolder(prefix, commit, filePath) {
-	const folderName = `${prefix}_${sanitizeCommit(commit)}_${sanitizeFilePath(filePath)}`;
+	const suffix =
+		commit === "WORKTREE"
+			? `_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+			: "";
+	const folderName = `${prefix}_${sanitizeCommit(commit)}_${sanitizeFilePath(filePath)}${suffix}`;
 	const folderDir = path.join(config.tempStorageDir, folderName);
 	const targetPath = path.join(folderDir, path.basename(filePath));
 	return { folderName, folderDir, targetPath };
@@ -43,7 +50,12 @@ const COMMIT_REF_PATTERN = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
 const VALID_EXTENSIONS = new Set([".kicad_pcb", ".kicad_sch"]);
 
 function isValidCommitRef(ref) {
-	return typeof ref === "string" && COMMIT_REF_PATTERN.test(ref);
+	if (typeof ref !== "string" || ref === "WORKTREE") return false;
+	return COMMIT_REF_PATTERN.test(ref);
+}
+
+function isValidTargetRef(ref) {
+	return ref === "WORKTREE" || isValidCommitRef(ref);
 }
 
 function isExternalOrTraversal(filePath) {
@@ -61,8 +73,12 @@ function isValidFilePath(filePath) {
 	return VALID_EXTENSIONS.has(path.extname(filePath));
 }
 
-function validateDiffGuards({ baseCommit, targetCommit, relativeFilePath }) {
-	if (!isValidCommitRef(baseCommit) || !isValidCommitRef(targetCommit)) {
+export function validateDiffGuards({
+	baseCommit,
+	targetCommit,
+	relativeFilePath,
+}) {
+	if (!isValidCommitRef(baseCommit) || !isValidTargetRef(targetCommit)) {
 		return "Invalid commit ref";
 	}
 	if (!isValidFilePath(relativeFilePath)) {
@@ -113,6 +129,13 @@ async function extractCommitTarget({
 	const fileBasename = path.basename(relativeFilePath);
 	const targetPath = path.join(folderName, fileBasename);
 	try {
+		if (commit === "WORKTREE") {
+			return await extractWorkingTreeFile(
+				repoPath,
+				relativeFilePath,
+				targetPath,
+			);
+		}
 		return await extractFileFromCommit(
 			repoPath,
 			commit,

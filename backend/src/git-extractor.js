@@ -212,3 +212,37 @@ export async function extractFileFromCommit(
 		targetFilename,
 	});
 }
+
+function isAllowedWorkingTreeFile(relPath, filePath) {
+	if (relPath.startsWith("..") || path.isAbsolute(relPath)) return false;
+	return filePath.endsWith(".kicad_sch") || filePath.endsWith(".kicad_pcb");
+}
+
+/**
+ * Extracts the uncommitted working-tree file to temp_storage.
+ *
+ * @param {string} repoPath - Path to the local git repository
+ * @param {string} relativeFilePath - Project-relative file path in the repository
+ * @param {string} targetFilename - Name of the output file inside temp_storage
+ * @returns {Promise<string>} Path to the written file
+ */
+export async function extractWorkingTreeFile(
+	repoPath,
+	relativeFilePath,
+	targetFilename,
+) {
+	try {
+		const realRepo = await fs.promises.realpath(repoPath);
+		const fullPath = path.resolve(repoPath, relativeFilePath);
+		const realFile = await fs.promises.realpath(fullPath);
+		const rel = path.relative(realRepo, realFile);
+		if (!isAllowedWorkingTreeFile(rel, realFile)) {
+			throw new Error("Invalid file");
+		}
+		const outputPath = prepareOutputPath(targetFilename);
+		await fs.promises.copyFile(realFile, outputPath);
+		return outputPath;
+	} catch (_) {
+		throw new Error("Working tree file not available");
+	}
+}
