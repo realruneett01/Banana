@@ -396,3 +396,111 @@ describe("kicadSchToIr round trip with kicad-sch-writer", () => {
 		});
 	}
 });
+
+describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
+	const MULTI_UNIT_SCH = `(kicad_sch
+		(version 20250114)
+		(lib_symbols
+			(symbol "Simulation:DualOpamp"
+				(symbol "DualOpamp_0_1"
+					(pin power_in line (at 0 10 270) (number "3"))
+				)
+				(symbol "DualOpamp_1_1"
+					(pin output line (at 5 0 180) (number "1"))
+				)
+				(symbol "DualOpamp_2_1"
+					(pin output line (at 5 0 180) (number "2"))
+				)
+			)
+		)
+		(symbol
+			(lib_id "Simulation:DualOpamp")
+			(at 50 50 0)
+			(unit 1)
+			(property "Reference" "U1")
+			(property "Value" "Dual")
+			(property "Footprint" "SOIC-8")
+		)
+		(symbol
+			(lib_id "Simulation:DualOpamp")
+			(at 100 50 0)
+			(unit 2)
+			(property "Reference" "U1")
+			(property "Value" "Dual")
+			(property "Footprint" "SOIC-8")
+		)
+		(label "NET_A" (at 55 50 0))
+		(label "NET_B" (at 105 50 0))
+		(label "NET_VCC1" (at 50 60 0))
+		(label "NET_VCC2" (at 100 60 0))
+	)`;
+
+	const UNANNOTATED_SCH = `(kicad_sch
+		(version 20250114)
+		(lib_symbols
+			(symbol "Device:R"
+				(pin passive line (at -5 0 0) (number "1"))
+				(pin passive line (at 5 0 0) (number "2"))
+			)
+		)
+		(symbol
+			(lib_id "Device:R")
+			(at 30 30 0)
+			(property "Reference" "R?")
+			(property "Value" "10k")
+			(property "Footprint" "R_0603")
+		)
+		(symbol
+			(lib_id "Device:R")
+			(at 60 30 0)
+			(property "Reference" "R?")
+			(property "Value" "20k")
+			(property "Footprint" "R_0603")
+		)
+	)`;
+
+	const TEST_CASES = [
+		{
+			name: "multi-unit symbol instances merge into one part with unit-specific and common pins",
+			sch: MULTI_UNIT_SCH,
+			expectedOk: true,
+			expectedParts: ["U1"],
+			expectedNets: [
+				{ name: "NET_A", pins: ["U1.1"] },
+				{ name: "NET_B", pins: ["U1.2"] },
+				{ name: "NET_VCC1", pins: ["U1.3"] },
+				{ name: "NET_VCC2", pins: ["U1.3"] },
+			],
+			expectedWarningCount: 0,
+		},
+		{
+			name: "repeated unannotated references receive unique suffixes and push warning",
+			sch: UNANNOTATED_SCH,
+			expectedOk: true,
+			expectedParts: ["R?", "R?_2"],
+			expectedNets: [],
+			expectedWarningCount: 1,
+			expectedWarningSubstring: "renamed unannotated reference",
+		},
+	];
+
+	for (const tc of TEST_CASES) {
+		test(tc.name, () => {
+			const res = kicadSchToIr(tc.sch, { idFn: makeIdCounter() });
+			assert.equal(res.ok, tc.expectedOk);
+			const partRefs = res.ir.parts.map((p) => p.ref);
+			assert.deepEqual(partRefs, tc.expectedParts);
+			assert.equal(res.warnings.length, tc.expectedWarningCount);
+			if (tc.expectedWarningSubstring) {
+				assert.ok(res.warnings[0].includes(tc.expectedWarningSubstring));
+			}
+			const partMap = new Map(res.ir.parts.map((p) => [p.id, p.ref]));
+			for (const expectedNet of tc.expectedNets) {
+				const net = res.ir.nets.find((n) => n.name === expectedNet.name);
+				assert.ok(net, `Net ${expectedNet.name} must exist`);
+				const pins = net.pins.map((p) => `${partMap.get(p.partId)}.${p.pin}`);
+				assert.deepEqual(pins, expectedNet.pins);
+			}
+		});
+	}
+});

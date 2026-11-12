@@ -88,22 +88,37 @@ function extractPinNumber(pinNode) {
 	return extractChildText(pinNode, "number");
 }
 
-function recordPin(node, pins) {
+const SUB_SYMBOL_RE = /_(\d+)_(\d+)$/;
+
+function parseSubSymbolUnitStyle(node, unit, style) {
+	if (!matchHead(node, "symbol")) {
+		return { unit, style };
+	}
+	const m = nodeSym(node[1]).match(SUB_SYMBOL_RE);
+	if (!m) {
+		return { unit: 0, style: 0 };
+	}
+	return { unit: Number(m[1]), style: Number(m[2]) };
+}
+
+function recordPin(node, pins, unit, style) {
 	const at = extractAt(node);
 	const num = extractPinNumber(node);
 	if (at && num) {
-		pins.push({ pin: num, x: at.x, y: at.y });
+		pins.push({ pin: num, x: at.x, y: at.y, unit, style });
 	}
 }
 
-function collectPins(node, pins) {
+function collectPins(node, pins, unit = 0, style = 0) {
 	if (!Array.isArray(node)) return;
 	if (node[0]?.sym === "pin") {
-		recordPin(node, pins);
+		recordPin(node, pins, unit, style);
 		return;
 	}
 	for (const child of node.slice(1)) {
-		if (Array.isArray(child)) collectPins(child, pins);
+		if (!Array.isArray(child)) continue;
+		const next = parseSubSymbolUnitStyle(child, unit, style);
+		collectPins(child, pins, next.unit, next.style);
 	}
 }
 
@@ -123,7 +138,8 @@ function dedupeBy(items, keyFn) {
 function dedupeLibPins(pins) {
 	return dedupeBy(
 		pins,
-		(p) => `${p.pin}:${roundCoord(p.x)},${roundCoord(p.y)}`,
+		(p) =>
+			`${p.pin}:${roundCoord(p.x)},${roundCoord(p.y)}:${p.unit}:${p.style}`,
 	);
 }
 
@@ -291,25 +307,106 @@ function extractSymbolPlacement(symNode) {
 	return at ? at : { x: 0, y: 0, rot: 0 };
 }
 
-function parseSymbolPart(symNode, idFn) {
+function extractInstanceUnit(symNode) {
+	const node = extractChildNode(symNode, "unit");
+	if (!node || node[1] == null) return 1;
+	const val = Number(node[1]);
+	return Number.isFinite(val) ? val : 1;
+}
+
+function extractInstanceStyle(symNode) {
+	const node =
+		extractChildNode(symNode, "convert") ??
+		extractChildNode(symNode, "body_style");
+	if (!node || node[1] == null) return 1;
+	const val = Number(node[1]);
+	return Number.isFinite(val) ? val : 1;
+}
+
+function parseSymbolData(symNode) {
 	const libId = extractLibId(symNode);
 	const props = extractProperties(symNode);
 	const ref = props.get("Reference") || "";
 	if (shouldSkipSymbol(libId, ref)) return null;
-	const at = extractSymbolPlacement(symNode);
 	return {
-		part: {
-			id: idFn("part"),
-			ref,
-			value: props.get("Value") || "",
-			symbol: libId,
-			footprint: props.get("Footprint") || "",
-			props: extractSymbolExtraProps(props),
-			placement: { x: at.x, y: at.y, rot: at.rot, side: "F" },
-		},
-		at,
+		libId,
+		ref,
+		props,
+		at: extractSymbolPlacement(symNode),
 		mirror: extractMirror(symNode),
+		unit: extractInstanceUnit(symNode),
+		style: extractInstanceStyle(symNode),
 	};
+}
+
+function createPartRecord(parsed, idFn, finalRef) {
+	const { libId, props, at } = parsed;
+	return {
+		id: idFn("part"),
+		ref: finalRef,
+		value: props.get("Value") || "",
+		symbol: libId,
+		footprint: props.get("Footprint") || "",
+		props: extractSymbolExtraProps(props),
+		placement: { x: at.x, y: at.y, rot: at.rot, side: "F" },
+	};
+}
+
+function matchUnit(pinUnit, targetUnit) {
+	return pinUnit === 0 || pinUnit === targetUnit;
+}
+
+function matchStyle(pinStyle, targetStyle) {
+	return pinStyle === 0 || pinStyle === targetStyle;
+}
+
+function matchesPin(p, unit, style) {
+	return matchUnit(p.unit, unit) && matchStyle(p.style, style);
+}
+
+function pinsForInstance(pins, unit, style) {
+	return pins.filter((p) => matchesPin(p, unit, style));
+}
+
+function isAnnotatedRef(ref) {
+	return Boolean(ref && !ref.endsWith("?"));
+}
+
+function canMergeInstance(ref, unit, refMap, refUnits) {
+	if (!isAnnotatedRef(ref) || !refMap.has(ref)) return false;
+	const units = refUnits.get(ref);
+	return Boolean(units && !units.has(unit));
+}
+
+function resolveUniqueRef(ref, refMap, ctx) {
+	let n = 2;
+	let candidate = `${ref}_${n}`;
+	while (refMap.has(candidate)) {
+		n++;
+		candidate = `${ref}_${n}`;
+	}
+	ctx.warnings.push(`renamed unannotated reference ${ref} to ${candidate}`);
+	return candidate;
+}
+
+function resolvePartRef(ref, refMap, ctx) {
+	if (!refMap.has(ref)) return ref;
+	if (isAnnotatedRef(ref)) return ref;
+	return resolveUniqueRef(ref, refMap, ctx);
+}
+
+function resolveTargetPart(parsed, symState, ctx) {
+	const { refMap, refUnits, idFn } = symState;
+	const { ref, unit } = parsed;
+	if (canMergeInstance(ref, unit, refMap, refUnits)) {
+		refUnits.get(ref).add(unit);
+		return { part: refMap.get(ref), isNew: false };
+	}
+	const finalRef = resolvePartRef(ref, refMap, ctx);
+	const part = createPartRecord(parsed, idFn, finalRef);
+	refMap.set(finalRef, part);
+	refUnits.set(finalRef, new Set([unit]));
+	return { part, isNew: true };
 }
 
 function connectPartPins(partData, libPins, ctx) {
@@ -336,23 +433,37 @@ function findSymbolPins(child, libSymbolsMap, symbolId) {
 	return localPins.length > 0 ? localPins : null;
 }
 
-function processSingleSymbol(child, libSymbolsMap, ctx, idFn) {
-	const parsed = parseSymbolPart(child, idFn);
-	if (!parsed) return null;
-	const pins = findSymbolPins(child, libSymbolsMap, parsed.part.symbol);
-	if (!pins) {
-		ctx.warnings.push(`missing library symbol ${parsed.part.symbol}`);
-		return parsed.part;
+function connectSymbolPins(child, libMap, parsed, target) {
+	const rawPins = findSymbolPins(child, libMap, parsed.libId);
+	if (!rawPins) {
+		target.ctx.warnings.push(`missing library symbol ${parsed.libId}`);
+		return;
 	}
-	connectPartPins(parsed, pins, ctx);
-	return parsed.part;
+	const pins = pinsForInstance(rawPins, parsed.unit, parsed.style);
+	const partData = {
+		part: target.part,
+		at: parsed.at,
+		mirror: parsed.mirror,
+	};
+	connectPartPins(partData, pins, target.ctx);
+}
+
+function processSingleSymbol(child, libSymbolsMap, ctx, symState) {
+	const parsed = parseSymbolData(child);
+	if (!parsed) return null;
+	const { part, isNew } = resolveTargetPart(parsed, symState, ctx);
+	connectSymbolPins(child, libSymbolsMap, parsed, { part, ctx });
+	return isNew ? part : null;
 }
 
 function processSymbols(ast, libSymbolsMap, ctx, idFn) {
+	const refMap = new Map();
+	const refUnits = new Map();
+	const symState = { refMap, refUnits, idFn };
 	const parts = [];
 	for (const child of ast.slice(1)) {
 		if (!Array.isArray(child) || child[0]?.sym !== "symbol") continue;
-		const part = processSingleSymbol(child, libSymbolsMap, ctx, idFn);
+		const part = processSingleSymbol(child, libSymbolsMap, ctx, symState);
 		if (part) parts.push(part);
 	}
 	return parts;
