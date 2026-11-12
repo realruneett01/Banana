@@ -306,7 +306,8 @@ function processPart(part, ctx) {
 		ctx.warnings.push(`Part '${part.ref}' skipped as black box`);
 		return null;
 	}
-	const prefix = String(part.ref || "").trim()[0] || "U";
+	const rawFirst = String(part.ref || "").trim()[0];
+	const prefix = /^[A-Za-z]$/.test(rawFirst) ? rawFirst : "U";
 	const name = sanitizeElementName(part.ref, prefix, ctx.usedElementNames);
 	ctx.elementMap[part.id] = name;
 	const lines = model.build(nodes, name, model.params);

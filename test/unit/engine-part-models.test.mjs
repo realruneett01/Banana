@@ -321,3 +321,79 @@ describe("irToSpice - integration with part models and passives", () => {
 		assert.strictEqual(res.netlist.includes("R2 n_sig 0 10000"), true);
 	});
 });
+
+describe("irToSpice - part model prefix sanitization", () => {
+	const safePattern = /^[A-Za-z0-9_ .+\-=(){}*,]+$/;
+
+	const cases = [
+		{ ref: ";x", rawChar: ";", forbiddenInName: ";" },
+		{ ref: "$U1", rawChar: "$", forbiddenInName: "$" },
+		{ ref: ".control", rawChar: ".", forbiddenInName: "." },
+		{ ref: "'a", rawChar: "'", forbiddenInName: "'" },
+		{ ref: " \n.shell", rawChar: ".", forbiddenInName: "." },
+		{ ref: "1abc", rawChar: "1", forbiddenInName: null },
+	];
+
+	for (const { ref, rawChar, forbiddenInName } of cases) {
+		test(`sanitizes regulator reference ${JSON.stringify(ref)}`, () => {
+			const reg = makePart(ref, "AMS1117-3.3", {
+				props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
+			});
+			const netVin = makeNet("VIN", [{ partId: reg.id, pin: "1" }]);
+			const netV33 = makeNet("V33", [{ partId: reg.id, pin: "3" }]);
+			const netGnd = makeNet("GND", [{ partId: reg.id, pin: "2" }]);
+			const ir = makeIR([reg], [netVin, netV33, netGnd]);
+			const res = irToSpice(ir);
+
+			assert.strictEqual(res.ok, true);
+			const elementName = res.elementMap[reg.id];
+			assert.notStrictEqual(elementName, undefined);
+			assert.strictEqual(elementName.startsWith(rawChar), false);
+			assert.strictEqual(elementName.startsWith("U"), true);
+			if (forbiddenInName) {
+				assert.strictEqual(elementName.includes(forbiddenInName), false);
+			}
+
+			const nonCommentLines = res.netlist
+				.split("\n")
+				.filter(
+					(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
+				);
+			for (const line of nonCommentLines) {
+				assert.strictEqual(
+					safePattern.test(line),
+					true,
+					`Invalid chars in: ${line}`,
+				);
+			}
+		});
+	}
+
+	test("normal reference U7 produces a name starting with U7", () => {
+		const reg = makePart("U7", "AMS1117-3.3", {
+			props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
+		});
+		const netVin = makeNet("VIN", [{ partId: reg.id, pin: "1" }]);
+		const netV33 = makeNet("V33", [{ partId: reg.id, pin: "3" }]);
+		const netGnd = makeNet("GND", [{ partId: reg.id, pin: "2" }]);
+		const ir = makeIR([reg], [netVin, netV33, netGnd]);
+		const res = irToSpice(ir);
+
+		assert.strictEqual(res.ok, true);
+		const elementName = res.elementMap[reg.id];
+		assert.strictEqual(elementName.startsWith("U7"), true);
+
+		const nonCommentLines = res.netlist
+			.split("\n")
+			.filter(
+				(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
+			);
+		for (const line of nonCommentLines) {
+			assert.strictEqual(
+				safePattern.test(line),
+				true,
+				`Invalid chars in: ${line}`,
+			);
+		}
+	});
+});
