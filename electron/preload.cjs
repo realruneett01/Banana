@@ -51,5 +51,11 @@ contextBridge.exposeInMainWorld("banana", {
 	kicad: {
 		status: () => ipcRenderer.invoke("banana:kicad-status"),
 		open: (request) => ipcRenderer.invoke("banana:kicad-open", request),
+		onFileChanged: (callback) => {
+			const listener = (_e, detail) => callback(detail);
+			ipcRenderer.on("banana:kicad-file-changed", listener);
+			return () =>
+				ipcRenderer.removeListener("banana:kicad-file-changed", listener);
+		},
 	},
 });

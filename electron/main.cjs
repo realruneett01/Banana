@@ -19,6 +19,7 @@ const {
 	clearEncryptedToken,
 } = require("./github-auth.cjs");
 const { findKicadGui, launchKicad } = require("./kicad-launch.cjs");
+const { createKicadWatcher } = require("./kicad-watch.cjs");
 
 // 1. Single Instance Lock (Phase 1 / T1.2)
 const gotTheLock = app.requestSingleInstanceLock();
@@ -31,6 +32,17 @@ let mainWindow = null;
 let serverInstance = null;
 let serverPort = null;
 const apiSecret = crypto.randomBytes(32).toString("hex"); // Phase 2 / T2.1: per-launch secret
+
+const kicadWatcher = createKicadWatcher({
+	onChange: ({ projectRoot, filePath }) => {
+		if (mainWindow && !mainWindow.isDestroyed()) {
+			mainWindow.webContents.send("banana:kicad-file-changed", {
+				projectRoot,
+				filePath,
+			});
+		}
+	},
+});
 
 // Set up user-writable storage directory for KiCad temp outputs (Phase 2 / T2.3)
 const userDataPath = app.getPath("userData");
@@ -280,6 +292,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+	kicadWatcher.stop();
 	if (serverInstance) {
 		try {
 			serverInstance.close();
@@ -365,7 +378,14 @@ function handleKicadOpen(request) {
 		return { ok: false, error: "Invalid request" };
 	}
 	const { kind, filePath, projectRoot } = request;
-	return launchKicad({ kind, filePath, projectRoot }, { gui: getKicadGui() });
+	const result = launchKicad(
+		{ kind, filePath, projectRoot },
+		{ gui: getKicadGui() },
+	);
+	if (result.ok && projectRoot) {
+		kicadWatcher.watchProject(projectRoot);
+	}
+	return result;
 }
 
 function registerAppIpcHandlers() {
