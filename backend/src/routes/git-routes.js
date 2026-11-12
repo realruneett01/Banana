@@ -505,4 +505,107 @@ router.get("/file", async (req, res) => {
 	}
 });
 
+function isPathSafe(repo, filePath) {
+	if (typeof filePath !== "string") return false;
+	return isRelativeFile(filePath) && staysWithinRepo(repo, filePath);
+}
+
+function isValidCommitFile(repo, filePath) {
+	if (!isPathSafe(repo, filePath)) return false;
+	if (!hasValidExtension(filePath)) return false;
+	try {
+		return fs.statSync(path.resolve(repo, filePath)).isFile();
+	} catch {
+		// Non-existent path or filesystem access failure
+		return false;
+	}
+}
+
+function areValidCommitFiles(repo, files) {
+	if (!Array.isArray(files)) return false;
+	if (files.length < 1 || files.length > 20) return false;
+	return files.every((f) => isValidCommitFile(repo, f));
+}
+
+function isValidCommitMessage(message) {
+	if (typeof message !== "string") return false;
+	const trimmed = message.trim();
+	return trimmed.length >= 1 && trimmed.length <= 200;
+}
+
+function runGit(repo, args) {
+	return new Promise((resolve, reject) => {
+		execFile(
+			"git",
+			args,
+			{ cwd: repo, timeout: 30000 },
+			(error, stdout, stderr) => {
+				if (error) {
+					const failure = new Error("Git command failed");
+					failure.stdout = stdout;
+					failure.stderr = stderr;
+					return reject(failure);
+				}
+				resolve(stdout ? stdout.trim() : "");
+			},
+		);
+	});
+}
+
+async function executeCommitFiles(repo, files, message) {
+	await runGit(repo, ["add", "--", ...files]);
+	await runGit(repo, [
+		"-c",
+		"user.name=Banana",
+		"-c",
+		"user.email=banana@localhost",
+		"commit",
+		"-m",
+		message.trim(),
+		"--",
+		...files,
+	]);
+	return runGit(repo, ["rev-parse", "--short", "HEAD"]);
+}
+
+function isNothingToCommit(err) {
+	const out = `${err?.stdout || ""} ${err?.stderr || ""}`;
+	return out.includes("nothing to commit");
+}
+
+function checkRepoPath(repoPath) {
+	if (typeof repoPath !== "string") {
+		return { error: "Invalid repository path" };
+	}
+	return validateRepoPath(repoPath);
+}
+
+router.post("/commit-files", async (req, res) => {
+	const { repoPath, files, message } = req.body || {};
+	const pathCheck = checkRepoPath(repoPath);
+	if (pathCheck.error) {
+		return res.status(400).json({ error: pathCheck.error });
+	}
+	if (!isValidCommitMessage(message)) {
+		return res.status(400).json({ error: "Invalid commit message" });
+	}
+	if (!areValidCommitFiles(pathCheck.normalizedPath, files)) {
+		return res.status(400).json({ error: "Invalid files parameter" });
+	}
+
+	try {
+		const commit = await executeCommitFiles(
+			pathCheck.normalizedPath,
+			files,
+			message,
+		);
+		return res.status(200).json({ commit, files });
+	} catch (err) {
+		if (isNothingToCommit(err)) {
+			return res.status(409).json({ error: "No changes to commit" });
+		}
+		return res.status(500).json({ error: "Commit failed" });
+	}
+});
+
 export default router;
