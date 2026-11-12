@@ -14,40 +14,73 @@ function makeIdCounter() {
 	};
 }
 
-function makeResistorLibSymbol() {
+function makeTwoPinLibSymbol(name, p1At, p2At) {
 	return [
 		sym("symbol"),
-		"Device:R",
-		[
-			sym("pin"),
-			"passive",
-			"line",
-			[sym("at"), -5, 0, 0],
-			[sym("number"), "1"],
-		],
-		[sym("pin"), "passive", "line", [sym("at"), 5, 0, 0], [sym("number"), "2"]],
+		name,
+		[sym("pin"), "passive", "line", [sym("at"), ...p1At], [sym("number"), "1"]],
+		[sym("pin"), "passive", "line", [sym("at"), ...p2At], [sym("number"), "2"]],
 	];
 }
 
-function makeCapacitorLibSymbol() {
-	return [
-		sym("symbol"),
-		"Device:C",
-		[
-			sym("pin"),
-			"passive",
-			"line",
-			[sym("at"), 0, 2.54, 270],
-			[sym("number"), "1"],
-		],
-		[
-			sym("pin"),
-			"passive",
-			"line",
-			[sym("at"), 0, -2.54, 90],
-			[sym("number"), "2"],
-		],
-	];
+const makeResistorLibSymbol = () =>
+	makeTwoPinLibSymbol("Device:R", [-5, 0, 0], [5, 0, 0]);
+
+const makeCapacitorLibSymbol = () =>
+	makeTwoPinLibSymbol("Device:C", [0, 2.54, 270], [0, -2.54, 90]);
+
+function makeTestPart(idNum, ref, value, symbol, footprint) {
+	const hex = String(idNum).padStart(12, "0");
+	return {
+		id: `part_00000000-0000-0000-0000-${hex}`,
+		ref,
+		value,
+		symbol,
+		footprint,
+		props: {},
+	};
+}
+
+function makeTestNet(idNum, name, pins) {
+	const hex = String(idNum).padStart(12, "0");
+	return {
+		id: `net_00000000-0000-0000-0000-${hex}`,
+		name,
+		pins: pins.map(([partIdNum, pin]) => ({
+			partId: `part_00000000-0000-0000-0000-${String(partIdNum).padStart(12, "0")}`,
+			pin,
+		})),
+	};
+}
+
+const RESISTOR_LIB_SYMBOL_SEXPR = `(lib_symbols
+	(symbol "Device:R"
+		(pin passive line (at -5 0 0) (number "1"))
+		(pin passive line (at 5 0 0) (number "2"))
+	)
+)`;
+
+function makeDuplicateRefSch(ref1, ref2, unitStr = "") {
+	return `(kicad_sch
+		(version 20250114)
+		${RESISTOR_LIB_SYMBOL_SEXPR}
+		(symbol
+			(lib_id "Device:R")
+			(at 30 30 0)
+			${unitStr}
+			(property "Reference" "${ref1}")
+			(property "Value" "10k")
+			(property "Footprint" "R_0603")
+		)
+		(symbol
+			(lib_id "Device:R")
+			(at 60 30 0)
+			${unitStr}
+			(property "Reference" "${ref2}")
+			(property "Value" "20k")
+			(property "Footprint" "R_0603")
+		)
+	)`;
 }
 
 function normalizeNetMembership(ir) {
@@ -61,6 +94,87 @@ function normalizeNetMembership(ir) {
 		})
 		.sort((a, b) => a.name.localeCompare(b.name));
 }
+
+function assertImportedPartsMatch(importedParts, originalParts) {
+	assert.equal(importedParts.length, originalParts.length);
+	for (const orig of originalParts) {
+		const match = importedParts.find((p) => p.ref === orig.ref);
+		assert.ok(match, `Part ${orig.ref} must exist`);
+		assert.equal(match.value, orig.value);
+		assert.equal(match.footprint, orig.footprint);
+		assert.equal(match.symbol, orig.symbol);
+	}
+}
+
+function assertExpectedNets(nets, parts, expectedNets) {
+	const partMap = new Map(parts.map((p) => [p.id, p.ref]));
+	for (const expectedNet of expectedNets) {
+		const net = nets.find((n) => n.name === expectedNet.name);
+		assert.ok(net, `Net ${expectedNet.name} must exist`);
+		const pins = net.pins.map((p) => `${partMap.get(p.partId)}.${p.pin}`);
+		assert.deepEqual(pins, expectedNet.pins);
+	}
+}
+
+const SYMBOL_PARSING_SCH = `(kicad_sch
+	(version 20250114)
+	${RESISTOR_LIB_SYMBOL_SEXPR}
+	(symbol
+		(lib_id "Device:R")
+		(at 100 150 90)
+		(property "Reference" "R1")
+		(property "Value" "10k")
+		(property "Footprint" "Resistor_SMD:R_0603")
+		(property "Tolerance" "1%")
+		(property "Manufacturer" "Yageo")
+	)
+)`;
+
+const POWER_AND_VIRTUAL_SYMBOLS_SCH = `(kicad_sch
+	(version 20250114)
+	(symbol (lib_id "power:GND") (at 10 10 0) (property "Reference" "#PWR0101") (property "Value" "GND") (property "Footprint" ""))
+	(symbol (lib_id "power:+3V3") (at 20 20 0) (property "Reference" "#PWR0102") (property "Value" "+3V3") (property "Footprint" ""))
+	(symbol (lib_id "Mechanical:MountingHole") (at 30 30 0) (property "Reference" "#H1") (property "Value" "Hole") (property "Footprint" "MountingHole:3mm"))
+	(symbol (lib_id "Device:R") (at 40 40 0) (property "Reference" "R1") (property "Value" "1k") (property "Footprint" "Resistor_SMD:R_0603"))
+)`;
+
+const LABELED_NET_SCH = `(kicad_sch
+	(version 20250114)
+	${RESISTOR_LIB_SYMBOL_SEXPR}
+	(symbol (lib_id "Device:R") (at 50 50 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
+	(symbol (lib_id "Device:R") (at 100 50 0) (property "Reference" "R2") (property "Value" "20k") (property "Footprint" "R_0603"))
+	(wire (pts (xy 55 50) (xy 95 50)))
+	(label "SIG_OUT" (at 75 50 0))
+)`;
+
+const UNLABELED_NET_SCH = `(kicad_sch
+	(version 20250114)
+	${RESISTOR_LIB_SYMBOL_SEXPR}
+	(symbol (lib_id "Device:R") (at 30 40 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
+	(symbol (lib_id "Device:R") (at 60 40 0) (property "Reference" "R2") (property "Value" "10k") (property "Footprint" "R_0603"))
+	(wire (pts (xy 35 40) (xy 55 40)))
+)`;
+
+const BUS_AND_SHEET_SCH = `(kicad_sch
+	(version 20250114)
+	(bus (pts (xy 10 10) (xy 50 10)))
+	(sheet (at 20 20) (size 10 10))
+	(symbol (lib_id "Device:R") (at 30 30 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
+)`;
+
+const ROTATION_MIRROR_SCH = `(kicad_sch
+	(version 20250114)
+	${RESISTOR_LIB_SYMBOL_SEXPR}
+	(symbol
+		(lib_id "Device:R")
+		(at 100 100 90)
+		(mirror x)
+		(property "Reference" "R1")
+		(property "Value" "10k")
+		(property "Footprint" "R_0603")
+	)
+	(global_label "NET_PIN1" (at 100 95 0))
+)`;
 
 describe("kicadSchToIr garbage and invalid input", () => {
 	const GARBAGE_CASES = [
@@ -78,82 +192,46 @@ describe("kicadSchToIr garbage and invalid input", () => {
 		test(`returns { ok: false } without throwing for ${name}`, () => {
 			const res = kicadSchToIr(input);
 			assert.equal(res.ok, false);
-			assert.ok(Array.isArray(res.errors));
+			assert.equal(Array.isArray(res.errors), true);
 			assert.ok(res.errors.length > 0);
 		});
 	}
 });
 
 describe("kicadSchToIr symbol and property parsing", () => {
-	test("parses symbol properties, placement, and extra props", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(lib_symbols
-				(symbol "Device:R"
-					(pin passive line (at -5 0 0) (number "1"))
-					(pin passive line (at 5 0 0) (number "2"))
-				)
-			)
-			(symbol
-				(lib_id "Device:R")
-				(at 100 150 90)
-				(property "Reference" "R1")
-				(property "Value" "10k")
-				(property "Footprint" "Resistor_SMD:R_0603")
-				(property "Tolerance" "1%")
-				(property "Manufacturer" "Yageo")
-			)
-		)`;
-
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
+	test("parses symbol properties and validates circuit IR", () => {
+		const res = kicadSchToIr(SYMBOL_PARSING_SCH, { idFn: makeIdCounter() });
 		assert.equal(res.ok, true);
 		assert.equal(res.ir.parts.length, 1);
-
 		const part = res.ir.parts[0];
 		assert.equal(part.ref, "R1");
 		assert.equal(part.value, "10k");
 		assert.equal(part.footprint, "Resistor_SMD:R_0603");
 		assert.equal(part.symbol, "Device:R");
-		assert.deepEqual(part.props, { Tolerance: "1%", Manufacturer: "Yageo" });
-		assert.deepEqual(part.placement, { x: 100, y: 150, rot: 90, side: "F" });
-
 		const valid = validateCircuitIR(res.ir);
 		assert.equal(valid.ok, true);
 	});
 
-	test("skips power symbols and #-prefixed references", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(symbol (lib_id "power:GND") (at 10 10 0) (property "Reference" "#PWR0101") (property "Value" "GND") (property "Footprint" ""))
-			(symbol (lib_id "power:+3V3") (at 20 20 0) (property "Reference" "#PWR0102") (property "Value" "+3V3") (property "Footprint" ""))
-			(symbol (lib_id "Mechanical:MountingHole") (at 30 30 0) (property "Reference" "#H1") (property "Value" "Hole") (property "Footprint" "MountingHole:3mm"))
-			(symbol (lib_id "Device:R") (at 40 40 0) (property "Reference" "R1") (property "Value" "1k") (property "Footprint" "Resistor_SMD:R_0603"))
-		)`;
+	test("parses symbol extra props and placement", () => {
+		const res = kicadSchToIr(SYMBOL_PARSING_SCH, { idFn: makeIdCounter() });
+		const part = res.ir.parts[0];
+		assert.deepEqual(part.props, { Tolerance: "1%", Manufacturer: "Yageo" });
+		assert.deepEqual(part.placement, { x: 100, y: 150, rot: 90, side: "F" });
+	});
 
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts.length, 1);
+	test("skips power symbols and #-prefixed references", () => {
+		const res = kicadSchToIr(POWER_AND_VIRTUAL_SYMBOLS_SCH, {
+			idFn: makeIdCounter(),
+		});
 		assert.equal(res.ir.parts[0].ref, "R1");
+		assert.equal(res.ir.parts.length, 1);
+		assert.equal(res.ok, true);
 	});
 });
 
 describe("kicadSchToIr net connectivity and naming", () => {
 	test("wires join pin coordinates and label names the net", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(lib_symbols
-				(symbol "Device:R"
-					(pin passive line (at -5 0 0) (number "1"))
-					(pin passive line (at 5 0 0) (number "2"))
-				)
-			)
-			(symbol (lib_id "Device:R") (at 50 50 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
-			(symbol (lib_id "Device:R") (at 100 50 0) (property "Reference" "R2") (property "Value" "20k") (property "Footprint" "R_0603"))
-			(wire (pts (xy 55 50) (xy 95 50)))
-			(label "SIG_OUT" (at 75 50 0))
-		)`;
-
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
+		const res = kicadSchToIr(LABELED_NET_SCH, { idFn: makeIdCounter() });
 		assert.equal(res.ok, true);
 		assert.equal(res.ir.nets.length, 1);
 		assert.equal(res.ir.nets[0].name, "SIG_OUT");
@@ -166,64 +244,28 @@ describe("kicadSchToIr net connectivity and naming", () => {
 	});
 
 	test("unlabeled connected pins receive Net-(<ref>-Pad<pin>) name", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(lib_symbols
-				(symbol "Device:R"
-					(pin passive line (at -5 0 0) (number "1"))
-					(pin passive line (at 5 0 0) (number "2"))
-				)
-			)
-			(symbol (lib_id "Device:R") (at 30 40 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
-			(symbol (lib_id "Device:R") (at 60 40 0) (property "Reference" "R2") (property "Value" "10k") (property "Footprint" "R_0603"))
-			(wire (pts (xy 35 40) (xy 55 40)))
-		)`;
-
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.nets.length, 1);
+		const res = kicadSchToIr(UNLABELED_NET_SCH, { idFn: makeIdCounter() });
 		assert.equal(res.ir.nets[0].name, "Net-(R1-Pad2)");
+		assert.equal(res.ir.nets.length, 1);
+		assert.equal(res.ok, true);
 	});
 
 	test("records warning on unsupported buses and sheets without failing", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(bus (pts (xy 10 10) (xy 50 10)))
-			(sheet (at 20 20) (size 10 10))
-			(symbol (lib_id "Device:R") (at 30 30 0) (property "Reference" "R1") (property "Value" "10k") (property "Footprint" "R_0603"))
-		)`;
-
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
+		const res = kicadSchToIr(BUS_AND_SHEET_SCH, { idFn: makeIdCounter() });
 		assert.equal(res.ok, true);
-		assert.ok(res.warnings.some((w) => w.includes("bus")));
+		assert.equal(
+			res.warnings.some((w) => w.includes("bus")),
+			true,
+		);
 		assert.ok(res.warnings.some((w) => w.includes("sheet")));
 	});
 
 	test("computes pin positions with rotation and mirror", () => {
-		const sch = `(kicad_sch
-			(version 20250114)
-			(lib_symbols
-				(symbol "Device:R"
-					(pin passive line (at -5 0 0) (number "1"))
-					(pin passive line (at 5 0 0) (number "2"))
-				)
-			)
-			(symbol
-				(lib_id "Device:R")
-				(at 100 100 90)
-				(mirror x)
-				(property "Reference" "R1")
-				(property "Value" "10k")
-				(property "Footprint" "R_0603")
-			)
-			(global_label "NET_PIN1" (at 100 95 0))
-		)`;
-
-		const res = kicadSchToIr(sch, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
+		const res = kicadSchToIr(ROTATION_MIRROR_SCH, { idFn: makeIdCounter() });
 		assert.equal(res.ir.nets.length, 1);
-		assert.equal(res.ir.nets[0].name, "NET_PIN1");
 		assert.equal(res.ir.nets[0].pins[0].pin, "1");
+		assert.equal(res.ok, true);
+		assert.equal(res.ir.nets[0].name, "NET_PIN1");
 	});
 });
 
@@ -232,109 +274,57 @@ describe("kicadSchToIr round trip with kicad-sch-writer", () => {
 		{
 			name: "SingleResistorNet",
 			parts: [
-				{
-					id: "part_00000000-0000-0000-0000-000000000001",
-					ref: "R1",
-					value: "10k",
-					symbol: "Device:R",
-					footprint: "Resistor_SMD:R_0603_1608Metric",
-					props: {},
-				},
-				{
-					id: "part_00000000-0000-0000-0000-000000000002",
-					ref: "R2",
-					value: "4.7k",
-					symbol: "Device:R",
-					footprint: "Resistor_SMD:R_0603_1608Metric",
-					props: {},
-				},
+				makeTestPart(
+					1,
+					"R1",
+					"10k",
+					"Device:R",
+					"Resistor_SMD:R_0603_1608Metric",
+				),
+				makeTestPart(
+					2,
+					"R2",
+					"4.7k",
+					"Device:R",
+					"Resistor_SMD:R_0603_1608Metric",
+				),
 			],
 			nets: [
-				{
-					id: "net_00000000-0000-0000-0000-000000000001",
-					name: "VCC",
-					pins: [
-						{
-							partId: "part_00000000-0000-0000-0000-000000000001",
-							pin: "1",
-						},
-						{
-							partId: "part_00000000-0000-0000-0000-000000000002",
-							pin: "1",
-						},
-					],
-				},
-				{
-					id: "net_00000000-0000-0000-0000-000000000002",
-					name: "MID",
-					pins: [
-						{
-							partId: "part_00000000-0000-0000-0000-000000000001",
-							pin: "2",
-						},
-						{
-							partId: "part_00000000-0000-0000-0000-000000000002",
-							pin: "2",
-						},
-					],
-				},
+				makeTestNet(1, "VCC", [
+					[1, "1"],
+					[2, "1"],
+				]),
+				makeTestNet(2, "MID", [
+					[1, "2"],
+					[2, "2"],
+				]),
 			],
 		},
 		{
 			name: "RC_Filter",
 			parts: [
-				{
-					id: "part_00000000-0000-0000-0000-000000000011",
-					ref: "R1",
-					value: "1k",
-					symbol: "Device:R",
-					footprint: "Resistor_SMD:R_0603_1608Metric",
-					props: {},
-				},
-				{
-					id: "part_00000000-0000-0000-0000-000000000012",
-					ref: "C1",
-					value: "100n",
-					symbol: "Device:C",
-					footprint: "Capacitor_SMD:C_0603_1608Metric",
-					props: {},
-				},
+				makeTestPart(
+					11,
+					"R1",
+					"1k",
+					"Device:R",
+					"Resistor_SMD:R_0603_1608Metric",
+				),
+				makeTestPart(
+					12,
+					"C1",
+					"100n",
+					"Device:C",
+					"Capacitor_SMD:C_0603_1608Metric",
+				),
 			],
 			nets: [
-				{
-					id: "net_00000000-0000-0000-0000-000000000011",
-					name: "AUDIO_IN",
-					pins: [
-						{
-							partId: "part_00000000-0000-0000-0000-000000000011",
-							pin: "1",
-						},
-					],
-				},
-				{
-					id: "net_00000000-0000-0000-0000-000000000012",
-					name: "FILTERED",
-					pins: [
-						{
-							partId: "part_00000000-0000-0000-0000-000000000011",
-							pin: "2",
-						},
-						{
-							partId: "part_00000000-0000-0000-0000-000000000012",
-							pin: "1",
-						},
-					],
-				},
-				{
-					id: "net_00000000-0000-0000-0000-000000000013",
-					name: "GND",
-					pins: [
-						{
-							partId: "part_00000000-0000-0000-0000-000000000012",
-							pin: "2",
-						},
-					],
-				},
+				makeTestNet(11, "AUDIO_IN", [[11, "1"]]),
+				makeTestNet(12, "FILTERED", [
+					[11, "2"],
+					[12, "1"],
+				]),
+				makeTestNet(13, "GND", [[12, "2"]]),
 			],
 		},
 	];
@@ -374,20 +364,11 @@ describe("kicadSchToIr round trip with kicad-sch-writer", () => {
 			assert.equal(imported.ok, true);
 			const valid = validateCircuitIR(imported.ir);
 			assert.equal(valid.ok, true);
-
-			assert.equal(imported.ir.parts.length, originalIR.parts.length);
-			for (let i = 0; i < originalIR.parts.length; i++) {
-				const orig = originalIR.parts[i];
-				const match = imported.ir.parts.find((p) => p.ref === orig.ref);
-				assert.ok(match, `Part ${orig.ref} must exist`);
-				assert.equal(match.value, orig.value);
-				assert.equal(match.footprint, orig.footprint);
-				assert.equal(match.symbol, orig.symbol);
-			}
-
-			const expectedMembership = normalizeNetMembership(originalIR);
-			const importedMembership = normalizeNetMembership(imported.ir);
-			assert.deepEqual(importedMembership, expectedMembership);
+			assertImportedPartsMatch(imported.ir.parts, originalIR.parts);
+			assert.deepEqual(
+				normalizeNetMembership(imported.ir),
+				normalizeNetMembership(originalIR),
+			);
 		});
 	}
 });
@@ -430,55 +411,8 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 		(label "NET_VCC2" (at 100 60 0))
 	)`;
 
-	const UNANNOTATED_SCH = `(kicad_sch
-		(version 20250114)
-		(lib_symbols
-			(symbol "Device:R"
-				(pin passive line (at -5 0 0) (number "1"))
-				(pin passive line (at 5 0 0) (number "2"))
-			)
-		)
-		(symbol
-			(lib_id "Device:R")
-			(at 30 30 0)
-			(property "Reference" "R?")
-			(property "Value" "10k")
-			(property "Footprint" "R_0603")
-		)
-		(symbol
-			(lib_id "Device:R")
-			(at 60 30 0)
-			(property "Reference" "R?")
-			(property "Value" "20k")
-			(property "Footprint" "R_0603")
-		)
-	)`;
-
-	const DUPLICATE_ANNOTATED_SCH = `(kicad_sch
-		(version 20250114)
-		(lib_symbols
-			(symbol "Device:R"
-				(pin passive line (at -5 0 0) (number "1"))
-				(pin passive line (at 5 0 0) (number "2"))
-			)
-		)
-		(symbol
-			(lib_id "Device:R")
-			(at 30 30 0)
-			(unit 1)
-			(property "Reference" "R1")
-			(property "Value" "10k")
-			(property "Footprint" "R_0603")
-		)
-		(symbol
-			(lib_id "Device:R")
-			(at 60 30 0)
-			(unit 1)
-			(property "Reference" "R1")
-			(property "Value" "20k")
-			(property "Footprint" "R_0603")
-		)
-	)`;
+	const UNANNOTATED_SCH = makeDuplicateRefSch("R?", "R?");
+	const DUPLICATE_ANNOTATED_SCH = makeDuplicateRefSch("R1", "R1", "(unit 1)");
 
 	const TEST_CASES = [
 		{
@@ -524,13 +458,7 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 			if (tc.expectedWarningSubstring) {
 				assert.ok(res.warnings[0].includes(tc.expectedWarningSubstring));
 			}
-			const partMap = new Map(res.ir.parts.map((p) => [p.id, p.ref]));
-			for (const expectedNet of tc.expectedNets) {
-				const net = res.ir.nets.find((n) => n.name === expectedNet.name);
-				assert.ok(net, `Net ${expectedNet.name} must exist`);
-				const pins = net.pins.map((p) => `${partMap.get(p.partId)}.${p.pin}`);
-				assert.deepEqual(pins, expectedNet.pins);
-			}
+			assertExpectedNets(res.ir.nets, res.ir.parts, tc.expectedNets);
 		});
 	}
 });
