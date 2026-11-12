@@ -49,6 +49,66 @@ function useEditorFocus(setEditorOpen) {
 	return { focusItemId, clearFocus, focusInEditor };
 }
 
+function createFreshIr() {
+	return {
+		schemaVersion: 1,
+		name: "untitled",
+		parts: [],
+		nets: [],
+		constraints: [],
+	};
+}
+
+function resolveTab(tab) {
+	return tab === "pcb" ? "pcb" : "schematic";
+}
+
+function useEditorDocument(setIr, setEditorOpen) {
+	const [board, setBoard] = useState(null);
+	const [editorTab, setEditorTab] = useState("schematic");
+	const [docKey, setDocKey] = useState(0);
+
+	const newDesign = useCallback(
+		(kind) => {
+			setIr(createFreshIr());
+			setBoard(null);
+			setEditorTab(resolveTab(kind));
+			setDocKey((k) => k + 1);
+			setEditorOpen(true);
+		},
+		[setIr, setEditorOpen],
+	);
+
+	const openDesign = useCallback(
+		({ ir, board: nextBoard, tab } = {}) => {
+			if (!isCircuitIr(ir)) {
+				return false;
+			}
+			setIr(ir);
+			setBoard(nextBoard ?? null);
+			setEditorTab(resolveTab(tab));
+			setDocKey((k) => k + 1);
+			setEditorOpen(true);
+			return true;
+		},
+		[setIr, setEditorOpen],
+	);
+
+	return { board, editorTab, docKey, newDesign, openDesign };
+}
+
+function useSaveFromEditor(setIr) {
+	return useCallback(
+		(payload) => {
+			const next = payload?.ir !== undefined ? payload.ir : payload;
+			if (isCircuitIr(next)) {
+				setIr(next);
+			}
+		},
+		[setIr],
+	);
+}
+
 function useEditorState(setIr) {
 	const [editorOpen, setEditorOpen] = useState(false);
 	const { focusItemId, clearFocus, focusInEditor } =
@@ -66,15 +126,8 @@ function useEditorState(setIr) {
 		},
 		[setIr],
 	);
-	const saveFromEditor = useCallback(
-		(payload) => {
-			const next = payload?.ir !== undefined ? payload.ir : payload;
-			if (isCircuitIr(next)) {
-				setIr(next);
-			}
-		},
-		[setIr],
-	);
+	const saveFromEditor = useSaveFromEditor(setIr);
+	const doc = useEditorDocument(setIr, setEditorOpen);
 	return {
 		editorOpen,
 		openEditor,
@@ -82,6 +135,7 @@ function useEditorState(setIr) {
 		saveFromEditor,
 		focusItemId,
 		focusInEditor,
+		...doc,
 	};
 }
 

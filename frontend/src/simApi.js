@@ -403,6 +403,16 @@ function buildEditorMethods(send, h) {
 			send("/api/editor/check", postOptions(h, { ir, board, rules }), signal),
 		editorExport: ({ ir, board, title } = {}, { signal } = {}) =>
 			send("/api/editor/export", postOptions(h, { ir, board, title }), signal),
+		editorImport: ({ kind, text } = {}, { signal } = {}) =>
+			send(
+				`/api/editor/import?kind=${encodeURIComponent(kind)}`,
+				{
+					method: "POST",
+					headers: { ...h, "Content-Type": "text/plain" },
+					body: text,
+				},
+				signal,
+			),
 		editorCommit: ({ repoPath, files, message } = {}, { signal } = {}) =>
 			send(
 				"/api/editor/commit",
