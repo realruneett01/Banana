@@ -78,30 +78,26 @@ describe("SqliteStateStore", () => {
 			validMsg: "valid before consume",
 			consumeMsg: "first consume accepted",
 		});
-		assertConsumeAll(store, [
-			[state, false, "rejected on reuse"],
-			["unknown-state-xyz", false, "rejected on unknown"],
-		]);
+		assert.equal(store.consume(state), false, "rejected on reuse");
+		assert.equal(
+			store.consume("unknown-state-xyz"),
+			false,
+			"rejected on unknown",
+		);
 		store.close();
 	});
 
 	it("rejects expired states on validate and consume", () => {
 		const { store, advance } = createClockedStore({ ttlMs: 60_000 });
-		const state1 = store.generate();
-		advance(70_000);
-		assertRejectedAndCleared(
-			store,
-			() => store.validate(state1),
-			"expired on validate",
-		);
-
-		const state2 = store.generate();
-		advance(70_000);
-		assertRejectedAndCleared(
-			store,
-			() => store.consume(state2),
-			"expired on consume",
-		);
+		const expiryChecks = [
+			[(s) => store.validate(s), "expired on validate"],
+			[(s) => store.consume(s), "expired on consume"],
+		];
+		for (const [check, desc] of expiryChecks) {
+			const state = store.generate();
+			advance(70_000);
+			assertRejectedAndCleared(store, () => check(state), desc);
+		}
 		store.close();
 	});
 
@@ -112,36 +108,47 @@ describe("SqliteStateStore", () => {
 		advance(70_000);
 		const fresh = store.generate();
 		assert.equal(store.size, 1);
-		assertConsumeAll(store, [[fresh, true]]);
+		assert.equal(store.consume(fresh), true);
 		store.close();
 	});
 
-	it("evicts oldest row when full and preserves newer entries", () => {
-		const { store, tick } = createClockedStore({ maxEntries: 3 });
-		seedStore(store, ["state-1", "state-2", "state-3"], tick);
-		assert.equal(store.size, 3);
-		seedStore(store, ["state-4"], tick);
-		assert.equal(store.size, 3);
+	const capacityCases = [
+		{
+			title: "evicts oldest row when full and preserves newer entries",
+			maxEntries: 3,
+			batches: [
+				{ keys: ["state-1", "state-2", "state-3"], expectedSize: 3 },
+				{ keys: ["state-4"], expectedSize: 3 },
+			],
+			consumes: [
+				["state-1", false, "oldest evicted"],
+				["state-2", true, "newer preserved"],
+				["state-3", true, "newer preserved"],
+				["state-4", true, "newest preserved"],
+			],
+		},
+		{
+			title: "does not evict when updating existing state",
+			maxEntries: 2,
+			batches: [{ keys: ["state-a", "state-b", "state-a"], expectedSize: 2 }],
+			consumes: [
+				["state-b", true],
+				["state-a", true],
+			],
+		},
+	];
 
-		assertConsumeAll(store, [
-			["state-1", false, "oldest evicted"],
-			["state-2", true, "newer preserved"],
-			["state-3", true, "newer preserved"],
-			["state-4", true, "newest preserved"],
-		]);
-		store.close();
-	});
-
-	it("does not evict when updating existing state", () => {
-		const { store, tick } = createClockedStore({ maxEntries: 2 });
-		seedStore(store, ["state-a", "state-b", "state-a"], tick);
-		assert.equal(store.size, 2);
-		assertConsumeAll(store, [
-			["state-b", true],
-			["state-a", true],
-		]);
-		store.close();
-	});
+	for (const tc of capacityCases) {
+		it(tc.title, () => {
+			const { store, tick } = createClockedStore({ maxEntries: tc.maxEntries });
+			for (const batch of tc.batches) {
+				seedStore(store, batch.keys, tick);
+				assert.equal(store.size, batch.expectedSize);
+			}
+			assertConsumeAll(store, tc.consumes);
+			store.close();
+		});
+	}
 
 	const invalidInputs = [
 		{ label: "null", value: null },
