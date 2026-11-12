@@ -1,15 +1,12 @@
-import {
-	Alert,
-	Button,
-	Input,
-	Segmented,
-	Tag,
-	Timeline,
-	Typography,
-} from "antd";
+import { SettingOutlined } from "@ant-design/icons";
+import { Alert, Button, Input, Modal, Tag, Timeline, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../config.js";
-import { createSimApi } from "../simApi.js";
+import { createSimApi, parseSseChunk } from "../simApi.js";
+import AgentModelSettings, {
+	readAgentApiKey,
+	readAgentModel,
+} from "./AgentModelSettings.jsx";
 import BoardPreview from "./BoardPreview.jsx";
 import IrDiffReview from "./IrDiffReview.jsx";
 import IssuesPanel from "./IssuesPanel.jsx";
@@ -33,23 +30,17 @@ const SECTION_STYLE = Object.freeze({
 	gap: "8px",
 });
 
-const MODEL_STORAGE_KEY = "banana.agent.provider";
-
-const MODEL_OPTIONS = Object.freeze([
-	{ label: "Auto (server default)", value: "auto" },
-	{ label: "Gemini", value: "gemini" },
-	{ label: "Claude", value: "claude" },
-]);
-
-const MODEL_PICKER_STYLE = Object.freeze({
+const HEADER_STYLE = Object.freeze({
 	display: "flex",
-	flexDirection: "column",
-	gap: "4px",
+	justifyContent: "space-between",
+	alignItems: "center",
+	marginBottom: "4px",
 });
 
-const MODEL_HINT_STYLE = Object.freeze({
-	color: "#94a3b8",
-	fontSize: "12px",
+const HEADER_INFO_STYLE = Object.freeze({
+	display: "flex",
+	alignItems: "center",
+	gap: "6px",
 });
 
 const TEXTAREA_STYLE = Object.freeze({
@@ -267,21 +258,22 @@ function PromptButtons({ isRunning, hasText, onSend, onCancel }) {
 	);
 }
 
+function onPromptKeyDown(e, onSend) {
+	if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+		e.preventDefault();
+		onSend();
+	}
+}
+
 function PromptSection({ text, onChange, onSend, onCancel, status }) {
 	const isRunning = status === "running";
-	const handleKeyDown = (e) => {
-		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-			e.preventDefault();
-			onSend();
-		}
-	};
 	return (
 		<div style={SECTION_STYLE}>
 			<Input.TextArea
 				rows={3}
 				value={text}
 				onChange={(e) => onChange(e.target.value)}
-				onKeyDown={handleKeyDown}
+				onKeyDown={(e) => onPromptKeyDown(e, onSend)}
 				placeholder="Describe PCB design (e.g. 555 timer board)..."
 				disabled={isRunning}
 				aria-label="Design prompt"
@@ -479,62 +471,260 @@ function AgentOutputs({ agent, currentIr, review, onOpenSimulation }) {
 	);
 }
 
-function ModelPicker({ value, onChange, disabled }) {
+function getValidModel(settings, provider) {
+	const raw = settings?.model;
+	if (typeof raw === "string" && raw.trim()) {
+		return raw.trim();
+	}
+	if (provider === "ollama") {
+		return "qwen2.5:7b";
+	}
+	return undefined;
+}
+
+function buildAgentBody(params, settings) {
+	const provider = settings?.provider || params?.provider;
+	const body = { message: params?.message };
+	if (params?.approved !== undefined) {
+		body.approved = params.approved;
+	}
+	if (provider) {
+		body.provider = provider;
+	}
+	const model = getValidModel(settings, provider);
+	if (model) {
+		body.model = model;
+	}
+	return body;
+}
+
+function buildAgentHeaders(apiKey) {
+	const headers = { "Content-Type": "application/json" };
+	if (typeof apiKey === "string" && apiKey.trim()) {
+		headers["x-model-api-key"] = apiKey.trim();
+	}
+	return headers;
+}
+
+async function parseJsonSafe(response) {
+	try {
+		return await response.json();
+	} catch {
+		return null;
+	}
+}
+
+async function handleAgentJson(response) {
+	const data = await parseJsonSafe(response);
+	if (!response.ok) {
+		const error = data?.error || `HTTP ${response.status}`;
+		return { ok: false, status: response.status, error };
+	}
+	return { ok: true, data: data ?? {} };
+}
+
+async function runAgentDirect(url, body, options = {}) {
+	const { fetchImpl = globalThis.fetch, headers, signal } = options;
+	try {
+		const res = await fetchImpl(url, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+			signal,
+		});
+		return handleAgentJson(res);
+	} catch (err) {
+		if (signal?.aborted) return { ok: false, status: 0, error: "aborted" };
+		return { ok: false, status: 0, error: err?.message || "Request failed" };
+	}
+}
+
+function dispatchStreamFrame(frame, onStep) {
+	if (frame.event === "step") {
+		onStep?.(frame.data);
+		return null;
+	}
+	if (frame.event === "result") {
+		return { result: frame.data };
+	}
+	if (frame.event === "error") {
+		return { error: frame.data?.error || "Agent execution failed" };
+	}
+	return null;
+}
+
+function processFrames(frames, onStep) {
+	let result = null;
+	for (const frame of frames) {
+		const outcome = dispatchStreamFrame(frame, onStep);
+		if (outcome?.error) return outcome;
+		if (outcome?.result !== undefined) result = outcome.result;
+	}
+	return { result };
+}
+
+async function readChunkLoop(reader, onStep, signal) {
+	const decoder = new TextDecoder();
+	let buf = "";
+	let finalResult = null;
+	while (true) {
+		if (signal?.aborted) return { ok: false, error: "aborted" };
+		const { done, value } = await reader.read();
+		if (done) break;
+		buf += decoder.decode(value, { stream: true });
+		const parsed = parseSseChunk(buf);
+		buf = parsed.rest;
+		const out = processFrames(parsed.frames, onStep);
+		if (out.error) return { ok: false, error: out.error };
+		if (out.result) finalResult = out.result;
+	}
+	if (finalResult) return { ok: true, data: finalResult };
+	return { ok: false, error: "Stream ended without result" };
+}
+
+async function streamResponse(res, onStep, signal) {
+	const reader = res.body?.getReader?.();
+	if (!reader) {
+		return { ok: false, error: "Body not readable" };
+	}
+	try {
+		return await readChunkLoop(reader, onStep, signal);
+	} catch (err) {
+		if (signal?.aborted) return { ok: false, error: "aborted" };
+		return { ok: false, error: err?.message || "Stream error" };
+	}
+}
+
+async function runAgentStreamRequest(baseUrl, body, headers, opt = {}) {
+	const { fetchImpl = globalThis.fetch, signal, onStep } = opt;
+	const streamUrl = `${baseUrl}/api/agent/run/stream`;
+	let res;
+	try {
+		res = await fetchImpl(streamUrl, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+			signal,
+		});
+	} catch (err) {
+		if (signal?.aborted) return { ok: false, status: 0, error: "aborted" };
+		return { ok: false, status: 0, error: err?.message || "Request failed" };
+	}
+	if (res.status === 404 || res.status === 405) {
+		return runAgentDirect(`${baseUrl}/api/agent/run`, body, {
+			fetchImpl,
+			headers,
+			signal,
+		});
+	}
+	if (!res.ok) {
+		return handleAgentJson(res);
+	}
+	return streamResponse(res, onStep, signal);
+}
+
+function createAgentApiClient(baseUrl, settings, apiKey, fallbackApi) {
+	const headers = buildAgentHeaders(apiKey);
+	const fetchImpl =
+		typeof fallbackApi?.fetchImpl === "function"
+			? fallbackApi.fetchImpl
+			: globalThis.fetch;
+	const runStream = (params, opt = {}) => {
+		const body = buildAgentBody(params, settings);
+		return runAgentStreamRequest(baseUrl, body, headers, { ...opt, fetchImpl });
+	};
+	const runSync = (params, opt = {}) => {
+		const body = buildAgentBody(params, settings);
+		return runAgentDirect(`${baseUrl}/api/agent/run`, body, {
+			fetchImpl,
+			headers,
+			signal: opt?.signal,
+		});
+	};
+	return {
+		...(fallbackApi || {}),
+		runAgentStream: runStream,
+		runAgent: runSync,
+	};
+}
+
+function resolveBaseUrl(api) {
+	if (typeof api?.baseUrl === "string" && api.baseUrl) {
+		return api.baseUrl.replace(/\/+$/, "");
+	}
+	return API_BASE_URL;
+}
+
+function SettingsHeader({ modelConfig, onOpenSettings, disabled }) {
+	const isOllama = modelConfig.provider === "ollama";
+	const modelLabel = modelConfig.model || (isOllama ? "qwen2.5:7b" : null);
 	return (
-		<div style={MODEL_PICKER_STYLE}>
-			<Segmented
+		<div style={HEADER_STYLE}>
+			<div style={HEADER_INFO_STYLE}>
+				<Tag color="geekblue">{modelConfig.provider}</Tag>
+				{modelLabel && <Tag>{modelLabel}</Tag>}
+			</div>
+			<Button
 				size="small"
-				options={MODEL_OPTIONS}
-				value={value}
-				onChange={onChange}
+				icon={<SettingOutlined />}
+				onClick={onOpenSettings}
 				disabled={disabled}
-				aria-label="Model selection"
-			/>
-			<span style={MODEL_HINT_STYLE}>
-				Keys are set up in the app settings, not here.
-			</span>
+				aria-label="Agent settings"
+			>
+				Settings
+			</Button>
 		</div>
 	);
 }
 
-function useAgentModel() {
-	const [model, setModel] = useState(() => {
-		let val = "auto";
-		try {
-			val = globalThis.localStorage?.getItem(MODEL_STORAGE_KEY);
-		} catch {
-			// Ignore storage access errors
-		}
-		return val === "gemini" || val === "claude" ? val : "auto";
-	});
+function useAgentSettingsState() {
+	const [modelConfig, setModelConfig] = useState(() => readAgentModel());
+	const [apiKey, setApiKey] = useState(() =>
+		readAgentApiKey(modelConfig.provider),
+	);
+	const [settingsOpen, setSettingsOpen] = useState(false);
 
-	const selectModel = (next) => {
-		setModel(next);
-		try {
-			globalThis.localStorage?.setItem(MODEL_STORAGE_KEY, next);
-		} catch {
-			// Ignore storage access errors
-		}
+	const handleSaveSettings = (saved) => {
+		setModelConfig({ provider: saved.provider, model: saved.model });
+		setApiKey(saved.apiKey);
+		setSettingsOpen(false);
 	};
 
-	const provider = model === "gemini" || model === "claude" ? model : undefined;
-	return { model, selectModel, provider };
+	return {
+		modelConfig,
+		apiKey,
+		settingsOpen,
+		setSettingsOpen,
+		handleSaveSettings,
+	};
 }
 
-function useAgentPanelState({ api, currentIr, onAcceptIr }) {
+function useAgentPanelState(props) {
+	const { api, currentIr, onAcceptIr } = props;
 	const [text, setText] = useState("");
-	const { model, selectModel, provider } = useAgentModel();
-	const effectiveApi = useMemo(
-		() => api ?? createSimApi({ baseUrl: API_BASE_URL }),
-		[api],
-	);
-	const agent = useDesignAgent({ api: effectiveApi, provider });
+	const settings = useAgentSettingsState();
+	const baseUrl = useMemo(() => resolveBaseUrl(api), [api]);
+	const effectiveApi = useMemo(() => {
+		const base = api ?? createSimApi({ baseUrl: API_BASE_URL });
+		return createAgentApiClient(
+			baseUrl,
+			settings.modelConfig,
+			settings.apiKey,
+			base,
+		);
+	}, [api, baseUrl, settings.modelConfig, settings.apiKey]);
+
+	const agent = useDesignAgent({
+		api: effectiveApi,
+		provider: settings.modelConfig.provider,
+	});
 	const review = useIrReview({
 		agentIr: agent.ir,
 		currentIr,
 		onAcceptIr,
 	});
-	return { text, setText, agent, review, model, selectModel };
+
+	return { text, setText, agent, review, settings };
 }
 
 function PanelPrompt({ text, setText, agent }) {
@@ -549,32 +739,41 @@ function PanelPrompt({ text, setText, agent }) {
 	);
 }
 
-export default function AgentDesignPanel({
-	api,
-	onOpenSimulation,
-	currentIr,
-	onAcceptIr,
-}) {
-	const { text, setText, agent, review, model, selectModel } =
-		useAgentPanelState({
-			api,
-			currentIr,
-			onAcceptIr,
-		});
+function SettingsModal({ open, onClose, onSave }) {
+	return (
+		<Modal
+			title="AI Model Settings"
+			open={open}
+			onCancel={onClose}
+			footer={null}
+			destroyOnClose
+		>
+			<AgentModelSettings onSave={onSave} onClose={onClose} />
+		</Modal>
+	);
+}
+
+export default function AgentDesignPanel(props) {
+	const { text, setText, agent, review, settings } = useAgentPanelState(props);
 
 	return (
 		<section style={PANEL_STYLE} aria-label="AI Design Panel">
-			<ModelPicker
-				value={model}
-				onChange={selectModel}
+			<SettingsHeader
+				modelConfig={settings.modelConfig}
+				onOpenSettings={() => settings.setSettingsOpen(true)}
 				disabled={agent.status === "running"}
 			/>
 			<PanelPrompt text={text} setText={setText} agent={agent} />
 			<AgentOutputs
 				agent={agent}
-				currentIr={currentIr}
+				currentIr={props.currentIr}
 				review={review}
-				onOpenSimulation={onOpenSimulation}
+				onOpenSimulation={props.onOpenSimulation}
+			/>
+			<SettingsModal
+				open={settings.settingsOpen}
+				onClose={() => settings.setSettingsOpen(false)}
+				onSave={settings.handleSaveSettings}
 			/>
 		</section>
 	);
