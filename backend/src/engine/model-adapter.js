@@ -690,27 +690,43 @@ function mapOllamaAssistantCalls(toolCalls) {
 	}));
 }
 
-function mapOllamaMessage(msg) {
-	if (isModelRole(msg.role)) {
-		const out = { role: "assistant", content: msg.content || msg.text || "" };
-		if (Array.isArray(msg.toolCalls) && msg.toolCalls.length > 0) {
-			out.tool_calls = mapOllamaAssistantCalls(msg.toolCalls);
-		}
-		return out;
+function mapOllamaAssistantMessage(msg) {
+	const out = { role: "assistant", content: resolveAssistantText(msg) };
+	if (hasToolCalls(msg)) {
+		out.tool_calls = mapOllamaAssistantCalls(msg.toolCalls);
 	}
-	if (isToolRole(msg.role)) {
-		return {
-			role: "tool",
-			content: formatToolContent(msg.content),
-		};
+	return out;
+}
+
+function mapOllamaToolMessage(msg) {
+	return {
+		role: "tool",
+		content: formatToolContent(msg.content),
+	};
+}
+
+function resolveOllamaContent(content) {
+	if (typeof content === "string") {
+		return content;
 	}
+	return formatToolContent(content ?? "");
+}
+
+function mapOllamaUserMessage(msg) {
 	return {
 		role: msg.role || "user",
-		content:
-			typeof msg.content === "string"
-				? msg.content
-				: formatToolContent(msg.content ?? ""),
+		content: resolveOllamaContent(msg.content),
 	};
+}
+
+function mapOllamaMessage(msg) {
+	if (isModelRole(msg.role)) {
+		return mapOllamaAssistantMessage(msg);
+	}
+	if (isToolRole(msg.role)) {
+		return mapOllamaToolMessage(msg);
+	}
+	return mapOllamaUserMessage(msg);
 }
 
 function mapOllamaMessages(messages, system) {
