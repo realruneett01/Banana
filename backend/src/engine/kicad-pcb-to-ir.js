@@ -448,7 +448,30 @@ function createPcbContext() {
 		rawVias: [],
 		rawZones: [],
 		warnings: [],
+		usedRefs: new Set(),
 	};
+}
+
+function findCandidateRef(base, usedRefs) {
+	if (base !== "NOREF" && !usedRefs.has(base)) {
+		return base;
+	}
+	let n = base === "NOREF" ? 1 : 2;
+	while (usedRefs.has(`${base}_${n}`)) {
+		n++;
+	}
+	return `${base}_${n}`;
+}
+
+function uniqueRef(ref, usedRefs, warnings) {
+	const base = ref !== "" && ref !== "REF**" ? ref : "NOREF";
+	const finalRef = findCandidateRef(base, usedRefs);
+	usedRefs.add(finalRef);
+	if (finalRef !== ref) {
+		const old = ref || "empty";
+		warnings.push(`renamed footprint reference ${old} to ${finalRef}`);
+	}
+	return finalRef;
 }
 
 function collectPcbElements(ast, ctx, idFn) {
@@ -457,6 +480,7 @@ function collectPcbElements(ast, ctx, idFn) {
 		const head = child[0]?.sym;
 		if (head === "footprint" || head === "module") {
 			const part = parseFootprintPart(child, idFn);
+			part.ref = uniqueRef(part.ref, ctx.usedRefs, ctx.warnings);
 			ctx.parts.push(part);
 			collectFootprintPads(child, part.id, ctx.padConnections);
 		} else if (head === "segment") {

@@ -96,10 +96,34 @@ const INVALID_INPUTS = [
 	["whitespace only", "   \n\t  "],
 	["unbalanced sexpr", "(kicad_pcb (version 20241229)"],
 	["wrong root symbol", "(not_kicad_pcb (version 1))"],
-	[
-		"duplicate reference in parts",
-		'(kicad_pcb (version 20241229) (footprint "R_0805" (property "Reference" "R1") (property "Value" "10k")) (footprint "R_0805" (property "Reference" "R1") (property "Value" "20k")))',
-	],
+];
+
+const UNIQUE_REF_CASES = [
+	{
+		name: "two footprints with empty ref produce NOREF_1 and NOREF_2 with two warnings",
+		pcb: '(kicad_pcb (version 20241229) (footprint "F1" (property "Reference" "")) (footprint "F2" (property "Reference" "")))',
+		expectedRefs: ["NOREF_1", "NOREF_2"],
+		expectedWarningCount: 2,
+		expectedWarnings: [
+			"renamed footprint reference empty to NOREF_1",
+			"renamed footprint reference empty to NOREF_2",
+		],
+	},
+	{
+		name: "a REF** footprint produces NOREF_1 with one warning",
+		pcb: '(kicad_pcb (version 20241229) (footprint "F1" (property "Reference" "REF**")))',
+		expectedRefs: ["NOREF_1"],
+		expectedWarningCount: 1,
+		expectedWarnings: ["renamed footprint reference REF** to NOREF_1"],
+	},
+	{
+		name: "two footprints both R1 produce R1 and R1_2 with one warning and pad net connects",
+		pcb: '(kicad_pcb (version 20241229) (net 1 "GND") (footprint "R_0805" (property "Reference" "R1")) (footprint "R_0805" (property "Reference" "R1") (pad "1" smd (net 1 "GND"))))',
+		expectedRefs: ["R1", "R1_2"],
+		expectedWarningCount: 1,
+		expectedWarnings: ["renamed footprint reference R1 to R1_2"],
+		expectedNets: [{ name: "GND", partIndex: 1, pin: "1" }],
+	},
 ];
 
 function makeIdCounter() {
@@ -226,6 +250,33 @@ function assertRoundTripSuccess(imported, expectedIR, expectedOutline) {
 	assertPartsMatch(imported.ir.parts, expectedIR.parts);
 	assertNetsMatch(imported.ir, expectedIR);
 	assert.deepEqual(imported.board.outline, expectedOutline);
+}
+
+function assertNetPinConnected(net, expectedPartId, expectedPin) {
+	const hasPin = net.pins.some(
+		(p) => p.partId === expectedPartId && p.pin === expectedPin,
+	);
+	assert.strictEqual(hasPin, true);
+}
+
+function assertExpectedNets(nets, parts, expectedNets = []) {
+	for (const spec of expectedNets) {
+		const net = nets.find((n) => n.name === spec.name);
+		assert.ok(net, `Net ${spec.name} must exist`);
+		assertNetPinConnected(net, parts[spec.partIndex].id, spec.pin);
+	}
+}
+
+function assertUniqueRefCase(tc) {
+	const res = kicadPcbToIr(tc.pcb);
+	assert.strictEqual(res.ok, true);
+	assert.deepEqual(
+		res.ir.parts.map((p) => p.ref),
+		tc.expectedRefs,
+	);
+	assert.strictEqual(res.warnings.length, tc.expectedWarningCount);
+	assert.deepEqual(res.warnings, tc.expectedWarnings);
+	assertExpectedNets(res.ir.nets, res.ir.parts, tc.expectedNets);
 }
 
 describe("kicadPcbToIr garbage and invalid input", () => {
@@ -381,4 +432,12 @@ describe("kicadPcbToIr determinism and round trip", () => {
 		const res2 = kicadPcbToIr(text, { idFn: makeIdCounter() });
 		assert.deepEqual(res1, res2);
 	});
+});
+
+describe("kicadPcbToIr unique references and empty ref handling", () => {
+	for (const tc of UNIQUE_REF_CASES) {
+		test(tc.name, () => {
+			assertUniqueRefCase(tc);
+		});
+	}
 });
