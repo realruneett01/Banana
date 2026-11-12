@@ -4,34 +4,121 @@ import { newId } from "../../backend/src/engine/ids.js";
 import { irToSpice } from "../../backend/src/engine/spice/ir-to-spice.js";
 import { modelForPart } from "../../backend/src/engine/spice/part-models.js";
 
-function makePart(ref, value, overrides = {}) {
-	return {
-		id: newId("part"),
-		ref,
-		value,
-		symbol: `Device:${ref.replace(/\d+$/, "")}`,
-		footprint: "Package_SO:SOIC-8_3.9x4.9mm",
-		props: {},
-		...overrides,
-	};
+const makePart = (ref, value, overrides = {}) =>
+	Object.assign(
+		{
+			id: newId("part"),
+			ref,
+			value,
+			symbol: `Device:${ref.replace(/\d+$/, "")}`,
+			footprint: "Package_SO:SOIC-8_3.9x4.9mm",
+			props: {},
+		},
+		overrides,
+	);
+
+const makeNet = (name, pins = []) => ({ id: newId("net"), name, pins });
+
+const makeIR = (parts, nets, name = "TestIR") => ({
+	constraints: [],
+	name,
+	nets,
+	parts,
+	schemaVersion: 1,
+});
+
+const safePattern = /^[A-Za-z0-9_ .+\-=(){}*,]+$/;
+
+function assertSafeCharacters(lines) {
+	for (const line of lines) {
+		assert.strictEqual(
+			safePattern.test(line),
+			true,
+			`Invalid chars in: ${line}`,
+		);
+	}
 }
 
-function makeNet(name, pins = []) {
-	return {
-		id: newId("net"),
-		name,
-		pins,
-	};
+function assertPayloadLinesSafe(netlist) {
+	const nonCommentLines = netlist
+		.split("\n")
+		.filter(
+			(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
+		);
+	assertSafeCharacters(nonCommentLines);
 }
 
-function makeIR(parts, nets, name = "TestIR") {
-	return {
-		schemaVersion: 1,
-		name,
-		parts,
-		nets,
-		constraints: [],
+function assertForbiddenSubstrings(lines) {
+	const forbidden = [".control", "shell", ";", "`", "\n"];
+	for (const line of lines) {
+		for (const sub of forbidden) {
+			assert.strictEqual(line.includes(sub), false);
+		}
+	}
+}
+
+function assertCircuitSpiceResult(
+	res,
+	expectedElements,
+	expectedNetlistSnippets,
+) {
+	assert.strictEqual(res.ok, true);
+	for (const [id, name] of Object.entries(expectedElements)) {
+		assert.strictEqual(res.elementMap[id], name);
+	}
+	for (const snippet of expectedNetlistSnippets) {
+		assert.strictEqual(res.netlist.includes(snippet), true);
+	}
+}
+
+function makeComplexPartModelCircuit() {
+	const parts = {
+		reg: makePart("U1", "AMS1117-3.3", {
+			props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
+		}),
+		op: makePart("U2", "LM358", {
+			props: {
+				pinRoles: { out: "1", inn: "2", inp: "3", vee: "4", vcc: "8" },
+			},
+		}),
+		mcu: makePart("U3", "STM32F103", {
+			props: { pinRoles: { supply: "1", gnd: "2" } },
+		}),
+		r1: makePart("R1", "10k"),
+		r2: makePart("R2", "10k"),
 	};
+	const pin = (p, pinNumber) => ({ partId: parts[p].id, pin: pinNumber });
+	const nets = [
+		makeNet("VIN", [pin("reg", "1"), pin("r1", "1")]),
+		makeNet("V33", [pin("reg", "3"), pin("mcu", "1"), pin("op", "8")]),
+		makeNet("GND", [
+			pin("reg", "2"),
+			pin("mcu", "2"),
+			pin("op", "4"),
+			pin("r2", "2"),
+		]),
+		makeNet("sig", [pin("r1", "2"), pin("r2", "1"), pin("op", "3")]),
+		makeNet("out", [pin("op", "1"), pin("op", "2")]),
+	];
+	return { parts, ir: makeIR(Object.values(parts), nets) };
+}
+
+function convertRegulatorWithRef(ref) {
+	const reg = makePart(ref, "AMS1117-3.3", {
+		props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
+	});
+	const ir = makeIR(
+		[reg],
+		[
+			makeNet("VIN", [{ partId: reg.id, pin: "1" }]),
+			makeNet("V33", [{ partId: reg.id, pin: "3" }]),
+			makeNet("GND", [{ partId: reg.id, pin: "2" }]),
+		],
+	);
+	const res = irToSpice(ir);
+	assert.strictEqual(res.ok, true);
+	assertPayloadLinesSafe(res.netlist);
+	return { elementName: res.elementMap[reg.id] };
 }
 
 describe("modelForPart - family detection", () => {
@@ -148,61 +235,41 @@ describe("modelForPart - vout parsing", () => {
 });
 
 describe("modelForPart - character set and template lines", () => {
-	const safePattern = /^[A-Za-z0-9_ .+\-=(){}*,]+$/;
+	const charsetCases = [
+		{
+			title: "regulator lines match allowed character set",
+			part: makePart("U1", "AMS1117-3.3"),
+			nodes: { in: "n_in", gnd: "0", out: "n_out" },
+			minLines: 2,
+		},
+		{
+			title: "opamp lines match allowed character set",
+			part: makePart("U1", "LM358"),
+			nodes: {
+				inp: "n_inp",
+				inn: "n_inn",
+				out: "n_out",
+				vcc: "n_vcc",
+				vee: "0",
+			},
+			minLines: 2,
+		},
+		{
+			title: "mcu lines match allowed character set",
+			part: makePart("U1", "STM32F103"),
+			nodes: { supply: "n_vcc", gnd: "0" },
+			minLines: 1,
+		},
+	];
 
-	test("regulator lines match allowed character set", () => {
-		const model = modelForPart(makePart("U1", "AMS1117-3.3"));
-		const lines = model.build(
-			{ in: "n_in", gnd: "0", out: "n_out" },
-			"U1",
-			model.params,
-		);
-		assert.strictEqual(lines.length >= 2, true);
-		for (const line of lines) {
-			assert.strictEqual(
-				safePattern.test(line),
-				true,
-				`Invalid chars in: ${line}`,
-			);
-		}
-	});
-
-	test("opamp lines match allowed character set", () => {
-		const model = modelForPart(makePart("U1", "LM358"));
-		const nodes = {
-			inp: "n_inp",
-			inn: "n_inn",
-			out: "n_out",
-			vcc: "n_vcc",
-			vee: "0",
-		};
-		const lines = model.build(nodes, "U1", model.params);
-		assert.strictEqual(lines.length >= 2, true);
-		for (const line of lines) {
-			assert.strictEqual(
-				safePattern.test(line),
-				true,
-				`Invalid chars in: ${line}`,
-			);
-		}
-	});
-
-	test("mcu lines match allowed character set", () => {
-		const model = modelForPart(makePart("U1", "STM32F103"));
-		const lines = model.build(
-			{ supply: "n_vcc", gnd: "0" },
-			"U1",
-			model.params,
-		);
-		assert.strictEqual(lines.length >= 1, true);
-		for (const line of lines) {
-			assert.strictEqual(
-				safePattern.test(line),
-				true,
-				`Invalid chars in: ${line}`,
-			);
-		}
-	});
+	for (const { title, part, nodes, minLines } of charsetCases) {
+		test(title, () => {
+			const model = modelForPart(part);
+			const lines = model.build(nodes, "U1", model.params);
+			assert.strictEqual(lines.length >= minLines, true);
+			assertSafeCharacters(lines);
+		});
+	}
 });
 
 describe("modelForPart - security and hostile values", () => {
@@ -213,6 +280,17 @@ describe("modelForPart - security and hostile values", () => {
 		"STM32;.include /etc/passwd",
 	];
 
+	const hostileNodes = {
+		in: "n_in",
+		gnd: "0",
+		out: "n_out",
+		inp: "n_inp",
+		inn: "n_inn",
+		vcc: "n_vcc",
+		vee: "0",
+		supply: "n_vcc",
+	};
+
 	for (const payload of hostilePayloads) {
 		test(`hostile payload never appears in output lines: ${JSON.stringify(payload)}`, () => {
 			const part = makePart(payload, payload, {
@@ -220,24 +298,8 @@ describe("modelForPart - security and hostile values", () => {
 			});
 			const model = modelForPart(part);
 			if (model) {
-				const nodes = {
-					in: "n_in",
-					gnd: "0",
-					out: "n_out",
-					inp: "n_inp",
-					inn: "n_inn",
-					vcc: "n_vcc",
-					vee: "0",
-					supply: "n_vcc",
-				};
-				const lines = model.build(nodes, "U1", model.params);
-				for (const line of lines) {
-					assert.strictEqual(line.includes(".control"), false);
-					assert.strictEqual(line.includes("shell"), false);
-					assert.strictEqual(line.includes(";"), false);
-					assert.strictEqual(line.includes("`"), false);
-					assert.strictEqual(line.includes("\n"), false);
-				}
+				const lines = model.build(hostileNodes, "U1", model.params);
+				assertForbiddenSubstrings(lines);
 			}
 		});
 	}
@@ -264,68 +326,24 @@ describe("modelForPart - non-finite numeric props fallback", () => {
 
 describe("irToSpice - integration with part models and passives", () => {
 	test("includes regulator, opamp, and mcu in netlist with passives", () => {
-		const reg = makePart("U1", "AMS1117-3.3", {
-			props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
-		});
-		const op = makePart("U2", "LM358", {
-			props: { pinRoles: { out: "1", inn: "2", inp: "3", vee: "4", vcc: "8" } },
-		});
-		const mcu = makePart("U3", "STM32F103", {
-			props: { pinRoles: { supply: "1", gnd: "2" } },
-		});
-		const r1 = makePart("R1", "10k");
-		const r2 = makePart("R2", "10k");
-
-		const netVin = makeNet("VIN", [
-			{ partId: reg.id, pin: "1" },
-			{ partId: r1.id, pin: "1" },
-		]);
-		const netV33 = makeNet("V33", [
-			{ partId: reg.id, pin: "3" },
-			{ partId: mcu.id, pin: "1" },
-			{ partId: op.id, pin: "8" },
-		]);
-		const netGnd = makeNet("GND", [
-			{ partId: reg.id, pin: "2" },
-			{ partId: mcu.id, pin: "2" },
-			{ partId: op.id, pin: "4" },
-			{ partId: r2.id, pin: "2" },
-		]);
-		const netSig = makeNet("sig", [
-			{ partId: r1.id, pin: "2" },
-			{ partId: r2.id, pin: "1" },
-			{ partId: op.id, pin: "3" },
-		]);
-		const netOut = makeNet("out", [
-			{ partId: op.id, pin: "1" },
-			{ partId: op.id, pin: "2" },
-		]);
-
-		const ir = makeIR(
-			[reg, op, mcu, r1, r2],
-			[netVin, netV33, netGnd, netSig, netOut],
-		);
+		const { parts, ir } = makeComplexPartModelCircuit();
 		const res = irToSpice(ir);
-
-		assert.strictEqual(res.ok, true);
-		assert.strictEqual(res.elementMap[reg.id], "U1");
-		assert.strictEqual(res.elementMap[op.id], "U2");
-		assert.strictEqual(res.elementMap[mcu.id], "U3");
-		assert.strictEqual(res.elementMap[r1.id], "R1");
-		assert.strictEqual(res.elementMap[r2.id], "R2");
-
-		assert.strictEqual(res.netlist.includes("B_U1"), true);
-		assert.strictEqual(res.netlist.includes("R_U2_in"), true);
-		assert.strictEqual(res.netlist.includes("I_U3"), true);
-		assert.strictEqual(res.netlist.includes("R1 n_VIN n_sig 10000"), true);
-		assert.strictEqual(res.netlist.includes("R2 n_sig 0 10000"), true);
+		assertCircuitSpiceResult(
+			res,
+			{
+				[parts.reg.id]: "U1",
+				[parts.op.id]: "U2",
+				[parts.mcu.id]: "U3",
+				[parts.r1.id]: "R1",
+				[parts.r2.id]: "R2",
+			},
+			["B_U1", "R_U2_in", "I_U3", "R1 n_VIN n_sig 10000", "R2 n_sig 0 10000"],
+		);
 	});
 });
 
 describe("irToSpice - part model prefix sanitization", () => {
-	const safePattern = /^[A-Za-z0-9_ .+\-=(){}*,]+$/;
-
-	const cases = [
+	const prefixCases = [
 		{ ref: ";x", rawChar: ";", forbiddenInName: ";" },
 		{ ref: "$U1", rawChar: "$", forbiddenInName: "$" },
 		{ ref: ".control", rawChar: ".", forbiddenInName: "." },
@@ -334,66 +352,20 @@ describe("irToSpice - part model prefix sanitization", () => {
 		{ ref: "1abc", rawChar: "1", forbiddenInName: null },
 	];
 
-	for (const { ref, rawChar, forbiddenInName } of cases) {
+	for (const { ref, rawChar, forbiddenInName } of prefixCases) {
 		test(`sanitizes regulator reference ${JSON.stringify(ref)}`, () => {
-			const reg = makePart(ref, "AMS1117-3.3", {
-				props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
-			});
-			const netVin = makeNet("VIN", [{ partId: reg.id, pin: "1" }]);
-			const netV33 = makeNet("V33", [{ partId: reg.id, pin: "3" }]);
-			const netGnd = makeNet("GND", [{ partId: reg.id, pin: "2" }]);
-			const ir = makeIR([reg], [netVin, netV33, netGnd]);
-			const res = irToSpice(ir);
-
-			assert.strictEqual(res.ok, true);
-			const elementName = res.elementMap[reg.id];
+			const { elementName } = convertRegulatorWithRef(ref);
 			assert.notStrictEqual(elementName, undefined);
 			assert.strictEqual(elementName.startsWith(rawChar), false);
 			assert.strictEqual(elementName.startsWith("U"), true);
 			if (forbiddenInName) {
 				assert.strictEqual(elementName.includes(forbiddenInName), false);
 			}
-
-			const nonCommentLines = res.netlist
-				.split("\n")
-				.filter(
-					(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
-				);
-			for (const line of nonCommentLines) {
-				assert.strictEqual(
-					safePattern.test(line),
-					true,
-					`Invalid chars in: ${line}`,
-				);
-			}
 		});
 	}
 
 	test("normal reference U7 produces a name starting with U7", () => {
-		const reg = makePart("U7", "AMS1117-3.3", {
-			props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
-		});
-		const netVin = makeNet("VIN", [{ partId: reg.id, pin: "1" }]);
-		const netV33 = makeNet("V33", [{ partId: reg.id, pin: "3" }]);
-		const netGnd = makeNet("GND", [{ partId: reg.id, pin: "2" }]);
-		const ir = makeIR([reg], [netVin, netV33, netGnd]);
-		const res = irToSpice(ir);
-
-		assert.strictEqual(res.ok, true);
-		const elementName = res.elementMap[reg.id];
+		const { elementName } = convertRegulatorWithRef("U7");
 		assert.strictEqual(elementName.startsWith("U7"), true);
-
-		const nonCommentLines = res.netlist
-			.split("\n")
-			.filter(
-				(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
-			);
-		for (const line of nonCommentLines) {
-			assert.strictEqual(
-				safePattern.test(line),
-				true,
-				`Invalid chars in: ${line}`,
-			);
-		}
 	});
 });
