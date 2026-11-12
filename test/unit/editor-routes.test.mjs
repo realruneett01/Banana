@@ -87,9 +87,10 @@ async function postJson(port, path, body) {
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(body),
 	});
+	const text = await res.text();
 	let payload = {};
 	try {
-		payload = await res.json();
+		payload = JSON.parse(text);
 	} catch {
 		payload = {};
 	}
@@ -97,6 +98,7 @@ async function postJson(port, path, body) {
 		status: res.status,
 		headers: res.headers,
 		json: payload,
+		text,
 	};
 }
 
@@ -404,6 +406,38 @@ function assertExportTracksAndWarnings(res, expectedTracks) {
 	}
 }
 
+const DOWNLOAD_HAPPY_CASES = [
+	{
+		kind: "bom",
+		endpoint: "/api/editor/bom",
+		expectedContentType: "text/csv; charset=utf-8",
+		expectedDisposition: "attachment; filename=design-bom.csv",
+		assertContent: (text) => {
+			assert.ok(text.startsWith("Reference,Qty,Value,Footprint,Symbol"));
+		},
+	},
+	{
+		kind: "netlist",
+		endpoint: "/api/editor/netlist",
+		expectedContentType: "text/plain; charset=utf-8",
+		expectedDisposition: "attachment; filename=design.net",
+		assertContent: (text) => {
+			assert.ok(text.includes("(export"));
+		},
+	},
+];
+
+const DOWNLOAD_SANITIZE_CASES = [
+	{
+		endpoint: "/api/editor/bom",
+		expectedDisposition: "attachment; filename=___evil_name-bom.csv",
+	},
+	{
+		endpoint: "/api/editor/netlist",
+		expectedDisposition: "attachment; filename=___evil_name.net",
+	},
+];
+
 describe("editor-routes", () => {
 	let app;
 	let server;
@@ -481,6 +515,47 @@ describe("editor-routes", () => {
 			const res = await postJson(port, "/api/editor/export", { ir, board });
 			assertExportTracksAndWarnings(res, board.tracks);
 		});
+	});
+
+	describe("POST /api/editor/bom and /api/editor/netlist", () => {
+		for (const tc of DOWNLOAD_HAPPY_CASES) {
+			test(`${tc.kind} returns 200 with attachment and correct content`, async () => {
+				const ir = makeTestIR("TestCircuit", 2);
+				const res = await postJson(port, tc.endpoint, { ir });
+				assert.strictEqual(res.status, 200);
+				assert.strictEqual(
+					res.headers.get("content-type"),
+					tc.expectedContentType,
+				);
+				assert.strictEqual(
+					res.headers.get("content-disposition"),
+					tc.expectedDisposition,
+				);
+				tc.assertContent(res.text);
+			});
+		}
+
+		registerRejectionTests("/api/editor/bom", EXPORT_INVALID_CASES, () => port);
+		registerRejectionTests(
+			"/api/editor/netlist",
+			EXPORT_INVALID_CASES,
+			() => port,
+		);
+
+		for (const tc of DOWNLOAD_SANITIZE_CASES) {
+			test(`sanitizes filename with ../ and quotes for ${tc.endpoint}`, async () => {
+				const ir = makeTestIR("TestCircuit", 1);
+				const res = await postJson(port, tc.endpoint, {
+					ir,
+					name: '../evil"name',
+				});
+				assert.strictEqual(res.status, 200);
+				assert.strictEqual(
+					res.headers.get("content-disposition"),
+					tc.expectedDisposition,
+				);
+			});
+		}
 	});
 
 	describe("POST /api/editor/import", () => {

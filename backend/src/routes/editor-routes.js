@@ -1,6 +1,7 @@
 import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
+import { irToBomCsv, irToKicadNetlist } from "../engine/ir-exports.js";
 import { kicadPcbToIr } from "../engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
 import { kicadSchToIr } from "../engine/kicad-sch-to-ir.js";
@@ -116,6 +117,50 @@ function handleExport(req, res) {
 		// Broad catch to guarantee route never leaks stack traces
 		return res.status(500).json({ error: "Editor export failed" });
 	}
+}
+
+function sanitizeDownloadBase(raw) {
+	if (typeof raw !== "string") {
+		return "design";
+	}
+	const cleaned = raw.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, MAX_NAME_LENGTH);
+	return cleaned || "design";
+}
+
+const DOWNLOAD_CONFIG = {
+	bom: {
+		contentType: "text/csv; charset=utf-8",
+		suffix: "-bom.csv",
+		convert: irToBomCsv,
+	},
+	netlist: {
+		contentType: "text/plain; charset=utf-8",
+		suffix: ".net",
+		convert: irToKicadNetlist,
+	},
+};
+
+function createDownloadHandler(kind) {
+	const config = DOWNLOAD_CONFIG[kind];
+	return (req, res) => {
+		const err = validatePayload(req.body);
+		if (err) {
+			const { status, ...payload } = err;
+			return res.status(status).json(payload);
+		}
+		try {
+			const base = sanitizeDownloadBase(req.body?.name);
+			const data = config.convert(req.body.ir);
+			res.set({
+				"Content-Type": config.contentType,
+				"Content-Disposition": `attachment; filename=${base}${config.suffix}`,
+			});
+			return res.status(200).send(data);
+		} catch (_err) {
+			// Broad catch to guarantee route never leaks stack traces
+			return res.status(500).json({ error: "Editor export failed" });
+		}
+	};
 }
 
 function isPlainObject(val) {
@@ -284,11 +329,21 @@ function handleImport(req, res) {
 
 const passThrough = (_req, _res, next) => next();
 
-export function createEditorRouter({
-	limiter,
-	patchDeps,
-	isLocalAllowed,
-} = {}) {
+function registerDownloadRoutes(router, routeLimiter) {
+	router.post(
+		["/editor/bom", "/api/editor/bom"],
+		routeLimiter,
+		createDownloadHandler("bom"),
+	);
+	router.post(
+		["/editor/netlist", "/api/editor/netlist"],
+		routeLimiter,
+		createDownloadHandler("netlist"),
+	);
+}
+
+export function createEditorRouter(options = {}) {
+	const { limiter, patchDeps, isLocalAllowed } = options;
 	const router = express.Router();
 	const routeLimiter = limiter ?? passThrough;
 	router.post(
@@ -301,6 +356,7 @@ export function createEditorRouter({
 		routeLimiter,
 		handleExport,
 	);
+	registerDownloadRoutes(router, routeLimiter);
 	router.post(
 		["/editor/commit", "/api/editor/commit"],
 		routeLimiter,
