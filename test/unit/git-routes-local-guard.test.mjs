@@ -61,6 +61,17 @@ async function requestApi(
 	return { status: res.status, headers: res.headers, text, json };
 }
 
+function getFile(serverUrl, repoPath, filePath, commit = null) {
+	let query = `repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(filePath)}`;
+	if (commit) {
+		query += `&commit=${encodeURIComponent(commit)}`;
+	}
+	return requestApi(serverUrl, {
+		method: "GET",
+		path: `/api/git/file?${query}`,
+	});
+}
+
 describe("git router local repository guards and /file endpoint", () => {
 	let disabledServer;
 	let enabledServer;
@@ -160,61 +171,67 @@ describe("git router local repository guards and /file endpoint", () => {
 
 	for (const tc of VALIDATION_CASES) {
 		test(`/file rejects ${tc.name} with 400`, async () => {
-			let query = `repoPath=${encodeURIComponent(tempRepo.dir)}&filePath=${encodeURIComponent(tc.file)}`;
-			if (tc.commit) {
-				query += `&commit=${encodeURIComponent(tc.commit)}`;
-			}
-			const res = await requestApi(enabledServer.url, {
-				method: "GET",
-				path: `/api/git/file?${query}`,
-			});
+			const res = await getFile(
+				enabledServer.url,
+				tempRepo.dir,
+				tc.file,
+				tc.commit,
+			);
 			assert.equal(res.status, 400);
 		});
 	}
 
-	test("GET /file without commit returns 200 and working-tree content", async () => {
-		const query = `repoPath=${encodeURIComponent(tempRepo.dir)}&filePath=test.kicad_sch`;
-		const res = await requestApi(enabledServer.url, {
-			method: "GET",
-			path: `/api/git/file?${query}`,
-		});
-		assert.equal(res.status, 200);
-		assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
-		assert.equal(res.text, SCH_CONTENT);
-	});
+	const SUCCESS_CASES = [
+		{
+			name: "GET /file without commit returns 200 and working-tree content",
+			commit: () => null,
+		},
+		{
+			name: "GET /file with commit returns 200 and git show content",
+			commit: () => tempRepo.head,
+		},
+	];
 
-	test("GET /file with commit returns 200 and git show content", async () => {
-		const query = `repoPath=${encodeURIComponent(tempRepo.dir)}&filePath=test.kicad_sch&commit=${tempRepo.head}`;
-		const res = await requestApi(enabledServer.url, {
-			method: "GET",
-			path: `/api/git/file?${query}`,
+	for (const tc of SUCCESS_CASES) {
+		test(tc.name, async () => {
+			const res = await getFile(
+				enabledServer.url,
+				tempRepo.dir,
+				"test.kicad_sch",
+				tc.commit(),
+			);
+			assert.equal(res.status, 200);
+			assert.equal(
+				res.headers.get("content-type"),
+				"text/plain; charset=utf-8",
+			);
+			assert.equal(res.text, SCH_CONTENT);
 		});
-		assert.equal(res.status, 200);
-		assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
-		assert.equal(res.text, SCH_CONTENT);
-	});
+	}
 
-	test("GET /file for nonexistent file returns 404 File not found", async () => {
-		const query = `repoPath=${encodeURIComponent(tempRepo.dir)}&filePath=missing.kicad_sch`;
-		const res = await requestApi(enabledServer.url, {
-			method: "GET",
-			path: `/api/git/file?${query}`,
-		});
-		assert.equal(res.status, 404);
-		assert.deepEqual(res.json, { error: "File not found" });
-	});
+	const FILE_ERROR_CASES = [
+		{
+			name: "GET /file for nonexistent file returns 404 File not found",
+			getRepo: () => tempRepo.dir,
+			file: "missing.kicad_sch",
+			status: 404,
+			error: "File not found",
+		},
+		{
+			name: "validateRepoPath returns 400 with 'Path does not exist on disk' without echoing path",
+			getRepo: () =>
+				path.join(os.tmpdir(), `banana-test-nonexistent-${Date.now()}`),
+			file: "test.kicad_sch",
+			status: 400,
+			error: "Path does not exist on disk",
+		},
+	];
 
-	test("validateRepoPath returns 400 with 'Path does not exist on disk' without echoing path", async () => {
-		const nonExistent = path.join(
-			os.tmpdir(),
-			`banana-test-nonexistent-${Date.now()}`,
-		);
-		const query = `repoPath=${encodeURIComponent(nonExistent)}&filePath=test.kicad_sch`;
-		const res = await requestApi(enabledServer.url, {
-			method: "GET",
-			path: `/api/git/file?${query}`,
+	for (const tc of FILE_ERROR_CASES) {
+		test(tc.name, async () => {
+			const res = await getFile(enabledServer.url, tc.getRepo(), tc.file);
+			assert.deepEqual(res.json, { error: tc.error });
+			assert.equal(res.status, tc.status);
 		});
-		assert.equal(res.status, 400);
-		assert.deepEqual(res.json, { error: "Path does not exist on disk" });
-	});
+	}
 });
