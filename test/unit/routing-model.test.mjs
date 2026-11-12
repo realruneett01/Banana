@@ -15,24 +15,22 @@ function checkAngleRoutes(mode, cases) {
 	}
 }
 
-describe("routingModel - constrainAngle", () => {
-	test("returns direct target when already orthogonal or 45 degrees in 45 mode", () => {
-		const targets = [
-			[10, 0],
-			[0, 10],
-			[10, 10],
-			[-10, 10],
-		];
-		checkAngleRoutes(
-			"45",
-			targets.map((target) => ({ target, expected: [target] })),
-		);
-	});
-
-	test("calculates 45-degree dogleg when absX > absY or absY > absX", () => {
-		// absX (10) > absY (4): corner moves 6 mm along X, then 4 mm at 45 deg
-		// absY (10) > absX (3): corner moves 7 mm along Y, then 3 mm at 45 deg
-		checkAngleRoutes("45", [
+const CONSTRAIN_ANGLE_CASES = [
+	{
+		title:
+			"returns direct target when already orthogonal or 45 degrees in 45 mode",
+		mode: "45",
+		cases: [
+			{ target: [10, 0], expected: [[10, 0]] },
+			{ target: [0, 10], expected: [[0, 10]] },
+			{ target: [10, 10], expected: [[10, 10]] },
+			{ target: [-10, 10], expected: [[-10, 10]] },
+		],
+	},
+	{
+		title: "calculates 45-degree dogleg when absX > absY or absY > absX",
+		mode: "45",
+		cases: [
 			{
 				target: [10, 4],
 				expected: [
@@ -47,11 +45,12 @@ describe("routingModel - constrainAngle", () => {
 					[3, 10],
 				],
 			},
-		]);
-	});
-
-	test("mode 90 produces orthogonal corner", () => {
-		checkAngleRoutes("90", [
+		],
+	},
+	{
+		title: "mode 90 produces orthogonal corner",
+		mode: "90",
+		cases: [
 			{ target: [10, 0], expected: [[10, 0]] },
 			{ target: [0, 10], expected: [[0, 10]] },
 			{
@@ -68,8 +67,16 @@ describe("routingModel - constrainAngle", () => {
 					[4, 8],
 				],
 			},
-		]);
-	});
+		],
+	},
+];
+
+describe("routingModel - constrainAngle", () => {
+	for (const { title, mode, cases } of CONSTRAIN_ANGLE_CASES) {
+		test(title, () => {
+			checkAngleRoutes(mode, cases);
+		});
+	}
 
 	test("accepts point objects with x and y", () => {
 		const pts = constrainAngle({ x: 0, y: 0 }, { x: 10, y: 0 });
@@ -238,6 +245,14 @@ function runPropose(board, netId) {
 	});
 }
 
+const makeSampleBoard = () => ({
+	tracks: [
+		makeTrack(1, "GND"),
+		makeTrack(5, "VCC"),
+		makeTrack(1, "GND", "B.Cu"),
+	],
+});
+
 function verifyRouteCollisions(collisions, expectedList) {
 	assert.equal(collisions.length, expectedList.length);
 	for (let i = 0; i < expectedList.length; i++) {
@@ -250,13 +265,7 @@ function verifyRouteCollisions(collisions, expectedList) {
 
 describe("routingModel - proposeRoute", () => {
 	test("proposes 45-degree route points and detects collision only against other nets", () => {
-		const board = {
-			tracks: [
-				makeTrack(1, "GND"),
-				makeTrack(5, "VCC"),
-				makeTrack(1, "GND", "B.Cu"),
-			],
-		};
+		const board = makeSampleBoard();
 
 		// Routing on F.Cu with netId "GND" near the GND track: same net, so no collision!
 		const resSameNet = runPropose(board, "GND");
@@ -279,11 +288,11 @@ const EXPECTED_WIDTH_PRESETS = [
 describe("routingModel - WIDTH_PRESETS", () => {
 	test("contains standard presets with current capacity hints", () => {
 		assert.equal(WIDTH_PRESETS.length, EXPECTED_WIDTH_PRESETS.length);
-		for (let i = 0; i < EXPECTED_WIDTH_PRESETS.length; i++) {
-			const preset = WIDTH_PRESETS[i];
-			const exp = EXPECTED_WIDTH_PRESETS[i];
-			assert.deepEqual({ label: preset.label, mm: preset.mm }, exp);
-			assert.ok(typeof preset.hint === "string" && preset.hint.length > 0);
+		const presets = WIDTH_PRESETS.map((p) => ({ label: p.label, mm: p.mm }));
+		assert.deepEqual(presets, EXPECTED_WIDTH_PRESETS);
+		for (const preset of WIDTH_PRESETS) {
+			assert.equal(typeof preset.hint, "string");
+			assert.ok(preset.hint.length > 0);
 		}
 	});
 });
