@@ -39,10 +39,14 @@ const SCHEMATIC_COLOR_CASES = [
 
 describe("editor theme definitions", () => {
 	test("themes are frozen", () => {
-		assert.equal(Object.isFrozen(SCHEMATIC_THEME), true);
-		assert.equal(Object.isFrozen(SCHEMATIC_THEME_DARK), true);
-		assert.equal(Object.isFrozen(PCB_THEME), true);
-		assert.equal(Object.isFrozen(PCB_THEME.layers), true);
+		for (const target of [
+			SCHEMATIC_THEME,
+			SCHEMATIC_THEME_DARK,
+			PCB_THEME,
+			PCB_THEME.layers,
+		]) {
+			assert.equal(Object.isFrozen(target), true);
+		}
 	});
 
 	test("SCHEMATIC_THEME_DARK contains identical keys to SCHEMATIC_THEME", () => {
@@ -56,49 +60,62 @@ describe("editor theme definitions", () => {
 	});
 
 	test("SCHEMATIC_THEME_DARK overrides specific colors", () => {
-		assert.equal(SCHEMATIC_THEME_DARK.background, "#1e1e1e");
-		assert.equal(SCHEMATIC_THEME_DARK.grid, "#4a4a4a");
-		assert.equal(SCHEMATIC_THEME_DARK.cursor, "#e6e6e6");
-		assert.equal(SCHEMATIC_THEME_DARK.label, "#e6e6e6");
-		assert.equal(SCHEMATIC_THEME_DARK.symbolFill, "rgba(0,0,0,0)");
-		assert.equal(SCHEMATIC_THEME_DARK.sheetFill, "rgba(0,0,0,0)");
-		assert.equal(SCHEMATIC_THEME_DARK.wire, SCHEMATIC_THEME.wire);
+		const overrides = {
+			background: "#1e1e1e",
+			grid: "#4a4a4a",
+			cursor: "#e6e6e6",
+			label: "#e6e6e6",
+			symbolFill: "rgba(0,0,0,0)",
+			sheetFill: "rgba(0,0,0,0)",
+			wire: SCHEMATIC_THEME.wire,
+		};
+		for (const [key, expected] of Object.entries(overrides)) {
+			assert.equal(SCHEMATIC_THEME_DARK[key], expected);
+		}
 	});
 });
 
 describe("getSchematicColor", () => {
-	test("resolves colors according to priority rules", () => {
-		for (const [, theme, key, expected] of SCHEMATIC_COLOR_CASES) {
+	for (const [description, theme, key, expected] of SCHEMATIC_COLOR_CASES) {
+		test(`resolves schematic color for ${description}`, () => {
 			assert.equal(getSchematicColor(theme, key), expected);
-		}
-	});
+		});
+	}
 });
 
 describe("getLayerColor", () => {
-	test("resolves layer colors from table cases", () => {
-		for (const [layer, expected] of LAYER_COLOR_CASES) {
+	for (const [layer, expected] of LAYER_COLOR_CASES) {
+		test(`resolves layer color for ${layer}`, () => {
 			assert.equal(getLayerColor(PCB_THEME, layer), expected);
-		}
-	});
+		});
+	}
 });
 
 describe("withOverrides", () => {
-	test("merges layers and leaves original unchanged", () => {
-		const overrides = {
+	function createPcbOverrides() {
+		return withOverrides(PCB_THEME, {
 			background: "#112233",
 			layers: {
 				"F.Cu": "#00ff00",
 			},
-		};
-		const updated = withOverrides(PCB_THEME, overrides);
+		});
+	}
 
+	test("merges layer properties and maintains untouched layers", () => {
+		const updated = createPcbOverrides();
 		assert.equal(updated.background, "#112233");
 		assert.equal(updated.layers["F.Cu"], "#00ff00");
 		assert.equal(updated.layers["B.Cu"], PCB_THEME.layers["B.Cu"]);
+	});
 
+	test("leaves original PCB_THEME unchanged", () => {
+		createPcbOverrides();
 		assert.equal(PCB_THEME.background, "#001023");
 		assert.equal(PCB_THEME.layers["F.Cu"], "#c83434");
+	});
 
+	test("freezes updated theme and its layers", () => {
+		const updated = createPcbOverrides();
 		assert.equal(Object.isFrozen(updated), true);
 		assert.equal(Object.isFrozen(updated.layers), true);
 	});
