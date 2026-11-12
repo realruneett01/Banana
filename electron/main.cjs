@@ -18,6 +18,7 @@ const {
 	loadEncryptedToken,
 	clearEncryptedToken,
 } = require("./github-auth.cjs");
+const { findKicadGui, launchKicad } = require("./kicad-launch.cjs");
 
 // 1. Single Instance Lock (Phase 1 / T1.2)
 const gotTheLock = app.requestSingleInstanceLock();
@@ -324,6 +325,49 @@ async function handleSelectFolder() {
 	return null;
 }
 
+let cachedKicadGui = null;
+let kicadGuiChecked = false;
+
+function getKicadGui() {
+	if (!kicadGuiChecked) {
+		cachedKicadGui = findKicadGui();
+		kicadGuiChecked = true;
+	}
+	return cachedKicadGui;
+}
+
+function hasAnyKicadTool(gui) {
+	if (!gui) return false;
+	const hasEditor = Boolean(gui.eeschema || gui.pcbnew);
+	return Boolean(gui.kicad || hasEditor);
+}
+
+function getKicadStatus() {
+	const gui = getKicadGui();
+	const schematic = Boolean(gui?.eeschema || gui?.kicad);
+	const pcb = Boolean(gui?.pcbnew || gui?.kicad);
+	return {
+		installed: hasAnyKicadTool(gui),
+		schematic,
+		pcb,
+	};
+}
+
+function isPlainObject(value) {
+	if (!value || typeof value !== "object") {
+		return false;
+	}
+	return !Array.isArray(value);
+}
+
+function handleKicadOpen(request) {
+	if (!isPlainObject(request)) {
+		return { ok: false, error: "Invalid request" };
+	}
+	const { kind, filePath, projectRoot } = request;
+	return launchKicad({ kind, filePath, projectRoot }, { gui: getKicadGui() });
+}
+
 function registerAppIpcHandlers() {
 	// Safe External URL Opener (T1.6)
 	ipcMain.handle("banana:open-external", async (_, url) => {
@@ -338,6 +382,19 @@ function registerAppIpcHandlers() {
 
 	// Native Folder Selector Dialog (T3.6)
 	ipcMain.handle("banana:select-folder", handleSelectFolder);
+
+	// KiCad Status & Launcher
+	ipcMain.handle("banana:kicad-status", (event) => {
+		if (!isTrustedSender(event)) return null;
+		return getKicadStatus();
+	});
+
+	ipcMain.handle("banana:kicad-open", (event, request) => {
+		if (!isTrustedSender(event)) {
+			return { ok: false, error: "Untrusted sender" };
+		}
+		return handleKicadOpen(request);
+	});
 }
 
 function registerGitHubDeviceFlowHandlers() {
