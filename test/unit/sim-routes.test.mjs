@@ -62,15 +62,8 @@ function makeValidCircuitIR() {
 }
 
 class RouteHarness {
-	static async launch(app) {
-		const server = http.createServer(app);
-		await new Promise((done) => server.listen(0, "127.0.0.1", done));
-		return new RouteHarness(server, server.address().port);
-	}
-
-	constructor(server, port) {
+	constructor(server) {
 		this.server = server;
-		this.origin = `http://127.0.0.1:${port}`;
 	}
 
 	async close() {
@@ -78,21 +71,30 @@ class RouteHarness {
 		await new Promise((done) => this.server.close(done));
 	}
 
-	async get(endpoint) {
-		const res = await fetch(`${this.origin}${endpoint}`);
+	async request(endpoint, init) {
+		const { port } = this.server.address();
+		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, init);
 		const payload = await res.json().catch(() => ({}));
 		return { status: res.status, json: payload };
 	}
 
+	async get(endpoint) {
+		return this.request(endpoint);
+	}
+
 	async post(endpoint, body) {
-		const res = await fetch(`${this.origin}${endpoint}`, {
+		return this.request(endpoint, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(body),
 		});
-		const payload = await res.json().catch(() => ({}));
-		return { status: res.status, json: payload };
 	}
+}
+
+async function launchRouteHarness(app) {
+	const server = http.createServer(app);
+	await new Promise((done) => server.listen(0, "127.0.0.1", done));
+	return new RouteHarness(server);
 }
 
 function makeSimRunBody(patch = {}) {
@@ -174,7 +176,7 @@ describe("sim-routes and erc-routes", () => {
 	let harness;
 
 	before(async () => {
-		harness = await RouteHarness.launch(createApp());
+		harness = await launchRouteHarness(createApp());
 	});
 
 	after(async () => {

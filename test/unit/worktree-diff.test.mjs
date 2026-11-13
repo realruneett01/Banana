@@ -29,18 +29,13 @@ function createTempGitRepo(tempDirs) {
 }
 
 function cleanupResources(tempDirs, cleanFiles) {
-	for (const f of cleanFiles) {
+	for (const target of [...cleanFiles, ...tempDirs]) {
 		try {
-			if (fs.existsSync(f)) fs.unlinkSync(f);
-		} catch (_) {
-			// Ignore temp file cleanup error
-		}
-	}
-	for (const d of tempDirs) {
-		try {
-			if (fs.existsSync(d)) fs.rmSync(d, { recursive: true, force: true });
-		} catch (_) {
-			// Ignore temp directory cleanup error
+			fs.rmSync(target, { recursive: true, force: true });
+		} catch (err) {
+			console.warn(
+				`worktree-diff test cleanup failed for ${target}: ${err.message}`,
+			);
 		}
 	}
 }
@@ -61,27 +56,26 @@ describe("worktree diff unit tests", () => {
 		cleanupResources(tempDirs, cleanFiles);
 	});
 
-	test("extractWorkingTreeFile copies modified content without caching", async () => {
-		const mod1 = "(kicad_sch (version 20231120) (comment modified_1))";
-		fs.writeFileSync(schFile, mod1);
-		const targetName = "wt_test_target.kicad_sch";
-		const outPath1 = await extractWorkingTreeFile(
+	async function writeAndExtract(content) {
+		fs.writeFileSync(schFile, content);
+		const outPath = await extractWorkingTreeFile(
 			repoDir,
 			"board.kicad_sch",
-			targetName,
+			"wt_test_target.kicad_sch",
+		);
+		assert.equal(fs.readFileSync(outPath, "utf8"), content);
+		return outPath;
+	}
+
+	test("extractWorkingTreeFile copies modified content without caching", async () => {
+		const outPath1 = await writeAndExtract(
+			"(kicad_sch (version 20231120) (comment modified_1))",
 		);
 		cleanFiles.push(outPath1);
-		assert.equal(fs.readFileSync(outPath1, "utf8"), mod1);
-
-		const mod2 = "(kicad_sch (version 20231120) (comment modified_2))";
-		fs.writeFileSync(schFile, mod2);
-		const outPath2 = await extractWorkingTreeFile(
-			repoDir,
-			"board.kicad_sch",
-			targetName,
+		const outPath2 = await writeAndExtract(
+			"(kicad_sch (version 20231120) (comment modified_2))",
 		);
 		assert.equal(outPath2, outPath1);
-		assert.equal(fs.readFileSync(outPath2, "utf8"), mod2);
 	});
 
 	test("extractWorkingTreeFile throws on path escape", async () => {
@@ -104,43 +98,26 @@ describe("worktree diff unit tests", () => {
 		);
 	});
 
+	const guard = (desc, baseCommit, targetCommit, expected) => ({
+		desc,
+		params: { baseCommit, targetCommit, relativeFilePath: "board.kicad_sch" },
+		expected,
+	});
 	const guardCases = [
-		{
-			desc: "rejects WORKTREE as baseCommit",
-			params: {
-				baseCommit: "WORKTREE",
-				targetCommit: "HEAD",
-				relativeFilePath: "board.kicad_sch",
-			},
-			expected: "Invalid commit ref",
-		},
-		{
-			desc: "accepts WORKTREE as targetCommit",
-			params: {
-				baseCommit: "HEAD",
-				targetCommit: "WORKTREE",
-				relativeFilePath: "board.kicad_sch",
-			},
-			expected: null,
-		},
-		{
-			desc: "rejects WORKTREE for both base and target",
-			params: {
-				baseCommit: "WORKTREE",
-				targetCommit: "WORKTREE",
-				relativeFilePath: "board.kicad_sch",
-			},
-			expected: "Invalid commit ref",
-		},
-		{
-			desc: "accepts normal commit refs",
-			params: {
-				baseCommit: "main",
-				targetCommit: "HEAD",
-				relativeFilePath: "board.kicad_sch",
-			},
-			expected: null,
-		},
+		guard(
+			"rejects WORKTREE as baseCommit",
+			"WORKTREE",
+			"HEAD",
+			"Invalid commit ref",
+		),
+		guard("accepts WORKTREE as targetCommit", "HEAD", "WORKTREE", null),
+		guard(
+			"rejects WORKTREE for both base and target",
+			"WORKTREE",
+			"WORKTREE",
+			"Invalid commit ref",
+		),
+		guard("accepts normal commit refs", "main", "HEAD", null),
 	];
 
 	for (const { desc, params, expected } of guardCases) {

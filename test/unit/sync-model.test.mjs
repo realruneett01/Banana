@@ -34,6 +34,23 @@ function makeBoard(overrides = {}) {
 	};
 }
 
+function assertPlacedAt(part, x, y) {
+	assert.deepEqual(part.placement, { x, y, rot: 0, side: "F" });
+}
+
+function assertInSync(report) {
+	assert.equal(report.inSync, true);
+	assert.equal(report.summary, "Board already matches the schematic");
+	assert.deepEqual(report.placed, []);
+}
+
+function assertIds(items, ids) {
+	assert.deepEqual(
+		items.map((item) => item.id),
+		ids,
+	);
+}
+
 describe("syncBoardFromIr - placement rules", () => {
 	test("new part gets placement outside the outline", () => {
 		const ir = { parts: [makePart("R1")], nets: [] };
@@ -85,18 +102,8 @@ describe("syncBoardFromIr - placement rules", () => {
 		const board = { outline: null, tracks: [], vias: [], zones: [] };
 		const result = syncBoardFromIr(ir, board, { spacing: 15 });
 
-		assert.deepEqual(result.ir.parts[0].placement, {
-			x: 0,
-			y: 0,
-			rot: 0,
-			side: "F",
-		});
-		assert.deepEqual(result.ir.parts[1].placement, {
-			x: 0,
-			y: 15,
-			rot: 0,
-			side: "F",
-		});
+		assertPlacedAt(result.ir.parts[0], 0, 0);
+		assertPlacedAt(result.ir.parts[1], 0, 15);
 	});
 
 	test("non-finite or partial placement coordinates are replaced", () => {
@@ -128,12 +135,7 @@ describe("syncBoardFromIr - placement rules", () => {
 		const board = makeBoard({ outline });
 		const result = syncBoardFromIr(ir, board, { spacing: 10 });
 
-		assert.deepEqual(result.ir.parts[1].placement, {
-			x: 110,
-			y: 10,
-			rot: 0,
-			side: "F",
-		});
+		assertPlacedAt(result.ir.parts[1], 110, 10);
 	});
 });
 
@@ -173,9 +175,7 @@ describe("syncBoardFromIr - orphan detection and reports", () => {
 		});
 		const result = syncBoardFromIr(ir, board);
 
-		assert.equal(result.report.inSync, true);
-		assert.equal(result.report.summary, "Board already matches the schematic");
-		assert.deepEqual(result.report.placed, []);
+		assertInSync(result.report);
 	});
 
 	test("summary sentence formats singular and plural clauses", () => {
@@ -233,18 +233,9 @@ describe("removeOrphans and safety guarantees", () => {
 		};
 		const cleaned = removeOrphans(board, report);
 
-		assert.deepEqual(
-			cleaned.tracks.map((t) => t.id),
-			["t0", "t2"],
-		);
-		assert.deepEqual(
-			cleaned.vias.map((v) => v.id),
-			["v1"],
-		);
-		assert.deepEqual(
-			cleaned.zones.map((z) => z.id),
-			["z0"],
-		);
+		assertIds(cleaned.tracks, ["t0", "t2"]);
+		assertIds(cleaned.vias, ["v1"]);
+		assertIds(cleaned.zones, ["z0"]);
 		assert.equal(board.tracks.length, 3);
 	});
 
@@ -260,9 +251,7 @@ describe("removeOrphans and safety guarantees", () => {
 	test("null board and null ir handled without throwing", () => {
 		const result = syncBoardFromIr(null, null);
 		assert.ok(result);
-		assert.equal(result.report.inSync, true);
-		assert.equal(result.report.summary, "Board already matches the schematic");
-		assert.deepEqual(result.report.placed, []);
+		assertInSync(result.report);
 		assert.deepEqual(result.ir.parts, []);
 	});
 

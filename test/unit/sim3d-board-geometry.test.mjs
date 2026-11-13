@@ -7,106 +7,61 @@ import {
 
 const EMPTY_BOARD_INPUTS = [null, undefined, {}, { tracks: [] }];
 
+const B = -BOARD_THICKNESS;
+const p3 = (x, y, z = 0) => [x, y, z];
+const seg = (start, end, layer) => ({
+	netId: "n1",
+	start,
+	end,
+	...(layer ? { layer } : {}),
+});
+
 const TRACK_ROUTE_CASES = [
 	{
 		name: "a net with two joined segments becomes one polyline in order",
 		board: {
-			tracks: [
-				{ netId: "n1", start: [0, 0], end: [10, 0], layer: "F.Cu" },
-				{ netId: "n1", start: [10, 0], end: [10, 10], layer: "F.Cu" },
-			],
+			tracks: [seg([0, 0], [10, 0], "F.Cu"), seg([10, 0], [10, 10], "F.Cu")],
 		},
 		expectedSegments: [
-			{
-				netId: "n1",
-				real: true,
-				points: [
-					[0, 0, 0],
-					[10, 0, 0],
-					[10, 10, 0],
-				],
-			},
+			{ netId: "n1", real: true, points: [p3(0, 0), p3(10, 0), p3(10, 10)] },
 		],
 	},
 	{
 		name: "reversed segments are joined correctly",
-		board: {
-			tracks: [
-				{ netId: "n1", start: [0, 0], end: [10, 0] },
-				{ netId: "n1", start: [20, 0], end: [10, 0] },
-			],
-		},
-		expectedSegments: [
-			{
-				points: [
-					[0, 0, 0],
-					[10, 0, 0],
-					[20, 0, 0],
-				],
-			},
-		],
+		board: { tracks: [seg([0, 0], [10, 0]), seg([20, 0], [10, 0])] },
+		expectedSegments: [{ points: [p3(0, 0), p3(10, 0), p3(20, 0)] }],
 	},
 	{
 		name: "two disconnected runs give two polylines",
 		board: {
 			tracks: [
-				{ netId: "n1", start: [0, 0], end: [5, 0] },
-				{ netId: "n1", start: [5, 0], end: [10, 0] },
-				{ netId: "n1", start: [50, 50], end: [55, 50] },
-				{ netId: "n1", start: [55, 50], end: [60, 50] },
+				seg([0, 0], [5, 0]),
+				seg([5, 0], [10, 0]),
+				seg([50, 50], [55, 50]),
+				seg([55, 50], [60, 50]),
 			],
 		},
 		expectedSegments: [
-			{
-				points: [
-					[0, 0, 0],
-					[5, 0, 0],
-					[10, 0, 0],
-				],
-			},
-			{
-				points: [
-					[50, 50, 0],
-					[55, 50, 0],
-					[60, 50, 0],
-				],
-			},
+			{ points: [p3(0, 0), p3(5, 0), p3(10, 0)] },
+			{ points: [p3(50, 50), p3(55, 50), p3(60, 50)] },
 		],
 	},
 	{
 		name: "via adds a vertical segment",
 		board: {
-			tracks: [{ netId: "n1", start: [0, 0], end: [5, 5], layer: "F.Cu" }],
+			tracks: [seg([0, 0], [5, 5], "F.Cu")],
 			vias: [{ netId: "n1", at: [5, 5] }],
 		},
-		expectedSegments: [
-			{
-				points: [
-					[0, 0, 0],
-					[5, 5, 0],
-					[5, 5, -BOARD_THICKNESS],
-				],
-			},
-		],
+		expectedSegments: [{ points: [p3(0, 0), p3(5, 5), p3(5, 5, B)] }],
 	},
 	{
 		name: "multi-layer route connects front track, via, and back track into single polyline",
 		board: {
-			tracks: [
-				{ netId: "n1", start: [0, 0], end: [5, 5], layer: "F.Cu" },
-				{ netId: "n1", start: [5, 5], end: [10, 10], layer: "B.Cu" },
-			],
+			tracks: [seg([0, 0], [5, 5], "F.Cu"), seg([5, 5], [10, 10], "B.Cu")],
 			vias: [{ netId: "n1", at: [5, 5] }],
 		},
 		expectedSegments: [
-			{
-				points: [
-					[0, 0, 0],
-					[5, 5, 0],
-					[5, 5, -BOARD_THICKNESS],
-					[10, 10, -BOARD_THICKNESS],
-				],
-			},
+			{ points: [p3(0, 0), p3(5, 5), p3(5, 5, B), p3(10, 10, B)] },
 		],
 	},
 ];
@@ -128,21 +83,11 @@ const MALFORMED_TRACKS = [
 
 const TOLERANCE_CASES = [
 	{
-		board: {
-			tracks: [
-				{ netId: "n1", start: [0, 0], end: [10, 0] },
-				{ netId: "n1", start: [10.005, 0], end: [20, 0] },
-			],
-		},
+		board: { tracks: [seg([0, 0], [10, 0]), seg([10.005, 0], [20, 0])] },
 		expectedCount: 1,
 	},
 	{
-		board: {
-			tracks: [
-				{ netId: "n1", start: [0, 0], end: [10, 0] },
-				{ netId: "n1", start: [10.02, 0], end: [20, 0] },
-			],
-		},
+		board: { tracks: [seg([0, 0], [10, 0]), seg([10.02, 0], [20, 0])] },
 		expectedCount: 2,
 	},
 ];
@@ -185,9 +130,7 @@ describe("sim3d boardGeometry - netSegments with real tracks", () => {
 	}
 
 	test("back-layer track sits below the board", () => {
-		const board = {
-			tracks: [{ netId: "n1", start: [0, 0], end: [10, 0], layer: "B.Cu" }],
-		};
+		const board = { tracks: [seg([0, 0], [10, 0], "B.Cu")] };
 		const segs = netSegments(null, board);
 		assert.equal(segs.length, 1);
 		for (const pt of segs[0].points) {
@@ -217,10 +160,7 @@ describe("sim3d boardGeometry - netSegments with real tracks", () => {
 		assert.equal(realSeg.real, true);
 		assert.ok(synthSeg);
 		assert.equal(synthSeg.real, undefined);
-		assert.deepEqual(synthSeg.points, [
-			[10, 10, 0],
-			[30, 10, 0],
-		]);
+		assert.deepEqual(synthSeg.points, [p3(10, 10), p3(30, 10)]);
 	});
 
 	test("malformed tracks (missing points, non-finite numbers, unknown netId) are ignored without throwing", () => {
@@ -229,13 +169,7 @@ describe("sim3d boardGeometry - netSegments with real tracks", () => {
 		};
 		const segs = netSegments(ir, { tracks: MALFORMED_TRACKS });
 		assertExpectedSegments(segs, [
-			{
-				netId: "valid_net",
-				points: [
-					[0, 0, 0],
-					[5, 5, 0],
-				],
-			},
+			{ netId: "valid_net", points: [p3(0, 0), p3(5, 5)] },
 		]);
 	});
 

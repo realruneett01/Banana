@@ -502,6 +502,29 @@ describe("parseSseChunk incremental parser", () => {
 	});
 });
 
+function assertStreamError(res, error) {
+	assert.equal(res.ok, false);
+	if (error === undefined) {
+		assert.ok(typeof res.error === "string" && res.error.length > 0);
+	} else {
+		assert.equal(res.error, error);
+	}
+}
+
+async function runStreamFallback(status, statusText, fallbackText, message) {
+	const { api, fakeFetch } = createClient(async (url) => {
+		if (url.endsWith("/stream")) {
+			return mockJsonResponse(status, { error: statusText }, statusText);
+		}
+		return mockJsonResponse(200, { text: fallbackText });
+	});
+	const res = await api.runAgentStream({ message });
+	assert.equal(res.ok, true);
+	assert.equal(res.data.text, fallbackText);
+	assert.equal(fakeFetch.calls.length, 2);
+	return fakeFetch;
+}
+
 describe("runAgentStream streaming client", () => {
 	test("happy path calls onStep in order and resolves with result data", async () => {
 		const chunks = [
@@ -527,8 +550,7 @@ describe("runAgentStream streaming client", () => {
 		];
 		const { api } = createClient(async () => mockStreamResponse(200, chunks));
 		const res = await api.runAgentStream({ message: "error test" });
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "Tool execution crashed");
+		assertStreamError(res, "Tool execution crashed");
 	});
 
 	test("handles non-200 JSON error", async () => {
@@ -549,48 +571,34 @@ describe("runAgentStream streaming client", () => {
 		const chunks = ["event: step\ndata: {not-valid-json\n\n"];
 		const { api } = createClient(async () => mockStreamResponse(200, chunks));
 		const res = await api.runAgentStream({ message: "bad json" });
-		assert.equal(res.ok, false);
-		assert.ok(typeof res.error === "string" && res.error.length > 0);
+		assertStreamError(res);
 	});
 
 	test("handles stream ends early without result frame", async () => {
 		const chunks = ['event: step\ndata: {"seq":1}\n\n'];
 		const { api } = createClient(async () => mockStreamResponse(200, chunks));
 		const res = await api.runAgentStream({ message: "early end" });
-		assert.equal(res.ok, false);
-		assert.ok(typeof res.error === "string" && res.error.length > 0);
+		assertStreamError(res);
 	});
 
 	test("falls back to runAgent on 404", async () => {
-		const { api, fakeFetch } = createClient(async (url) => {
-			if (url.endsWith("/stream")) {
-				return mockJsonResponse(404, { error: "Not Found" }, "Not Found");
-			}
-			return mockJsonResponse(200, { text: "fallback success" });
-		});
-		const res = await api.runAgentStream({ message: "fallback test" });
-		assert.equal(res.ok, true);
-		assert.equal(res.data.text, "fallback success");
-		assert.equal(fakeFetch.calls.length, 2);
+		const fakeFetch = await runStreamFallback(
+			404,
+			"Not Found",
+			"fallback success",
+			"fallback test",
+		);
 		assert.ok(fakeFetch.calls[0].url.endsWith("/api/agent/run/stream"));
 		assert.ok(fakeFetch.calls[1].url.endsWith("/api/agent/run"));
 	});
 
 	test("falls back to runAgent on 405", async () => {
-		const { api, fakeFetch } = createClient(async (url) => {
-			if (url.endsWith("/stream")) {
-				return mockJsonResponse(
-					405,
-					{ error: "Method Not Allowed" },
-					"Method Not Allowed",
-				);
-			}
-			return mockJsonResponse(200, { text: "fallback from 405" });
-		});
-		const res = await api.runAgentStream({ message: "fallback 405 test" });
-		assert.equal(res.ok, true);
-		assert.equal(res.data.text, "fallback from 405");
-		assert.equal(fakeFetch.calls.length, 2);
+		await runStreamFallback(
+			405,
+			"Method Not Allowed",
+			"fallback from 405",
+			"fallback 405 test",
+		);
 	});
 
 	test("passes provider in request body for runAgent and runAgentStream", async () => {
@@ -614,8 +622,7 @@ describe("runAgentStream streaming client", () => {
 			{ message: "aborted" },
 			{ signal: controller.signal },
 		);
-		assert.equal(res.ok, false);
-		assert.equal(res.error, "aborted");
+		assertStreamError(res, "aborted");
 	});
 });
 

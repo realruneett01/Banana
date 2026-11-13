@@ -50,86 +50,61 @@ function assertEvents(events, expected) {
 	}
 }
 
+const run = (t, voltages, currents) => ({ t, voltages, currents });
+const ev = (kind, partId, t, text) => ({ kind, partId, t, text });
+const currentSeries = (time, partCurrents) => ({
+	time,
+	nodeVoltages: {},
+	partCurrents,
+});
+
 const FRAME_TEST_CASES = [
 	{
 		name: "clamps time below minimum and above maximum",
 		runs: [
-			{ t: -0.01, voltages: { net1: 0 }, currents: { D1: 0 } },
-			{ t: 0.05, voltages: { net1: 5.0 }, currents: { D1: 0.02 } },
+			run(-0.01, { net1: 0 }, { D1: 0 }),
+			run(0.05, { net1: 5.0 }, { D1: 0.02 }),
 		],
 	},
 	{
 		name: "matches exact sample points",
 		runs: [
-			{ t: 0, voltages: { net1: 0, net2: 10 }, currents: { D1: 0 } },
-			{ t: 0.005, voltages: { net1: 2.5 }, currents: { D1: 0.01 } },
+			run(0, { net1: 0, net2: 10 }, { D1: 0 }),
+			run(0.005, { net1: 2.5 }, { D1: 0.01 }),
 		],
 	},
 	{
 		name: "linearly interpolates between sample points",
-		runs: [
-			{
-				t: 0.0025,
-				voltages: { net1: 1.25, net2: 10 },
-				currents: { D1: 0.005 },
-			},
-		],
+		runs: [run(0.0025, { net1: 1.25, net2: 10 }, { D1: 0.005 })],
 	},
 	{
 		name: "handles single-point series gracefully",
 		series: SINGLE_SERIES,
-		runs: [{ t: 0.005, voltages: { net1: 3.3 }, currents: { D1: 0.015 } }],
+		runs: [run(0.005, { net1: 3.3 }, { D1: 0.015 })],
 	},
 ];
 
 const EVENT_TEST_CASES = [
 	{
 		name: "detects LED turn on and turn off events with plain English text",
-		series: {
-			time: [0, 0.001, 0.002, 0.0032, 0.005, 0.008, 0.01],
-			nodeVoltages: {},
-			partCurrents: {
-				D1: [0, 0.0002, 0.0008, 0.015, 0.015, 0.0005, 0],
-			},
-		},
+		series: currentSeries([0, 0.001, 0.002, 0.0032, 0.005, 0.008, 0.01], {
+			D1: [0, 0.0002, 0.0008, 0.015, 0.015, 0.0005, 0],
+		}),
 		ir: {
 			parts: [{ id: "D1", ref: "D1", symbol: "Device:LED", value: "Red LED" }],
 		},
 		expected: [
-			{
-				kind: "turn_on",
-				partId: "D1",
-				t: 0.0032,
-				text: "LED D1 turns on at 3.2 ms",
-			},
-			{
-				kind: "turn_off",
-				partId: "D1",
-				t: 0.008,
-				text: "LED D1 turns off at 8.0 ms",
-			},
+			ev("turn_on", "D1", 0.0032, "LED D1 turns on at 3.2 ms"),
+			ev("turn_off", "D1", 0.008, "LED D1 turns off at 8.0 ms"),
 		],
 	},
 	{
 		name: "detects current spikes exceeding 3x median",
-		series: {
-			time: [0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006],
-			nodeVoltages: {},
-			partCurrents: {
-				R1: [0.01, 0.01, 0.01, 0.01, 0.05, 0.01, 0.01],
-			},
-		},
-		ir: {
-			parts: [{ id: "R1", ref: "R1", symbol: "Device:R" }],
-		},
-		expected: [
-			{
-				kind: "spike",
-				partId: "R1",
-				t: 0.004,
-				text: "Current spike on R1 at 4.0 ms",
-			},
-		],
+		series: currentSeries([0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006], {
+			R1: [0.01, 0.01, 0.01, 0.01, 0.05, 0.01, 0.01],
+		}),
+		ir: { parts: [{ id: "R1", ref: "R1", symbol: "Device:R" }] },
+		expected: [ev("spike", "R1", 0.004, "Current spike on R1 at 4.0 ms")],
 	},
 ];
 
@@ -160,9 +135,9 @@ describe("transientModel - playbackClock (scaling, speed, and seek)", () => {
 	});
 
 	test("honors speed multiplier during playback advance", () => {
-		for (const { speed, expected } of [
-			{ speed: 2, expected: 0.01 },
-			{ speed: 0.5, expected: 0.0025 },
+		for (const [speed, expected] of [
+			[2, 0.01],
+			[0.5, 0.0025],
 		]) {
 			const clock = makeClock({ speed });
 			assertNear(clock.advance(4), expected);
@@ -176,10 +151,10 @@ describe("transientModel - playbackClock (scaling, speed, and seek)", () => {
 
 	test("supports seek and reset", () => {
 		const clock = makeClock();
-		for (const { target, expected } of [
-			{ target: 0.006, expected: 0.006 },
-			{ target: 0.5, expected: 0.01 },
-			{ target: -1, expected: 0 },
+		for (const [target, expected] of [
+			[0.006, 0.006],
+			[0.5, 0.01],
+			[-1, 0],
 		]) {
 			assert.equal(clock.seek(target), expected);
 		}
@@ -190,14 +165,14 @@ describe("transientModel - playbackClock (scaling, speed, and seek)", () => {
 describe("transientModel - formatTime", () => {
 	test("formats seconds, milliseconds, microseconds and zeroes", () => {
 		const cases = [
-			{ input: 0.0032, expected: "3.2 ms" },
-			{ input: 0.01, expected: "10.0 ms" },
-			{ input: 0.0005, expected: "500.0 µs" },
-			{ input: 2.5, expected: "2.50 s" },
-			{ input: 0, expected: "0 ms" },
+			[0.0032, "3.2 ms"],
+			[0.01, "10.0 ms"],
+			[0.0005, "500.0 µs"],
+			[2.5, "2.50 s"],
+			[0, "0 ms"],
 		];
-		for (const tc of cases) {
-			assert.equal(formatTime(tc.input), tc.expected);
+		for (const [input, expected] of cases) {
+			assert.equal(formatTime(input), expected);
 		}
 	});
 });
