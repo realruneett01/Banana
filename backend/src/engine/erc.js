@@ -196,6 +196,7 @@ function collectPinShorts(pinMap, partsById, commit) {
 	return issues;
 }
 
+// Part pins with a type, then the net's ercPins (PWR_FLAG, power ports).
 function typedNetPins(net, partsById) {
 	const typed = [];
 	for (const p of net.pins ?? []) {
@@ -205,11 +206,13 @@ function typedNetPins(net, partsById) {
 		const name = part.pinNames?.[p.pin];
 		typed.push({ partId: p.partId, pin: p.pin, type, name, ref: part.ref });
 	}
-	return typed;
+	return [...typed, ...(net.ercPins ?? [])];
 }
 
 function createPinTypeIssue(net, result, commit) {
-	const partIds = [...new Set(result.pins.map((p) => p.partId))];
+	const partIds = [
+		...new Set(result.pins.map((p) => p.partId).filter(Boolean)),
+	];
 	const pins = result.pins.map((p) => `${p.ref}.${p.pin}`).join(", ");
 	return {
 		id: newId("issue"),

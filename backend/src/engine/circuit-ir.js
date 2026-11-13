@@ -61,6 +61,12 @@ export const CIRCUIT_IR_SCHEMA = {
 				partId: stringProp,
 				pin: stringProp,
 			}),
+			// ERC-only typed pins of PWR_FLAG and power ports (not parts)
+			ercPins: arrayOfObjects(["ref", "pin", "type"], {
+				ref: stringProp,
+				pin: stringProp,
+				type: stringProp,
+			}),
 		}),
 		constraints: arrayOfObjects(["id", "kind", "target", "value", "unit"], {
 			id: stringProp,

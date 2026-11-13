@@ -509,6 +509,13 @@ function connectSymbolPins(child, libMap, parsed, target) {
 	recordPinNames(target.part, pins);
 }
 
+// Typed pins of power ports and PWR_FLAG, kept for ERC only (not parts).
+function recordErcPin(key, ercPin, ctx) {
+	if (!ercPin.pin || !ercPin.type) return;
+	if (!ctx.pointErcPins.has(key)) ctx.pointErcPins.set(key, []);
+	ctx.pointErcPins.get(key).push(ercPin);
+}
+
 // Power ports and PWR_FLAG are not parts, but they drive their net; a
 // power_in port also names it by its Value, globally like a global label.
 function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
@@ -518,6 +525,7 @@ function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
 	for (const lp of pinsForInstance(libPins, parsed.unit, parsed.style)) {
 		const key = connectLibPin(lp, parsed.at, parsed.mirror, ctx);
 		ctx.drivenPoints.add(key);
+		recordErcPin(key, { ref: parsed.ref, pin: lp.pin, type: lp.type }, ctx);
 		if (lp.type === "power_in" && netName) recordPointLabel(key, netName, ctx);
 	}
 }
@@ -557,9 +565,11 @@ function appendGroupedItems(sourceMap, targetMap, uf) {
 function groupComponents(ctx) {
 	const compPins = new Map();
 	const compLabels = new Map();
+	const compErcPins = new Map();
 	appendGroupedItems(ctx.pointPins, compPins, ctx.uf);
 	appendGroupedItems(ctx.pointLabels, compLabels, ctx.uf);
-	return { compPins, compLabels };
+	appendGroupedItems(ctx.pointErcPins, compErcPins, ctx.uf);
+	return { compPins, compLabels, compErcPins };
 }
 
 function dedupePins(pins) {
@@ -586,17 +596,19 @@ function shouldSkipNet(pins, labels) {
 	return pins.length === 1 && labels.length === 0;
 }
 
-function buildNets(compPins, compLabels, drivenRoots, idFn) {
+function buildNets(groups, drivenRoots, idFn) {
 	const nets = [];
-	for (const [root, rawPins] of compPins) {
+	for (const [root, rawPins] of groups.compPins) {
 		const pins = dedupePins(rawPins);
-		const labels = compLabels.get(root) || [];
+		const labels = groups.compLabels.get(root) || [];
 		if (shouldSkipNet(pins, labels)) continue;
+		const ercPins = groups.compErcPins.get(root);
 		nets.push({
 			id: idFn("net"),
 			name: determineNetName(pins, labels),
 			...(drivenRoots.has(root) && { driven: true }),
 			pins: pins.map((p) => ({ partId: p.partId, pin: p.pin })),
+			...(ercPins && { ercPins }),
 		});
 	}
 	return nets;
@@ -617,6 +629,7 @@ function createParseContext() {
 		pointLabels: new Map(),
 		labelFirstPoint: new Map(),
 		drivenPoints: new Set(),
+		pointErcPins: new Map(),
 		warnings: [],
 	};
 }
@@ -661,9 +674,9 @@ function assembleCircuit(ast, ctx, idFn) {
 	const libMap = parseLibSymbols(libNode);
 	ctx.powerLibs = collectPowerLibs(libNode);
 	const parts = processSymbols(ast, libMap, ctx, idFn);
-	const { compPins, compLabels } = groupComponents(ctx);
+	const groups = groupComponents(ctx);
 	const drivenRoots = new Set([...ctx.drivenPoints].map((k) => ctx.uf.find(k)));
-	const nets = buildNets(compPins, compLabels, drivenRoots, idFn);
+	const nets = buildNets(groups, drivenRoots, idFn);
 	return { parts, nets };
 }
 

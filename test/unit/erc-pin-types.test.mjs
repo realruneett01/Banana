@@ -92,6 +92,21 @@ describe("runErc pin-type checks", () => {
 		assert.deepEqual(pinTypeIssues(runErc(ir, { commit: COMMIT })), []);
 	});
 
+	test("net ercPins join the checks; a PWR_FLAG power_out drives power_in", () => {
+		const ir = irWith(part("U1", { 1: "power_in" }), part("R1"));
+		ir.nets[0].ercPins = [{ ref: "#FLG01", pin: "1", type: "power_out" }];
+		const issuesNow = () => pinTypeIssues(runErc(ir, { commit: COMMIT }));
+		const flagOnly = issuesNow();
+		ir.parts[1].pinTypes = { 1: "power_out" };
+		const clash = issuesNow().map((i) => [i.message, i.itemIds]);
+		const msg =
+			"net SIG: pin type conflict: power_out vs power_out (R1.1, #FLG01.1)";
+		assert.deepEqual(
+			{ flagOnly, clash },
+			{ flagOnly: [], clash: [[msg, [ir.nets[0].id, ir.parts[1].id]]] },
+		);
+	});
+
 	test("IR without pinTypes yields the same issues as before", () => {
 		const ir = irWith(part("R1"), part("R2"));
 		const plain = runErc(ir, { commit: COMMIT }).map((i) => i.message);
@@ -141,6 +156,12 @@ const LIB = `(lib_symbols
 	(symbol "power:PWR_FLAG" (power)
 		(pin power_out line (at 0 0 90) (number "1"))
 	)
+	(symbol "power:VCC" (power)
+		(pin power_in line (at 0 0 90) (number "1"))
+	)
+	(symbol "Reg:OUT"
+		(pin output line (at -5 0 0) (number "1"))
+	)
 )`;
 
 function sym(lib, ref, value, at) {
@@ -168,6 +189,11 @@ function assertDrivenNets(res, names) {
 	);
 	assert.deepEqual(notDriven(res.ir), []);
 }
+
+// U1's output pin with a PWR_FLAG on it, plus `extra` at the same point.
+const flaggedOutput = (extra) =>
+	importNets(`${sym("Reg:OUT", "U1", "LDO", "50 50")}
+		${sym("power:PWR_FLAG", "#FLG01", "PWR_FLAG", "45 50")} ${extra}`);
 
 describe("kicadSchToIr power ports, PWR_FLAG and off-sheet links", () => {
 	test("power symbols join rail islands by Value and mark the net driven", () => {
@@ -202,6 +228,30 @@ describe("kicadSchToIr power ports, PWR_FLAG and off-sheet links", () => {
 			)
 			(wire (pts (xy 20 50) (xy 30 50)))`);
 		assertDrivenNets(res, ["IN", "Net-(R1-Pad2)"]);
+	});
+
+	test("PWR_FLAG and power port pins are typed ERC pins, not parts", () => {
+		const res = flaggedOutput(sym("power:VCC", "#PWR01", "VCC", "45 50"));
+		const flag = { ref: "#FLG01", pin: "1", type: "power_out" };
+		const port = { ref: "#PWR01", pin: "1", type: "power_in" };
+		const seen = {
+			ercPins: res.ir.nets.map((n) => n.ercPins),
+			parts: res.ir.parts.map((p) => p.ref),
+		};
+		assert.deepEqual(seen, { ercPins: [[flag, port]], parts: ["U1"] });
+	});
+
+	test("PWR_FLAG power_out conflicts with an output pin like kicad-cli", () => {
+		const res = flaggedOutput(`(label "VO" (at 45 50 0))`);
+		const found = runErc(res.ir).filter((i) => /pin type/.test(i.message));
+		const summary = found.map((i) => [
+			i.severity,
+			validateIssue(i).ok,
+			i.message,
+		]);
+		const msg =
+			"net VO: pin type conflict: output vs power_out (U1.1, #FLG01.1)";
+		assert.deepEqual(summary, [["error", true, msg]]);
 	});
 
 	test("local-only net stays undriven", () => {
