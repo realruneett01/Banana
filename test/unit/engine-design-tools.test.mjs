@@ -78,11 +78,17 @@ function makeFaultyIR() {
 	};
 }
 
-async function invokeTool(tool, input, deps) {
+function designRegistry(deps) {
 	const registry = createRegistry();
 	registerDesignTools(registry, deps);
-	return registry.call(tool, input);
+	return registry;
 }
+
+async function invokeTool(tool, input, deps) {
+	return designRegistry(deps).call(tool, input);
+}
+
+const runErcOn = (ir) => invokeTool("erc.run", { ir, commit: TEST_COMMIT });
 
 async function invokeSimRun(options = {}, deps) {
 	const { env = makeEnv(), inputs = {}, kind = "thermal" } = options;
@@ -192,15 +198,8 @@ function assertSimulationFailedOutput(res) {
 }
 
 describe("engine-design-tools registration", () => {
-	test("exports registerDesignTools function", () => {
-		assert.equal(typeof registerDesignTools, "function");
-	});
-
 	test("registers all six tools with permission read", () => {
-		const registry = createRegistry();
-		registerDesignTools(registry);
-		const tools = registry.list();
-		assert.equal(tools.length, 6);
+		const tools = designRegistry().list();
 		assert.deepEqual(tools.map((t) => t.name).sort(), [
 			"erc.run",
 			"ir.auto_place",
@@ -209,16 +208,22 @@ describe("engine-design-tools registration", () => {
 			"ir.validate",
 			"sim.run",
 		]);
+		assert.equal(tools.length, 6);
 		for (const tool of tools) {
 			assertToolMetadata(tool);
 		}
+	});
+
+	test("exports registerDesignTools function", () => {
+		assert.equal(typeof registerDesignTools, "function");
 	});
 });
 
 describe("ir.validate tool", () => {
 	test("returns valid:true and empty errors on valid IR", async () => {
-		const res = await invokeTool("ir.validate", { ir: makeCleanIR() });
-		assertValidationSuccess(res);
+		assertValidationSuccess(
+			await invokeTool("ir.validate", { ir: makeCleanIR() }),
+		);
 	});
 
 	test("returns valid:false and errors array on invalid IR", async () => {
@@ -246,19 +251,11 @@ describe("ir.validate tool", () => {
 
 describe("erc.run tool", () => {
 	test("returns zero issues for clean IR", async () => {
-		const res = await invokeTool("erc.run", {
-			ir: makeCleanIR(),
-			commit: TEST_COMMIT,
-		});
-		assertZeroIssues(res);
+		assertZeroIssues(await runErcOn(makeCleanIR()));
 	});
 
 	test("returns detected issues for faulty IR", async () => {
-		const res = await invokeTool("erc.run", {
-			ir: makeFaultyIR(),
-			commit: TEST_COMMIT,
-		});
-		assertDetectedIssues(res);
+		assertDetectedIssues(await runErcOn(makeFaultyIR()));
 	});
 
 	test("supports injected deps.runErc", async () => {

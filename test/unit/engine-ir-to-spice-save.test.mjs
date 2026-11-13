@@ -21,45 +21,21 @@ const ir = (parts, nets) => ({
 	constraints: [],
 });
 
-function rc() {
+/** V1 (5 V) driving one or two loads in series; midName names the net between two loads. */
+function chain(midName, ...loads) {
 	const v1 = part("V1", "5");
-	const r1 = part("R1", "1k");
-	const c1 = part("C1", "1u");
-	return ir(
-		[v1, r1, c1],
-		[
-			net("in", pin(v1, "1"), pin(r1, "1")),
-			net("out", pin(r1, "2"), pin(c1, "1")),
-			net("GND", pin(v1, "2"), pin(c1, "2")),
-		],
-	);
+	const first = loads[0];
+	const last = loads.at(-1);
+	const nets = [net("in", pin(v1, "1"), pin(first, "1"))];
+	if (midName) nets.push(net(midName, pin(first, "2"), pin(last, "1")));
+	nets.push(net("GND", pin(v1, "2"), pin(last, "2")));
+	return ir([v1, ...loads], nets);
 }
 
-function led() {
-	const v1 = part("V1", "5");
-	const r1 = part("R1", "330");
-	const d1 = part("D1", "red", "Device:LED");
-	return ir(
-		[v1, r1, d1],
-		[
-			net("in", pin(v1, "1"), pin(r1, "1")),
-			net("a", pin(r1, "2"), pin(d1, "1")),
-			net("GND", pin(v1, "2"), pin(d1, "2")),
-		],
-	);
-}
-
-function capOnly() {
-	const v1 = part("V1", "5");
-	const c1 = part("C1", "1u");
-	return ir(
-		[v1, c1],
-		[
-			net("in", pin(v1, "1"), pin(c1, "1")),
-			net("GND", pin(v1, "2"), pin(c1, "2")),
-		],
-	);
-}
+const rc = () => chain("out", part("R1", "1k"), part("C1", "1u"));
+const led = () =>
+	chain("a", part("R1", "330"), part("D1", "red", "Device:LED"));
+const capOnly = () => chain(null, part("C1", "1u"));
 
 const saveLineOf = (res) =>
 	res.netlist.split("\n").find((l) => l.startsWith(".save"));

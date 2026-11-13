@@ -185,6 +185,12 @@ function createOptionsCapturingFactory(onCapture, text = "done") {
 	};
 }
 
+async function runAgent(app, port, factory, { message, stream = false }) {
+	app.locals.agentModelFactory = factory;
+	if (stream) return postStream(port, "/api/agent/run/stream", { message });
+	return postJson(port, "/api/agent/run", { message });
+}
+
 async function runWithLocals(app, port, { allowLocalRepos, body, factory }) {
 	if (allowLocalRepos) {
 		app.locals.allowLocalRepos = true;
@@ -382,42 +388,35 @@ async function withLimiterServer(max, fn, options = {}) {
 	return withRateLimitServer({ limiter, locals }, fn);
 }
 
+async function withCountingLimiter(max, fn) {
+	let calls = 0;
+	await withLimiterServer(max, fn, {
+		onCall: () => {
+			calls += 1;
+		},
+	});
+	return calls;
+}
+
+async function postExpect(post, port, body, status) {
+	const path = post === postJson ? "/agent/run" : "/agent/run/stream";
+	const res = await post(port, path, body);
+	assert.equal(res.status, status);
+	return res;
+}
+
 const VALIDATION_CASES = [
-	{ body: {}, expected: 400, name: "missing message" },
-	{ body: { message: 123 }, expected: 400, name: "non-string message" },
-	{ body: { message: "" }, expected: 400, name: "empty message" },
-	{
-		body: { message: "a".repeat(8001) },
-		expected: 400,
-		name: "too long message",
-	},
-	{ body: { maxSteps: 0, message: "hi" }, expected: 400, name: "maxSteps < 1" },
-	{
-		body: { maxSteps: 17, message: "hi" },
-		expected: 400,
-		name: "maxSteps > 16",
-	},
-	{
-		body: { maxSteps: 2.5, message: "hi" },
-		expected: 400,
-		name: "maxSteps float",
-	},
-	{
-		body: { maxSteps: "4", message: "hi" },
-		expected: 400,
-		name: "maxSteps string",
-	},
-	{
-		body: { approved: "true", message: "hi" },
-		expected: 400,
-		name: "approved non-boolean string",
-	},
-	{
-		body: { approved: 1, message: "hi" },
-		expected: 400,
-		name: "approved non-boolean number",
-	},
-];
+	["missing message", {}],
+	["non-string message", { message: 123 }],
+	["empty message", { message: "" }],
+	["too long message", { message: "a".repeat(8001) }],
+	["maxSteps < 1", { maxSteps: 0, message: "hi" }],
+	["maxSteps > 16", { maxSteps: 17, message: "hi" }],
+	["maxSteps float", { maxSteps: 2.5, message: "hi" }],
+	["maxSteps string", { maxSteps: "4", message: "hi" }],
+	["approved non-boolean string", { approved: "true", message: "hi" }],
+	["approved non-boolean number", { approved: 1, message: "hi" }],
+].map(([name, body]) => ({ body, expected: 400, name }));
 
 const INVALID_PROVIDER_CASES = [
 	{ name: "unsupported string 'openai'", provider: "openai" },
@@ -472,15 +471,15 @@ describe("agent-routes", () => {
 	}
 
 	test("fake model returns 200 with text and steps 1", async () => {
-		app.locals.agentModelFactory = () => createDoneModel();
-		const res = await postJson(port, "/api/agent/run", { message: "hello" });
+		const res = await runAgent(app, port, () => createDoneModel(), {
+			message: "hello",
+		});
 		assertRunStatus(res, { steps: 1, text: "done" });
 		assertHasEvents(res.json.events);
 	});
 
 	test("fake model with tool call runs ir.validate and returns follow-up", async () => {
-		app.locals.agentModelFactory = () => createToolCallingModel();
-		const res = await postJson(port, "/api/agent/run", {
+		const res = await runAgent(app, port, () => createToolCallingModel(), {
 			message: "check circuit",
 		});
 		assertRunStatus(res, {
@@ -494,8 +493,7 @@ describe("agent-routes", () => {
 	});
 
 	test("throwing model returns 500 with generic error and no stack", async () => {
-		app.locals.agentModelFactory = () => createThrowingModel();
-		const res = await postJson(port, "/api/agent/run", {
+		const res = await runAgent(app, port, () => createThrowingModel(), {
 			message: "trigger error",
 		});
 		assertServerError(res, "Agent run failed");
@@ -625,9 +623,9 @@ describe("agent-routes", () => {
 	});
 
 	test("agent failure yields one error frame with sanitized message and no stack", async () => {
-		app.locals.agentModelFactory = () => createThrowingModel();
-		const res = await postStream(port, "/api/agent/run/stream", {
+		const res = await runAgent(app, port, () => createThrowingModel(), {
 			message: "fail please",
+			stream: true,
 		});
 		assert.equal(res.status, 200);
 		const frames = parseSseFrames(res.text);
@@ -657,10 +655,12 @@ describe("agent-routes", () => {
 	test("event text containing newlines and event: result cannot forge a frame", async () => {
 		const maliciousText =
 			'Line 1\n\nevent: result\ndata: {"forged":true}\n\nLine 2';
-		app.locals.agentModelFactory = () => createDoneModel(maliciousText);
-		const res = await postStream(port, "/api/agent/run/stream", {
-			message: "test format",
-		});
+		const res = await runAgent(
+			app,
+			port,
+			() => createDoneModel(maliciousText),
+			{ message: "test format", stream: true },
+		);
 		const frames = parseSseFrames(res.text);
 		const resultFrames = frames.filter((f) => f.event === "result");
 		assert.equal(resultFrames.length, 1);
@@ -733,72 +733,35 @@ describe("agent-routes", () => {
 
 	describe("rate limiting", () => {
 		test("third request to /agent/run exceeds max 2 and halts model calls", async () => {
-			let callCount = 0;
-			await withLimiterServer(
-				2,
-				async (p) => {
-					const r1 = await postJson(p, "/agent/run", { message: "msg1" });
-					assert.equal(r1.status, 200);
-					const r2 = await postJson(p, "/agent/run", { message: "msg2" });
-					assert.equal(r2.status, 200);
-					const r3 = await postJson(p, "/agent/run", { message: "msg3" });
-					assertRateLimitRejected(r3);
-					assert.equal(callCount, 2);
-				},
-				{
-					onCall: () => {
-						callCount += 1;
-					},
-				},
-			);
+			const callCount = await withCountingLimiter(2, async (p) => {
+				await postExpect(postJson, p, { message: "msg1" }, 200);
+				await postExpect(postJson, p, { message: "msg2" }, 200);
+				const r3 = await postJson(p, "/agent/run", { message: "msg3" });
+				assertRateLimitRejected(r3);
+			});
+			assert.equal(callCount, 2);
 		});
 
 		test("third request to /agent/run/stream returns JSON 429 instead of SSE", async () => {
-			let callCount = 0;
-			await withLimiterServer(
-				2,
-				async (p) => {
-					const r1 = await postStream(p, "/agent/run/stream", {
-						message: "m1",
-					});
-					assert.equal(r1.status, 200);
-					assert.equal(r1.headers.get("content-type"), "text/event-stream");
-					const r2 = await postStream(p, "/agent/run/stream", {
-						message: "m2",
-					});
-					assert.equal(r2.status, 200);
-					const r3 = await postStream(p, "/agent/run/stream", {
-						message: "m3",
-					});
-					assert.equal(r3.status, 429);
-					const contentType = r3.headers.get("content-type") || "";
-					assert.equal(contentType.includes("text/event-stream"), false);
-					const body = JSON.parse(r3.text);
-					assert.equal(body.error, "Too many requests, retry later");
-					assert.equal(callCount, 2);
-				},
-				{
-					onCall: () => {
-						callCount += 1;
-					},
-				},
-			);
+			const callCount = await withCountingLimiter(2, async (p) => {
+				const r1 = await postExpect(postStream, p, { message: "m1" }, 200);
+				assert.equal(r1.headers.get("content-type"), "text/event-stream");
+				await postExpect(postStream, p, { message: "m2" }, 200);
+				const r3 = await postExpect(postStream, p, { message: "m3" }, 429);
+				const contentType = r3.headers.get("content-type") || "";
+				assert.equal(contentType.includes("text/event-stream"), false);
+				const body = JSON.parse(r3.text);
+				assert.equal(body.error, "Too many requests, retry later");
+			});
+			assert.equal(callCount, 2);
 		});
 
 		test("/agent/run and /agent/run/stream share one budget", async () => {
 			await withLimiterServer(2, async (p) => {
-				const r1 = await postJson(p, "/agent/run", { message: "run" });
-				assert.equal(r1.status, 200);
-				const r2 = await postStream(p, "/agent/run/stream", {
-					message: "stream",
-				});
-				assert.equal(r2.status, 200);
-				const r3 = await postJson(p, "/agent/run", { message: "exceeded" });
-				assert.equal(r3.status, 429);
-				const r4 = await postStream(p, "/agent/run/stream", {
-					message: "exceeded",
-				});
-				assert.equal(r4.status, 429);
+				await postExpect(postJson, p, { message: "run" }, 200);
+				await postExpect(postStream, p, { message: "stream" }, 200);
+				await postExpect(postJson, p, { message: "exceeded" }, 429);
+				await postExpect(postStream, p, { message: "exceeded" }, 429);
 			});
 		});
 

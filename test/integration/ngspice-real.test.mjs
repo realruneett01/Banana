@@ -57,87 +57,106 @@ function extractCurrent(plot, candidates) {
 	return null;
 }
 
+async function simulateIR(parts, nets, name) {
+	const spiceRes = irToSpice(makeIR(parts, nets, name));
+	assert.equal(spiceRes.ok, true);
+	const simRes = await runner.run(spiceRes.netlist);
+	assert.equal(simRes.ok, true);
+	return { spiceRes, simRes };
+}
+
+/** Simulates source V1 -> resistor R1 -> load -> GND; pins are the load's [in, out]. */
+async function simulateSeries({
+	volts,
+	ohms,
+	load,
+	pins: [loadIn, loadOut],
+	name,
+}) {
+	const v1 = makePart("V1", volts, { props: { voltage: volts } });
+	const r1 = makePart("R1", ohms);
+	const netIn = makeNet("in", [pin(v1.id, "1"), pin(r1.id, "1")]);
+	const netMid = makeNet("mid", [pin(r1.id, "2"), pin(load.id, loadIn)]);
+	const netGnd = makeNet("GND", [pin(v1.id, "2"), pin(load.id, loadOut)]);
+	const sim = await simulateIR([v1, r1, load], [netIn, netMid, netGnd], name);
+	return { ...sim, netMid, v1, r1 };
+}
+
+const realOpts = { skip: skipOption, timeout: 20000 };
+
 describe("ngspice real integration", () => {
-	test("solves resistor divider midpoint within 1 percent of 5 V", {
-		skip: skipOption,
-		timeout: 20000,
-	}, async () => {
-		const v1 = makePart("V1", "10V", { props: { voltage: "10V" } });
-		const r1 = makePart("R1", "1k");
-		const r2 = makePart("R2", "1k");
-		const netIn = makeNet("in", [pin(v1.id, "1"), pin(r1.id, "1")]);
-		const netMid = makeNet("mid", [pin(r1.id, "2"), pin(r2.id, "1")]);
-		const netGnd = makeNet("GND", [pin(v1.id, "2"), pin(r2.id, "2")]);
+	test(
+		"solves resistor divider midpoint within 1 percent of 5 V",
+		realOpts,
+		async () => {
+			const { spiceRes, simRes, netMid } = await simulateSeries({
+				volts: "10V",
+				ohms: "1k",
+				load: makePart("R2", "1k"),
+				pins: ["1", "2"],
+				name: "ResistorDivider",
+			});
 
-		const ir = makeIR([v1, r1, r2], [netIn, netMid, netGnd], "ResistorDivider");
-		const spiceRes = irToSpice(ir);
-		assert.equal(spiceRes.ok, true);
+			const midNode = spiceRes.nodeMap[netMid.id];
+			const vMid = getPlotVariable(simRes.plots[0], `v(${midNode})`);
+			assert.notEqual(vMid, null);
+			const percentDiff = (Math.abs(vMid - 5.0) / 5.0) * 100;
+			assert.ok(
+				percentDiff <= 1.0,
+				`Midpoint voltage ${vMid} V is not within 1% of 5 V`,
+			);
+		},
+	);
 
-		const simRes = await runner.run(spiceRes.netlist);
-		assert.equal(simRes.ok, true);
+	test(
+		"LED with series resistor draws current between 1 mA and 30 mA",
+		realOpts,
+		async () => {
+			const led = makePart("LED1", "Red", {
+				symbol: "Device:LED",
+				footprint: "LED_SMD:LED_0805_2012Metric",
+			});
+			const { spiceRes, simRes, v1, r1 } = await simulateSeries({
+				volts: "5V",
+				ohms: "220",
+				load: led,
+				pins: ["A", "K"],
+				name: "LedCircuit",
+			});
 
-		const midNode = spiceRes.nodeMap[netMid.id];
-		const vMid = getPlotVariable(simRes.plots[0], `v(${midNode})`);
-		assert.notEqual(vMid, null);
-		const percentDiff = (Math.abs(vMid - 5.0) / 5.0) * 100;
-		assert.ok(
-			percentDiff <= 1.0,
-			`Midpoint voltage ${vMid} V is not within 1% of 5 V`,
-		);
-	});
+			const ledElem = spiceRes.elementMap[led.id] || "DLED1";
+			const rElem = spiceRes.elementMap[r1.id] || "R1";
+			const vElem = spiceRes.elementMap[v1.id] || "V1";
+			const current = extractCurrent(simRes.plots[0], [
+				`@${ledElem.toLowerCase()}[id]`,
+				`@${rElem.toLowerCase()}[i]`,
+				`i(${vElem.toLowerCase()})`,
+				`${vElem.toLowerCase()}#branch`,
+			]);
+			assert.notEqual(
+				current,
+				null,
+				"Current variable not found in simulation output",
+			);
+			assert.ok(current >= 0.001, `Current ${current} A is below 1 mA`);
+			assert.ok(current <= 0.03, `Current ${current} A is above 30 mA`);
+		},
+	);
 
-	test("LED with series resistor draws current between 1 mA and 30 mA", {
-		skip: skipOption,
-		timeout: 20000,
-	}, async () => {
-		const v1 = makePart("V1", "5V", { props: { voltage: "5V" } });
-		const r1 = makePart("R1", "220");
-		const led = makePart("LED1", "Red", {
-			symbol: "Device:LED",
-			footprint: "LED_SMD:LED_0805_2012Metric",
-		});
-		const netIn = makeNet("in", [pin(v1.id, "1"), pin(r1.id, "1")]);
-		const netMid = makeNet("mid", [pin(r1.id, "2"), pin(led.id, "A")]);
-		const netGnd = makeNet("GND", [pin(led.id, "K"), pin(v1.id, "2")]);
-
-		const ir = makeIR([v1, r1, led], [netIn, netMid, netGnd], "LedCircuit");
-		const spiceRes = irToSpice(ir);
-		assert.equal(spiceRes.ok, true);
-
-		const simRes = await runner.run(spiceRes.netlist);
-		assert.equal(simRes.ok, true);
-
-		const ledElem = spiceRes.elementMap[led.id] || "DLED1";
-		const rElem = spiceRes.elementMap[r1.id] || "R1";
-		const vElem = spiceRes.elementMap[v1.id] || "V1";
-		const current = extractCurrent(simRes.plots[0], [
-			`@${ledElem.toLowerCase()}[id]`,
-			`@${rElem.toLowerCase()}[i]`,
-			`i(${vElem.toLowerCase()})`,
-			`${vElem.toLowerCase()}#branch`,
-		]);
-		assert.notEqual(
-			current,
-			null,
-			"Current variable not found in simulation output",
-		);
-		assert.ok(current >= 0.001, `Current ${current} A is below 1 mA`);
-		assert.ok(current <= 0.03, `Current ${current} A is above 30 mA`);
-	});
-
-	test("netlist containing .control or shell line is rejected by safety guard before ngspice starts", {
-		skip: skipOption,
-		timeout: 20000,
-	}, async () => {
-		const maliciousNetlists = [
-			"* Malicious control directive\n.control\necho bad\n.endc\n.end",
-			"* Malicious shell directive\nshell echo bad\n.end",
-		];
-		for (const netlist of maliciousNetlists) {
-			const res = await runner.run(netlist);
-			assert.equal(res.ok, false);
-			assert.equal(res.log, "");
-			assert.match(res.error, /forbidden/i);
-		}
-	});
+	test(
+		"netlist containing .control or shell line is rejected by safety guard before ngspice starts",
+		realOpts,
+		async () => {
+			const maliciousNetlists = [
+				"* Malicious control directive\n.control\necho bad\n.endc\n.end",
+				"* Malicious shell directive\nshell echo bad\n.end",
+			];
+			for (const netlist of maliciousNetlists) {
+				const res = await runner.run(netlist);
+				assert.equal(res.ok, false);
+				assert.equal(res.log, "");
+				assert.match(res.error, /forbidden/i);
+			}
+		},
+	);
 });

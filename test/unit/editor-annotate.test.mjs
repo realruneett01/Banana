@@ -30,154 +30,117 @@ function makeFrozenFixture() {
 	return { ir, res: annotate(ir, { mode: "keep", order: "x", start: 1 }) };
 }
 
+// [ref, expected] pairs
 const REF_PREFIX_CASES = [
-	{ ref: "R?", expected: "R" },
-	{ ref: "U12", expected: "U" },
-	{ ref: "SW_1", expected: "SW_" },
-	{ ref: "#PWR1", expected: "#PWR" },
-	{ ref: "C", expected: "C" },
-	{ ref: "12", expected: "X" },
-	{ ref: "?", expected: "X" },
-	{ ref: "", expected: "X" },
-	{ ref: null, expected: "X" },
-	{ ref: undefined, expected: "X" },
+	["R?", "R"],
+	["U12", "U"],
+	["SW_1", "SW_"],
+	["#PWR1", "#PWR"],
+	["C", "C"],
+	["12", "X"],
+	["?", "X"],
+	["", "X"],
+	[null, "X"],
+	[undefined, "X"],
 ];
 
+// [ref, expected] pairs
 const REF_NUMBER_CASES = [
-	{ ref: "R12", expected: 12 },
-	{ ref: "U3", expected: 3 },
-	{ ref: "SW_1", expected: 1 },
-	{ ref: "R0", expected: 0 },
-	{ ref: "123", expected: 123 },
-	{ ref: "R?", expected: null },
-	{ ref: "R", expected: null },
-	{ ref: "R12?", expected: null },
-	{ ref: "", expected: null },
-	{ ref: null, expected: null },
+	["R12", 12],
+	["U3", 3],
+	["SW_1", 1],
+	["R0", 0],
+	["123", 123],
+	["R?", null],
+	["R", null],
+	["R12?", null],
+	["", null],
+	[null, null],
 ];
 
+/** Builds parts p1..pN from [ref, x, y] tuples. */
+function partsOf(...specs) {
+	return specs.map(([ref, x, y], i) => makePart(`p${i + 1}`, ref, x, y));
+}
+
+/** Builds parts p1..pN on y=0, spaced 10 apart starting at x0. */
+function inRow(x0, ...refs) {
+	return partsOf(...refs.map((ref, i) => [ref, x0 + 10 * i, 0]));
+}
+
+/** Expected [{ id, ref }] for parts p1..pN. */
+function idRefs(...refs) {
+	return refs.map((ref, i) => ({ id: `p${i + 1}`, ref }));
+}
+
+const refsById = (res) => res.ir.parts.map((p) => ({ id: p.id, ref: p.ref }));
+
+// [parts, expected duplicate refs]
 const DUPLICATE_REF_CASES = [
-	{
-		parts: [makePart("p1", "R1"), makePart("p2", "R2")],
-		expected: [],
-	},
-	{
-		parts: [makePart("p1", "R1"), makePart("p2", "R1"), makePart("p3", "R2")],
-		expected: ["R1"],
-	},
-	{
-		parts: [
-			makePart("p1", "R1"),
-			makePart("p2", "C1"),
-			makePart("p3", "R1"),
-			makePart("p4", "C1"),
-		],
-		expected: ["R1", "C1"],
-	},
-	{
-		parts: [],
-		expected: [],
-	},
+	[partsOf(["R1"], ["R2"]), []],
+	[partsOf(["R1"], ["R1"], ["R2"]), ["R1"]],
+	[partsOf(["R1"], ["C1"], ["R1"], ["C1"]), ["R1", "C1"]],
+	[[], []],
 ];
+
+const KEEP_X = { mode: "keep", order: "x", start: 1 };
+const RESET_X = { mode: "reset", order: "x", start: 1 };
 
 const ANNOTATE_CASES = [
 	{
 		name: "default options with unannotated parts",
-		ir: { parts: [makePart("p1", "C?"), makePart("p2", "C?")] },
+		parts: partsOf(["C?"], ["C?"]),
 		opts: undefined,
 		expected: ["C1", "C2"],
 	},
 	{
 		name: "keep mode skips existing numbers and handles non-standard prefixes",
-		ir: { parts: [makePart("p1", "SW_1"), makePart("p2", "SW_?")] },
+		parts: partsOf(["SW_1"], ["SW_?"]),
 		opts: { mode: "keep", start: 1 },
 		expected: ["SW_1", "SW_2"],
 	},
 	{
 		name: "empty ir handles gracefully",
-		ir: { parts: [] },
+		parts: [],
 		opts: {},
 		expected: [],
 	},
 	{
 		name: "keep mode fills gaps in x order",
-		ir: {
-			parts: [
-				makePart("p1", "R1", 0, 0),
-				makePart("p2", "R?", 10, 0),
-				makePart("p3", "R3", 20, 0),
-				makePart("p4", "R?", 30, 0),
-			],
-		},
-		opts: { mode: "keep", order: "x", start: 1 },
+		parts: inRow(0, "R1", "R?", "R3", "R?"),
+		opts: KEEP_X,
 		expected: ["R1", "R2", "R3", "R4"],
 	},
 	{
 		name: "reset mode renumbers by position",
-		ir: {
-			parts: [
-				makePart("p1", "R9", 30, 0),
-				makePart("p2", "R1", 10, 0),
-				makePart("p3", "R?", 20, 0),
-			],
-		},
-		opts: { mode: "reset", order: "x", start: 1 },
-		expected: [
-			{ id: "p1", ref: "R3" },
-			{ id: "p2", ref: "R1" },
-			{ id: "p3", ref: "R2" },
-		],
-		extract: (res) => res.ir.parts.map((p) => ({ id: p.id, ref: p.ref })),
+		parts: partsOf(["R9", 30, 0], ["R1", 10, 0], ["R?", 20, 0]),
+		opts: RESET_X,
+		expected: idRefs("R3", "R1", "R2"),
+		extract: refsById,
 	},
 	{
 		name: "order y sorts primarily by y coordinate",
-		ir: {
-			parts: [
-				makePart("p1", "R?", 10, 50),
-				makePart("p2", "R?", 30, 10),
-				makePart("p3", "R?", 20, 10),
-			],
-		},
+		parts: partsOf(["R?", 10, 50], ["R?", 30, 10], ["R?", 20, 10]),
 		opts: { mode: "reset", order: "y", start: 1 },
-		expected: [
-			{ id: "p1", ref: "R3" },
-			{ id: "p2", ref: "R2" },
-			{ id: "p3", ref: "R1" },
-		],
-		extract: (res) => res.ir.parts.map((p) => ({ id: p.id, ref: p.ref })),
+		expected: idRefs("R3", "R2", "R1"),
+		extract: refsById,
 	},
 	{
 		name: "start 100 begins numbering at 100",
-		ir: {
-			parts: [makePart("p1", "R?", 10, 0), makePart("p2", "R?", 20, 0)],
-		},
+		parts: inRow(10, "R?", "R?"),
 		opts: { mode: "reset", order: "x", start: 100 },
 		expected: ["R100", "R101"],
 	},
 	{
 		name: "mixed prefixes allocate separate number sequences",
-		ir: {
-			parts: [
-				makePart("p1", "R?", 10, 0),
-				makePart("p2", "C?", 20, 0),
-				makePart("p3", "U?", 30, 0),
-				makePart("p4", "R?", 40, 0),
-				makePart("p5", "C?", 50, 0),
-			],
-		},
-		opts: { mode: "reset", order: "x", start: 1 },
+		parts: inRow(10, "R?", "C?", "U?", "R?", "C?"),
+		opts: RESET_X,
 		expected: ["R1", "C1", "U1", "R2", "C2"],
 	},
 	{
 		name: "changes list records modified parts with id, from, and to",
-		ir: {
-			parts: [
-				makePart("p1", "R1", 0, 0),
-				makePart("p2", "R?", 10, 0),
-				makePart("p3", "R?", 20, 0),
-			],
-		},
-		opts: { mode: "keep", order: "x", start: 1 },
+		parts: inRow(0, "R1", "R?", "R?"),
+		opts: KEEP_X,
 		expected: [
 			{ id: "p2", from: "R?", to: "R2" },
 			{ id: "p3", from: "R?", to: "R3" },
@@ -187,27 +150,33 @@ const ANNOTATE_CASES = [
 ];
 
 describe("annotate module", () => {
-	test("refPrefix extracts prefix according to rules", () => {
-		for (const { ref, expected } of REF_PREFIX_CASES) {
-			assert.equal(refPrefix(ref), expected);
-		}
-	});
-
-	test("refNumber extracts trailing integer or null", () => {
-		for (const { ref, expected } of REF_NUMBER_CASES) {
-			assert.equal(refNumber(ref), expected);
-		}
-	});
-
-	test("findDuplicateRefs identifies repeated references", () => {
-		for (const { parts, expected } of DUPLICATE_REF_CASES) {
-			assert.deepEqual(findDuplicateRefs({ parts }), expected);
-		}
-	});
+	for (const [title, fn, cases] of [
+		[
+			"refPrefix extracts prefix according to rules",
+			refPrefix,
+			REF_PREFIX_CASES,
+		],
+		[
+			"refNumber extracts trailing integer or null",
+			refNumber,
+			REF_NUMBER_CASES,
+		],
+		[
+			"findDuplicateRefs identifies repeated references",
+			(parts) => findDuplicateRefs({ parts }),
+			DUPLICATE_REF_CASES,
+		],
+	]) {
+		test(title, () => {
+			for (const [input, expected] of cases) {
+				assert.deepEqual(fn(input), expected);
+			}
+		});
+	}
 
 	for (const tc of ANNOTATE_CASES) {
 		test(tc.name, () => {
-			const res = annotate(tc.ir, tc.opts);
+			const res = annotate({ parts: tc.parts }, tc.opts);
 			const actual = tc.extract
 				? tc.extract(res)
 				: res.ir.parts.map((p) => p.ref);

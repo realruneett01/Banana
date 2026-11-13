@@ -96,12 +96,22 @@ function setupAndDispatch(command) {
 	return ctx;
 }
 
+// Command builders; part commands default to part_u1.
+const u1 = (type, extra) => ({ type, partId: "part_u1", ...extra });
+const move = (x, y, partId = "part_u1") => ({ type: "movePart", partId, x, y });
+const rotate = (deltaDeg) => u1("rotatePart", { deltaDeg });
+const setField = (field, value) => u1("setPartField", { field, value });
+const setProp = (key, value) => u1("setPartProp", { key, value });
+const connect = (partIdA, pinA, partIdB, pinB) => ({
+	type: "connect",
+	partIdA,
+	pinA,
+	partIdB,
+	pinB,
+});
+
 function makeBatchCommands(field, value) {
-	return [
-		{ type: "movePart", partId: "part_u1", x: 10, y: 20 },
-		{ type: "rotatePart", partId: "part_u1", deltaDeg: 90 },
-		{ type: "setPartField", partId: "part_u1", field, value },
-	];
+	return [move(10, 20), rotate(90), setField(field, value)];
 }
 
 function assertModifiedState(editor, baseIr) {
@@ -226,82 +236,23 @@ function makeRoundTripCases() {
 			"deletePart removes part and pins",
 			{ type: "deletePart", partId: "part_r1" },
 		],
-		[
-			"movePart updates placement",
-			{ type: "movePart", partId: "part_u1", x: 150, y: 250 },
-		],
-		[
-			"rotatePart with positive delta",
-			{ type: "rotatePart", partId: "part_u1", deltaDeg: 90 },
-		],
-		[
-			"rotatePart with negative delta",
-			{ type: "rotatePart", partId: "part_u1", deltaDeg: -90 },
-		],
-		[
-			"rotatePart with > 360 delta",
-			{ type: "rotatePart", partId: "part_u1", deltaDeg: 450 },
-		],
-		["flipPart F to B", { type: "flipPart", partId: "part_u1" }],
-		[
-			"setPartField ref",
-			{ type: "setPartField", partId: "part_u1", field: "ref", value: "U99" },
-		],
-		[
-			"setPartField value",
-			{
-				type: "setPartField",
-				partId: "part_u1",
-				field: "value",
-				value: "TLC555",
-			},
-		],
-		[
-			"setPartProp add prop",
-			{
-				type: "setPartProp",
-				partId: "part_u1",
-				key: "package",
-				value: "DIP",
-			},
-		],
-		[
-			"setPartProp update existing prop",
-			{
-				type: "setPartProp",
-				partId: "part_u1",
-				key: "temp",
-				value: "commercial",
-			},
-		],
-		[
-			"setPartProp delete prop",
-			{
-				type: "setPartProp",
-				partId: "part_u1",
-				key: "temp",
-				value: undefined,
-			},
-		],
+		["movePart updates placement", move(150, 250)],
+		["rotatePart with positive delta", rotate(90)],
+		["rotatePart with negative delta", rotate(-90)],
+		["rotatePart with > 360 delta", rotate(450)],
+		["flipPart F to B", u1("flipPart")],
+		["setPartField ref", setField("ref", "U99")],
+		["setPartField value", setField("value", "TLC555")],
+		["setPartProp add prop", setProp("package", "DIP")],
+		["setPartProp update existing prop", setProp("temp", "commercial")],
+		["setPartProp delete prop", setProp("temp", undefined)],
 		[
 			"connect unconnected pins creates new net",
-			{
-				type: "connect",
-				partIdA: "part_r2",
-				pinA: "1",
-				partIdB: "part_r2",
-				pinB: "2",
-			},
+			connect("part_r2", "1", "part_r2", "2"),
 		],
 		[
 			"connect unconnected pin to existing net",
-			{
-				type: "connect",
-				partIdA: "part_r2",
-				pinA: "1",
-				partIdB: "part_u1",
-				pinB: "8",
-			},
+			connect("part_r2", "1", "part_u1", "8"),
 		],
 		[
 			"disconnect pin from net",
@@ -344,13 +295,9 @@ describe("batch command", () => {
 
 describe("connect and net merging", () => {
 	test("connect merges two distinct nets correctly", () => {
-		const { baseIr, editor } = setupAndDispatch({
-			type: "connect",
-			partIdA: "part_u1",
-			pinA: "8",
-			partIdB: "part_u1",
-			pinB: "1",
-		});
+		const { baseIr, editor } = setupAndDispatch(
+			connect("part_u1", "8", "part_u1", "1"),
+		);
 		assertMergedNet(editor, baseIr);
 	});
 });
@@ -367,19 +314,10 @@ describe("deletePart pin cleanup", () => {
 
 describe("id permanence", () => {
 	test("ids never change on move or rotate", () => {
-		const { editor } = setupAndDispatch({
-			type: "movePart",
-			partId: "part_u1",
-			x: 999,
-			y: 888,
-		});
+		const { editor } = setupAndDispatch(move(999, 888));
 		assertPartId(editor, 0, "part_u1");
 
-		editor.dispatch({
-			type: "rotatePart",
-			partId: "part_u1",
-			deltaDeg: 180,
-		});
+		editor.dispatch(rotate(180));
 		assertPartId(editor, 0, "part_u1");
 	});
 });
@@ -388,42 +326,13 @@ const INVALID_CASES = [
 	["null command", null],
 	["missing type", {}],
 	["unknown type", { type: "unknownCommand" }],
-	[
-		"movePart non-numeric x",
-		{ type: "movePart", partId: "part_u1", x: "abc", y: 10 },
-	],
-	[
-		"movePart missing part",
-		{ type: "movePart", partId: "missing_id", x: 10, y: 10 },
-	],
-	[
-		"rotatePart non-numeric deg",
-		{ type: "rotatePart", partId: "part_u1", deltaDeg: "not_a_num" },
-	],
+	["movePart non-numeric x", move("abc", 10)],
+	["movePart missing part", move(10, 10, "missing_id")],
+	["rotatePart non-numeric deg", rotate("not_a_num")],
 	["flipPart missing part", { type: "flipPart", partId: "missing_id" }],
-	[
-		"setPartField invalid field",
-		{
-			type: "setPartField",
-			partId: "part_u1",
-			field: "invalid",
-			value: "val",
-		},
-	],
-	[
-		"setPartProp empty key",
-		{ type: "setPartProp", partId: "part_u1", key: "", value: "val" },
-	],
-	[
-		"connect pin to itself",
-		{
-			type: "connect",
-			partIdA: "part_u1",
-			pinA: "1",
-			partIdB: "part_u1",
-			pinB: "1",
-		},
-	],
+	["setPartField invalid field", setField("invalid", "val")],
+	["setPartProp empty key", setProp("", "val")],
+	["connect pin to itself", connect("part_u1", "1", "part_u1", "1")],
 	[
 		"disconnect unconnected pin",
 		{ type: "disconnect", partId: "part_r2", pin: "99" },
@@ -448,12 +357,7 @@ describe("history cap", () => {
 	test("caps past history at 200", () => {
 		const { editor } = setupEditor();
 		for (let i = 0; i < 210; i++) {
-			editor.dispatch({
-				type: "movePart",
-				partId: "part_u1",
-				x: i,
-				y: i,
-			});
+			editor.dispatch(move(i, i));
 		}
 		assertHistoryLengths(editor, 200);
 		for (let i = 0; i < 200; i++) {

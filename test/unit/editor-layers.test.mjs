@@ -15,6 +15,7 @@ import {
 	stepCopper,
 	toggleVisible,
 } from "../../frontend/src/editor/layers.js";
+import { assertAllFrozen } from "../helpers/tests_1-asserts.mjs";
 
 const VALID_COPPER_CASES = [
 	{ count: 1, expected: ["F.Cu"] },
@@ -28,19 +29,20 @@ const VALID_COPPER_CASES = [
 
 const INVALID_COPPER_CASES = [3, 0, -2, 34, 1.5, "4", null, undefined];
 
+// [layer, expected] pairs
 const FLIP_LAYER_CASES = [
-	{ layer: "F.Cu", expected: "B.Cu" },
-	{ layer: "B.Cu", expected: "F.Cu" },
-	{ layer: "F.SilkS", expected: "B.SilkS" },
-	{ layer: "B.SilkS", expected: "F.SilkS" },
-	{ layer: "F.Mask", expected: "B.Mask" },
-	{ layer: "B.Paste", expected: "F.Paste" },
-	{ layer: "In1.Cu", expected: "In1.Cu" },
-	{ layer: "In2.Cu", expected: "In2.Cu" },
-	{ layer: "Edge.Cuts", expected: "Edge.Cuts" },
-	{ layer: "Dwgs.User", expected: "Dwgs.User" },
-	{ layer: "User.1", expected: "User.1" },
-	{ layer: "Margin", expected: "Margin" },
+	["F.Cu", "B.Cu"],
+	["B.Cu", "F.Cu"],
+	["F.SilkS", "B.SilkS"],
+	["B.SilkS", "F.SilkS"],
+	["F.Mask", "B.Mask"],
+	["B.Paste", "F.Paste"],
+	["In1.Cu", "In1.Cu"],
+	["In2.Cu", "In2.Cu"],
+	["Edge.Cuts", "Edge.Cuts"],
+	["Dwgs.User", "Dwgs.User"],
+	["User.1", "User.1"],
+	["Margin", "Margin"],
 ];
 
 const LAYER_KIND_GROUPS = [
@@ -98,7 +100,7 @@ describe("NON_COPPER_LAYERS", () => {
 });
 
 describe("flipLayer", () => {
-	for (const { layer, expected } of FLIP_LAYER_CASES) {
+	for (const [layer, expected] of FLIP_LAYER_CASES) {
 		test(`swaps ${layer} to ${expected}`, () => {
 			assert.equal(flipLayer(layer), expected);
 		});
@@ -126,84 +128,87 @@ describe("createLayerState", () => {
 
 	test("freezes default state and its collections", () => {
 		const state = makeState();
-		assert.equal(Object.isFrozen(state), true);
-		assert.equal(Object.isFrozen(state.copper), true);
-		assert.equal(Object.isFrozen(state.all), true);
-		assert.equal(Object.isFrozen(state.hidden), true);
+		assertAllFrozen(state, state.copper, state.all, state.hidden);
 	});
 });
 
-describe("setActive", () => {
-	test("updates active layer when valid", () => {
-		const state = makeState(4);
-		const validUpdated = setActive(state, "In2.Cu");
-		assert.equal(validUpdated.active, "In2.Cu");
+/** Registers a test asserting the active layer after `run` on a 4-layer state. */
+function testActiveAfter(title, run, expected) {
+	test(title, () => {
+		assert.equal(run(makeState(4)).active, expected);
 	});
+}
+
+/** Registers a test asserting `run` returns the 4-layer state unchanged. */
+function testUnchanged(title, run) {
+	test(title, () => {
+		const state = makeState(4);
+		assert.equal(run(state), state);
+	});
+}
+
+/** Registers a test stepping copper by `dir` and asserting each active layer. */
+function testWalk(title, dir, expectedLayers) {
+	test(title, () => {
+		let state = makeState(4);
+		for (const expected of expectedLayers) {
+			state = stepCopper(state, dir);
+			assert.equal(state.active, expected);
+		}
+	});
+}
+
+describe("setActive", () => {
+	testActiveAfter(
+		"updates active layer when valid",
+		(state) => setActive(state, "In2.Cu"),
+		"In2.Cu",
+	);
 
 	test("returns frozen state on valid update", () => {
-		const state = makeState(4);
-		const validUpdated = setActive(state, "In2.Cu");
-		assert.equal(Object.isFrozen(validUpdated), true);
+		assertAllFrozen(setActive(makeState(4), "In2.Cu"));
 	});
 
-	test("preserves state when layer does not exist", () => {
-		const state = makeState(4);
-		const invalidUpdated = setActive(state, "NonExistent.Layer");
-		assert.equal(invalidUpdated, state);
-	});
+	testUnchanged("preserves state when layer does not exist", (state) =>
+		setActive(state, "NonExistent.Layer"),
+	);
 
 	test("preserves state when setting currently active layer", () => {
-		const state = makeState(4);
-		const validUpdated = setActive(state, "In2.Cu");
+		const validUpdated = setActive(makeState(4), "In2.Cu");
 		const sameUpdated = setActive(validUpdated, "In2.Cu");
 		assert.equal(sameUpdated, validUpdated);
 	});
 });
 
 describe("stepCopper", () => {
-	test("moves and wraps forward", () => {
-		let state = makeState(4);
-		for (const expected of ["In1.Cu", "In2.Cu", "B.Cu", "F.Cu"]) {
-			state = stepCopper(state, 1);
-			assert.equal(state.active, expected);
-		}
-	});
-
-	test("moves and wraps backward", () => {
-		let state = makeState(4);
-		for (const expected of ["B.Cu", "In2.Cu", "In1.Cu", "F.Cu"]) {
-			state = stepCopper(state, -1);
-			assert.equal(state.active, expected);
-		}
-	});
-
-	test("resets to F.Cu if active is not copper", () => {
-		const state = makeState(4);
-		const userState = setActive(state, "Edge.Cuts");
-		const stepped = stepCopper(userState, 1);
-		assert.equal(stepped.active, "F.Cu");
-	});
+	testWalk("moves and wraps forward", 1, ["In1.Cu", "In2.Cu", "B.Cu", "F.Cu"]);
+	testWalk("moves and wraps backward", -1, [
+		"B.Cu",
+		"In2.Cu",
+		"In1.Cu",
+		"F.Cu",
+	]);
+	testActiveAfter(
+		"resets to F.Cu if active is not copper",
+		(state) => stepCopper(setActive(state, "Edge.Cuts"), 1),
+		"F.Cu",
+	);
 });
 
 describe("jumpCopper", () => {
-	test("jumps to bottom copper layer", () => {
-		const state = makeState(4);
-		const bottomState = jumpCopper(state, "bottom");
-		assert.equal(bottomState.active, "B.Cu");
-	});
-
-	test("jumps to top copper layer", () => {
-		const state = makeState(4);
-		const bottomState = jumpCopper(state, "bottom");
-		const topState = jumpCopper(bottomState, "top");
-		assert.equal(topState.active, "F.Cu");
-	});
-
-	test("preserves state for invalid target", () => {
-		const state = makeState(4);
-		const unchanged = jumpCopper(state, "invalid");
-		assert.equal(unchanged, state);
-	});
+	testActiveAfter(
+		"jumps to bottom copper layer",
+		(state) => jumpCopper(state, "bottom"),
+		"B.Cu",
+	);
+	testActiveAfter(
+		"jumps to top copper layer",
+		(state) => jumpCopper(jumpCopper(state, "bottom"), "top"),
+		"F.Cu",
+	);
+	testUnchanged("preserves state for invalid target", (state) =>
+		jumpCopper(state, "invalid"),
+	);
 });
 
 describe("layer visibility", () => {
@@ -268,18 +273,15 @@ describe("drawOrder", () => {
 		assert.equal(order.includes("B.SilkS"), false);
 	});
 
+	const orderWithActive = (layer) => drawOrder(setActive(makeState(4), layer));
+
 	test("moves active layer to end when active is non-copper", () => {
-		const state = makeState(4);
-		const edgeActive = setActive(state, "Edge.Cuts");
-		const orderEdge = drawOrder(edgeActive);
-		assert.equal(orderEdge[orderEdge.length - 1], "Edge.Cuts");
+		const orderEdge = orderWithActive("Edge.Cuts");
+		assert.equal(orderEdge.at(-1), "Edge.Cuts");
 		assert.equal(orderEdge.indexOf("B.Cu") < orderEdge.indexOf("F.Cu"), true);
 	});
 
 	test("moves active layer to end when active is back copper", () => {
-		const state = makeState(4);
-		const bCuActive = setActive(state, "B.Cu");
-		const orderBCu = drawOrder(bCuActive);
-		assert.equal(orderBCu[orderBCu.length - 1], "B.Cu");
+		assert.equal(orderWithActive("B.Cu").at(-1), "B.Cu");
 	});
 });

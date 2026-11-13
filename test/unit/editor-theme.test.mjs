@@ -8,6 +8,7 @@ import {
 	SCHEMATIC_THEME_DARK,
 	withOverrides,
 } from "../../frontend/src/editor/theme.js";
+import { assertAllFrozen } from "../helpers/tests_1-asserts.mjs";
 
 const LAYER_COLOR_CASES = [
 	["F.Cu", PCB_THEME.layers["F.Cu"]],
@@ -39,14 +40,12 @@ const SCHEMATIC_COLOR_CASES = [
 
 describe("editor theme definitions", () => {
 	test("themes are frozen", () => {
-		for (const target of [
+		assertAllFrozen(
 			SCHEMATIC_THEME,
 			SCHEMATIC_THEME_DARK,
 			PCB_THEME,
 			PCB_THEME.layers,
-		]) {
-			assert.equal(Object.isFrozen(target), true);
-		}
+		);
 	});
 
 	test("SCHEMATIC_THEME_DARK contains identical keys to SCHEMATIC_THEME", () => {
@@ -75,21 +74,30 @@ describe("editor theme definitions", () => {
 	});
 });
 
-describe("getSchematicColor", () => {
-	for (const [description, theme, key, expected] of SCHEMATIC_COLOR_CASES) {
-		test(`resolves schematic color for ${description}`, () => {
-			assert.equal(getSchematicColor(theme, key), expected);
-		});
-	}
-});
-
-describe("getLayerColor", () => {
-	for (const [layer, expected] of LAYER_COLOR_CASES) {
-		test(`resolves layer color for ${layer}`, () => {
-			assert.equal(getLayerColor(PCB_THEME, layer), expected);
-		});
-	}
-});
+// Rows are [label, ...args, expected]; one test per row.
+for (const [suite, kind, cases, resolve] of [
+	["getSchematicColor", "schematic", SCHEMATIC_COLOR_CASES, getSchematicColor],
+	[
+		"getLayerColor",
+		"layer",
+		LAYER_COLOR_CASES.map(([layer, expected]) => [
+			layer,
+			PCB_THEME,
+			layer,
+			expected,
+		]),
+		getLayerColor,
+	],
+]) {
+	describe(suite, () => {
+		for (const [label, ...args] of cases) {
+			const expected = args.pop();
+			test(`resolves ${kind} color for ${label}`, () => {
+				assert.equal(resolve(...args), expected);
+			});
+		}
+	});
+}
 
 describe("withOverrides", () => {
 	function createPcbOverrides() {
@@ -116,14 +124,13 @@ describe("withOverrides", () => {
 
 	test("freezes updated theme and its layers", () => {
 		const updated = createPcbOverrides();
-		assert.equal(Object.isFrozen(updated), true);
-		assert.equal(Object.isFrozen(updated.layers), true);
+		assertAllFrozen(updated, updated.layers);
 	});
 
 	test("merges non-layer theme overrides", () => {
 		const updated = withOverrides(SCHEMATIC_THEME, { wire: "#ff0000" });
 		assert.equal(updated.wire, "#ff0000");
 		assert.equal(SCHEMATIC_THEME.wire, "#009600");
-		assert.equal(Object.isFrozen(updated), true);
+		assertAllFrozen(updated);
 	});
 });

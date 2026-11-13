@@ -19,60 +19,39 @@ const SEARCH_TERMS = ["res", "cap", "led", "op", "usb", "mcu", "555", "lm"];
 const FALLBACK_SCH = "(kicad_sch (version 20231120) (generator eeschema))";
 const FALLBACK_PCB = "(kicad_pcb (version 20240108) (generator pcbnew))";
 
+const rcId = (kind, n) => `${kind}_0000000${n}-0000-4000-8000-00000000000${n}`;
+
+function rcPart(n, ref, value, { symbol, footprint, props = {} }) {
+	return { id: rcId("part", n), ref, value, symbol, footprint, props };
+}
+
+function rcNet(n, name, ...pins) {
+	const toPin = ([part, pin]) => ({ partId: rcId("part", part), pin });
+	return { id: rcId("net", n), name, pins: pins.map(toPin) };
+}
+
 const RC_CIRCUIT_IR = {
 	schemaVersion: 1,
 	name: "rc_filter",
 	parts: [
-		{
-			id: "part_00000001-0000-4000-8000-000000000001",
-			ref: "V1",
-			value: "5V",
+		rcPart(1, "V1", "5V", {
 			symbol: "Source:V",
 			footprint: "Pkg:V",
 			props: { voltage: "5V" },
-		},
-		{
-			id: "part_00000002-0000-4000-8000-000000000002",
-			ref: "R1",
-			value: "1k",
+		}),
+		rcPart(2, "R1", "1k", {
 			symbol: "Device:R",
 			footprint: "Resistor_SMD:R_0603",
-			props: {},
-		},
-		{
-			id: "part_00000003-0000-4000-8000-000000000003",
-			ref: "C1",
-			value: "1uF",
+		}),
+		rcPart(3, "C1", "1uF", {
 			symbol: "Device:C",
 			footprint: "Capacitor_SMD:C_0603",
-			props: {},
-		},
+		}),
 	],
 	nets: [
-		{
-			id: "net_00000001-0000-4000-8000-000000000001",
-			name: "VCC",
-			pins: [
-				{ partId: "part_00000001-0000-4000-8000-000000000001", pin: "1" },
-				{ partId: "part_00000002-0000-4000-8000-000000000002", pin: "1" },
-			],
-		},
-		{
-			id: "net_00000002-0000-4000-8000-000000000002",
-			name: "MID",
-			pins: [
-				{ partId: "part_00000002-0000-4000-8000-000000000002", pin: "2" },
-				{ partId: "part_00000003-0000-4000-8000-000000000003", pin: "1" },
-			],
-		},
-		{
-			id: "net_00000003-0000-4000-8000-000000000003",
-			name: "GND",
-			pins: [
-				{ partId: "part_00000003-0000-4000-8000-000000000003", pin: "2" },
-				{ partId: "part_00000001-0000-4000-8000-000000000001", pin: "2" },
-			],
-		},
+		rcNet(1, "VCC", [1, "1"], [2, "1"]),
+		rcNet(2, "MID", [2, "2"], [3, "1"]),
+		rcNet(3, "GND", [3, "2"], [1, "2"]),
 	],
 	constraints: [],
 };
@@ -95,38 +74,24 @@ const MCP_LIST_PAYLOAD = JSON.stringify({
 	params: {},
 });
 
-const ARG_HANDLERS = {
-	"--base": (args, val) => {
-		args.base = val.replace(/\/+$/, "");
-	},
-	"--duration": (args, val) => {
-		args.duration = Number(val) || 60;
-	},
-	"--concurrency": (args, val) => {
-		args.concurrency = Number(val) || 50;
-	},
-	"--scenario": (args, val) => {
-		args.scenario = val;
-	},
-	"--sch": (args, val) => {
-		args.sch = val;
-	},
-	"--pcb": (args, val) => {
-		args.pcb = val;
-	},
-	"--mcp-token": (args, val) => {
-		args.mcpToken = val;
-	},
-	"--pid": (args, val) => {
-		args.pid = Number(val) || null;
-	},
+const asIs = (val) => val;
+
+const ARG_FIELDS = {
+	"--base": ["base", (val) => val.replace(/\/+$/, "")],
+	"--duration": ["duration", (val) => Number(val) || 60],
+	"--concurrency": ["concurrency", (val) => Number(val) || 50],
+	"--scenario": ["scenario", asIs],
+	"--sch": ["sch", asIs],
+	"--pcb": ["pcb", asIs],
+	"--mcp-token": ["mcpToken", asIs],
+	"--pid": ["pid", (val) => Number(val) || null],
 };
 
 function applyArg(args, key, val) {
 	if (!val) return;
-	const handler = ARG_HANDLERS[key];
-	if (handler) {
-		handler(args, val);
+	const field = ARG_FIELDS[key];
+	if (field) {
+		args[field[0]] = field[1](val);
 	}
 }
 
@@ -149,17 +114,31 @@ function parseCliArgs(argv) {
 	return args;
 }
 
+const TEXT_HEADERS = { "Content-Type": "text/plain" };
+const JSON_HEADERS = { "Content-Type": "application/json" };
+
+function postBody(url, headers, body) {
+	return fetch(url, { method: "POST", headers, body });
+}
+
+async function drainStatus(res) {
+	await res.text();
+	return res.status;
+}
+
 function readTextFile(filePath, fallback) {
 	try {
 		if (filePath && fs.existsSync(filePath)) {
 			return fs.readFileSync(filePath, "utf-8");
 		}
-	} catch {}
+	} catch (err) {
+		console.warn(`Could not read ${filePath}, using fallback:`, err.message);
+	}
 	return fallback;
 }
 
 function buildMcpHeaders(token) {
-	const headers = { "Content-Type": "application/json" };
+	const headers = { ...JSON_HEADERS };
 	if (token) {
 		headers.Authorization = `Bearer ${token}`;
 		headers["x-banana-auth"] = token;
@@ -169,23 +148,23 @@ function buildMcpHeaders(token) {
 
 async function fetchImportedIr(base, schText) {
 	try {
-		const res = await fetch(`${base}/api/editor/import?kind=sch`, {
-			method: "POST",
-			headers: { "Content-Type": "text/plain" },
-			body: schText,
-		});
+		const res = await postBody(
+			`${base}/api/editor/import?kind=sch`,
+			TEXT_HEADERS,
+			schText,
+		);
 		if (res.ok) {
 			const data = await res.json();
 			return data?.ir ?? RC_CIRCUIT_IR;
 		}
-	} catch {}
+	} catch (err) {
+		console.warn("Schematic import failed, using RC circuit IR:", err.message);
+	}
 	return RC_CIRCUIT_IR;
 }
 
 async function requestHealth(base) {
-	const res = await fetch(`${base}/api/library/status`);
-	await res.text();
-	return res.status;
+	return drainStatus(await fetch(`${base}/api/library/status`));
 }
 
 function getRandomSearchTerm() {
@@ -195,9 +174,9 @@ function getRandomSearchTerm() {
 
 async function requestSearch(base) {
 	const q = getRandomSearchTerm();
-	const res = await fetch(`${base}/api/library/symbols?q=${q}&limit=50`);
-	await res.text();
-	return res.status;
+	return drainStatus(
+		await fetch(`${base}/api/library/symbols?q=${q}&limit=50`),
+	);
 }
 
 function pickRandomLibrary(libraries) {
@@ -210,97 +189,47 @@ function pickRandomLibrary(libraries) {
 
 async function requestLibtree(base) {
 	const res = await fetch(`${base}/api/library/symbols/libraries`);
-	if (!res.ok) {
-		await res.text();
-		return res.status;
-	}
+	if (!res.ok) return drainStatus(res);
 	const data = await res.json();
 	const lib = pickRandomLibrary(data?.libraries);
-	const itemRes = await fetch(
-		`${base}/api/library/symbols/libraries/${encodeURIComponent(lib)}`,
+	return drainStatus(
+		await fetch(
+			`${base}/api/library/symbols/libraries/${encodeURIComponent(lib)}`,
+		),
 	);
-	await itemRes.text();
-	return itemRes.status;
 }
 
-async function requestImportSch(base, schText) {
-	const res = await fetch(`${base}/api/editor/import?kind=sch`, {
-		method: "POST",
-		headers: { "Content-Type": "text/plain" },
-		body: schText,
-	});
-	await res.text();
-	return res.status;
-}
-
-async function requestImportPcb(base, pcbText) {
-	const res = await fetch(`${base}/api/editor/import?kind=pcb`, {
-		method: "POST",
-		headers: { "Content-Type": "text/plain" },
-		body: pcbText,
-	});
-	await res.text();
-	return res.status;
-}
-
-async function requestCheck(base, checkPayload) {
-	const res = await fetch(`${base}/api/editor/check`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: checkPayload,
-	});
-	await res.text();
-	return res.status;
-}
-
-async function requestSim(base, simPayload) {
-	const res = await fetch(`${base}/api/circuit/simulate`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: simPayload,
-	});
-	await res.text();
-	return res.status;
+async function postStatus(url, headers, body) {
+	return drainStatus(await postBody(url, headers, body));
 }
 
 async function requestMcp(base, mcpHeaders) {
-	const initRes = await fetch(`${base}/mcp`, {
-		method: "POST",
-		headers: mcpHeaders,
-		body: MCP_INIT_PAYLOAD,
-	});
-	if (!initRes.ok) {
-		await initRes.text();
-		return initRes.status;
-	}
-	await initRes.text();
-	const listRes = await fetch(`${base}/mcp`, {
-		method: "POST",
-		headers: mcpHeaders,
-		body: MCP_LIST_PAYLOAD,
-	});
-	await listRes.text();
-	return listRes.status;
+	const initStatus = await postStatus(
+		`${base}/mcp`,
+		mcpHeaders,
+		MCP_INIT_PAYLOAD,
+	);
+	if (initStatus < 200 || initStatus >= 300) return initStatus;
+	return postStatus(`${base}/mcp`, mcpHeaders, MCP_LIST_PAYLOAD);
 }
 
+const POST_SCENARIOS = [
+	["import-sch", "/api/editor/import?kind=sch", TEXT_HEADERS, "schText"],
+	["import-pcb", "/api/editor/import?kind=pcb", TEXT_HEADERS, "pcbText"],
+	["check", "/api/editor/check", JSON_HEADERS, "checkPayload"],
+	["sim", "/api/circuit/simulate", JSON_HEADERS, "simPayload"],
+];
+
 function createScenarios(cfg, data) {
+	const posts = POST_SCENARIOS.map(([name, path, headers, key]) => ({
+		name,
+		request: () => postStatus(`${cfg.base}${path}`, headers, data[key]),
+	}));
 	return [
 		{ name: "health", request: () => requestHealth(cfg.base) },
 		{ name: "search", request: () => requestSearch(cfg.base) },
 		{ name: "libtree", request: () => requestLibtree(cfg.base) },
-		{
-			name: "import-sch",
-			request: () => requestImportSch(cfg.base, data.schText),
-		},
-		{
-			name: "import-pcb",
-			request: () => requestImportPcb(cfg.base, data.pcbText),
-		},
-		{
-			name: "check",
-			request: () => requestCheck(cfg.base, data.checkPayload),
-		},
-		{ name: "sim", request: () => requestSim(cfg.base, data.simPayload) },
+		...posts,
 		{ name: "mcp", request: () => requestMcp(cfg.base, data.mcpHeaders) },
 	];
 }
