@@ -149,3 +149,26 @@ export function createHotkeyDispatcher(bindings = {}, handlers = {}) {
 		return true;
 	};
 }
+
+// Extra keys the schematic canvas accepts besides SCHEMATIC_HOTKEYS: "+" may
+// need Shift (US layouts send "shift++"), "=" is the unshifted "+" key.
+const SCHEMATIC_KEY_ALIASES = Object.freeze({
+	"+": "zoomIn",
+	"shift++": "zoomIn",
+	"=": "zoomIn",
+	"-": "zoomOut",
+	backspace: "delete",
+	"ctrl+shift+z": "redo",
+});
+
+const SCHEMATIC_KEY_MAP = new Map([
+	...Object.entries(SCHEMATIC_KEY_ALIASES),
+	...buildReverseMap(SCHEMATIC_HOTKEYS),
+]);
+
+export function resolveSchematicAction(event) {
+	if (!event || isTypingTarget(event.target)) {
+		return null;
+	}
+	return SCHEMATIC_KEY_MAP.get(eventToKeySpec(event)) ?? null;
+}

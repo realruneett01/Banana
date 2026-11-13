@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyCommand } from "./editorModel.js";
+import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import {
 	hitTest,
@@ -619,24 +620,41 @@ function handleWireModeKey(ctx) {
 function handleEscapeKey(ctx) {
 	ctx.setWireMode(false);
 	ctx.setWireStart(null);
+	ctx.setDragState(null);
+	ctx.setDragPos(null);
+}
+
+function forEachSelected(ctx, makeCmd) {
+	for (const id of ctx.doc.selection) {
+		ctx.dispatchCmd(makeCmd(id));
+	}
 }
 
 function handleRotateKey(ctx) {
-	for (const id of ctx.doc.selection) {
-		ctx.dispatchCmd({ type: "rotatePart", partId: id, deltaDeg: 90 });
-	}
+	forEachSelected(ctx, (id) => ({
+		type: "rotatePart",
+		partId: id,
+		deltaDeg: 90,
+	}));
 }
 
-function handleFlipKey(ctx) {
-	for (const id of ctx.doc.selection) {
-		ctx.dispatchCmd({ type: "flipPart", partId: id });
-	}
+// Mirror about the Y axis: flipPart negates the symbol's local x.
+function handleMirrorYKey(ctx) {
+	forEachSelected(ctx, (id) => ({ type: "flipPart", partId: id }));
+}
+
+// Mirror about the X axis = mirror about Y, then rotate 180 degrees.
+function handleMirrorXKey(ctx) {
+	handleMirrorYKey(ctx);
+	forEachSelected(ctx, (id) => ({
+		type: "rotatePart",
+		partId: id,
+		deltaDeg: 180,
+	}));
 }
 
 function handleDeleteKey(ctx) {
-	for (const id of ctx.doc.selection) {
-		ctx.dispatchCmd({ type: "deletePart", partId: id });
-	}
+	forEachSelected(ctx, (id) => ({ type: "deletePart", partId: id }));
 }
 
 function handleHomeKey(ctx) {
@@ -656,58 +674,60 @@ function handleHomeKey(ctx) {
 	ctx.vp.setZoom(next.zoom);
 }
 
+function zoomAtCenter(ctx, factor) {
+	const rect = ctx.svgRef?.current?.getBoundingClientRect();
+	const center = { x: (rect?.width || 800) / 2, y: (rect?.height || 600) / 2 };
+	const next = zoomAt(ctx.vp, center, factor);
+	ctx.vp.setPan(next.pan);
+	ctx.vp.setZoom(next.zoom);
+}
+
+// M / G: the first selected part follows the cursor; the next click drops it.
+function handleMoveKey(ctx) {
+	const part = ctx.doc.ir?.parts?.find((p) => p.id === ctx.doc.selection[0]);
+	if (!part || !ctx.cursorWorld) return;
+	ctx.setDragState({
+		partId: part.id,
+		startX: part.placement?.x ?? 0,
+		startY: part.placement?.y ?? 0,
+		mouseStartX: ctx.cursorWorld.x,
+		mouseStartY: ctx.cursorWorld.y,
+		moved: false,
+		keyboard: true,
+	});
+}
+
+// E: select the item under the cursor so the properties panel shows it.
+function handleEditKey(ctx) {
+	if (!ctx.cursorWorld) return;
+	const hit = schematicHitTest(ctx.doc, ctx.allPinPos, ctx.cursorWorld);
+	if (hit?.kind === "part" || hit?.kind === "wire") {
+		ctx.dispatchCmd({ type: "select", ids: [hit.id] });
+	}
+}
+
 const ACTION_KEY_HANDLERS = {
-	w: handleWireModeKey,
-	W: handleWireModeKey,
-	Escape: handleEscapeKey,
-	r: handleRotateKey,
-	R: handleRotateKey,
-	f: handleFlipKey,
-	F: handleFlipKey,
-	Delete: handleDeleteKey,
-	Backspace: handleDeleteKey,
-	Home: handleHomeKey,
+	placeWire: handleWireModeKey,
+	cancel: handleEscapeKey,
+	rotate: handleRotateKey,
+	mirrorX: handleMirrorXKey,
+	mirrorY: handleMirrorYKey,
+	move: handleMoveKey,
+	drag: handleMoveKey,
+	edit: handleEditKey,
+	delete: handleDeleteKey,
+	undo: (ctx) => ctx.handleUndo(),
+	redo: (ctx) => ctx.handleRedo(),
+	zoomFit: handleHomeKey,
+	zoomIn: (ctx) => zoomAtCenter(ctx, 1.15),
+	zoomOut: (ctx) => zoomAtCenter(ctx, 0.87),
 };
 
-function handleActionKey(e, ctx) {
-	const handler = ACTION_KEY_HANDLERS[e.key];
-	if (handler) handler(ctx);
-}
-
-function isModifierKey(e) {
-	return Boolean(e.ctrlKey || e.metaKey);
-}
-
-function isKey(e, keyName) {
-	return e.key?.toLowerCase() === keyName;
-}
-
-function isUndoShortcut(e) {
-	if (!isModifierKey(e)) return false;
-	return isKey(e, "z") && !e.shiftKey;
-}
-
-function isRedoShortcut(e) {
-	if (!isModifierKey(e)) return false;
-	if (isKey(e, "y")) return true;
-	return isKey(e, "z") && Boolean(e.shiftKey);
-}
-
 function handleKeyDown(e, ctx) {
-	if (isUndoShortcut(e)) {
-		e.preventDefault();
-		ctx.handleUndo();
-		return;
-	}
-	if (isRedoShortcut(e)) {
-		e.preventDefault();
-		ctx.handleRedo();
-		return;
-	}
-	if (e.key === "Home") {
-		e.preventDefault();
-	}
-	handleActionKey(e, ctx);
+	const handler = ACTION_KEY_HANDLERS[resolveSchematicAction(e)];
+	if (!handler) return;
+	e.preventDefault();
+	handler(ctx);
 }
 
 function handlePinConnect(hit, wireState, dispatchCmd) {
@@ -805,7 +825,7 @@ function onPointerDownEvent(e, ctx) {
 		startPanDrag(e, vp, panDragRef);
 		return;
 	}
-	if (e.button !== 0) return;
+	if (e.button !== 0 || ctx.keyboardMove) return;
 	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 	const hit = schematicHitTest(doc, allPinPos, worldPt);
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt });
@@ -814,7 +834,7 @@ function onPointerDownEvent(e, ctx) {
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
 	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
 	const { doc, dispatchCmd } = editorState;
-	const { panDragRef, setDragState } = dragInit;
+	const { panDragRef, setDragState, keyboardMove } = dragInit;
 	const hitCtx = useMemo(
 		() => ({ wireMode, wireState, dispatchCmd, setDragState }),
 		[wireMode, wireState, dispatchCmd, setDragState],
@@ -830,9 +850,10 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 				doc,
 				allPinPos,
 				hitCtx,
+				keyboardMove,
 			});
 		},
-		[svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx],
+		[svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx, keyboardMove],
 	);
 }
 
@@ -872,7 +893,11 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 	const [dragState, setDragState] = useState(null);
 	const [cursorWorld, setCursorWorld] = useState(null);
 
-	const dragInit = useMemo(() => ({ panDragRef, setDragState }), []);
+	const keyboardMove = Boolean(dragState?.keyboard);
+	const dragInit = useMemo(
+		() => ({ panDragRef, setDragState, keyboardMove }),
+		[keyboardMove],
+	);
 	const moveCtx = useMemo(
 		() => ({ panDragRef, setDragPos: wireState.setDragPos, setCursorWorld }),
 		[wireState.setDragPos],
@@ -901,6 +926,7 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 		onPointerLeave,
 		cursorWorld,
 		setCursorWorld,
+		setDragState,
 	};
 }
 
@@ -953,7 +979,8 @@ function useWireState(wire, vp, isSpaceDown, allPinPos) {
 	);
 }
 
-function useKeyContext(ed, wire, vp, svgRef) {
+function useKeyContext(ed, wire, ptr, view) {
+	const { vp, svgRef, allPinPos } = view;
 	return useMemo(
 		() => ({
 			doc: ed.doc,
@@ -962,6 +989,10 @@ function useKeyContext(ed, wire, vp, svgRef) {
 			handleRedo: ed.handleRedo,
 			setWireMode: wire.setWireMode,
 			setWireStart: wire.setWireStart,
+			setDragPos: wire.setDragPos,
+			setDragState: ptr.setDragState,
+			cursorWorld: ptr.cursorWorld,
+			allPinPos,
 			vp,
 			svgRef,
 		}),
@@ -972,6 +1003,10 @@ function useKeyContext(ed, wire, vp, svgRef) {
 			ed.handleRedo,
 			wire.setWireMode,
 			wire.setWireStart,
+			wire.setDragPos,
+			ptr.setDragState,
+			ptr.cursorWorld,
+			allPinPos,
 			vp,
 			svgRef,
 		],
@@ -1002,7 +1037,7 @@ function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 		[ed.doc, ed.dispatchCmd],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
-	const keyCtx = useKeyContext(ed, wire, vp, svgRef);
+	const keyCtx = useKeyContext(ed, wire, ptr, { vp, svgRef, allPinPos });
 	return {
 		svgRef,
 		vp,
