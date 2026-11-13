@@ -57,17 +57,42 @@ function isParallelOutput(p, q) {
 	return bothOutputs && p.ref === q.ref && Boolean(p.name) && p.name === q.name;
 }
 
-function pairIssues(pins) {
-	const issues = [];
-	const typed = pins.filter((p) => !isUnspecified(p));
+// Edge order: parallel pads merge first, then errors win over warnings.
+const EDGE_RANK = { parallel: 0, error: 1, warning: 2 };
+
+function conflictEdges(typed) {
+	const edges = [];
 	typed.forEach((p, i) => {
-		for (const q of typed.slice(i + 1)) {
+		typed.slice(i + 1).forEach((q, k) => {
 			const severity = pinPairSeverity(p.type, q.type);
-			if (severity === "ok" || isParallelOutput(p, q)) continue;
-			const message = `pin type conflict: ${p.type} vs ${q.type}`;
-			issues.push({ severity, message, pins: [p, q] });
-		}
+			const kind = isParallelOutput(p, q) ? "parallel" : severity;
+			if (kind !== "ok") edges.push({ i, j: i + 1 + k, kind });
+		});
 	});
+	return edges.sort((a, b) => EDGE_RANK[a.kind] - EDGE_RANK[b.kind]);
+}
+
+function rootOf(parent, i) {
+	let r = i;
+	while (parent[r] !== r) r = parent[r];
+	return r;
+}
+
+// kicad-cli reports n-1 violations per cluster of conflicting pins, not
+// every pair, so keep only the edges of a spanning forest (union-find).
+function pairIssues(pins) {
+	const typed = pins.filter((p) => !isUnspecified(p));
+	const parent = typed.map((_, i) => i);
+	const issues = [];
+	for (const { i, j, kind } of conflictEdges(typed)) {
+		const [a, b] = [rootOf(parent, i), rootOf(parent, j)];
+		if (a === b) continue;
+		parent[b] = a;
+		if (kind === "parallel") continue;
+		const [p, q] = [typed[i], typed[j]];
+		const message = `pin type conflict: ${p.type} vs ${q.type}`;
+		issues.push({ severity: kind, message, pins: [p, q] });
+	}
 	return issues;
 }
 

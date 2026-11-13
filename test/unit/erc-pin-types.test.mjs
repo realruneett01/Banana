@@ -58,6 +58,15 @@ describe("runErc pin-type checks", () => {
 		assert.equal(validateIssue(issue).ok, true);
 	});
 
+	test("three outputs on one net report n-1 conflicts like kicad-cli", () => {
+		const ir = irWith(part("U1", { 1: "output" }), part("U2", { 1: "output" }));
+		const u3 = part("U3", { 1: "output" });
+		ir.parts.push(u3);
+		ir.nets[0].pins.push({ partId: u3.id, pin: "1" });
+		const found = pinTypeIssues(runErc(ir, { commit: COMMIT }));
+		assert.equal(found.length, 2);
+	});
+
 	test("output driving an input has no pin-type issue", () => {
 		const ir = irWith(part("U1", { 1: "output" }), part("U2", { 1: "input" }));
 		assert.deepEqual(pinTypeIssues(runErc(ir, { commit: COMMIT })), []);

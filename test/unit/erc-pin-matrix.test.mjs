@@ -8,9 +8,20 @@ import {
 
 // --- helpers ---
 
-function pin(ref, type) {
-	return { ref, pin: "1", type };
+function pin(ref, type, name) {
+	return name === undefined
+		? { ref, pin: "1", type }
+		: { ref, pin: "1", type, name };
 }
+
+// One pin per type, on parts U1..Un.
+const netOf = (types) => types.map((t, n) => pin(`U${n + 1}`, t));
+
+// [ref, type, name] tuples -> pins
+const pinsOf = (specs) => specs.map((s) => pin(...s));
+
+const conflictsOf = (issues) =>
+	issues.filter((i) => i.message.includes("conflict"));
 
 // --- PIN_TYPES ---
 
@@ -40,141 +51,122 @@ describe("pinPairSeverity symmetry", () => {
 	});
 });
 
-// --- pair rules ---
+// --- pair rules: expected severity -> [type A, type B] pairs ---
 
-const ERROR_PAIRS = [
-	["output", "output"],
-	["output", "power_out"],
-	["power_out", "power_out"],
-	["output", "open_collector"],
-	["output", "open_emitter"],
-];
+const PAIR_CASES = {
+	error: [
+		["output", "output"],
+		["output", "power_out"],
+		["power_out", "power_out"],
+		["output", "open_collector"],
+		["output", "open_emitter"],
+		["no_connect", "input"],
+		["no_connect", "output"],
+	],
+	warning: [
+		["tri_state", "output"],
+		["unspecified", "input"],
+		["unspecified", "output"],
+	],
+	ok: [
+		["no_connect", "no_connect"],
+		["input", "output"],
+		["passive", "passive"],
+		["free", "bidirectional"],
+	],
+};
 
-describe("pinPairSeverity error pairs", () => {
-	for (const [a, b] of ERROR_PAIRS) {
-		test(`${a} + ${b} -> error`, () => {
-			assert.equal(pinPairSeverity(a, b), "error");
-		});
+describe("pinPairSeverity", () => {
+	for (const [expected, pairs] of Object.entries(PAIR_CASES)) {
+		for (const [a, b] of pairs) {
+			test(`${a} + ${b} -> ${expected}`, () => {
+				assert.equal(pinPairSeverity(a, b), expected);
+			});
+		}
 	}
 });
 
-describe("pinPairSeverity warning pairs", () => {
-	test("tri_state + output -> warning", () => {
-		assert.equal(pinPairSeverity("tri_state", "output"), "warning");
+// --- checkNet conflict counts ---
+
+// kicad-cli reports n-1 pin_to_pin violations per cluster of mutually
+// conflicting pins, not every pair: vme-wren power-supply-3 has 6 VOUT
+// power outputs plus a PWR_FLAG on P3V3 and kicad-cli lists 6 violations.
+// [case, pin types, expected conflict count]
+const CONFLICT_COUNT_CASES = [
+	["output+output+input", ["output", "output", "input"], 1],
+	[
+		"3 outputs + input: n-1, not 3 pairs",
+		["output", "output", "output", "input"],
+		2,
+	],
+	["6 power outputs", Array(6).fill("power_out"), 5],
+	[
+		"output vs two open drains (a star)",
+		["output", "open_collector", "open_emitter"],
+		2,
+	],
+];
+
+describe("checkNet conflict counts", () => {
+	for (const [name, types, count] of CONFLICT_COUNT_CASES) {
+		test(`${name} -> ${count}`, () => {
+			assert.equal(conflictsOf(checkNet(netOf(types))).length, count);
+		});
+	}
+
+	test("driven net still reports pin-pair conflicts", () => {
+		const pins = netOf(["output", "output"]);
+		assert.equal(checkNet(pins, { driven: true }).length, 1);
 	});
 
-	test("unspecified + input -> warning", () => {
-		assert.equal(pinPairSeverity("unspecified", "input"), "warning");
+	test("parallel pads join the cluster as one pin", () => {
+		const pins = pinsOf([
+			["U1", "output", "SW"],
+			["U1", "output", "SW"],
+			["U2", "output"],
+		]);
+		assert.equal(conflictsOf(checkNet(pins)).length, 1);
 	});
 
-	test("unspecified + output -> warning", () => {
-		assert.equal(pinPairSeverity("unspecified", "output"), "warning");
-	});
-});
-
-describe("pinPairSeverity no_connect rules", () => {
-	test("no_connect + no_connect -> ok", () => {
-		assert.equal(pinPairSeverity("no_connect", "no_connect"), "ok");
-	});
-
-	test("no_connect + input -> error", () => {
-		assert.equal(pinPairSeverity("no_connect", "input"), "error");
-	});
-
-	test("no_connect + output -> error", () => {
-		assert.equal(pinPairSeverity("no_connect", "output"), "error");
-	});
-});
-
-describe("pinPairSeverity ok pairs", () => {
-	test("input + output -> ok", () => {
-		assert.equal(pinPairSeverity("input", "output"), "ok");
-	});
-
-	test("passive + passive -> ok", () => {
-		assert.equal(pinPairSeverity("passive", "passive"), "ok");
-	});
-
-	test("free + anything -> ok (bidirectional)", () => {
-		assert.equal(pinPairSeverity("free", "bidirectional"), "ok");
-	});
-});
-
-// --- checkNet ---
-
-describe("checkNet dedup", () => {
-	test("3-pin net with output+output produces one issue, not two", () => {
-		const pins = [pin("U1", "output"), pin("U2", "output"), pin("U3", "input")];
-		const issues = checkNet(pins);
-		const conflicts = issues.filter((i) => i.message.includes("conflict"));
-		assert.equal(conflicts.length, 1);
-	});
-
-	test("each pair counted once across 4 pins", () => {
-		const pins = [
-			pin("U1", "output"),
-			pin("U2", "output"),
-			pin("U3", "output"),
-			pin("U4", "input"),
-		];
-		const issues = checkNet(pins);
-		const conflicts = issues.filter((i) => i.message.includes("conflict"));
-		// 3 output+output pairs
-		assert.equal(conflicts.length, 3);
+	test("error pairs are kept before warnings in a cluster", () => {
+		const pins = netOf(["tri_state", "output", "output"]);
+		const severities = conflictsOf(checkNet(pins)).map((i) => i.severity);
+		assert.deepEqual(severities.sort(), ["error", "warning"]);
 	});
 });
 
-describe("checkNet undriven input net", () => {
-	test("all-input net -> error", () => {
-		const pins = [pin("U1", "input"), pin("U2", "input")];
-		const issues = checkNet(pins);
-		const driven = issues.find((i) => i.message.includes("not driven"));
-		assert.ok(driven, "expected 'not driven' issue");
-		assert.equal(driven.severity, "error");
-	});
+// --- checkNet drive checks: error message -> [pin types, expected present] ---
 
-	test("single input pin -> error", () => {
-		const pins = [pin("U1", "input")];
-		const issues = checkNet(pins);
-		assert.ok(issues.some((i) => i.message.includes("not driven")));
-	});
+const DRIVE_CASES = {
+	"net has only inputs (not driven)": [
+		[["input", "input"], true],
+		[["input"], true],
+		[["input", "output"], false],
+	],
+	"power_in not driven": [
+		[["power_in"], true],
+		[["power_in", "passive"], true],
+		[["power_in", "power_out"], false],
+		[["power_in", "output"], false],
+		[["power_in", "bidirectional"], false],
+	],
+};
 
-	test("input + output -> no undriven error", () => {
-		const pins = [pin("U1", "input"), pin("U2", "output")];
-		const issues = checkNet(pins);
-		assert.ok(!issues.some((i) => i.message.includes("not driven")));
-	});
-});
+describe("checkNet drive checks", () => {
+	for (const [message, cases] of Object.entries(DRIVE_CASES)) {
+		for (const [types, present] of cases) {
+			test(`${types.join(" + ")} -> ${present ? "" : "no "}"${message}"`, () => {
+				const found = checkNet(netOf(types)).find((i) => i.message === message);
+				assert.equal(found?.severity, present ? "error" : undefined);
+			});
+		}
+	}
 
-describe("checkNet undriven power_in", () => {
-	test("power_in alone -> error", () => {
-		const pins = [pin("U1", "power_in")];
-		const issues = checkNet(pins);
-		assert.ok(issues.some((i) => i.message === "power_in not driven"));
-	});
-
-	test("power_in + passive -> error (passive does not drive)", () => {
-		const pins = [pin("U1", "power_in"), pin("U2", "passive")];
-		const issues = checkNet(pins);
-		assert.ok(issues.some((i) => i.message === "power_in not driven"));
-	});
-
-	test("power_in + power_out -> no power_in error", () => {
-		const pins = [pin("U1", "power_in"), pin("U2", "power_out")];
-		const issues = checkNet(pins);
-		assert.ok(!issues.some((i) => i.message === "power_in not driven"));
-	});
-
-	test("power_in + output -> no power_in error", () => {
-		const pins = [pin("U1", "power_in"), pin("U2", "output")];
-		const issues = checkNet(pins);
-		assert.ok(!issues.some((i) => i.message === "power_in not driven"));
-	});
-
-	test("power_in + bidirectional -> no power_in error", () => {
-		const pins = [pin("U1", "power_in"), pin("U2", "bidirectional")];
-		const issues = checkNet(pins);
-		assert.ok(!issues.some((i) => i.message === "power_in not driven"));
+	test("driven net skips undriven input and power_in checks", () => {
+		assert.deepEqual(
+			checkNet(netOf(["input", "power_in"]), { driven: true }),
+			[],
+		);
 	});
 });
 
@@ -184,19 +176,13 @@ describe("checkNet empty / no conflict", () => {
 	});
 
 	test("passive + passive -> no issues", () => {
-		const pins = [pin("R1", "passive"), pin("R2", "passive")];
-		assert.deepEqual(checkNet(pins), []);
+		assert.deepEqual(checkNet(netOf(["passive", "passive"])), []);
 	});
 });
 
 describe("checkNet unspecified pins", () => {
 	test("one warning per net listing every unspecified pin", () => {
-		const pins = [
-			pin("U1", "unspecified"),
-			pin("U2", "unspecified"),
-			pin("U3", "input"),
-			pin("U4", "output"),
-		];
+		const pins = netOf(["unspecified", "unspecified", "input", "output"]);
 		const found = checkNet(pins).filter((i) => i.message.includes("unspec"));
 		assert.equal(found.length, 1);
 		assert.equal(found[0].severity, "warning");
@@ -207,58 +193,29 @@ describe("checkNet unspecified pins", () => {
 	});
 
 	test("lone unspecified pin -> no warning", () => {
-		assert.deepEqual(checkNet([pin("U1", "unspecified")]), []);
+		assert.deepEqual(checkNet(netOf(["unspecified"])), []);
 	});
 });
 
 // kicad-cli ERC treats same-named output pins of one symbol (a regulator's
 // parallel SW pads) as one pin, but still flags differently named outputs
 // and same-named power outputs (vme-wren power-supply demos).
-// [case, [ref, type, name] of pin A, same for pin B, expected issue count]
+// Pin A is U1 "SW" of the given type; [type, ref B, name B, expected issues]
 const PARALLEL_OUTPUT_CASES = [
-	[
-		"same part, same name outputs",
-		["U1", "output", "SW"],
-		["U1", "output", "SW"],
-		0,
-	],
-	[
-		"same part, different names",
-		["U1", "output", "A"],
-		["U1", "output", "B"],
-		1,
-	],
-	[
-		"same name on different parts",
-		["U1", "output", "SW"],
-		["U2", "output", "SW"],
-		1,
-	],
-	[
-		"same part, same name power outputs",
-		["U1", "power_out", "V"],
-		["U1", "power_out", "V"],
-		1,
-	],
+	["output", "U1", "SW", 0], // same part, same name outputs
+	["output", "U1", "B", 1], // same part, different names
+	["output", "U2", "SW", 1], // same name on different parts
+	["power_out", "U1", "SW", 1], // same part, same name power outputs
 ];
 
 describe("checkNet parallel output pins of one part", () => {
-	const named = ([ref, type, name]) => ({ ...pin(ref, type), name });
-	for (const [name, a, b, count] of PARALLEL_OUTPUT_CASES) {
-		test(`${name} -> ${count} issue(s)`, () => {
-			assert.equal(checkNet([named(a), named(b)]).length, count);
+	for (const [type, ref, name, count] of PARALLEL_OUTPUT_CASES) {
+		test(`U1 SW + ${ref} ${name} (${type}) -> ${count} issue(s)`, () => {
+			const pins = pinsOf([
+				["U1", type, "SW"],
+				[ref, type, name],
+			]);
+			assert.equal(checkNet(pins).length, count);
 		});
 	}
-});
-
-describe("checkNet driven by something outside the pin list", () => {
-	test("driven net skips undriven input and power_in checks", () => {
-		const pins = [pin("U1", "input"), pin("U2", "power_in")];
-		assert.deepEqual(checkNet(pins, { driven: true }), []);
-	});
-
-	test("driven net still reports pin-pair conflicts", () => {
-		const pins = [pin("U1", "output"), pin("U2", "output")];
-		assert.equal(checkNet(pins, { driven: true }).length, 1);
-	});
 });
