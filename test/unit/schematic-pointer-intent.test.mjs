@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { pointerDownTarget } from "../../frontend/src/editor/pointerIntent.js";
+import {
+	isPanPointer,
+	pointerDownTarget,
+} from "../../frontend/src/editor/pointerIntent.js";
 
 describe("pointerDownTarget", () => {
 	test("a pin click in select mode selects the part, never starts a wire", () => {
@@ -17,5 +20,21 @@ describe("pointerDownTarget", () => {
 			assert.equal(pointerDownTarget("wire", wireMode), "wire");
 			assert.equal(pointerDownTarget(undefined, wireMode), "empty");
 		}
+	});
+});
+
+describe("isPanPointer", () => {
+	test("middle button pans with or without Space", () => {
+		assert.equal(isPanPointer(1, false), true);
+		assert.equal(isPanPointer(1, true), true);
+	});
+
+	test("left button pans only while Space is held", () => {
+		assert.equal(isPanPointer(0, true), true);
+		assert.equal(isPanPointer(0, false), false);
+	});
+
+	test("right button never pans", () => {
+		assert.equal(isPanPointer(2, true), false);
 	});
 });

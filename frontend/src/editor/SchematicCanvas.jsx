@@ -5,7 +5,7 @@ import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
-import { pointerDownTarget } from "./pointerIntent.js";
+import { isPanPointer, pointerDownTarget } from "./pointerIntent.js";
 import {
 	hitTest,
 	partBox,
@@ -788,9 +788,22 @@ function handleEmptyPointerDown({
 	dispatchCmd,
 	setBoxDrag,
 	worldPt,
+	capturePointer,
 }) {
-	dispatchCmd({ type: "select", ids: [] });
-	if (!wireMode) setBoxDrag({ start: worldPt, end: worldPt });
+	// Wire mode has no box drag, so the click clears now. Otherwise the box
+	// commit on pointer-up dispatches the single select (empty for a click).
+	if (wireMode) {
+		dispatchCmd({ type: "select", ids: [] });
+		return;
+	}
+	capturePointer();
+	setBoxDrag({ start: worldPt, end: worldPt });
+}
+
+function releasePointer(e) {
+	const el = e?.currentTarget;
+	if (el?.hasPointerCapture?.(e.pointerId))
+		el.releasePointerCapture(e.pointerId);
 }
 
 function commitBoxSelect(boxDrag, editorState) {
@@ -798,7 +811,7 @@ function commitBoxSelect(boxDrag, editorState) {
 	const { doc, symbolCache, dispatchCmd } = editorState;
 	const items = partItems(doc.ir, symbolCache);
 	const ids = boxSelect(items, boxDrag.start, boxDrag.end);
-	if (ids.length) dispatchCmd({ type: "select", ids });
+	dispatchCmd({ type: "select", ids });
 }
 
 function updatePartDrag(dragState, worldPt, setDragPos) {
@@ -844,14 +857,16 @@ function commitPartDrag(dragState, dragPos, dispatchCmd) {
 function onPointerDownEvent(e, ctx) {
 	const { svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx } = ctx;
 	if (!svgRef.current) return;
-	if (e.button === 1 || (e.button === 0 && isSpaceDown)) {
+	if (isPanPointer(e.button, isSpaceDown)) {
 		startPanDrag(e, vp, panDragRef);
 		return;
 	}
 	if (e.button !== 0 || ctx.keyboardMove) return;
 	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 	const hit = schematicHitTest(doc, allPinPos, worldPt);
-	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt });
+	const el = e.currentTarget;
+	const capturePointer = () => el?.setPointerCapture?.(e.pointerId);
+	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt, capturePointer });
 }
 
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
@@ -914,24 +929,28 @@ function usePointerUp(editorState, wireState, dragState, upCtx) {
 	const { dragPos, setDragPos } = wireState;
 	const { panDragRef, setDragState, boxDrag, setBoxDrag } = upCtx;
 
-	return useCallback(() => {
-		panDragRef.current = null;
-		commitPartDrag(dragState, dragPos, dispatchCmd);
-		commitBoxSelect(boxDrag, editorState);
-		setBoxDrag(null);
-		setDragState(null);
-		setDragPos(null);
-	}, [
-		dragState,
-		dragPos,
-		dispatchCmd,
-		editorState,
-		boxDrag,
-		setBoxDrag,
-		setDragPos,
-		panDragRef,
-		setDragState,
-	]);
+	return useCallback(
+		(e) => {
+			releasePointer(e);
+			panDragRef.current = null;
+			commitPartDrag(dragState, dragPos, dispatchCmd);
+			commitBoxSelect(boxDrag, editorState);
+			setBoxDrag(null);
+			setDragState(null);
+			setDragPos(null);
+		},
+		[
+			dragState,
+			dragPos,
+			dispatchCmd,
+			editorState,
+			boxDrag,
+			setBoxDrag,
+			setDragPos,
+			panDragRef,
+			setDragState,
+		],
+	);
 }
 
 function usePointerInteractions(svgRef, editorState, wireState) {
@@ -974,12 +993,15 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 	);
 	const onPointerUp = usePointerUp(editorState, wireState, dragState, upCtx);
 	const onPointerLeave = useCallback(() => setCursorWorld(null), []);
+	// Cancel or a lost capture drops the box without selecting anything.
+	const onPointerCancel = useCallback(() => setBoxDrag(null), []);
 
 	return {
 		onPointerDown,
 		onPointerMove,
 		onPointerUp,
 		onPointerLeave,
+		onPointerCancel,
 		cursorWorld,
 		setCursorWorld,
 		setDragState,
@@ -1104,6 +1126,7 @@ function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 		allPinPos,
 		ptr,
 		keyCtx,
+		isSpaceDown,
 		setIsSpaceDown,
 	};
 }
@@ -1349,15 +1372,17 @@ function nextHighlight(hit, ir) {
 
 function useNetHighlight(s) {
 	const [highlightNet, setHighlightNet] = useState(null);
-	const { svgRef, vp, doc, allPinPos, wire } = s;
+	const { svgRef, vp, doc, allPinPos, wire, isSpaceDown } = s;
 	const onPointerDown = useCallback(
 		(e) => {
-			if (e.button !== 0 || wire.wireMode || !svgRef.current) return;
+			// A pan (middle button or Space+left) leaves the highlight alone.
+			if (isPanPointer(e.button, isSpaceDown) || e.button !== 0) return;
+			if (wire.wireMode || !svgRef.current) return;
 			const pt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 			const next = nextHighlight(schematicHitTest(doc, allPinPos, pt), doc.ir);
 			if (next !== undefined) setHighlightNet(next);
 		},
-		[svgRef, vp, doc, allPinPos, wire.wireMode],
+		[svgRef, vp, doc, allPinPos, wire.wireMode, isSpaceDown],
 	);
 	const onKeyDown = useCallback((e) => {
 		if (e.key === "Escape") setHighlightNet(null);
@@ -1428,6 +1453,8 @@ export default function SchematicCanvas({
 			}}
 			onPointerMove={s.ptr.onPointerMove}
 			onPointerUp={s.ptr.onPointerUp}
+			onPointerCancel={s.ptr.onPointerCancel}
+			onLostPointerCapture={s.ptr.onPointerCancel}
 			onPointerLeave={s.ptr.onPointerLeave}
 		>
 			<svg
