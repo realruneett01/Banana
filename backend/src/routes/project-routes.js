@@ -109,26 +109,51 @@ async function initGitRepo(runGit, target, base) {
 	]);
 }
 
-async function provisionProject(res, deps, realParent, projectRes) {
+function fail(status, error) {
+	return { status, body: { error } };
+}
+
+async function provisionProject(deps, realParent, projectRes) {
 	const { base, files } = projectRes;
 	const target = path.join(realParent, base);
 	if (await targetExists(deps.fsImpl, target)) {
-		return res.status(409).json({
-			error: "A folder with that name already exists",
-		});
+		return fail(409, "A folder with that name already exists");
 	}
 	try {
 		await deps.fsImpl.mkdir(target);
 		await writeProjectFiles(deps.fsImpl, target, files);
 		await initGitRepo(deps.runGit, target, base);
-		return res.status(201).json({
-			projectRoot: target,
-			files: Object.keys(files),
-		});
+		return {
+			status: 201,
+			body: { projectRoot: target, files: Object.keys(files) },
+		};
 	} catch (_err) {
-		// Broad catch to guarantee route never leaks stack traces
-		return res.status(500).json({ error: "Could not create project" });
+		// Broad catch to guarantee callers never see stack traces
+		return fail(500, "Could not create project");
 	}
+}
+
+export async function createProject(options, body) {
+	const deps = {
+		fsImpl: options.fsImpl ?? fs.promises,
+		runGit: options.runGit ?? defaultRunGit,
+	};
+	const boardErr = validateBoardDimensions(body);
+	if (boardErr) {
+		return fail(400, boardErr);
+	}
+	const realParent = await resolveParentDir(deps.fsImpl, body.parentDir);
+	if (!realParent) {
+		return fail(400, "Parent folder not found");
+	}
+	const projectRes = createProjectFiles(body.name, {
+		boardW: body.boardW,
+		boardH: body.boardH,
+	});
+	if (!projectRes.ok) {
+		return fail(400, projectRes.error);
+	}
+	return await provisionProject(deps, realParent, projectRes);
 }
 
 async function handleCreate(req, res, deps) {
@@ -137,23 +162,8 @@ async function handleCreate(req, res, deps) {
 			error: "Creating projects is only available in the desktop app",
 		});
 	}
-	const body = req.body ?? {};
-	const boardErr = validateBoardDimensions(body);
-	if (boardErr) {
-		return res.status(400).json({ error: boardErr });
-	}
-	const realParent = await resolveParentDir(deps.fsImpl, body.parentDir);
-	if (!realParent) {
-		return res.status(400).json({ error: "Parent folder not found" });
-	}
-	const projectRes = createProjectFiles(body.name, {
-		boardW: body.boardW,
-		boardH: body.boardH,
-	});
-	if (!projectRes.ok) {
-		return res.status(400).json({ error: projectRes.error });
-	}
-	return await provisionProject(res, deps, realParent, projectRes);
+	const out = await createProject(deps, req.body ?? {});
+	return res.status(out.status).json(out.body);
 }
 
 function isIgnoredFile(name) {

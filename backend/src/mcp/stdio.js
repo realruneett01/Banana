@@ -18,6 +18,9 @@ export async function runStdioServer() {
 		"../engine/tools/commit-tools.js"
 	);
 	const { registerRouteTools } = await import("../engine/tools/route-tools.js");
+	const { registerProjectTools } = await import(
+		"../engine/tools/project-tools.js"
+	);
 	const { createMcpServer } = await import("./server.js");
 
 	const registry = createRegistry();
@@ -26,6 +29,7 @@ export async function runStdioServer() {
 	registerDesignTools(registry);
 	registerRouteTools(registry);
 	registerCommitTools(registry);
+	registerProjectTools(registry);
 
 	const server = createMcpServer({ registry });
 	const transport = new StdioServerTransport();

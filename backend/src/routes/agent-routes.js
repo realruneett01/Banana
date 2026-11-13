@@ -7,6 +7,7 @@ import { registerDesignTools } from "../engine/tools/design-tools.js";
 import { registerDiffTools } from "../engine/tools/diff-tools.js";
 import { registerKicadTools } from "../engine/tools/kicad-tools.js";
 import { registerPatchTools } from "../engine/tools/patch-tools.js";
+import { registerProjectTools } from "../engine/tools/project-tools.js";
 import { registerRouteTools } from "../engine/tools/route-tools.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 
@@ -115,6 +116,7 @@ export function buildLocalRegistry(deps = {}) {
 	registerRouteTools(registry, deps?.route);
 	registerCommitTools(registry, deps?.commit ?? deps);
 	registerPatchTools(registry, deps?.patch ?? deps);
+	registerProjectTools(registry, deps?.project);
 	return registry;
 }
 
