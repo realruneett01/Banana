@@ -2198,7 +2198,10 @@ function usePcbCanvasState({
 		svgRef,
 		view,
 	});
-	const rnLines = useMemo(() => ratsnest(ir, padPositions), [ir, padPositions]);
+	const rnLines = useMemo(
+		() => ratsnest(ir, padPositions, board?.tracks),
+		[ir, padPositions, board?.tracks],
+	);
 	const onPointerDown = usePointerDownHandler({
 		route,
 		sel,

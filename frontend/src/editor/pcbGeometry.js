@@ -1,3 +1,8 @@
+import { ratsnest as pureRatsnest } from "./ratsnest.js";
+
+// Each net is solved on its own, so the pure module needs only one non-empty net key.
+const NET_KEY = "net";
+
 export const LAYER_COLORS = Object.freeze({
 	"F.Cu": "#c83434",
 	"B.Cu": "#3b82f6",
@@ -182,57 +187,34 @@ function collectPinsWithPos(net, padPos, partMap) {
 	return pins;
 }
 
-function buildNetPairs(pins) {
-	const pairs = [];
-	for (let i = 0; i < pins.length; i++) {
-		for (let j = i + 1; j < pins.length; j++) {
-			pairs.push({ u: i, v: j, dist: pointDistance(pins[i], pins[j]) });
-		}
-	}
-	return pairs.sort((a, b) => a.dist - b.dist);
+function toXY(p) {
+	const [x, y] = ptCoords(p);
+	return { x, y };
 }
 
-function findRoot(parent, i) {
-	if (parent[i] !== i) {
-		parent[i] = findRoot(parent, parent[i]);
-	}
-	return parent[i];
+function pureTracksOfNet(tracks, netId) {
+	return (tracks ?? [])
+		.filter((t) => t.netId === netId)
+		.map((t) => ({ net: NET_KEY, start: toXY(t.start), end: toXY(t.end) }));
 }
 
-function unionRoots(parent, a, b) {
-	const ra = findRoot(parent, a);
-	const rb = findRoot(parent, b);
-	if (ra === rb) return false;
-	parent[ra] = rb;
-	return true;
+function netAirlines(net, pins, tracks) {
+	const pads = pins.map((p, i) => ({ id: i, net: NET_KEY, x: p.x, y: p.y }));
+	return pureRatsnest(pads, pureTracksOfNet(tracks, net.id)).map((a) => ({
+		netId: net.id,
+		name: net.name ?? net.id,
+		from: { ...pins[a.from] },
+		to: { ...pins[a.to] },
+	}));
 }
 
-function computeMstLinks(pins, net) {
-	if (pins.length < 2) return [];
-	const pairs = buildNetPairs(pins);
-	const parent = Array.from({ length: pins.length }, (_, i) => i);
-	const links = [];
-	for (const pair of pairs) {
-		if (unionRoots(parent, pair.u, pair.v)) {
-			links.push({
-				netId: net.id,
-				name: net.name ?? net.id,
-				from: { ...pins[pair.u] },
-				to: { ...pins[pair.v] },
-			});
-			if (links.length === pins.length - 1) break;
-		}
-	}
-	return links;
-}
-
-export function ratsnest(ir, padPos) {
+export function ratsnest(ir, padPos, tracks = []) {
 	if (!Array.isArray(ir?.nets)) return [];
 	const partMap = new Map((ir?.parts ?? []).map((p) => [p.id, p]));
 	const links = [];
 	for (const net of ir.nets) {
 		const pins = collectPinsWithPos(net, padPos, partMap);
-		links.push(...computeMstLinks(pins, net));
+		links.push(...netAirlines(net, pins, tracks));
 	}
 	return links;
 }
