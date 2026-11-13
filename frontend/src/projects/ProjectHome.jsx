@@ -110,7 +110,7 @@ export function NewProjectCard({ onCreate }) {
 
 	return (
 		<Card title="New Project" style={{ marginBottom: 24 }}>
-			<Space direction="vertical" size="middle" style={{ width: "100%" }}>
+			<Space orientation="vertical" size="middle" style={{ width: "100%" }}>
 				<Input
 					placeholder="Project name"
 					value={name}

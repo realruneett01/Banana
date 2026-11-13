@@ -182,7 +182,7 @@ function useSaveCommit(options) {
 function SaveCommitBody(props) {
 	const { edits, repo, errorText, commitMessage, onChangeMessage } = props;
 	return (
-		<Space direction="vertical" style={CONTENT_STYLE} size="middle">
+		<Space orientation="vertical" style={CONTENT_STYLE} size="middle">
 			<p>{edits.summary}</p>
 			<UnsupportedAlert unsupported={edits.unsupported} />
 			<MissingFolderAlert repo={repo} />

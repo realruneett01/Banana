@@ -36,7 +36,7 @@ function StepResultView({ verdict, summary }) {
 			role="status"
 			aria-live="polite"
 		>
-			<Space direction="vertical" size={8} style={{ width: "100%" }}>
+			<Space orientation="vertical" size={8} style={{ width: "100%" }}>
 				<Space>
 					<span style={{ fontWeight: 600 }}>Verdict:</span>
 					<VerdictTag verdict={verdict.verdict} />
