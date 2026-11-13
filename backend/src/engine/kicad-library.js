@@ -928,6 +928,32 @@ function createLibraryApi(ctx, loaders) {
 	};
 }
 
+function parseSchematicAst(text) {
+	try {
+		const ast = parse(text);
+		return Array.isArray(ast) ? ast : null;
+	} catch {
+		// Malformed schematic text yields no embedded symbols
+		return null;
+	}
+}
+
+/**
+ * Symbols a .kicad_sch embeds in its (lib_symbols ...) block, keyed by
+ * lib_id, in the same shape the library route returns.
+ * @param {string} text
+ * @returns {Record<string, object>}
+ */
+export function embeddedLibSymbols(text) {
+	const libNode = extractChildNode(parseSchematicAst(text), "lib_symbols");
+	const entries = filterAndMapChildren(libNode, "symbol", (node) => {
+		const libId = nodeSym(node[1]);
+		const name = libId.slice(libId.indexOf(":") + 1);
+		return [libId, resolveInheritedSymbol(text, node, libId, name)];
+	});
+	return Object.fromEntries(entries);
+}
+
 export function createKicadLibrary(options = {}) {
 	const { symbolDir, footprintDir } = resolveLibraryDirs(options);
 	const ctx = {

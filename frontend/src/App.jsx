@@ -120,6 +120,7 @@ async function loadKicadFile(loop, file) {
 	const opened = loop.openDesign({
 		ir: res.data.ir,
 		board: res.data.board,
+		symbols: res.data.symbols,
 		tab: kind === "pcb" ? "pcb" : "schematic",
 	});
 	if (opened === false) {
@@ -154,6 +155,7 @@ async function importAndOpenDesign(loop, kind, text) {
 		const opened = loop.openDesign({
 			ir: imp.data?.ir,
 			board: imp.data?.board,
+			symbols: imp.data?.symbols,
 			tab,
 		});
 		if (opened === false) {
@@ -387,6 +389,7 @@ function EditorDrawerContent({ loop, repo }) {
 			key={loop.docKey}
 			ir={loop.ir}
 			board={loop.board}
+			symbols={loop.symbols}
 			initialTab={loop.editorTab}
 			onSave={loop.saveFromEditor}
 			focusItemId={loop.focusItemId}

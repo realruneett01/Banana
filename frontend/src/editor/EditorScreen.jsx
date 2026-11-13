@@ -889,10 +889,14 @@ async function fetchEntity(api, method, dataKey, id) {
 	return res?.ok ? (res.data?.[dataKey] ?? null) : null;
 }
 
-function useCanvasFetchers(api) {
+// Symbols embedded in the opened file win; the library is the fallback.
+function useCanvasFetchers(api, symbols) {
 	const fetchSymbol = useCallback(
-		(libId) => fetchEntity(api, "getSymbol", "symbol", libId),
-		[api],
+		(libId) =>
+			symbols?.[libId]
+				? Promise.resolve(symbols[libId])
+				: fetchEntity(api, "getSymbol", "symbol", libId),
+		[api, symbols],
 	);
 
 	const fetchFootprint = useCallback(
@@ -1071,10 +1075,10 @@ function useBoardToolsChange(docState) {
 	);
 }
 
-function useScreenController({ ir, board, onSave, api, openCommit }) {
+function useScreenController({ ir, board, onSave, api, openCommit, symbols }) {
 	const docState = useEditorDocument({ ir, board });
 	const lib = useLibraryState();
-	const fetchers = useCanvasFetchers(api);
+	const fetchers = useCanvasFetchers(api, symbols);
 	const { doc, board: curBoard, dispatch } = docState;
 	const onPlace = usePlacePartCallback(doc, dispatch);
 	const onSelectIssue = useIssueSelector(dispatch);
@@ -1192,6 +1196,7 @@ function useEditorScreen({
 	focusItemId,
 	repo,
 	initialTab,
+	symbols,
 }) {
 	const [activeTab, setActiveTab] = useState(
 		initialTab === "pcb" ? "pcb" : "schematic",
@@ -1211,6 +1216,7 @@ function useEditorScreen({
 		onSave,
 		api,
 		openCommit: commit.openCommit,
+		symbols,
 	});
 	useFocusItem(focusItemId, ctrl.onSelectIssue);
 	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exports);
@@ -1267,6 +1273,7 @@ export default function EditorScreen({
 	focusItemId,
 	repo,
 	initialTab,
+	symbols,
 }) {
 	const s = useEditorScreen({
 		ir,
@@ -1276,6 +1283,7 @@ export default function EditorScreen({
 		focusItemId,
 		repo,
 		initialTab,
+		symbols,
 	});
 	return <EditorView s={s} ir={ir} board={board} api={api} repo={repo} />;
 }

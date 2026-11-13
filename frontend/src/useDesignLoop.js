@@ -65,6 +65,7 @@ function resolveTab(tab) {
 
 function useEditorDocument(setIr, setEditorOpen) {
 	const [board, setBoard] = useState(null);
+	const [symbols, setSymbols] = useState(null);
 	const [editorTab, setEditorTab] = useState("schematic");
 	const [docKey, setDocKey] = useState(0);
 
@@ -72,6 +73,7 @@ function useEditorDocument(setIr, setEditorOpen) {
 		(kind) => {
 			setIr(createFreshIr());
 			setBoard(null);
+			setSymbols(null);
 			setEditorTab(resolveTab(kind));
 			setDocKey((k) => k + 1);
 			setEditorOpen(true);
@@ -80,12 +82,13 @@ function useEditorDocument(setIr, setEditorOpen) {
 	);
 
 	const openDesign = useCallback(
-		({ ir, board: nextBoard, tab } = {}) => {
+		({ ir, board: nextBoard, tab, symbols: nextSymbols } = {}) => {
 			if (!isCircuitIr(ir)) {
 				return false;
 			}
 			setIr(ir);
 			setBoard(nextBoard ?? null);
+			setSymbols(nextSymbols ?? null);
 			setEditorTab(resolveTab(tab));
 			setDocKey((k) => k + 1);
 			setEditorOpen(true);
@@ -94,7 +97,7 @@ function useEditorDocument(setIr, setEditorOpen) {
 		[setIr, setEditorOpen],
 	);
 
-	return { board, editorTab, docKey, newDesign, openDesign };
+	return { board, symbols, editorTab, docKey, newDesign, openDesign };
 }
 
 function useSaveFromEditor(setIr) {

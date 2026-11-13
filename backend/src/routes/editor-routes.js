@@ -2,6 +2,7 @@ import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
 import { irToBomCsv, irToKicadNetlist } from "../engine/ir-exports.js";
+import { embeddedLibSymbols } from "../engine/kicad-library.js";
 import { kicadPcbToIr } from "../engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
 import { kicadSchToIr } from "../engine/kicad-sch-to-ir.js";
@@ -286,7 +287,10 @@ const IMPORT_CONFIG = {
 	sch: {
 		header: "(kicad_sch",
 		error: "File is not a KiCad schematic",
-		convert: (text) => kicadSchToIr(text),
+		convert: (text) => ({
+			...kicadSchToIr(text),
+			symbols: embeddedLibSymbols(text),
+		}),
 	},
 	pcb: {
 		header: "(kicad_pcb",
@@ -325,6 +329,7 @@ function handleImport(req, res) {
 			ir: result.ir,
 			board: result.board ?? null,
 			warnings: result.warnings ?? [],
+			symbols: result.symbols ?? {},
 		});
 	} catch (_err) {
 		// Broad catch to guarantee route never leaks stack traces
