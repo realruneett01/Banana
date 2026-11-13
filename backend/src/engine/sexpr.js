@@ -92,75 +92,33 @@ function unescapeChar(c) {
 	return c;
 }
 
+// Sticky regexes scan from lastIndex without slicing; same character classes as before.
+const BARE_ATOM = /[^\s()]*/y;
+const WHITESPACE = /\s*/y;
+const QUOTE_OR_ESCAPE = /["\\]/g;
+
+function matchEnd(pattern, text, start) {
+	pattern.lastIndex = start;
+	pattern.test(text);
+	return pattern.lastIndex;
+}
+
 function readQuotedString(text, start) {
 	let val = "";
 	let i = start + 1;
 	while (i < text.length) {
-		const c = text[i];
-		if (c === '"') {
-			return { value: val, nextIndex: i + 1 };
+		QUOTE_OR_ESCAPE.lastIndex = i;
+		const hit = QUOTE_OR_ESCAPE.exec(text);
+		if (hit === null) break;
+		val += text.slice(i, hit.index);
+		if (hit[0] === '"') {
+			return { value: val, nextIndex: hit.index + 1 };
 		}
-		if (c === "\\") {
-			i++;
-			if (i >= text.length) break;
-			val += unescapeChar(text[i]);
-		} else {
-			val += c;
-		}
-		i++;
+		if (hit.index + 1 >= text.length) break;
+		val += unescapeChar(text[hit.index + 1]);
+		i = hit.index + 2;
 	}
 	throw new Error(`Unterminated string starting at offset ${start}`);
-}
-
-function readBareToken(text, start) {
-	let i = start;
-	while (i < text.length && !/[\s()]/.test(text[i])) {
-		i++;
-	}
-	return { raw: text.slice(start, i), nextIndex: i };
-}
-
-function skipWhitespace(text, start) {
-	let i = start;
-	while (i < text.length && /\s/.test(text[i])) {
-		i++;
-	}
-	return i;
-}
-
-function nextToken(text, i) {
-	const c = text[i];
-	if (c === "(") {
-		return { token: { type: "LPAREN", offset: i }, nextIndex: i + 1 };
-	}
-	if (c === ")") {
-		return { token: { type: "RPAREN", offset: i }, nextIndex: i + 1 };
-	}
-	if (c === '"') {
-		const str = readQuotedString(text, i);
-		return {
-			token: { type: "STRING", value: str.value, offset: i },
-			nextIndex: str.nextIndex,
-		};
-	}
-	const bare = readBareToken(text, i);
-	return {
-		token: { type: "ATOM", raw: bare.raw, offset: i },
-		nextIndex: bare.nextIndex,
-	};
-}
-
-function tokenize(text) {
-	const tokens = [];
-	let i = 0;
-	while (i < text.length) {
-		i = skipWhitespace(text, i);
-		if (i >= text.length) break;
-		const next = nextToken(text, i);
-		tokens.push(next.token);
-		i = next.nextIndex;
-	}
-	return tokens;
 }
 
 function parseAtom(raw) {
@@ -173,59 +131,83 @@ function parseAtom(raw) {
 	return { sym: raw };
 }
 
-function addNodeToStack(node, stack, rootLists) {
-	if (stack.length > 0) {
-		stack[stack.length - 1].list.push(node);
-		return;
+function readAtom(text, start) {
+	if (text[start] === '"') {
+		return readQuotedString(text, start);
 	}
-	rootLists.push(node);
+	const end = matchEnd(BARE_ATOM, text, start);
+	return { value: parseAtom(text.slice(start, end)), nextIndex: end };
 }
 
-function handleToken(token, stack, rootLists) {
-	if (token.type === "LPAREN") {
-		if (stack.length >= MAX_DEPTH) {
-			throw new Error(
-				`Nesting deeper than ${MAX_DEPTH} at offset ${token.offset}`,
-			);
-		}
-		stack.push({ list: [], offset: token.offset });
-		return;
+// Strings are lexed before any structure is checked, so an unterminated string
+// later in the input is reported ahead of a paren or depth error.
+function failAfterLexing(text, from, message) {
+	let i = matchEnd(WHITESPACE, text, from);
+	while (i < text.length) {
+		const isParen = text[i] === "(" || text[i] === ")";
+		i = isParen ? i + 1 : readAtom(text, i).nextIndex;
+		i = matchEnd(WHITESPACE, text, i);
 	}
-	if (token.type === "RPAREN") {
-		if (stack.length === 0) {
-			throw new Error(
-				`Unbalanced parenthesis: unexpected ')' at offset ${token.offset}`,
-			);
-		}
-		const frame = stack.pop();
-		addNodeToStack(frame.list, stack, rootLists);
-		return;
-	}
-	const val = token.type === "STRING" ? token.value : parseAtom(token.raw);
-	addNodeToStack(val, stack, rootLists);
+	throw new Error(message);
 }
 
-function parseTokens(tokens) {
-	const rootLists = [];
-	const stack = [];
-	for (const token of tokens) {
-		handleToken(token, stack, rootLists);
+function addNode(state, node) {
+	const { stack } = state;
+	const target = stack.length > 0 ? stack[stack.length - 1].list : state.roots;
+	target.push(node);
+}
+
+function openList(state, offset) {
+	state.i = offset + 1;
+	if (state.stack.length >= MAX_DEPTH) {
+		const message = `Nesting deeper than ${MAX_DEPTH} at offset ${offset}`;
+		failAfterLexing(state.text, state.i, message);
 	}
+	state.stack.push({ list: [], offset });
+}
+
+function closeList(state, offset) {
+	state.i = offset + 1;
+	if (state.stack.length === 0) {
+		const message = `Unbalanced parenthesis: unexpected ')' at offset ${offset}`;
+		failAfterLexing(state.text, state.i, message);
+	}
+	addNode(state, state.stack.pop().list);
+}
+
+function readNext(state) {
+	const start = state.i;
+	const c = state.text[start];
+	if (c === "(") return openList(state, start);
+	if (c === ")") return closeList(state, start);
+	const atom = readAtom(state.text, start);
+	addNode(state, atom.value);
+	state.i = atom.nextIndex;
+}
+
+function finish({ stack, roots }) {
 	if (stack.length > 0) {
 		const unclosed = stack[stack.length - 1];
 		throw new Error(
 			`Unbalanced parenthesis: unclosed '(' at offset ${unclosed.offset}`,
 		);
 	}
-	if (rootLists.length === 0) {
+	if (roots.length === 0) {
 		return null;
 	}
-	return rootLists.length === 1 ? rootLists[0] : rootLists;
+	return roots.length === 1 ? roots[0] : roots;
 }
 
+// Single pass: builds the tree straight from the text, no intermediate token array.
 export function parse(text) {
 	if (typeof text !== "string") {
 		throw new TypeError("parse: input must be a string");
 	}
-	return parseTokens(tokenize(text));
+	const state = { text, i: 0, stack: [], roots: [] };
+	state.i = matchEnd(WHITESPACE, text, 0);
+	while (state.i < text.length) {
+		readNext(state);
+		state.i = matchEnd(WHITESPACE, text, state.i);
+	}
+	return finish(state);
 }

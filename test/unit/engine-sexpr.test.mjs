@@ -117,6 +117,26 @@ describe("parse errors", () => {
 		}
 	});
 
+	test("an unterminated string anywhere wins over an earlier paren error", () => {
+		assert.throws(
+			() => parse('(a)) "open'),
+			/^Error: Unterminated string starting at offset 5$/,
+		);
+		const deep = `${"(".repeat(1001)} "open`;
+		assert.throws(
+			() => parse(deep),
+			/Unterminated string starting at offset 1002/,
+		);
+	});
+
+	test("treats any Unicode whitespace as a separator and keeps escapes", () => {
+		assert.deepEqual(parse('(a b "x\\ty\\q")'), [
+			{ sym: "a" },
+			{ sym: "b" },
+			"x\tyq",
+		]);
+	});
+
 	test("throws TypeError for non-string input", () => {
 		assert.throws(() => parse(123), TypeError);
 	});
