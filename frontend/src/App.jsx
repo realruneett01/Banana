@@ -190,7 +190,8 @@ function useEditCurrentFile(loop, repo) {
 
 function useProjectHome(ws, loop) {
 	const repoPath = ws.sidebarProps?.localProps?.repoPath;
-	const [homeRequested, setHomeRequested] = useState(false);
+	// Start on Project Home: a repo path restored from storage is not an open project.
+	const [homeRequested, setHomeRequested] = useState(true);
 	const { openProjectFile } = ws;
 	const openFile = useCallback(
 		async (target) => {
@@ -406,6 +407,8 @@ function EditorDrawer({ loop, repo, ws }) {
 			title="Editor"
 			open={loop.editorOpen}
 			onClose={loop.closeEditor}
+			keyboard={false}
+			mask={{ closable: false }}
 			extra={<DesignStartPanel loop={loop} compact repo={resolvedRepo} />}
 			width="100%"
 			destroyOnHidden={false}

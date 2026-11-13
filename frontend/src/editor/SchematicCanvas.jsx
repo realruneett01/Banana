@@ -5,6 +5,7 @@ import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
+import { pointerDownTarget } from "./pointerIntent.js";
 import {
 	hitTest,
 	partBox,
@@ -755,15 +756,16 @@ function handlePinConnect(hit, wireState, dispatchCmd) {
 function handlePointerDownHit(hit, hitCtx) {
 	const { wireMode, wireState, dispatchCmd, setDragState, doc, worldPt } =
 		hitCtx;
-	if (wireMode || hit?.kind === "pin") {
-		if (hit?.kind === "pin") {
-			handlePinConnect(hit, wireState, dispatchCmd);
-			return;
-		}
+	const target = pointerDownTarget(hit?.kind, wireMode);
+	if (target === "connect") {
+		handlePinConnect(hit, wireState, dispatchCmd);
+		return;
+	}
+	if (wireMode) {
 		wireState.setWireMode(false);
 		wireState.setWireStart(null);
 	}
-	if (hit?.kind === "part") {
+	if (target === "part") {
 		dispatchCmd({ type: "select", ids: [hit.id] });
 		const part = doc.ir.parts?.find((p) => p.id === hit.id);
 		setDragState({
@@ -774,7 +776,7 @@ function handlePointerDownHit(hit, hitCtx) {
 			mouseStartY: worldPt.y,
 			moved: false,
 		});
-	} else if (hit?.kind === "wire") {
+	} else if (target === "wire") {
 		dispatchCmd({ type: "select", ids: [hit.id] });
 	} else {
 		handleEmptyPointerDown(hitCtx);
