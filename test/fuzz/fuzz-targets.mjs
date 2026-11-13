@@ -6,12 +6,7 @@ import { kicadSchToIr } from "../../backend/src/engine/kicad-sch-to-ir.js";
 import { parse, serialize } from "../../backend/src/engine/sexpr.js";
 import { irToSpice } from "../../backend/src/engine/spice/ir-to-spice.js";
 import { validateNetlist } from "../../backend/src/engine/spice/ngspice-runner.js";
-import {
-	findUnsafeSpiceLine,
-	fixedId,
-	mutateText,
-	NGSPICE_EXEC_PREFIXES,
-} from "./fuzz-lib.mjs";
+import { findUnsafeSpiceLine, fixedId, mutateText } from "./fuzz-lib.mjs";
 
 // Each target returns true when the case got past input rejection, so the suite can prove it is not vacuous.
 
@@ -356,7 +351,7 @@ function fuzzNetlist(rng, _seeds, sink) {
 	sink.input = netlist;
 	const res = validateNetlist(netlist);
 	assertResultObject(res);
-	const unsafe = findUnsafeSpiceLine(netlist, NGSPICE_EXEC_PREFIXES);
+	const unsafe = findUnsafeSpiceLine(netlist);
 	if (res.ok)
 		assert.equal(unsafe, null, "validateNetlist accepted unsafe SPICE");
 	return res.ok;

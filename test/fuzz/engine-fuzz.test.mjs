@@ -1,4 +1,4 @@
-// Fuzz suite (npm run test:fuzz; not in npm test). Env: FUZZ_SEED, FUZZ_ITERATIONS, FUZZ_CASE_MS, FUZZ_TARGET, FUZZ_CASE.
+// Fuzz suite (runs in npm test with fixed seed 1; set FUZZ_SEED to explore). Env: FUZZ_SEED, FUZZ_ITERATIONS, FUZZ_CASE_MS, FUZZ_TARGET, FUZZ_CASE.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { Worker } from "node:worker_threads";
@@ -14,7 +14,7 @@ function envInt(name, fallback) {
 }
 
 const SETTINGS = {
-	seed: envInt("FUZZ_SEED", Date.now() % 2 ** 31),
+	seed: envInt("FUZZ_SEED", 1),
 	iterations: envInt("FUZZ_ITERATIONS", 300),
 	caseLimitMs: envInt("FUZZ_CASE_MS", 2000),
 	onlyCase: process.env.FUZZ_CASE ? envInt("FUZZ_CASE", 0) : null,

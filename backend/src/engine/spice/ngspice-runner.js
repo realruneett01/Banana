@@ -279,9 +279,11 @@ async function executeSimulation(cfg, workDir, netlist) {
 	return { ok: true, plots: parsed.plots, log };
 }
 
-const NETLIST_LIMITS = {
+// Exported so netlist writers (ir-to-spice) strip exactly what this gate rejects.
+export const NETLIST_LIMITS = {
 	maxBytes: 500 * 1024,
 	forbiddenChars: /[\0`]/,
+	forbiddenSubstrings: ["$("],
 	filePathChars: /[/\\~"'>]/,
 	filePathParam: /^(file|path)\s*=/i,
 	forbiddenPrefixes: [
@@ -294,6 +296,7 @@ const NETLIST_LIMITS = {
 		".write",
 		".shell",
 		"shell",
+		"system",
 		"*ng_script",
 		"* ng_script",
 	],
@@ -384,8 +387,11 @@ function checkNetlistPayload(netlist) {
 	if (NETLIST_LIMITS.forbiddenChars.test(netlist)) {
 		return "Netlist contains forbidden character";
 	}
-	if (netlist.includes("$(")) {
-		return "Netlist contains forbidden '$('";
+	const bad = NETLIST_LIMITS.forbiddenSubstrings.find((s) =>
+		netlist.includes(s),
+	);
+	if (bad) {
+		return `Netlist contains forbidden '${bad}'`;
 	}
 	return null;
 }

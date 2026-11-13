@@ -1,4 +1,5 @@
 import { validateCircuitIR } from "../circuit-ir.js";
+import { NETLIST_LIMITS, validateNetlist } from "./ngspice-runner.js";
 import { modelForPart } from "./part-models.js";
 
 const MULTIPLIERS = {
@@ -331,11 +332,21 @@ function formatAnalysis(analysis) {
 	return ".op";
 }
 
+function stripForbidden(text) {
+	const chars = new RegExp(NETLIST_LIMITS.forbiddenChars.source, "g");
+	let s = String(text ?? "")
+		.replace(/[\r\n]/g, "")
+		.replace(chars, "");
+	for (const bad of NETLIST_LIMITS.forbiddenSubstrings) {
+		while (s.includes(bad)) s = s.replaceAll(bad, "");
+	}
+	return s.trim();
+}
+
+// The comment must pass the same gate the netlist will (e.g. a title of "ng_script" would not).
 function sanitizeComment(text, fallback) {
-	const stripped = String(text ?? "")
-		.replace(/[\r\n`]/g, "")
-		.trim();
-	return stripped || fallback;
+	const stripped = stripForbidden(text);
+	return stripped && validateNetlist(`* ${stripped}`).ok ? stripped : fallback;
 }
 
 // ngspice ignores wildcard device names in .save (and then writes no vectors), so list each one.

@@ -180,16 +180,10 @@ function stripLeader(line) {
 	return s.toLowerCase();
 }
 
-export function findUnsafeSpiceLine(netlist, prefixes = UNSAFE_PREFIXES) {
+export function findUnsafeSpiceLine(netlist) {
 	for (const raw of netlist.split("\n")) {
 		const line = stripLeader(raw);
-		if (prefixes.some((p) => line.startsWith(p))) return raw;
+		if (UNSAFE_PREFIXES.some((p) => line.startsWith(p))) return raw;
 	}
 	return null;
 }
-
-// "system" is not an ngspice command: outside a .control block (itself rejected) such a line
-// is parsed as a switch element, so the netlist gate is held to what ngspice can execute.
-export const NGSPICE_EXEC_PREFIXES = UNSAFE_PREFIXES.filter(
-	(p) => p !== "system",
-);

@@ -19,8 +19,15 @@ function isPresent(val) {
 	return val !== undefined && val !== null;
 }
 
+// Anything beyond 10 m is not a board; it would also overflow to Infinity when rounded.
+const MAX_BOARD_MM = 10000;
+
+function isBoardCoord(val) {
+	return Number.isFinite(val) && Math.abs(val) <= MAX_BOARD_MM;
+}
+
 function isPositiveNumber(val) {
-	return Number.isFinite(val) && val > 0;
+	return isBoardCoord(val) && val > 0;
 }
 
 function findChildByTag(node, tag) {
@@ -281,7 +288,7 @@ function validateAddFootprintFields(edit) {
 }
 
 function validateAddFootprintCoords(edit) {
-	if (!Number.isFinite(edit.x) || !Number.isFinite(edit.y)) {
+	if (!isBoardCoord(edit.x) || !isBoardCoord(edit.y)) {
 		return "Non-finite coordinates";
 	}
 	if (edit.rot !== undefined && !Number.isFinite(edit.rot)) {
@@ -400,7 +407,7 @@ function handleSetPadNet(ast, edit) {
 }
 
 function isValidPoint(p) {
-	return Boolean(p && Number.isFinite(p.x) && Number.isFinite(p.y));
+	return Boolean(p && isBoardCoord(p.x) && isBoardCoord(p.y));
 }
 
 function validateTrackPoints(points) {
@@ -438,7 +445,7 @@ function handleAddTrack(ast, edit, newUuid) {
 }
 
 function validateViaParams(edit, size, drill) {
-	if (!Number.isFinite(edit.x) || !Number.isFinite(edit.y)) {
+	if (!isBoardCoord(edit.x) || !isBoardCoord(edit.y)) {
 		return "Non-finite coords";
 	}
 	if (!isPositiveNumber(size)) return "Invalid via size";
@@ -531,5 +538,13 @@ export function applyPcbEdits(text, edits, { newUuid = randomUUID } = {}) {
 		const res = dispatchEdit(parsed.ast, edit, newUuid);
 		if (!res.ok) return res;
 	}
-	return { ok: true, text: serialize(parsed.ast) };
+	return serializePcbAst(parsed.ast);
+}
+
+function serializePcbAst(ast) {
+	try {
+		return { ok: true, text: serialize(ast) };
+	} catch (e) {
+		return { ok: false, error: `Serialize error: ${e.message}` };
+	}
 }
