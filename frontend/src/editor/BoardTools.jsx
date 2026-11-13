@@ -17,6 +17,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { outlineToPolygon, polygonBBox } from "./boardOutline.js";
+import { createStore } from "./editorStatus.js";
 import { removeOrphans, syncBoardFromIr } from "./syncModel.js";
 import { addZone, rectZonePoints, validateZone } from "./zoneModel.js";
 
@@ -37,31 +38,11 @@ const DEFAULT_OUTLINE_TOOL = Object.freeze({
 	radius: 1,
 });
 
-let outlineToolState = DEFAULT_OUTLINE_TOOL;
-const outlineListeners = new Set();
-
-function notifyOutlineTool() {
-	for (const listener of outlineListeners) {
-		listener(outlineToolState);
-	}
-}
-
-export function getOutlineTool() {
-	return outlineToolState;
-}
-
-export function subscribeOutlineTool(listener) {
-	outlineListeners.add(listener);
-	return () => {
-		outlineListeners.delete(listener);
-	};
-}
-
-export function setOutlineTool(patch) {
-	const next = typeof patch === "function" ? patch(outlineToolState) : patch;
-	outlineToolState = { ...outlineToolState, ...next };
-	notifyOutlineTool();
-}
+export const {
+	get: getOutlineTool,
+	subscribe: subscribeOutlineTool,
+	set: setOutlineTool,
+} = createStore(DEFAULT_OUTLINE_TOOL);
 
 export function useOutlineTool() {
 	return useSyncExternalStore(subscribeOutlineTool, getOutlineTool);

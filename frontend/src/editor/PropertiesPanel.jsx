@@ -3,15 +3,20 @@ import { useEffect, useState } from "react";
 
 const CORE_FIELDS = ["ref", "value", "footprint", "symbol"];
 
+const SURFACE = "#181c25";
+const BORDER = "1px solid #232836";
+const MUTED = "#8a91a3";
+const TEXT = "#e6e8ee";
+
 const PANEL_STYLE = Object.freeze({
 	width: "280px",
 	minWidth: "260px",
 	height: "100%",
 	overflowY: "auto",
 	background: "#12151c",
-	borderLeft: "1px solid #232836",
+	borderLeft: BORDER,
 	padding: "16px",
-	color: "#e6e8ee",
+	color: TEXT,
 });
 
 const PANEL_TITLE_STYLE = Object.freeze({
@@ -20,7 +25,7 @@ const PANEL_TITLE_STYLE = Object.freeze({
 	color: "#f1f5f9",
 	marginBottom: "12px",
 	paddingBottom: "6px",
-	borderBottom: "1px solid #232836",
+	borderBottom: BORDER,
 });
 
 const SECTION_HEADER_STYLE = Object.freeze({
@@ -28,7 +33,7 @@ const SECTION_HEADER_STYLE = Object.freeze({
 	fontWeight: 700,
 	textTransform: "uppercase",
 	letterSpacing: "0.05em",
-	color: "#8a91a3",
+	color: MUTED,
 	marginBottom: "8px",
 });
 
@@ -36,43 +41,38 @@ const LABEL_STYLE = Object.freeze({
 	display: "block",
 	fontSize: "11px",
 	fontWeight: 600,
-	color: "#8a91a3",
+	color: MUTED,
 	marginBottom: "3px",
 });
 
 const INPUT_STYLE = Object.freeze({
-	background: "#181c25",
+	background: SURFACE,
 	borderColor: "#2f3546",
-	color: "#e6e8ee",
+	color: TEXT,
 });
 
-const ROW_STYLE = Object.freeze({
+const FLEX_ROW = Object.freeze({
 	display: "flex",
 	justifyContent: "space-between",
 	alignItems: "center",
-	marginBottom: "8px",
 });
 
-const BUTTON_STYLE = Object.freeze({
-	background: "#181c25",
-	borderColor: "#2f3546",
-	color: "#e6e8ee",
-});
+const ROW_STYLE = Object.freeze({ ...FLEX_ROW, marginBottom: "8px" });
+
+const BUTTON_STYLE = INPUT_STYLE;
 
 const STAT_CARD_STYLE = Object.freeze({
-	display: "flex",
-	justifyContent: "space-between",
-	alignItems: "center",
+	...FLEX_ROW,
 	padding: "8px 12px",
-	background: "#181c25",
-	border: "1px solid #232836",
+	background: SURFACE,
+	border: BORDER,
 	borderRadius: "6px",
 	marginBottom: "8px",
 });
 
 const STAT_LABEL_STYLE = Object.freeze({
 	fontSize: "12px",
-	color: "#8a91a3",
+	color: MUTED,
 });
 
 const STAT_VALUE_STYLE = Object.freeze({
@@ -89,13 +89,11 @@ const HINT_STYLE = Object.freeze({
 });
 
 const NET_ROW_STYLE = Object.freeze({
-	display: "flex",
-	justifyContent: "space-between",
-	alignItems: "center",
+	...FLEX_ROW,
 	padding: "4px 8px",
-	background: "#181c25",
+	background: SURFACE,
 	borderRadius: "4px",
-	border: "1px solid #232836",
+	border: BORDER,
 	fontSize: "12px",
 });
 
@@ -240,7 +238,7 @@ function NetPins({ net, partId }) {
 			<span style={{ color: "#38bdf8", fontWeight: 600 }}>
 				{net.name || net.id}
 			</span>
-			<span style={{ color: "#8a91a3", fontSize: 11 }}>Pin {pins}</span>
+			<span style={{ color: MUTED, fontSize: 11 }}>Pin {pins}</span>
 		</div>
 	);
 }

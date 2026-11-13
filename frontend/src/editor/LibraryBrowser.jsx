@@ -419,6 +419,20 @@ function useFootprintPickerOptions({ api, initialFp }) {
 	return { options, handleSearch };
 }
 
+function pickProp(key, selectedItem, detail) {
+	return selectedItem.properties?.[key] || detail?.properties?.[key];
+}
+
+function buildSymbolPayload({ selectedItem, selectedFootprint, detail }) {
+	const footprint =
+		selectedFootprint || pickProp("Footprint", selectedItem, detail) || "";
+	const refProp = pickProp("Reference", selectedItem, detail) || "U";
+	const ref = refProp.replace(/[?#]+$/, "") || "U";
+	const value =
+		pickProp("Value", selectedItem, detail) || selectedItem.name || "";
+	return { symbol: selectedItem.libId, footprint, ref, prefix: ref, value };
+}
+
 function buildPlacePayload({
 	activeTab,
 	selectedItem,
@@ -426,23 +440,7 @@ function buildPlacePayload({
 	detail,
 }) {
 	if (activeTab === "symbols") {
-		const symbol = selectedItem.libId;
-		const footprint =
-			selectedFootprint ||
-			selectedItem.properties?.Footprint ||
-			detail?.properties?.Footprint ||
-			"";
-		const refProp =
-			selectedItem.properties?.Reference ||
-			detail?.properties?.Reference ||
-			"U";
-		const ref = refProp.replace(/[?#]+$/, "") || "U";
-		const value =
-			selectedItem.properties?.Value ||
-			detail?.properties?.Value ||
-			selectedItem.name ||
-			"";
-		return { symbol, footprint, ref, prefix: ref, value };
+		return buildSymbolPayload({ selectedItem, selectedFootprint, detail });
 	}
 	const footprint = selectedItem.libId;
 	return {

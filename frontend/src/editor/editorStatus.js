@@ -8,49 +8,44 @@ const DEFAULT_STATE = Object.freeze({
 	grid: 1.27,
 });
 
-let state = DEFAULT_STATE;
-let originX = 0;
-let originY = 0;
-const listeners = new Set();
-
-function notify() {
-	for (const fn of listeners) {
-		fn(state);
-	}
-}
-
-export function get() {
-	return state;
-}
-
-export function subscribe(listener) {
-	listeners.add(listener);
-	return () => {
-		listeners.delete(listener);
+/** Minimal external store: get/subscribe plus shallow-merge set(patch | fn). */
+export function createStore(initial) {
+	let current = initial;
+	const listeners = new Set();
+	return {
+		get: () => current,
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+		set(patch) {
+			const next = typeof patch === "function" ? patch(current) : patch;
+			current = { ...current, ...next };
+			for (const fn of listeners) fn(current);
+		},
 	};
 }
 
-export function set(patch) {
-	const next = typeof patch === "function" ? patch(state) : patch;
-	state = { ...state, ...next };
-	notify();
-}
+let originX = 0;
+let originY = 0;
+
+export const { get, subscribe, set } = createStore(DEFAULT_STATE);
 
 export function setCursor(pt) {
 	if (!pt) return;
-	const x = pt.x ?? state.x;
-	const y = pt.y ?? state.y;
-	const dx = x - originX;
-	const dy = y - originY;
-	set({ x, y, dx, dy });
+	const { x: curX, y: curY } = get();
+	const x = pt.x ?? curX;
+	const y = pt.y ?? curY;
+	set({ x, y, dx: x - originX, dy: y - originY });
 }
 
 export function setOrigin(pt) {
-	originX = pt?.x ?? state.x;
-	originY = pt?.y ?? state.y;
-	const dx = state.x - originX;
-	const dy = state.y - originY;
-	set({ dx, dy });
+	const { x, y } = get();
+	originX = pt?.x ?? x;
+	originY = pt?.y ?? y;
+	set({ dx: x - originX, dy: y - originY });
 }
 
 export function setUnits(u) {
