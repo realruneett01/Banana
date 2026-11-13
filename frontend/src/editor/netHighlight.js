@@ -41,3 +41,16 @@ export function netsOfPart(ir, partId) {
 	}
 	return result;
 }
+
+/**
+ * Ring points for a highlight from netItemsAt: one {x,y} per net pin with a known position.
+ * allPinPos: Map of "partId:pin" -> [x, y] (as built from pinPositions / symbol pins).
+ */
+export function netRingPoints(highlight, allPinPos) {
+	const points = [];
+	for (const { partId, pin } of highlight?.pins || []) {
+		const pos = allPinPos?.get(`${partId}:${pin}`);
+		if (pos) points.push({ x: pos[0], y: pos[1] });
+	}
+	return points;
+}

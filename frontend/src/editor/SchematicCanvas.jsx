@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { applyCommand } from "./editorModel.js";
 import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
+import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import {
 	hitTest,
 	partBox,
@@ -1237,7 +1238,53 @@ function SchematicCrosshair({ cursorWorld, vp, theme }) {
 	);
 }
 
-function SchematicSvgScene({ s, problems, theme }) {
+function SchematicNetHighlightLayer({ highlightNet, allPinPos, theme }) {
+	const points = netRingPoints(highlightNet, allPinPos);
+	if (points.length === 0) return null;
+	const color = getSchematicColor(theme, "highlight") || "#facc15";
+	return (
+		<g style={{ pointerEvents: "none" }}>
+			{points.map((pt) => (
+				<circle
+					key={`${pt.x},${pt.y}`}
+					cx={pt.x}
+					cy={pt.y}
+					r={1.2}
+					fill="none"
+					stroke={color}
+					strokeWidth={0.3}
+				/>
+			))}
+		</g>
+	);
+}
+
+function nextHighlight(hit, ir) {
+	if (!hit) return null;
+	if (hit.kind === "pin")
+		return netItemsAt(ir, { partId: hit.id, pin: hit.pin });
+	return undefined;
+}
+
+function useNetHighlight(s) {
+	const [highlightNet, setHighlightNet] = useState(null);
+	const { svgRef, vp, doc, allPinPos, wire } = s;
+	const onPointerDown = useCallback(
+		(e) => {
+			if (e.button !== 0 || wire.wireMode || !svgRef.current) return;
+			const pt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
+			const next = nextHighlight(schematicHitTest(doc, allPinPos, pt), doc.ir);
+			if (next !== undefined) setHighlightNet(next);
+		},
+		[svgRef, vp, doc, allPinPos, wire.wireMode],
+	);
+	const onKeyDown = useCallback((e) => {
+		if (e.key === "Escape") setHighlightNet(null);
+	}, []);
+	return { highlightNet, onPointerDown, onKeyDown };
+}
+
+function SchematicSvgScene({ s, problems, theme, highlightNet }) {
 	return (
 		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
 			<SchematicGrid zoom={s.vp.zoom} theme={theme} />
@@ -1245,6 +1292,11 @@ function SchematicSvgScene({ s, problems, theme }) {
 				nets={s.doc.ir?.nets}
 				allPinPos={s.allPinPos}
 				selection={s.doc.selection}
+				theme={theme}
+			/>
+			<SchematicNetHighlightLayer
+				highlightNet={highlightNet}
+				allPinPos={s.allPinPos}
 				theme={theme}
 			/>
 			<SchematicPartsLayer
@@ -1274,6 +1326,7 @@ export default function SchematicCanvas({
 	theme,
 }) {
 	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
+	const hl = useNetHighlight(s);
 	const bg = getSchematicColor(theme, "background");
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
@@ -1283,9 +1336,15 @@ export default function SchematicCanvas({
 			role="region"
 			aria-label="Schematic editor"
 			style={{ ...CANVAS_CONTAINER_STYLE, background: bg }}
-			onKeyDown={(e) => handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx)}
+			onKeyDown={(e) => {
+				hl.onKeyDown(e);
+				handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx);
+			}}
 			onKeyUp={(e) => handleCanvasKeyUp(e, s.setIsSpaceDown)}
-			onPointerDown={s.ptr.onPointerDown}
+			onPointerDown={(e) => {
+				hl.onPointerDown(e);
+				s.ptr.onPointerDown(e);
+			}}
 			onPointerMove={s.ptr.onPointerMove}
 			onPointerUp={s.ptr.onPointerUp}
 			onPointerLeave={s.ptr.onPointerLeave}
@@ -1297,7 +1356,12 @@ export default function SchematicCanvas({
 				style={{ display: "block", userSelect: "none" }}
 			>
 				<title>Schematic Canvas</title>
-				<SchematicSvgScene s={s} problems={problems} theme={theme} />
+				<SchematicSvgScene
+					s={s}
+					problems={problems}
+					theme={theme}
+					highlightNet={hl.highlightNet}
+				/>
 				<SchematicCrosshair
 					cursorWorld={s.ptr.cursorWorld}
 					vp={s.vp}
