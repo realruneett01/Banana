@@ -22,7 +22,7 @@ function isPresent(val) {
 // Anything beyond 10 m is not a board; it would also overflow to Infinity when rounded.
 const MAX_BOARD_MM = 10000;
 
-function isBoardCoord(val) {
+export function isBoardCoord(val) {
 	return Number.isFinite(val) && Math.abs(val) <= MAX_BOARD_MM;
 }
 

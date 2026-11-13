@@ -1,4 +1,4 @@
-import { applyPcbEdits } from "./kicad-pcb-edit.js";
+import { applyPcbEdits, isBoardCoord } from "./kicad-pcb-edit.js";
 import { applySchEdits } from "./kicad-sch-edit.js";
 import { parse, serialize } from "./sexpr.js";
 
@@ -31,7 +31,7 @@ function isValidValue(value) {
 }
 
 function isValidMove(edit) {
-	if (!Number.isFinite(edit.x) || !Number.isFinite(edit.y)) {
+	if (!isBoardCoord(edit.x) || !isBoardCoord(edit.y)) {
 		return false;
 	}
 	if (edit.rot !== undefined) {
@@ -49,7 +49,7 @@ function validateOpPayload(edit) {
 	}
 	if (edit.op === "move") {
 		if (!isValidMove(edit)) {
-			return "Invalid coordinates: x, y, and rot must be finite numbers";
+			return "Invalid coordinates: x and y must be within ±10000 mm, rot must be finite";
 		}
 		return null;
 	}
