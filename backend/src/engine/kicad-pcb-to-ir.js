@@ -1,5 +1,6 @@
 import { validateCircuitIR } from "./circuit-ir.js";
 import { newId } from "./ids.js";
+import { collectFootprintPads as collectPadGeometry } from "./kicad-library.js";
 import { parse } from "./sexpr.js";
 
 function roundCoord(val) {
@@ -143,6 +144,23 @@ function collectFootprintPads(fpNode, partId, padConnections) {
 			parsePad(child, partId, padConnections);
 		}
 	}
+}
+
+// Board files store pad angles absolute; the editor wants them footprint-relative.
+function toLocalPad(pad, fpRot) {
+	const [x, y, rot] = pad.at;
+	return { ...pad, at: [x, y, (((rot - fpRot) % 360) + 360) % 360] };
+}
+
+// Pads exactly as placed on the board (already flipped for B side). Graphics
+// stay out: raw silkscreen nodes would push the board past the JSON body
+// limit of the live-check and export requests.
+function embeddedFootprint(fpNode, fpRot) {
+	return {
+		embedded: true,
+		pads: collectPadGeometry(fpNode).map((pad) => toLocalPad(pad, fpRot)),
+		graphics: [],
+	};
 }
 
 function collectDeclaredNets(ast, netInfoMap) {
@@ -470,6 +488,7 @@ function createPcbContext() {
 		rawSegments: [],
 		rawVias: [],
 		rawZones: [],
+		footprints: {},
 		warnings: [],
 		usedRefs: new Set(),
 	};
@@ -506,6 +525,7 @@ function collectPcbElements(ast, ctx, idFn) {
 			part.ref = uniqueRef(part.ref, ctx.usedRefs, ctx.warnings);
 			ctx.parts.push(part);
 			collectFootprintPads(child, part.id, ctx.padConnections);
+			ctx.footprints[part.id] = embeddedFootprint(child, part.placement.rot);
 		} else if (head === "segment") {
 			ctx.rawSegments.push(child);
 		} else if (head === "via") {
@@ -557,6 +577,7 @@ function buildBoardGeometry(ast, ctx, netNumberToId) {
 		tracks: ctx.rawSegments.map((s) => parseTrack(s, netNumberToId)),
 		vias: ctx.rawVias.map((v) => parseVia(v, netNumberToId)),
 		zones: ctx.rawZones.map((z) => parseZone(z, netNumberToId)),
+		footprints: ctx.footprints,
 	};
 }
 

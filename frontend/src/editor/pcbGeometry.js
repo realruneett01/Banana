@@ -195,12 +195,30 @@ function toXY(p) {
 function pureTracksOfNet(tracks, netId) {
 	return (tracks ?? [])
 		.filter((t) => t.netId === netId)
-		.map((t) => ({ net: NET_KEY, start: toXY(t.start), end: toXY(t.end) }));
+		.map((t) => ({
+			net: NET_KEY,
+			start: toXY(t.start),
+			end: toXY(t.end),
+			width: t.widthMm ?? 0,
+		}));
 }
 
-function netAirlines(net, pins, tracks) {
-	const pads = pins.map((p, i) => ({ id: i, net: NET_KEY, x: p.x, y: p.y }));
-	return pureRatsnest(pads, pureTracksOfNet(tracks, net.id)).map((a) => ({
+function pureZonesOfNet(zones, netId) {
+	return (zones ?? [])
+		.filter((z) => z.netId === netId)
+		.map((z) => ({ net: NET_KEY, polygon: (z.polygon ?? []).map(toXY) }));
+}
+
+function pinPad(pin, i, padRadius) {
+	const r = padRadius?.[pin.partId]?.[pin.pin] ?? 0;
+	return { id: i, net: NET_KEY, x: pin.x, y: pin.y, r };
+}
+
+function netAirlines(net, pins, tracks, opts) {
+	const pads = pins.map((p, i) => pinPad(p, i, opts.padRadius));
+	const netTracks = pureTracksOfNet(tracks, net.id);
+	const netZones = pureZonesOfNet(opts.zones, net.id);
+	return pureRatsnest(pads, netTracks, netZones).map((a) => ({
 		netId: net.id,
 		name: net.name ?? net.id,
 		from: { ...pins[a.from] },
@@ -208,13 +226,14 @@ function netAirlines(net, pins, tracks) {
 	}));
 }
 
-export function ratsnest(ir, padPos, tracks = []) {
+/** opts.zones: board zones; opts.padRadius: {partId: {pin: reach}} so tracks ending inside a pad connect. */
+export function ratsnest(ir, padPos, tracks = [], opts = {}) {
 	if (!Array.isArray(ir?.nets)) return [];
 	const partMap = new Map((ir?.parts ?? []).map((p) => [p.id, p]));
 	const links = [];
 	for (const net of ir.nets) {
 		const pins = collectPinsWithPos(net, padPos, partMap);
-		links.push(...netAirlines(net, pins, tracks));
+		links.push(...netAirlines(net, pins, tracks, opts));
 	}
 	return links;
 }

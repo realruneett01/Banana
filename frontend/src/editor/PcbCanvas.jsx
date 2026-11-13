@@ -10,8 +10,10 @@ import {
 import { get as getEditorStatus } from "./editorStatus.js";
 import {
 	arcToSvgPath,
+	boardPadPositions,
+	boardPadRadii,
 	footprintToPrimitives,
-	padWorldPositions,
+	placementFor,
 	transformPrimitives,
 } from "./footprintRender.js";
 import {
@@ -758,7 +760,11 @@ function getGraphicKey(g) {
 
 function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 	const prims = useMemo(
-		() => transformPrimitives(footprintToPrimitives(fp), part.placement),
+		() =>
+			transformPrimitives(
+				footprintToPrimitives(fp),
+				placementFor(fp, part.placement),
+			),
 		[fp, part.placement],
 	);
 	const isBack = rect.side === "B";
@@ -846,7 +852,7 @@ function PartsLayer({
 	layerState,
 	onSelectPart,
 	onStartDrag,
-	fpCache,
+	fpLookup,
 }) {
 	if (!Array.isArray(parts)) return null;
 	const isSilk = layer === "F.SilkS" || layer === "B.SilkS";
@@ -867,7 +873,7 @@ function PartsLayer({
 					layerState={layerState}
 					onSelectPart={onSelectPart}
 					onStartDrag={onStartDrag}
-					fp={fpCache?.[p.footprint ?? p.props?.footprint]}
+					fp={fpLookup?.(p)}
 				/>
 			))}
 		</g>
@@ -1661,16 +1667,30 @@ function useFootprintCache(parts, fetchFootprint) {
 	return cache;
 }
 
-function buildPadPositions(parts, fpCache) {
-	const map = {};
-	for (const p of parts ?? []) {
-		const fpId = p.footprint ?? p.props?.footprint;
-		const fp = fpId ? fpCache[fpId] : null;
-		if (fp && p.placement) {
-			map[p.id] = padWorldPositions(fp, p.placement);
-		}
-	}
-	return map;
+function partFpId(part) {
+	return part.footprint ?? part.props?.footprint;
+}
+
+// A board file embeds every placed footprint; fetch from the library only the rest.
+function usePadGeometry(parts, board, fetchFootprint) {
+	const embedded = board?.footprints;
+	const toFetch = useMemo(
+		() => (parts ?? []).filter((p) => !embedded?.[p.id]),
+		[parts, embedded],
+	);
+	const fpCache = useFootprintCache(toFetch, fetchFootprint);
+	const fpLookup = useCallback(
+		(p) => embedded?.[p.id] ?? fpCache[partFpId(p)] ?? null,
+		[embedded, fpCache],
+	);
+	return useMemo(
+		() => ({
+			fpLookup,
+			padPositions: boardPadPositions(parts, fpLookup),
+			padRadius: boardPadRadii(parts, fpLookup),
+		}),
+		[parts, fpLookup],
+	);
 }
 
 function useCanvasLayers(board) {
@@ -1795,7 +1815,7 @@ function buildSceneData(ctx) {
 		selectedTrackIndex: ctx.sel.selectedTrackIndex,
 		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
 		onPointerDown: ctx.onPointerDown,
-		fpCache: ctx.fpCache,
+		fpLookup: ctx.fpLookup,
 	};
 }
 
@@ -1923,7 +1943,7 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 				layerState={layerState}
 				onSelectPart={sceneData.onSelectPart}
 				onStartDrag={drag.onStartDrag}
-				fpCache={sceneData.fpCache}
+				fpLookup={sceneData.fpLookup}
 			/>
 		</g>
 	));
@@ -2210,14 +2230,14 @@ function usePcbCanvasState({
 	const ir = editor?.state?.ir;
 	const { view, pan, fitHome } = useCanvasView(board, ir, svgRef);
 	const layers = useCanvasLayers(board);
-	const fpCache = useFootprintCache(ir?.parts, fetchFootprint);
+	const { fpLookup, padPositions, padRadius } = usePadGeometry(
+		ir?.parts,
+		board,
+		fetchFootprint,
+	);
 	const history = useBoardHistory(board, onBoardChange);
 	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
 	const drag = usePartDrag(editor, svgRef, view);
-	const padPositions = useMemo(
-		() => buildPadPositions(ir?.parts, fpCache),
-		[ir?.parts, fpCache],
-	);
 	const route = useRoutingState({
 		board,
 		activeLayer: layers.layerState.active,
@@ -2235,8 +2255,12 @@ function usePcbCanvasState({
 		view,
 	});
 	const rnLines = useMemo(
-		() => ratsnest(ir, padPositions, board?.tracks),
-		[ir, padPositions, board?.tracks],
+		() =>
+			ratsnest(ir, padPositions, board?.tracks, {
+				zones: board?.zones,
+				padRadius,
+			}),
+		[ir, padPositions, padRadius, board?.tracks, board?.zones],
 	);
 	const onPointerDown = usePointerDownHandler({
 		route,
@@ -2261,7 +2285,7 @@ function usePcbCanvasState({
 		rnLines,
 		sel,
 		onPointerDown,
-		fpCache,
+		fpLookup,
 	});
 	return {
 		svgRef,

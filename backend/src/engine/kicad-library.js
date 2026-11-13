@@ -267,7 +267,7 @@ function parsePadNode(padNode) {
 	};
 }
 
-function collectFootprintPads(fpNode) {
+export function collectFootprintPads(fpNode) {
 	return filterAndMapChildren(fpNode, "pad", parsePadNode);
 }
 

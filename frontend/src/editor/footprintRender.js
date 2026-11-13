@@ -358,9 +358,19 @@ function calcPadWorldCoord(pad, pl) {
 	return [round4(wx), round4(wy)];
 }
 
+/**
+ * Placement to transform a footprint with. A footprint embedded in a board
+ * file is already flipped for its side, and KiCad turns positive angles
+ * counter-clockwise on a Y-down board, so the angle is negated for it.
+ */
+export function placementFor(fp, placement = {}) {
+	if (!fp?.embedded) return placement;
+	return { ...placement, rot: -(placement.rot ?? 0), side: "F" };
+}
+
 export function padWorldPositions(fp, placement = {}) {
 	const pads = getFootprintPads(fp);
-	const pl = { x: 0, y: 0, rot: 0, side: "F", ...placement };
+	const pl = { x: 0, y: 0, rot: 0, side: "F", ...placementFor(fp, placement) };
 	const positions = {};
 	for (const pad of pads) {
 		const num = String(pad.number ?? "");
@@ -369,6 +379,40 @@ export function padWorldPositions(fp, placement = {}) {
 		}
 	}
 	return positions;
+}
+
+// Radius of the circle around a pad's centre that a track must reach.
+function padReach(pad) {
+	const [w, h] = toNumPair(pad.size, 0);
+	return Math.max(w, h) / 2;
+}
+
+function padRadii(fp) {
+	const radii = {};
+	for (const pad of getFootprintPads(fp)) {
+		const num = String(pad.number ?? "");
+		if (num) radii[num] = padReach(pad);
+	}
+	return radii;
+}
+
+function mapPlacedParts(parts, lookupFp, fn) {
+	const map = {};
+	for (const part of parts ?? []) {
+		const fp = lookupFp(part);
+		if (fp && part.placement) map[part.id] = fn(fp, part.placement);
+	}
+	return map;
+}
+
+/** {partId: {pin: [x, y]}} for every placed part whose footprint lookupFp(part) finds. */
+export function boardPadPositions(parts, lookupFp) {
+	return mapPlacedParts(parts, lookupFp, padWorldPositions);
+}
+
+/** {partId: {pin: reach}} matching boardPadPositions. */
+export function boardPadRadii(parts, lookupFp) {
+	return mapPlacedParts(parts, lookupFp, padRadii);
 }
 
 function pointInRotatedBox(lx, ly, hw, hh) {
