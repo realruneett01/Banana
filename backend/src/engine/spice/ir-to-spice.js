@@ -282,17 +282,22 @@ function getModelPins(part, pinRoles, ctx) {
 	return nodes;
 }
 
+function runHandler(part, handler, ctx) {
+	const pins = getPartPins(part, ctx.pinToNet, ctx.nodeMap, ctx.warnings);
+	const line = pins ? handler(part, pins, ctx) : null;
+	if (line) {
+		ctx.probeNames.push(ctx.elementMap[part.id]);
+	}
+	return line;
+}
+
 function processPart(part, ctx) {
 	const upper = String(part.ref || "")
 		.trim()
 		.toUpperCase();
 	const handler = getElementHandler(upper);
 	if (handler) {
-		const pins = getPartPins(part, ctx.pinToNet, ctx.nodeMap, ctx.warnings);
-		if (!pins) {
-			return null;
-		}
-		return handler(part, pins, ctx);
+		return runHandler(part, handler, ctx);
 	}
 	const model = modelForPart(part);
 	const nodes = model ? getModelPins(part, model.pinRoles, ctx) : null;
@@ -333,6 +338,16 @@ function sanitizeComment(text, fallback) {
 	return stripped || fallback;
 }
 
+// ngspice ignores wildcard device names in .save (and then writes no vectors), so list each one.
+const PROBE_PARAM = { R: "i", D: "id" };
+
+function saveLine(names) {
+	const probes = names
+		.filter((n) => PROBE_PARAM[n?.[0]])
+		.map((n) => `@${n.toLowerCase()}[${PROBE_PARAM[n[0]]}]`);
+	return [".save all", ...probes].join(" ");
+}
+
 function assembleNetlist(name, lines, ctx, analysis) {
 	const title = sanitizeComment(name, "Circuit");
 	const out = [`* ${title}`];
@@ -349,7 +364,7 @@ function assembleNetlist(name, lines, ctx, analysis) {
 		}
 	}
 	out.push(formatAnalysis(analysis));
-	out.push(".save all @r*[i] @d*[id]");
+	out.push(saveLine(ctx.probeNames));
 	out.push(".end");
 	return out.join("\n");
 }
@@ -373,6 +388,7 @@ function initContext(ir, options) {
 		pinToNet: buildPinToNetMap(ir.nets),
 		elementMap: {},
 		usedElementNames: new Set(),
+		probeNames: [],
 		warnings: [],
 		hasDiode: false,
 		hasLed: false,

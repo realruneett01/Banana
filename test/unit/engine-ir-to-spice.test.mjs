@@ -143,7 +143,7 @@ describe("irToSpice - voltage divider", () => {
 			"R1 n_in n_out 10000",
 			"R2 n_out 0 10000",
 			".op",
-			".save all @r*[i] @d*[id]",
+			".save all @r1[i] @r2[i]",
 			".end",
 		];
 		for (const expected of expectedLines) {
