@@ -13,6 +13,7 @@ import {
 	wireForNet,
 } from "./schematicGeometry.js";
 import {
+	getPrimKey,
 	symbolPinPositions,
 	symbolToSvgPrimitives,
 	transformPrimitives,
@@ -375,17 +376,6 @@ function SymbolPin({ pin, activePart, wireStart, strokeWidth, theme }) {
 			/>
 		</g>
 	);
-}
-
-function getPrimKey(prim, idx) {
-	if (prim.type === "pin") return `pin-${prim.number || idx}`;
-	if (prim.type === "rect") return `rect-${prim.x}-${prim.y}-${prim.width}`;
-	if (prim.type === "circle") return `circle-${prim.cx}-${prim.cy}`;
-	if (prim.type === "arc") return `arc-${prim.d}`;
-	if (prim.type === "polyline") {
-		return `poly-${prim.points?.[0]?.[0]}-${prim.points?.[0]?.[1]}-${idx}`;
-	}
-	return `prim-${prim.type}-${idx}`;
 }
 
 function PartTextLabels({ x, yRef, yVal, refText, valueText, theme }) {

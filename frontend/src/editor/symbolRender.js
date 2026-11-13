@@ -335,6 +335,18 @@ export function transformPrimitives(prims, placement = {}) {
 	return prims.map((prim) => transformSinglePrimitive(prim, placement));
 }
 
+export function getPrimKey(prim, idx) {
+	if (prim.type === "pin") return `pin-${prim.number ?? idx}-${idx}`;
+	if (prim.type === "rect")
+		return `rect-${prim.x}-${prim.y}-${prim.width}-${idx}`;
+	if (prim.type === "circle") return `circle-${prim.cx}-${prim.cy}-${idx}`;
+	if (prim.type === "arc") return `arc-${prim.d}-${idx}`;
+	if (prim.type === "polyline") {
+		return `poly-${prim.points?.[0]?.[0]}-${prim.points?.[0]?.[1]}-${idx}`;
+	}
+	return `prim-${prim.type}-${idx}`;
+}
+
 export function symbolPinPositions(symbol, placement = {}) {
 	const result = {};
 	for (const pin of symbol?.pins ?? []) {
