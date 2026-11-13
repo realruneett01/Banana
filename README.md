@@ -42,3 +42,12 @@ Banana  is an advanced visual Git diff tool engineered for KiCad hardware design
    ```
 
 3. Open your browser at `http://localhost:5173`.
+
+## Connecting AI assistants (MCP)
+
+Banana exposes its diff, KiCad check, design and simulation tools over the Model Context Protocol:
+
+- **Local (stdio):** Claude Desktop, Claude Code, Cursor run `node backend/src/mcp/stdio.js`.
+- **Network (Streamable HTTP):** `/mcp` on the backend, off until `BANANA_MCP_TOKEN` (32+ chars) is set; reach it from cloud clients through an HTTPS tunnel.
+
+Setup, the tool list and security notes: [docs/MCP.md](docs/MCP.md). Schemas: [docs/mcp-reference.md](docs/mcp-reference.md).
