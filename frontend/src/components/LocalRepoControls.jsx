@@ -15,6 +15,7 @@ import {
 	Typography,
 	Upload,
 } from "antd";
+import { useEffect } from "react";
 import { CommitWorktreeButton } from "./CommitWorktreeButton.jsx";
 
 const { Title, Text } = Typography;
@@ -526,7 +527,14 @@ function LocalRepoForm(props) {
 		targetCommit,
 		relativeFilePath,
 		onFetchDiff,
+		onFormMountChange,
 	} = props;
+
+	// Tells the workspace its form instance is now connected (see formConnection.js)
+	useEffect(() => {
+		onFormMountChange?.(true);
+		return () => onFormMountChange?.(false);
+	}, [onFormMountChange]);
 
 	return (
 		<Form

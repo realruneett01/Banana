@@ -1,5 +1,6 @@
 import { Form } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { guardFormWrites, nextFormConnection } from "./formConnection.js";
 import { pickDiffCommits, planProjectOpen } from "./projects/openProject.js";
 import { useBackendHealthAndGithub } from "./useBackendHealthAndGithub.js";
 import { useDiffFocus } from "./useDiffFocus.js";
@@ -250,11 +251,13 @@ export function useWorkspaceViewerState() {
 	};
 }
 
-function buildLocalProps({ revisions, form, localRepo, diffLoader }) {
+function buildLocalProps(ctx) {
+	const { revisions, form, localRepo, diffLoader } = ctx;
 	return {
 		...revisions,
 		...pick(localRepo, LOCAL_REPO_KEYS),
 		form,
+		onFormMountChange: ctx.onFormMountChange,
 		loading: diffLoader.loading,
 		onFetchDiff: diffLoader.fetchDiff,
 		onFileDropped: localRepo.handleFileDraggedOrDropped,
@@ -519,13 +522,28 @@ function useOpenProjectFile(ctx) {
 	);
 }
 
-export function useWorkspaceState() {
+// The real form goes to LocalRepoForm; hooks that run while that Form is not
+// mounted (Project Home, github mode) get the guarded one (see formConnection.js).
+function useWorkspaceForm() {
 	const [form] = Form.useForm();
+	const connectionRef = useRef(nextFormConnection(null, false));
+	const onFormMountChange = useCallback((mounted) => {
+		connectionRef.current = nextFormConnection(connectionRef.current, mounted);
+	}, []);
+	const guardedForm = useMemo(
+		() => guardFormWrites(form, () => connectionRef.current),
+		[form],
+	);
+	return { form, guardedForm, onFormMountChange };
+}
+
+export function useWorkspaceState() {
+	const { form, guardedForm, onFormMountChange } = useWorkspaceForm();
 	const sideBySideRef = useRef(null);
 	const diffCanvasRef = useRef(null);
 	const revisions = useWorkspaceRevisions();
 	const viewer = useWorkspaceViewerState();
-	const integrations = useWorkspaceIntegrations(form, revisions);
+	const integrations = useWorkspaceIntegrations(guardedForm, revisions);
 	const interactions = useWorkspaceInteractions({
 		activeDiffData: integrations.activeDiffData,
 		viewer,
@@ -536,7 +554,7 @@ export function useWorkspaceState() {
 	});
 
 	const openProjectFile = useOpenProjectFile({
-		form,
+		form: guardedForm,
 		revisions,
 		localRepo: integrations.localRepo,
 		fetchDiff: integrations.diffLoader.fetchDiff,
@@ -545,6 +563,7 @@ export function useWorkspaceState() {
 	return {
 		...assembleWorkspaceState({
 			form,
+			onFormMountChange,
 			sideBySideRef,
 			diffCanvasRef,
 			revisions,
