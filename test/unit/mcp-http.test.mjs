@@ -123,6 +123,7 @@ describe("MCP HTTP router: enabled", () => {
 		assert.equal(res.status, 200);
 		const msg = await rpcResult(res);
 		assert.ok(msg.result.tools.length > 0);
+		assert.ok(msg.result.tools.some((t) => t.name === "erc.project"));
 	});
 
 	test("unknown session -> 404; non-initialize without session -> 400", async () => {

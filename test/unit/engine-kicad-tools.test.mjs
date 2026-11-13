@@ -223,12 +223,15 @@ describe("module contract", () => {
 	test("exports match the contract exactly", async () => {
 		const mod = await import("../../backend/src/engine/tools/kicad-tools.js");
 		const exportedKeys = Object.keys(mod).sort();
-		assert.deepEqual(exportedKeys, ["registerKicadTools"]);
+		assert.deepEqual(exportedKeys, [
+			"registerKicadTools",
+			"runConfinedProjectErc",
+		]);
 	});
 });
 
 describe("tool registration and schema", () => {
-	test("registers read tools kicad.erc, kicad.drc, kicad.export_netlist", () => {
+	test("registers read tools kicad.erc, kicad.drc, kicad.export_netlist, erc.project", () => {
 		const registry = setupRegistry(createFakeCli());
 		const tools = registry.list();
 		assert.deepEqual(
@@ -241,8 +244,13 @@ describe("tool registration and schema", () => {
 				),
 			},
 			{
-				count: 3,
-				names: ["kicad.drc", "kicad.erc", "kicad.export_netlist"],
+				count: 4,
+				names: [
+					"erc.project",
+					"kicad.drc",
+					"kicad.erc",
+					"kicad.export_netlist",
+				],
 				allRead: true,
 				allDescribed: true,
 			},
@@ -252,7 +260,7 @@ describe("tool registration and schema", () => {
 	test("registers with default options when omitted", () => {
 		const registry = createRegistry();
 		registerKicadTools(registry);
-		assert.equal(registry.list().length, 3);
+		assert.equal(registry.list().length, 4);
 	});
 });
 

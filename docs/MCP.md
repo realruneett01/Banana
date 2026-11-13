@@ -126,6 +126,7 @@ Registered in `backend/src/engine/tools/*.js`. All are read-only except `design.
 | `kicad.erc` | Runs KiCad's electrical rules check on a schematic. |
 | `kicad.drc` | Runs KiCad's design rules check on a PCB layout. |
 | `kicad.export_netlist` | Exports a netlist from a KiCad schematic. |
+| `erc.project` | Runs ERC across a whole schematic hierarchy from a root `.kicad_sch` inside the projects root (default: home folder); issues grouped by severity, capped at 500 each. Also `POST /api/erc/project {path}` (desktop only). |
 | `ir.validate` | Validates a Circuit IR document against the schema and semantic rules. |
 | `erc.run` | Runs the electrical rules check on a Circuit IR. |
 | `ir.auto_place` | Places unplaced components on a PCB grid. |

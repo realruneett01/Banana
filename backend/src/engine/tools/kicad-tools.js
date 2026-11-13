@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { runProjectErc } from "../erc-project.js";
 import { newId } from "../ids.js";
 import { validateIssue } from "../issue.js";
 import { createKicadCli } from "../kicad-cli.js";
+import { confineToRoot } from "./project-tools.js";
 
 function createPathPattern(ext) {
 	return `^([a-zA-Z]:[\\\\/]|[\\\\/]).+\\.${ext}$`;
@@ -69,6 +72,34 @@ const EXPORT_NETLIST_INPUT_SCHEMA = {
 		},
 	},
 };
+
+const ERC_PROJECT_INPUT_SCHEMA = makeSinglePropSchema("path", {
+	type: "string",
+	minLength: 1,
+});
+
+const SEVERITY_ARRAYS = {
+	error: { type: "array" },
+	warning: { type: "array" },
+	info: { type: "array" },
+};
+
+const ERC_PROJECT_OUTPUT_SCHEMA = {
+	type: "object",
+	required: ["sheets", "counts", "issues", "warnings", "truncated"],
+	additionalProperties: false,
+	properties: {
+		sheets: { type: "number" },
+		counts: { type: "object" },
+		issues: { type: "object", properties: SEVERITY_ARRAYS },
+		warnings: { type: "array", items: { type: "string" } },
+		truncated: { type: "boolean" },
+	},
+};
+
+const MAX_ISSUES_PER_SEVERITY = 500;
+const MAX_WARNINGS = 100;
+const SEVERITIES = ["error", "warning", "info"];
 
 const EXPORT_NETLIST_OUTPUT_SCHEMA = makeSinglePropSchema("netlistPath", {
 	type: "string",
@@ -255,6 +286,36 @@ async function runExportNetlistTool(input, cli) {
 	return { netlistPath };
 }
 
+function capProjectReport(result) {
+	const counts = {};
+	const issues = {};
+	for (const sev of SEVERITIES) {
+		const group = result.issues.filter((i) => i.severity === sev);
+		counts[sev] = group.length;
+		issues[sev] = group.slice(0, MAX_ISSUES_PER_SEVERITY);
+	}
+	const truncated =
+		SEVERITIES.some((sev) => counts[sev] > MAX_ISSUES_PER_SEVERITY) ||
+		result.warnings.length > MAX_WARNINGS;
+	const warnings = result.warnings.slice(0, MAX_WARNINGS);
+	return { sheets: result.sheets, counts, issues, warnings, truncated };
+}
+
+// Whole-hierarchy ERC on a root sheet that must resolve (realpath) inside
+// projectsRoot; shared by the erc.project tool and POST /api/erc/project.
+export async function runConfinedProjectErc({ projectsRoot, schPath, commit }) {
+	if (typeof schPath !== "string" || !schPath.endsWith(".kicad_sch")) {
+		throw new Error("path must be a .kicad_sch file");
+	}
+	const root = projectsRoot ?? os.homedir();
+	const real = await confineToRoot(fs.promises, root, schPath);
+	const result = runProjectErc(real, { commit: commit ?? "" });
+	if (!result.ok) {
+		throw new Error(result.errors.join("; "));
+	}
+	return capProjectReport(result);
+}
+
 function registerToolEntry(registry, def) {
 	registry.register({
 		name: def.name,
@@ -285,7 +346,10 @@ const RULE_CHECK_CONFIGS = [
 	},
 ];
 
-export function registerKicadTools(registry, { cli, commit } = {}) {
+export function registerKicadTools(
+	registry,
+	{ cli, commit, projectsRoot } = {},
+) {
 	const activeCli = cli || createKicadCli();
 	const activeCommit = typeof commit === "string" ? commit : "HEAD";
 
@@ -312,5 +376,19 @@ export function registerKicadTools(registry, { cli, commit } = {}) {
 		inputSchema: EXPORT_NETLIST_INPUT_SCHEMA,
 		outputSchema: EXPORT_NETLIST_OUTPUT_SCHEMA,
 		handler: (input) => runExportNetlistTool(input, activeCli),
+	});
+
+	registerToolEntry(registry, {
+		name: "erc.project",
+		description:
+			"Runs ERC across a whole schematic hierarchy (root .kicad_sch inside the projects root)",
+		inputSchema: ERC_PROJECT_INPUT_SCHEMA,
+		outputSchema: ERC_PROJECT_OUTPUT_SCHEMA,
+		handler: (input) =>
+			runConfinedProjectErc({
+				projectsRoot,
+				schPath: input.path,
+				commit: activeCommit,
+			}),
 	});
 }

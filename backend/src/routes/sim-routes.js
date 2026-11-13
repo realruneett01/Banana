@@ -4,6 +4,7 @@ import { runErc } from "../engine/erc.js";
 import { isId } from "../engine/ids.js";
 import { runSimulation, SIM_KINDS } from "../engine/sim/run-sim.js";
 import { createSimStore } from "../engine/sim/sim-store.js";
+import { runConfinedProjectErc } from "../engine/tools/kicad-tools.js";
 
 const router = express.Router();
 
@@ -252,6 +253,28 @@ function handleErcRun(req, res) {
 	}
 }
 
+// Reads local files, so desktop-only like the project routes; the root
+// sheet must resolve inside app.locals.projectsRoot (default: home dir).
+async function handleErcProject(req, res) {
+	const locals = req.app?.locals ?? {};
+	if (locals.allowLocalRepos !== true) {
+		return res
+			.status(403)
+			.json({ error: "Project ERC is only available in the desktop app" });
+	}
+	const { path: schPath, commit } = req.body || {};
+	try {
+		const report = await runConfinedProjectErc({
+			projectsRoot: locals.projectsRoot,
+			schPath,
+			commit: typeof commit === "string" ? commit : "",
+		});
+		return res.status(200).json(report);
+	} catch (err) {
+		return sendBadRequest(res, err.message);
+	}
+}
+
 const ROUTE_DEFS = [
 	["get", "/sim/kinds", handleSimKinds],
 	["get", "/sim/runs", handleListSimRuns],
@@ -260,6 +283,7 @@ const ROUTE_DEFS = [
 	["post", "/sim/compare", handleCompareSimRuns],
 	["patch", "/issues/:id", handlePatchIssue],
 	["post", "/erc/run", handleErcRun],
+	["post", "/erc/project", handleErcProject],
 ];
 
 for (const [method, routePath, handler] of ROUTE_DEFS) {

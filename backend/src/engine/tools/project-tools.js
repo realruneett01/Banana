@@ -40,7 +40,7 @@ const WRITE_INPUT_SCHEMA = strictObject({
 });
 const WRITE_OUTPUT_SCHEMA = strictObject({ commit: T_STR, files: T_FILES });
 
-async function confineToRoot(fsImpl, root, target) {
+export async function confineToRoot(fsImpl, root, target) {
 	validateRepoPath(target);
 	const realRoot = await fsImpl.realpath(root);
 	const realTarget = await fsImpl.realpath(target);
