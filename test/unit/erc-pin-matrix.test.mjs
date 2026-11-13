@@ -147,8 +147,9 @@ const DRIVE_CASES = {
 		[["power_in"], true],
 		[["power_in", "passive"], true],
 		[["power_in", "power_out"], false],
-		[["power_in", "output"], false],
-		[["power_in", "bidirectional"], false],
+		// KiCad: only power_out drives power_in (multichannel IC1 V+ via J5 bidi).
+		[["power_in", "output"], true],
+		[["power_in", "bidirectional"], true],
 	],
 };
 

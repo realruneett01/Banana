@@ -5,6 +5,8 @@ import { parse } from "./sexpr.js";
 
 const LABEL_HEADS = new Set(["label", "global_label", "hierarchical_label"]);
 const CORE_PROP_KEYS = new Set(["Reference", "Value", "Footprint"]);
+// Label kinds that reach other sheets, as recorded in a group's links.
+const LINK_KINDS = { global_label: "global", hierarchical_label: "hier" };
 
 function roundCoord(val) {
 	const rounded = Math.round(Number(val) * 100) / 100;
@@ -15,7 +17,7 @@ function pointKey(x, y) {
 	return `${roundCoord(x).toFixed(2)},${roundCoord(y).toFixed(2)}`;
 }
 
-class UnionFind {
+export class UnionFind {
 	constructor() {
 		this.parent = new Map();
 	}
@@ -275,7 +277,15 @@ function processLabelNode(child, ctx) {
 	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 	recordPointLabel(key, text, ctx);
 	// Global and hierarchical labels reach other sheets, where a driver may be.
-	if (child[0].sym !== "label") ctx.drivenPoints.add(key);
+	const kind = LINK_KINDS[child[0].sym];
+	if (!kind) return;
+	ctx.drivenPoints.add(key);
+	pushAt(ctx.pointLinks, key, { kind, name: text });
+}
+
+function pushAt(map, key, item) {
+	if (!map.has(key)) map.set(key, []);
+	map.get(key).push(item);
 }
 
 function processJunctionNode(child, ctx) {
@@ -285,11 +295,16 @@ function processJunctionNode(child, ctx) {
 
 // Sheet pins link this sheet's wires to a sub-sheet that may drive them.
 function processSheetPins(sheetNode, ctx) {
+	const sheet = extractChildText(sheetNode, "uuid");
+	const file = extractProperties(sheetNode).get("Sheetfile") ?? "";
+	ctx.sheets.push({ uuid: sheet, file });
 	for (const pin of sheetNode.filter((c) => matchHead(c, "pin"))) {
 		const at = extractAt(pin);
 		if (!at) continue;
 		const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 		ctx.drivenPoints.add(key);
+		const name = nodeSym(pin[1]);
+		pushAt(ctx.pointLinks, key, { kind: "sheetPin", sheet, name });
 	}
 }
 
@@ -510,8 +525,9 @@ function connectSymbolPins(child, libMap, parsed, target) {
 }
 
 // Typed pins of power ports and PWR_FLAG, kept for ERC only (not parts).
+// A power port's hidden pin may have an empty number; it still counts.
 function recordErcPin(key, ercPin, ctx) {
-	if (!ercPin.pin || !ercPin.type) return;
+	if (!ercPin.type) return;
 	if (!ctx.pointErcPins.has(key)) ctx.pointErcPins.set(key, []);
 	ctx.pointErcPins.get(key).push(ercPin);
 }
@@ -526,7 +542,10 @@ function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
 		const key = connectLibPin(lp, parsed.at, parsed.mirror, ctx);
 		ctx.drivenPoints.add(key);
 		recordErcPin(key, { ref: parsed.ref, pin: lp.pin, type: lp.type }, ctx);
-		if (lp.type === "power_in" && netName) recordPointLabel(key, netName, ctx);
+		if (lp.type === "power_in" && netName) {
+			recordPointLabel(key, netName, ctx);
+			pushAt(ctx.pointLinks, key, { kind: "global", name: netName });
+		}
 	}
 }
 
@@ -566,10 +585,12 @@ function groupComponents(ctx) {
 	const compPins = new Map();
 	const compLabels = new Map();
 	const compErcPins = new Map();
+	const compLinks = new Map();
 	appendGroupedItems(ctx.pointPins, compPins, ctx.uf);
 	appendGroupedItems(ctx.pointLabels, compLabels, ctx.uf);
 	appendGroupedItems(ctx.pointErcPins, compErcPins, ctx.uf);
-	return { compPins, compLabels, compErcPins };
+	appendGroupedItems(ctx.pointLinks, compLinks, ctx.uf);
+	return { compPins, compLabels, compErcPins, compLinks };
 }
 
 function dedupePins(pins) {
@@ -614,6 +635,41 @@ function buildNets(groups, drivenRoots, idFn) {
 	return nets;
 }
 
+function groupRoots(groups) {
+	const { compPins, compErcPins, compLinks } = groups;
+	const keys = [compPins, compErcPins, compLinks].flatMap((m) => [...m.keys()]);
+	return new Set(keys);
+}
+
+// Like shouldSkipNet, but ERC-only pins and off-sheet links keep a group.
+function isLoneGroup(group, labels) {
+	const pinCount = group.pins.length + group.ercPins.length;
+	return pinCount <= 1 && labels.length === 0 && group.links.length === 0;
+}
+
+function buildErcGroup(root, groups) {
+	const pins = dedupePins(groups.compPins.get(root) ?? []);
+	const labels = [...(groups.compLabels.get(root) ?? [])];
+	const named = pins.length > 0 || labels.length > 0;
+	const group = {
+		name: named ? determineNetName(pins, labels) : "",
+		pins: pins.map((p) => ({ partId: p.partId, pin: p.pin })),
+		ercPins: groups.compErcPins.get(root) ?? [],
+		links: groups.compLinks.get(root) ?? [],
+	};
+	return isLoneGroup(group, labels) ? null : group;
+}
+
+// Every connected group, with the links that join it to other sheets.
+function buildErcGroups(groups) {
+	const out = [];
+	for (const root of groupRoots(groups)) {
+		const group = buildErcGroup(root, groups);
+		if (group) out.push(group);
+	}
+	return out;
+}
+
 function extractTitle(ast) {
 	const tb = extractChildNode(ast, "title_block");
 	if (!tb) return null;
@@ -630,6 +686,8 @@ function createParseContext() {
 		labelFirstPoint: new Map(),
 		drivenPoints: new Set(),
 		pointErcPins: new Map(),
+		pointLinks: new Map(),
+		sheets: [],
 		warnings: [],
 	};
 }
@@ -677,7 +735,7 @@ function assembleCircuit(ast, ctx, idFn) {
 	const groups = groupComponents(ctx);
 	const drivenRoots = new Set([...ctx.drivenPoints].map((k) => ctx.uf.find(k)));
 	const nets = buildNets(groups, drivenRoots, idFn);
-	return { parts, nets };
+	return { parts, nets, groups };
 }
 
 function convertSchToIr(text, { name, idFn }) {
@@ -705,6 +763,22 @@ export function kicadSchToIr(text, { name = "imported", idFn = newId } = {}) {
 		return convertSchToIr(text, { name, idFn });
 	} catch (err) {
 		// Broad catch to guarantee kicadSchToIr never throws on malformed input
+		return { ok: false, errors: [err?.message || String(err)] };
+	}
+}
+
+// For whole-project ERC: parts, connected groups with their off-sheet links
+// (global names, hierarchical labels, sheet pins) and the sub-sheets used.
+export function kicadSchToErcGraph(text, { idFn = newId } = {}) {
+	try {
+		const parsed = parseSchAst(text);
+		if (!parsed.ok) return parsed;
+		const ctx = createParseContext();
+		const { parts, groups } = assembleCircuit(parsed.ast, ctx, idFn);
+		const ercGroups = buildErcGroups(groups);
+		return { ok: true, parts, groups: ercGroups, sheets: ctx.sheets };
+	} catch (err) {
+		// Broad catch: one malformed sheet must not abort a project walk
 		return { ok: false, errors: [err?.message || String(err)] };
 	}
 }

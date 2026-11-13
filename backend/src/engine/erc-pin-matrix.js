@@ -31,8 +31,6 @@ const MATRIX = new Map(
 	]),
 );
 
-const DRIVERS = new Set(DRIVER_TYPES);
-
 export function pinPairSeverity(a, b) {
 	if (a === "no_connect" || b === "no_connect") {
 		return a === b ? "ok" : "error";
@@ -102,8 +100,9 @@ function driveIssues(pins) {
 		const message = "net has only inputs (not driven)";
 		issues.push({ severity: "error", message, pins: [...pins] });
 	}
+	// Like KiCad, only a power_out pin drives power_in (not output or bidi).
 	const powerIn = pins.filter((p) => p.type === "power_in");
-	if (powerIn.length > 0 && !pins.some((p) => DRIVERS.has(p.type))) {
+	if (powerIn.length > 0 && !pins.some((p) => p.type === "power_out")) {
 		const message = "power_in not driven";
 		issues.push({ severity: "error", message, pins: powerIn });
 	}
