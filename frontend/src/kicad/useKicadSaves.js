@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE_URL } from "../config.js";
-import { emitCommitCreated } from "../designEvents.js";
+import {
+	buildWorktreeDiffValues,
+	commitWorktreeFile,
+} from "./commitWorktree.js";
 
 function normalizePath(p) {
 	if (!p || typeof p !== "string") return "";
@@ -24,46 +27,16 @@ async function getAuthHeader() {
 	return {};
 }
 
-async function parseJsonResponse(res) {
-	try {
-		return await res.json();
-	} catch {
-		// Response body is not JSON
-		return null;
-	}
-}
-
-async function postCommitFiles(repoPath, filePath, message) {
-	const authHeader = await getAuthHeader();
-	return await fetch(`${API_BASE_URL}/api/git/commit-files`, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			...authHeader,
-		},
-		body: JSON.stringify({
-			repoPath,
-			files: [filePath],
-			message,
-		}),
-	});
-}
-
 async function executeCommitPending({ repoPath, filePath, message }) {
-	try {
-		const trimmed = (message ?? "").trim();
-		const res = await postCommitFiles(repoPath, filePath, trimmed);
-		const data = await parseJsonResponse(res);
-		if (res.status === 200 && data?.commit) {
-			emitCommitCreated({ repoPath, filePath, commit: data.commit });
-			return { ok: true, commit: data.commit };
-		}
-		const error = data?.error ?? (res.statusText || "Commit failed");
-		return { ok: false, error };
-	} catch (err) {
-		// Network or fetch failure
-		return { ok: false, error: err?.message || "Commit failed" };
-	}
+	const headers = await getAuthHeader();
+	return await commitWorktreeFile({
+		apiBase: API_BASE_URL,
+		fetchImpl: fetch,
+		headers,
+		repoPath,
+		filePath,
+		message,
+	});
 }
 
 function useKicadSubscription({
@@ -81,12 +54,7 @@ function useKicadSubscription({
 			const { projectRoot, filePath } = payload;
 			if (!arePathsEqual(projectRoot, repoPath)) return;
 			onFileChange(filePath);
-			onWorktreeDiff?.({
-				repoPath,
-				baseCommit,
-				targetCommit: "WORKTREE",
-				relativeFilePath: filePath,
-			});
+			onWorktreeDiff?.(buildWorktreeDiffValues(repoPath, baseCommit, filePath));
 		});
 		return () => {
 			if (typeof unsubscribe === "function") unsubscribe();

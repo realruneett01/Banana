@@ -15,6 +15,7 @@ import {
 	Typography,
 	Upload,
 } from "antd";
+import { CommitWorktreeButton } from "./CommitWorktreeButton.jsx";
 
 const { Title, Text } = Typography;
 
@@ -600,6 +601,11 @@ export function LocalRepoControls(props) {
 	return (
 		<>
 			<LocalRepoDragger onFileDropped={props.onFileDropped} />
+			<CommitWorktreeButton
+				repoPath={props.repoPath}
+				baseCommit={props.baseCommit}
+				onWorktreeDiff={props.onFetchDiff}
+			/>
 			<LocalRepoForm {...formProps} />
 			<RecentCommitsList commits={props.repoInfo?.commits} />
 		</>
