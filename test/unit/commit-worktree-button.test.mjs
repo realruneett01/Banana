@@ -20,12 +20,53 @@ function fakeFetch(status, body) {
 	return { impl, calls };
 }
 
+/** Table-driven strict equality: each row is [actual, expected]. */
+function assertEqualRows(rows) {
+	for (const [actual, expected] of rows) {
+		assert.equal(actual, expected);
+	}
+}
+
+/** Calls commitWorktreeFile with the shared repo/file defaults plus overrides. */
+function commit(overrides) {
+	return commitWorktreeFile({
+		apiBase: "",
+		repoPath: REPO,
+		filePath: FILE,
+		message: "m",
+		...overrides,
+	});
+}
+
+/** Commits via a fake 200 backend at http://api; returns the result and fetch calls. */
+async function commitViaApi(message, body) {
+	const { impl, calls } = fakeFetch(200, body);
+	const res = await commit({ apiBase: "http://api", message, fetchImpl: impl });
+	return { res, calls };
+}
+
+/** Runs fn while listening for commit-created; returns [fnResult, details seen]. */
+async function withCommitEvents(fn) {
+	const seen = [];
+	const off = onCommitCreated((detail) => seen.push(detail));
+	try {
+		return [await fn(), seen];
+	} finally {
+		off();
+	}
+}
+
 describe("normalizeCommitMessage", () => {
 	test("trims and rejects blank messages", () => {
-		assert.equal(normalizeCommitMessage("  fix trace  "), "fix trace");
-		assert.equal(normalizeCommitMessage("   "), "");
-		assert.equal(normalizeCommitMessage(undefined), "");
-		assert.equal(normalizeCommitMessage(42), "");
+		const cases = [
+			["  fix trace  ", "fix trace"],
+			["   ", ""],
+			[undefined, ""],
+			[42, ""],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(normalizeCommitMessage(input), expected);
+		}
 	});
 });
 
@@ -35,9 +76,11 @@ describe("buildCommitFilesRequest", () => {
 			{ repoPath: REPO, filePath: FILE, message: " msg " },
 			{ "x-banana-auth": "t" },
 		);
-		assert.equal(req.method, "POST");
-		assert.equal(req.headers["Content-Type"], "application/json");
-		assert.equal(req.headers["x-banana-auth"], "t");
+		assertEqualRows([
+			[req.method, "POST"],
+			[req.headers["Content-Type"], "application/json"],
+			[req.headers["x-banana-auth"], "t"],
+		]);
 		assert.deepEqual(JSON.parse(req.body), {
 			repoPath: REPO,
 			files: [FILE],
@@ -63,48 +106,28 @@ describe("buildWorktreeDiffValues", () => {
 
 describe("commitWorktreeFile", () => {
 	test("requires a commit message and never calls fetch without one", async () => {
-		const { impl, calls } = fakeFetch(200, { commit: "x" });
-		const res = await commitWorktreeFile({
-			apiBase: "http://api",
-			repoPath: REPO,
-			filePath: FILE,
-			message: "  ",
-			fetchImpl: impl,
-		});
-		assert.equal(res.ok, false);
+		const { res, calls } = await commitViaApi("  ", { commit: "x" });
 		assert.match(res.error, /message is required/i);
-		assert.equal(calls.length, 0);
+		assertEqualRows([
+			[res.ok, false],
+			[calls.length, 0],
+		]);
 	});
 
 	test("posts to /api/git/commit-files and reports the new commit", async () => {
-		const { impl, calls } = fakeFetch(200, { commit: "deadbeef" });
-		const res = await commitWorktreeFile({
-			apiBase: "http://api",
-			repoPath: REPO,
-			filePath: FILE,
-			message: "route GND",
-			fetchImpl: impl,
+		const { res, calls } = await commitViaApi("route GND", {
+			commit: "deadbeef",
 		});
 		assert.deepEqual(res, { ok: true, commit: "deadbeef" });
-		assert.equal(calls[0].url, "http://api/api/git/commit-files");
-		assert.equal(JSON.parse(calls[0].init.body).message, "route GND");
+		assertEqualRows([
+			[calls[0].url, "http://api/api/git/commit-files"],
+			[JSON.parse(calls[0].init.body).message, "route GND"],
+		]);
 	});
 
 	test("emits commit-created so the commit selector refreshes", async () => {
 		const { impl } = fakeFetch(200, { commit: "cafe01" });
-		const seen = [];
-		const off = onCommitCreated((detail) => seen.push(detail));
-		try {
-			await commitWorktreeFile({
-				apiBase: "",
-				repoPath: REPO,
-				filePath: FILE,
-				message: "m",
-				fetchImpl: impl,
-			});
-		} finally {
-			off();
-		}
+		const [, seen] = await withCommitEvents(() => commit({ fetchImpl: impl }));
 		assert.deepEqual(seen, [
 			{ repoPath: REPO, filePath: FILE, commit: "cafe01" },
 		]);
@@ -112,29 +135,15 @@ describe("commitWorktreeFile", () => {
 
 	test("surfaces the backend error and does not emit on failure", async () => {
 		const { impl } = fakeFetch(409, { error: "No changes to commit" });
-		const seen = [];
-		const off = onCommitCreated((detail) => seen.push(detail));
-		try {
-			const res = await commitWorktreeFile({
-				apiBase: "",
-				repoPath: REPO,
-				filePath: FILE,
-				message: "m",
-				fetchImpl: impl,
-			});
-			assert.deepEqual(res, { ok: false, error: "No changes to commit" });
-		} finally {
-			off();
-		}
+		const [res, seen] = await withCommitEvents(() =>
+			commit({ fetchImpl: impl }),
+		);
+		assert.deepEqual(res, { ok: false, error: "No changes to commit" });
 		assert.equal(seen.length, 0);
 	});
 
 	test("reports network failures", async () => {
-		const res = await commitWorktreeFile({
-			apiBase: "",
-			repoPath: REPO,
-			filePath: FILE,
-			message: "m",
+		const res = await commit({
 			fetchImpl: async () => {
 				throw new Error("offline");
 			},

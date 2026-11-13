@@ -25,6 +25,32 @@ const makeNet = (name, pins, id = `n_${name}`) => ({
 
 const ir = (parts, nets = []) => ({ parts, nets });
 
+// Pin "1" of each listed part id, in makeNet's [partId, pin] form.
+const pin1 = (...partIds) => partIds.map((partId) => [partId, "1"]);
+
+// Expected edit ops shared by many cases.
+const schField = (name, value, ref = "R1") => ({
+	op: "setField",
+	ref,
+	name,
+	value,
+});
+const pcbField = (name, value, ref = "R1") => ({
+	op: "setFootprintField",
+	ref,
+	name,
+	value,
+});
+const padNet = (ref, net) => ({ op: "setPadNet", ref, pad: "1", net });
+const label = (net, pos) => ({ op: "addLabel", net, ...pos });
+const addTrack = (layer, width, points, net) => ({
+	op: "addTrack",
+	layer,
+	width,
+	points,
+	net,
+});
+
 const ADD_SYMBOL_R5 = {
 	op: "addSymbol",
 	ref: "R5",
@@ -52,6 +78,7 @@ const R2 = makePart({ id: "p2", ref: "R2", placement: at(40, 20) });
 
 // Pin 1 of a part at (10, 20) sits on the left edge of the 15.24 mm body.
 const PIN1_AT_10_20 = { x: 2.38, y: 20 };
+const PIN1_AT_40_20 = { x: 32.38, y: 20 };
 
 const PART_CASES = [
 	{
@@ -82,14 +109,9 @@ const PART_CASES = [
 		name: "removing a wired part does not block the save",
 		before: ir(
 			[makePart({ id: "c2", ref: "C2" }), R2],
-			[
-				makeNet("GND", [
-					["c2", "1"],
-					["p2", "1"],
-				]),
-			],
+			[makeNet("GND", pin1("c2", "p2"))],
 		),
-		after: ir([R2], [makeNet("GND", [["p2", "1"]])]),
+		after: ir([R2], [makeNet("GND", pin1("p2"))]),
 		sch: [{ op: "deleteSymbol", ref: "C2" }],
 		pcb: [{ op: "deleteFootprint", ref: "C2" }],
 		summary: "1 removed part will be saved",
@@ -98,10 +120,8 @@ const PART_CASES = [
 		name: "rename maps to Reference field edits",
 		before: ir([makePart()]),
 		after: ir([makePart({ ref: "R10" })]),
-		sch: [{ op: "setField", ref: "R1", name: "Reference", value: "R10" }],
-		pcb: [
-			{ op: "setFootprintField", ref: "R1", name: "Reference", value: "R10" },
-		],
+		sch: [schField("Reference", "R10")],
+		pcb: [pcbField("Reference", "R10")],
 		summary: "1 field will be saved",
 	},
 	{
@@ -110,43 +130,27 @@ const PART_CASES = [
 		after: ir([makePart({ ref: "R10", value: "22k", placement: at(5, 6) })]),
 		sch: [
 			{ op: "setValue", ref: "R1", value: "22k" },
-			{ op: "setField", ref: "R1", name: "Reference", value: "R10" },
+			schField("Reference", "R10"),
 		],
 		pcb: [
 			{ op: "move", ref: "R1", x: 5, y: 6, rot: 0 },
 			{ op: "setValue", ref: "R1", value: "22k" },
-			{ op: "setFootprintField", ref: "R1", name: "Reference", value: "R10" },
+			pcbField("Reference", "R10"),
 		],
 		summary: "1 value, 1 position and 1 field will be saved",
 	},
 	{
 		name: "footprint change swaps the PCB footprint and keeps its pad nets",
-		before: ir([makePart()], [makeNet("GND", [["p1", "1"]])]),
+		before: ir([makePart()], [makeNet("GND", pin1("p1"))]),
 		after: ir(
 			[makePart({ footprint: "Resistor_SMD:R_0805" })],
-			[makeNet("GND", [["p1", "1"]])],
+			[makeNet("GND", pin1("p1"))],
 		),
-		sch: [
-			{
-				op: "setField",
-				ref: "R1",
-				name: "Footprint",
-				value: "Resistor_SMD:R_0805",
-			},
-		],
+		sch: [schField("Footprint", "Resistor_SMD:R_0805")],
 		pcb: [
 			{ op: "deleteFootprint", ref: "R1" },
-			{
-				op: "addFootprint",
-				ref: "R1",
-				libId: "Resistor_SMD:R_0805",
-				value: "10k",
-				x: 10,
-				y: 20,
-				rot: 0,
-				side: "F",
-			},
-			{ op: "setPadNet", ref: "R1", pad: "1", net: "GND" },
+			{ ...ADD_FOOTPRINT_R5, ref: "R1", libId: "Resistor_SMD:R_0805" },
+			padNet("R1", "GND"),
 		],
 		summary: "1 field will be saved",
 	},
@@ -154,21 +158,15 @@ const PART_CASES = [
 		name: "text field change maps to setField and setFootprintField",
 		before: ir([makePart({ props: { MPN: "A" } })]),
 		after: ir([makePart({ props: { MPN: "B", Note: 3 } })]),
-		sch: [
-			{ op: "setField", ref: "R1", name: "MPN", value: "B" },
-			{ op: "setField", ref: "R1", name: "Note", value: "3" },
-		],
-		pcb: [
-			{ op: "setFootprintField", ref: "R1", name: "MPN", value: "B" },
-			{ op: "setFootprintField", ref: "R1", name: "Note", value: "3" },
-		],
+		sch: [schField("MPN", "B"), schField("Note", "3")],
+		pcb: [pcbField("MPN", "B"), pcbField("Note", "3")],
 		summary: "2 fields will be saved",
 	},
 	{
 		name: "field change on a part without footprint stays in the schematic",
 		before: ir([makePart({ footprint: "", props: { MPN: "A" } })]),
 		after: ir([makePart({ footprint: "", props: { MPN: "B" } })]),
-		sch: [{ op: "setField", ref: "R1", name: "MPN", value: "B" }],
+		sch: [schField("MPN", "B")],
 		pcb: [],
 		summary: "1 field will be saved",
 	},
@@ -178,58 +176,33 @@ const NET_CASES = [
 	{
 		name: "new connection maps to a label at each pin and pad nets",
 		before: ir([makePart(), R2]),
-		after: ir(
-			[makePart(), R2],
-			[
-				makeNet("SIG", [
-					["p1", "1"],
-					["p2", "1"],
-				]),
-			],
-		),
-		sch: [
-			{ op: "addLabel", net: "SIG", ...PIN1_AT_10_20 },
-			{ op: "addLabel", net: "SIG", x: 32.38, y: 20 },
-		],
-		pcb: [
-			{ op: "setPadNet", ref: "R1", pad: "1", net: "SIG" },
-			{ op: "setPadNet", ref: "R2", pad: "1", net: "SIG" },
-		],
+		after: ir([makePart(), R2], [makeNet("SIG", pin1("p1", "p2"))]),
+		sch: [label("SIG", PIN1_AT_10_20), label("SIG", PIN1_AT_40_20)],
+		pcb: [padNet("R1", "SIG"), padNet("R2", "SIG")],
 		summary: "2 connections will be saved",
 	},
 	{
 		name: "pin added to an existing connection labels only the new pin",
-		before: ir([makePart(), R2], [makeNet("VCC", [["p1", "1"]])]),
-		after: ir(
-			[makePart(), R2],
-			[
-				makeNet("VCC", [
-					["p1", "1"],
-					["p2", "1"],
-				]),
-			],
-		),
-		sch: [{ op: "addLabel", net: "VCC", x: 32.38, y: 20 }],
-		pcb: [{ op: "setPadNet", ref: "R2", pad: "1", net: "VCC" }],
+		before: ir([makePart(), R2], [makeNet("VCC", pin1("p1"))]),
+		after: ir([makePart(), R2], [makeNet("VCC", pin1("p1", "p2"))]),
+		sch: [label("VCC", PIN1_AT_40_20)],
+		pcb: [padNet("R2", "VCC")],
 		summary: "1 connection will be saved",
 	},
 	{
 		name: "connection to a part without footprint is a label only",
 		before: ir([makePart({ footprint: "" })]),
-		after: ir([makePart({ footprint: "" })], [makeNet("GND", [["p1", "1"]])]),
-		sch: [{ op: "addLabel", net: "GND", ...PIN1_AT_10_20 }],
+		after: ir([makePart({ footprint: "" })], [makeNet("GND", pin1("p1"))]),
+		sch: [label("GND", PIN1_AT_10_20)],
 		pcb: [],
 		summary: "1 connection will be saved",
 	},
 	{
 		name: "added part wired in one save is added before it is connected",
 		before: ir([]),
-		after: ir([R5], [makeNet("GND", [["p5", "1"]])]),
-		sch: [ADD_SYMBOL_R5, { op: "addLabel", net: "GND", ...PIN1_AT_10_20 }],
-		pcb: [
-			ADD_FOOTPRINT_R5,
-			{ op: "setPadNet", ref: "R5", pad: "1", net: "GND" },
-		],
+		after: ir([R5], [makeNet("GND", pin1("p5"))]),
+		sch: [ADD_SYMBOL_R5, label("GND", PIN1_AT_10_20)],
+		pcb: [ADD_FOOTPRINT_R5, padNet("R5", "GND")],
 		summary: "1 added part and 1 connection will be saved",
 	},
 ];
@@ -243,7 +216,7 @@ const seg = (patch = {}) => ({
 	widthMm: 0.3,
 	...patch,
 });
-const gndIr = ir([makePart()], [makeNet("GND", [["p1", "1"]])]);
+const gndIr = ir([makePart()], [makeNet("GND", pin1("p1"))]);
 
 const TRACK_CASES = [
 	{
@@ -253,16 +226,15 @@ const TRACK_CASES = [
 		boards: { before: board(), after: board(seg()) },
 		sch: [],
 		pcb: [
-			{
-				op: "addTrack",
-				layer: "F.Cu",
-				width: 0.3,
-				points: [
+			addTrack(
+				"F.Cu",
+				0.3,
+				[
 					{ x: 0, y: 0 },
 					{ x: 5, y: 0 },
 				],
-				net: "GND",
-			},
+				"GND",
+			),
 		],
 		summary: "1 track will be saved",
 	},
@@ -280,16 +252,15 @@ const TRACK_CASES = [
 		},
 		sch: [],
 		pcb: [
-			{
-				op: "addTrack",
-				layer: "B.Cu",
-				width: 0.25,
-				points: [
+			addTrack(
+				"B.Cu",
+				0.25,
+				[
 					{ x: 1, y: 2 },
 					{ x: 3, y: 4 },
 				],
-				net: 0,
-			},
+				0,
+			),
 		],
 		summary: "1 track will be saved",
 	},
@@ -331,22 +302,14 @@ const UNSUPPORTED_CASES = [
 	},
 	{
 		name: "renamed connection",
-		before: ir([makePart()], [makeNet("GND", [["p1", "1"]], "n1")]),
-		after: ir([makePart()], [makeNet("AGND", [["p1", "1"]], "n1")]),
+		before: ir([makePart()], [makeNet("GND", pin1("p1"), "n1")]),
+		after: ir([makePart()], [makeNet("AGND", pin1("p1"), "n1")]),
 		sentence: "connection GND was renamed to AGND",
 	},
 	{
 		name: "pin removed from a connection",
-		before: ir(
-			[makePart(), R2],
-			[
-				makeNet("VCC", [
-					["p1", "1"],
-					["p2", "1"],
-				]),
-			],
-		),
-		after: ir([makePart(), R2], [makeNet("VCC", [["p1", "1"]])]),
+		before: ir([makePart(), R2], [makeNet("VCC", pin1("p1", "p2"))]),
+		after: ir([makePart(), R2], [makeNet("VCC", pin1("p1"))]),
 		sentence: "connection VCC lost a pin",
 	},
 	{
