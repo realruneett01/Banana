@@ -52,6 +52,11 @@ export function normalizeCommitMessage(message) {
 	return typeof message === "string" ? message.trim() : "";
 }
 
+// Returns true when a remembered file should trigger a diff refresh on mount.
+export function shouldRefreshOnMount(filePath) {
+	return typeof filePath === "string" && filePath.length > 0;
+}
+
 export function buildWorktreeDiffValues(repoPath, baseCommit, filePath) {
 	return {
 		repoPath,

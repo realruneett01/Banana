@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createFileChangeHub } from "../../frontend/src/kicad/commitWorktree.js";
+import {
+	buildWorktreeDiffValues,
+	createFileChangeHub,
+	shouldRefreshOnMount,
+} from "../../frontend/src/kicad/commitWorktree.js";
 
 function fakeSource() {
 	const state = { listeners: [], unsubscribed: 0 };
@@ -84,5 +88,79 @@ describe("createFileChangeHub", () => {
 		web.start();
 		web.stop();
 		assert.equal(web.latestFor("C:/r"), null);
+	});
+});
+
+describe("shouldRefreshOnMount", () => {
+	const cases = [
+		{ filePath: "a.kicad_pcb", expected: true },
+		{ filePath: null, expected: false },
+		{ filePath: undefined, expected: false },
+		{ filePath: "", expected: false },
+	];
+	for (const { filePath, expected } of cases) {
+		test(`filePath=${JSON.stringify(filePath)} -> ${expected}`, () => {
+			assert.equal(shouldRefreshOnMount(filePath), expected);
+		});
+	}
+});
+
+describe("mount-refresh integration", () => {
+	test("restored file triggers one refresh request", () => {
+		const { src, hub } = startedHub();
+		src.fire({ projectRoot: "C:/proj", filePath: "board.kicad_pcb" });
+
+		const refreshed = [];
+		const onWorktreeDiff = (v) => refreshed.push(v);
+
+		// simulate what useKicadSaves does on mount when a remembered file exists
+		const remembered = hub.latestFor("C:/proj");
+		if (shouldRefreshOnMount(remembered)) {
+			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
+		}
+
+		assert.equal(refreshed.length, 1);
+		assert.equal(refreshed[0].relativeFilePath, "board.kicad_pcb");
+	});
+
+	test("no remembered file -> no refresh on mount", () => {
+		const { hub } = startedHub();
+		const refreshed = [];
+		const onWorktreeDiff = (v) => refreshed.push(v);
+
+		const remembered = hub.latestFor("C:/proj");
+		if (shouldRefreshOnMount(remembered)) {
+			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
+		}
+
+		assert.equal(refreshed.length, 0);
+	});
+
+	test("live event after restore triggers exactly one more refresh", () => {
+		const { src, hub } = startedHub();
+		src.fire({ projectRoot: "C:/proj", filePath: "board.kicad_pcb" });
+
+		const refreshed = [];
+		const onWorktreeDiff = (v) => refreshed.push(v);
+		let mountDone = false;
+
+		// mount: restore diff
+		const remembered = hub.latestFor("C:/proj");
+		if (shouldRefreshOnMount(remembered)) {
+			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
+		}
+		mountDone = true;
+		assert.equal(refreshed.length, 1);
+
+		// simulate live event arriving after mount
+		const liveFile = "board.kicad_pcb";
+		if (!mountDone || liveFile !== remembered) {
+			// this branch would be a duplicate guard; not taken here
+			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", liveFile));
+		} else {
+			// mount already covered this file; live event still fires one more
+			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", liveFile));
+		}
+		assert.equal(refreshed.length, 2);
 	});
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../config.js";
 import { createProjectHeaders } from "../projects/useProjects.js";
 import {
@@ -6,6 +6,7 @@ import {
 	commitWorktreeFile,
 	kicadFileChanges,
 	normalizePath,
+	shouldRefreshOnMount,
 } from "./commitWorktree.js";
 
 // Mount once near the app root: owns the session-long KiCad subscription.
@@ -86,6 +87,20 @@ export function useKicadSaves(options = {}) {
 		kicadFileChanges.clear(repoPath);
 		setPending(null);
 	}, [repoPath]);
+
+	// On mount / repo change: if a remembered file exists, refresh the diff once.
+	// The callback is read through a ref so a new identity never re-runs the refresh.
+	const diffRef = useRef(onWorktreeDiff);
+	diffRef.current = onWorktreeDiff;
+	useEffect(() => {
+		const filePath = kicadFileChanges.latestFor(repoPath);
+		if (shouldRefreshOnMount(filePath)) {
+			diffRef.current?.(
+				buildWorktreeDiffValues(repoPath, baseCommit, filePath),
+			);
+		}
+	}, [repoPath, baseCommit]);
+
 	useKicadSubscription({ repoPath, baseCommit, onWorktreeDiff, onFileChange });
 	const commitPending = useCommitCallback({
 		repoPath,
