@@ -390,7 +390,7 @@ export default function SimulationDrawer({
 		<Drawer
 			title="Simulate"
 			placement="right"
-			width={520}
+			size={520}
 			open={open}
 			onClose={onClose}
 			styles={DRAWER_STYLES}

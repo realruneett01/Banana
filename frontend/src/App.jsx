@@ -431,7 +431,7 @@ function DesignDrawers({ loop, commit, repo, ws }) {
 		<>
 			<Drawer
 				placement="left"
-				width={560}
+				size={560}
 				title="Design with AI"
 				open={loop.agentOpen}
 				onClose={loop.closeAgent}
