@@ -146,21 +146,142 @@ function collectFootprintPads(fpNode, partId, padConnections) {
 	}
 }
 
+function relAngle(rot, fpRot) {
+	return (((rot - fpRot) % 360) + 360) % 360;
+}
+
 // Board files store pad angles absolute; the editor wants them footprint-relative.
 function toLocalPad(pad, fpRot) {
 	const [x, y, rot] = pad.at;
-	return { ...pad, at: [x, y, (((rot - fpRot) % 360) + 360) % 360] };
+	return { ...pad, at: [x, y, relAngle(rot, fpRot)] };
 }
 
-// Pads exactly as placed on the board (already flipped for B side). Graphics
-// stay out: raw silkscreen nodes would push the board past the JSON body
-// limit of the live-check and export requests.
-function embeddedFootprint(fpNode, fpRot) {
+const GRAPHIC_LAYERS = new Set(["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"]);
+
+function roundMilli(val) {
+	const r = Math.round(Number(val) * 1000) / 1000;
+	return Object.is(r, -0) ? 0 : r;
+}
+
+function milliPt(node) {
+	return [roundMilli(node?.[1] ?? 0), roundMilli(node?.[2] ?? 0)];
+}
+
+function childPt(node, head) {
+	return milliPt(extractChildNode(node, head));
+}
+
+function strokeWidth(node) {
+	const stroke = extractChildNode(node, "stroke");
+	const width = extractChildNode(stroke ?? node, "width");
+	return width ? roundMilli(width[1]) : 0.12;
+}
+
+// A rect becomes a polygon so it stays correct under any footprint rotation.
+function rectToPoly(node) {
+	const [x1, y1] = childPt(node, "start");
+	const [x2, y2] = childPt(node, "end");
+	const pts = [
+		[x1, y1],
+		[x2, y1],
+		[x2, y2],
+		[x1, y2],
+	];
+	return { type: "poly", pts };
+}
+
+function circleShape(node) {
+	const center = childPt(node, "center");
+	const [ex, ey] = childPt(node, "end");
+	const radius = roundMilli(Math.hypot(ex - center[0], ey - center[1]));
+	return { type: "circle", center, radius };
+}
+
+// Board files written by KiCad 7+ always give arcs a mid point.
+function arcShape(node) {
+	if (!extractChildNode(node, "mid")) return null;
+	const [start, mid, end] = ["start", "mid", "end"].map((h) =>
+		childPt(node, h),
+	);
+	return { type: "arc", start, mid, end };
+}
+
+function polyShape(node) {
+	const pts = (extractChildNode(node, "pts") ?? []).filter(
+		(c) => Array.isArray(c) && c[0]?.sym === "xy",
+	);
+	return { type: "poly", pts: pts.map(milliPt) };
+}
+
+const GRAPHIC_SHAPES = new Map([
+	[
+		"fp_line",
+		(n) => ({
+			type: "line",
+			start: childPt(n, "start"),
+			end: childPt(n, "end"),
+		}),
+	],
+	["fp_rect", rectToPoly],
+	["fp_circle", circleShape],
+	["fp_arc", arcShape],
+	["fp_poly", polyShape],
+]);
+
+// Footprint-local silk/fab outlines in the editor's primitive shape. Text
+// strokes stay out to keep the board JSON small.
+function compactGraphic(node) {
+	const shape = GRAPHIC_SHAPES.get(node[0]?.sym);
+	const layer = extractLayerName(node);
+	if (!shape || !GRAPHIC_LAYERS.has(layer)) return null;
+	const g = shape(node);
+	return g && { ...g, layer, width: strokeWidth(node) };
+}
+
+function compactGraphics(fpNode) {
+	return fpNode
+		.filter((c) => Array.isArray(c))
+		.map(compactGraphic)
+		.filter(Boolean);
+}
+
+function isReferenceText(node) {
+	const head = node[0]?.sym;
+	const kind = nodeSym(node[1]);
+	if (head === "property") return kind === "Reference";
+	return head === "fp_text" && kind.toLowerCase() === "reference";
+}
+
+function fontHeight(textNode) {
+	const effects = extractChildNode(textNode, "effects");
+	const size = extractChildNode(extractChildNode(effects, "font"), "size");
+	return size ? roundMilli(size[1]) : 1;
+}
+
+// Reference text position: footprint-local, angle relative to the footprint
+// (the board file stores text angles absolute, like pad angles).
+function referenceLabel(fpNode, fpRot) {
+	const text = fpNode.find((c) => Array.isArray(c) && isReferenceText(c));
+	const at = extractChildNode(text, "at");
+	if (!at) return null;
+	const rot = at.length > 3 ? Number(at[3]) : 0;
 	return {
+		at: milliPt(at),
+		rot: relAngle(rot, fpRot),
+		size: fontHeight(text),
+	};
+}
+
+// Pads exactly as placed on the board (already flipped for B side), plus
+// compact silk/fab outlines and the reference text position.
+function embeddedFootprint(fpNode, fpRot) {
+	const fp = {
 		embedded: true,
 		pads: collectPadGeometry(fpNode).map((pad) => toLocalPad(pad, fpRot)),
-		graphics: [],
+		graphics: compactGraphics(fpNode),
 	};
+	const refLabel = referenceLabel(fpNode, fpRot);
+	return refLabel ? { ...fp, refLabel } : fp;
 }
 
 function collectDeclaredNets(ast, netInfoMap) {

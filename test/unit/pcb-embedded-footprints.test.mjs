@@ -6,9 +6,15 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import { kicadPcbToIr } from "../../backend/src/engine/kicad-pcb-to-ir.js";
 import {
+	arcToSvgPath,
 	boardPadPositions,
 	boardPadRadii,
+	footprintIdsToFetch,
+	footprintToPrimitives,
 	padWorldPositions,
+	placementFor,
+	refLabelPlacement,
+	transformPrimitives,
 } from "../../frontend/src/editor/footprintRender.js";
 import { ratsnest as boardRatsnest } from "../../frontend/src/editor/pcbGeometry.js";
 import { ratsnest } from "../../frontend/src/editor/ratsnest.js";
@@ -143,5 +149,202 @@ describe("ratsnest connectivity", () => {
 			{ id: 1, net, x: 9, y: 9, r: 0.5 },
 		];
 		assert.equal(ratsnest(pads, []).length, 1);
+	});
+});
+
+const GRAPHIC_TYPES = new Set(["line", "arc", "circle", "poly"]);
+const GRAPHIC_LAYERS = new Set(["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"]);
+// express.json() default body limit ("100kb").
+const EXPRESS_DEFAULT_LIMIT = 100 * 1024;
+
+function allGraphics(board) {
+	return Object.values(board.footprints).flatMap((fp) => fp.graphics);
+}
+
+function isMilliRounded(n) {
+	return Math.abs(n * 1000 - Math.round(n * 1000)) < 1e-6;
+}
+
+function graphicNumbers(g) {
+	const pts = [g.start, g.mid, g.end, g.center, ...(g.pts ?? [])];
+	return pts
+		.filter(Boolean)
+		.flat()
+		.concat(g.radius ?? [], g.width);
+}
+
+describe("compact embedded graphics (ecc83-pp)", { skip: skipEcc83 }, () => {
+	test("silkscreen primitives are extracted in compact form", () => {
+		const { board } = importEcc83();
+		const graphics = allGraphics(board);
+		const silk = graphics.filter((g) => g.layer.endsWith(".SilkS"));
+		assert.ok(silk.length > 0, "no silkscreen primitives");
+		for (const g of graphics) {
+			assert.ok(GRAPHIC_TYPES.has(g.type), `type ${g.type}`);
+			assert.ok(GRAPHIC_LAYERS.has(g.layer), `layer ${g.layer}`);
+			assert.ok(graphicNumbers(g).every(isMilliRounded), JSON.stringify(g));
+		}
+	});
+
+	test("ir + board request body stays under the default JSON limit", () => {
+		const { ir, board } = importEcc83();
+		const size = JSON.stringify({ ir, board }).length;
+		assert.ok(size < EXPRESS_DEFAULT_LIMIT, `body is ${size} bytes`);
+	});
+
+	test("compact graphics render through footprintToPrimitives", () => {
+		const { ir, board } = importEcc83();
+		const part = ir.parts.find((p) => p.ref === "R1");
+		const fp = board.footprints[part.id];
+		const prims = transformPrimitives(
+			footprintToPrimitives(fp),
+			placementFor(fp, part.placement),
+		);
+		assert.equal(prims.graphics.length, fp.graphics.length);
+		for (const g of prims.graphics.filter((x) => x.type === "arc")) {
+			assert.match(arcToSvgPath(g), /^M [-\d.]+ [-\d.]+ A /);
+		}
+	});
+
+	test("reference label position comes from the board file", () => {
+		const { ir, board } = importEcc83();
+		const p5 = ir.parts.find((p) => p.ref === "P5");
+		assert.deepEqual(board.footprints[p5.id].refLabel, {
+			at: [4.505, -1.28],
+			rot: 0,
+			size: 1,
+		});
+		const r1 = ir.parts.find((p) => p.ref === "R1");
+		// Board text angle 90 is absolute; the footprint sits at -90.
+		assert.equal(board.footprints[r1.id].refLabel.rot, 180);
+	});
+});
+
+describe("compact embedded graphics (synthetic)", () => {
+	const text = `(kicad_pcb (version 20240108) (generator test)
+  (footprint "Lib:X" (layer "F.Cu") (at 10 20 90)
+    (property "Reference" "U1" (at 1.23456 -2 90) (layer "F.SilkS")
+      (effects (font (size 1.5 1.5))))
+    (fp_line (start 0 0) (end 1.00049 0) (stroke (width 0.12) (type solid)) (layer "F.SilkS"))
+    (fp_rect (start -1 -1) (end 1 1) (stroke (width 0.1) (type solid)) (layer "F.Fab"))
+    (fp_circle (center 0 0) (end 3 4) (stroke (width 0.1) (type solid)) (layer "B.SilkS"))
+    (fp_arc (start 1 0) (mid 0 1) (end -1 0) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
+    (fp_poly (pts (xy 0 0) (xy 1 0) (xy 1 1)) (stroke (width 0.1) (type solid)) (layer "F.SilkS"))
+    (fp_line (start 0 0) (end 5 5) (stroke (width 0.05) (type solid)) (layer "F.CrtYd"))
+    (fp_text user "x" (at 0 0) (layer "F.SilkS"))
+    (pad "1" smd rect (at 0 0 90) (size 1 1) (layers "F.Cu"))))`;
+
+	function importSynthetic() {
+		const res = kicadPcbToIr(text);
+		assert.equal(res.ok, true, JSON.stringify(res.errors));
+		return res.board.footprints[res.ir.parts[0].id];
+	}
+
+	test("keeps silk and fab shapes only, rounded to 0.001 mm", () => {
+		const fp = importSynthetic();
+		const style = (layer, width) => ({ layer, width });
+		assert.deepEqual(fp.graphics, [
+			{ type: "line", start: [0, 0], end: [1, 0], ...style("F.SilkS", 0.12) },
+			{
+				type: "poly",
+				pts: [
+					[-1, -1],
+					[1, -1],
+					[1, 1],
+					[-1, 1],
+				],
+				...style("F.Fab", 0.1),
+			},
+			{ type: "circle", center: [0, 0], radius: 5, ...style("B.SilkS", 0.1) },
+			{
+				type: "arc",
+				start: [1, 0],
+				mid: [0, 1],
+				end: [-1, 0],
+				...style("F.SilkS", 0.1),
+			},
+			{
+				type: "poly",
+				pts: [
+					[0, 0],
+					[1, 0],
+					[1, 1],
+				],
+				...style("F.SilkS", 0.1),
+			},
+		]);
+	});
+
+	test("compact arcs get centre and radius for drawing", () => {
+		const fp = importSynthetic();
+		const placed = transformPrimitives(
+			footprintToPrimitives(fp),
+			placementFor(fp, { x: 10, y: 20, rot: 90, side: "F" }),
+		);
+		const arc = placed.graphics.find((g) => g.type === "arc");
+		assert.deepEqual(
+			arc.center.map((n) => Math.round(n * 1000) / 1000),
+			[10, 20],
+		);
+		assert.equal(arc.radius, 1);
+		assert.match(arcToSvgPath(arc), /^M [-\d.]+ [-\d.]+ A 1 1 /);
+	});
+
+	test("reference label is footprint-local with a relative angle", () => {
+		const fp = importSynthetic();
+		assert.deepEqual(fp.refLabel, { at: [1.235, -2], rot: 0, size: 1.5 });
+	});
+
+	test("label placement rotates with the footprint and stays readable", () => {
+		const fp = { embedded: true, refLabel: { at: [2, 0], rot: 0, size: 1 } };
+		const pl = refLabelPlacement(fp, { x: 10, y: 20, rot: 90, side: "F" });
+		assert.deepEqual(pl, { x: 10, y: 18, angle: -90, size: 1 });
+		const flipped = refLabelPlacement(
+			{ ...fp, refLabel: { at: [0, 0], rot: 180, size: 1 } },
+			{ x: 0, y: 0, rot: 0, side: "F" },
+		);
+		assert.equal(flipped.angle, 0);
+	});
+
+	test("no reference label without a board-file position", () => {
+		assert.equal(refLabelPlacement({ embedded: true, pads: [] }, {}), null);
+		assert.equal(refLabelPlacement(null, {}), null);
+	});
+});
+
+describe("library footprint fetch decision", () => {
+	const part = (id, footprint, placement = { x: 0, y: 0 }) => ({
+		id,
+		footprint,
+		placement,
+	});
+	const parts = [
+		part("a", "Lib:A"),
+		part("b", "Lib:B"),
+		part("c", "Lib:A"),
+		{ id: "d", footprint: "Lib:D" },
+	];
+
+	test("nothing is fetched while the PCB view is hidden", () => {
+		assert.deepEqual(footprintIdsToFetch(parts, { visible: false }), []);
+	});
+
+	test("visible view fetches each unknown placed footprint once", () => {
+		const ids = footprintIdsToFetch(parts, { visible: true });
+		assert.deepEqual(ids, ["Lib:A", "Lib:B"]);
+	});
+
+	test("known misses, cached, pending and embedded parts are skipped", () => {
+		const ids = footprintIdsToFetch(parts, {
+			visible: true,
+			cache: { "Lib:A": null },
+			pending: new Set(["Lib:B"]),
+		});
+		assert.deepEqual(ids, []);
+		const embedded = footprintIdsToFetch(parts, {
+			visible: true,
+			embedded: { a: {}, c: {} },
+		});
+		assert.deepEqual(embedded, ["Lib:B"]);
 	});
 });

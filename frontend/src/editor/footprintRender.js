@@ -174,8 +174,16 @@ function parsePolyNode(node, layer, width) {
 	return { type: "poly", layer, width, pts };
 }
 
+// Board-embedded footprints carry graphics already in primitive form; arcs
+// only keep start/mid/end, so the centre and radius are derived here.
+function compactGraphic(g) {
+	if (!g?.type) return null;
+	if (g.type !== "arc") return g;
+	return { ...g, ...calcArcCenter(g.start, g.mid, g.end) };
+}
+
 function parseGraphicNode(node) {
-	if (!Array.isArray(node)) return null;
+	if (!Array.isArray(node)) return compactGraphic(node);
 	const head = nodeSym(node[0]);
 	const layer = extractLayer(node);
 	const width = extractWidth(node);
@@ -366,6 +374,45 @@ function calcPadWorldCoord(pad, pl) {
 export function placementFor(fp, placement = {}) {
 	if (!fp?.embedded) return placement;
 	return { ...placement, rot: -(placement.rot ?? 0), side: "F" };
+}
+
+// SVG rotation for a KiCad text angle (counter-clockwise, Y down), turned
+// so the text never reads upside down.
+function readableSvgAngle(kicadDeg) {
+	const a = ((-kicadDeg % 360) + 360) % 360 || 0;
+	if (a >= 90 && a < 270) return a - 180;
+	return a >= 270 ? a - 360 : a;
+}
+
+/**
+ * World position, SVG angle and font height of a board-embedded footprint's
+ * reference text; null when the board file gave no position.
+ */
+export function refLabelPlacement(fp, placement = {}) {
+	const label = fp?.refLabel;
+	if (!label) return null;
+	const [x, y] = transformPoint(label.at, placementFor(fp, placement));
+	const angle = readableSvgAngle(label.rot + (placement.rot ?? 0));
+	return { x: round4(x), y: round4(y), angle, size: label.size };
+}
+
+function partFootprintId(part) {
+	return part.footprint ?? part.props?.footprint;
+}
+
+/**
+ * Library footprint ids still to fetch: only while the PCB view is shown,
+ * only for placed parts the board file does not embed, and never again for
+ * an id already cached (a cached null is a known miss) or in flight.
+ */
+export function footprintIdsToFetch(parts, opts = {}) {
+	const { visible, embedded, cache = {}, pending = new Set() } = opts;
+	if (!visible || !Array.isArray(parts)) return [];
+	const ids = parts
+		.filter((p) => p.placement && !embedded?.[p.id])
+		.map(partFootprintId)
+		.filter((id) => id && cache[id] === undefined && !pending.has(id));
+	return [...new Set(ids)];
 }
 
 export function padWorldPositions(fp, placement = {}) {

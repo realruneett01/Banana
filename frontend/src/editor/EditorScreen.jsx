@@ -987,6 +987,7 @@ function CanvasViewport(props) {
 					board={curBoard}
 					onBoardChange={docState.setBoard}
 					fetchFootprint={fetchers.fetchFootprint}
+					visible={activeTab === "pcb"}
 					markers={markers}
 					onCursorMove={setCursor}
 				/>

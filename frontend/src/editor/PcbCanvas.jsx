@@ -12,8 +12,10 @@ import {
 	arcToSvgPath,
 	boardPadPositions,
 	boardPadRadii,
+	footprintIdsToFetch,
 	footprintToPrimitives,
 	placementFor,
+	refLabelPlacement,
 	transformPrimitives,
 } from "./footprintRender.js";
 import {
@@ -530,12 +532,17 @@ function ViasLayer({ vias }) {
 	);
 }
 
-function PartRefLabel({ rect }) {
-	const fontSize = Math.max(0.6, Math.min(rect.w, rect.h) * 0.4);
+// `label` is the board file's reference text placement; without it the
+// reference sits at the part centre, sized to the part.
+function PartRefLabel({ rect, label }) {
+	const fontSize = label?.size ?? Math.max(0.6, Math.min(rect.w, rect.h) * 0.4);
+	const x = label?.x ?? rect.x;
+	const y = label?.y ?? rect.y;
 	return (
 		<text
-			x={rect.x}
-			y={rect.y}
+			x={x}
+			y={y}
+			transform={label?.angle ? `rotate(${label.angle} ${x} ${y})` : undefined}
 			textAnchor="middle"
 			dominantBaseline="central"
 			fill="#f1f5f9"
@@ -767,6 +774,7 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 			),
 		[fp, part.placement],
 	);
+	const label = refLabelPlacement(fp, part.placement);
 	const isBack = rect.side === "B";
 	const rot = rect.rot ? `rotate(${rect.rot} ${rect.x} ${rect.y})` : undefined;
 	return (
@@ -800,7 +808,7 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 					layerState={layerState}
 				/>
 			))}
-			<PartRefLabel rect={rect} />
+			<PartRefLabel rect={rect} label={label} />
 		</g>
 	);
 }
@@ -1632,11 +1640,6 @@ function useCanvasSelection(editor, board, pushBoard, onChange) {
 	return { selectedTrackIndex, selectedPartId, deleteSelected, onSelectHit };
 }
 
-function shouldFetchFp(fpId, cache, pending) {
-	if (!fpId) return false;
-	return cache[fpId] === undefined && !pending.has(fpId);
-}
-
 function fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache) {
 	pendingRef.current.add(fpId);
 	fetchFootprint(fpId)
@@ -1650,19 +1653,24 @@ function fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache) {
 		});
 }
 
-function useFootprintCache(parts, fetchFootprint) {
+// Lazy: nothing is fetched until the PCB view is shown; a cached null is a
+// known miss and is never fetched again.
+function useFootprintCache(parts, embedded, fetchFootprint, visible) {
 	const [cache, setCache] = useState({});
 	const pendingRef = useRef(new Set());
 
 	useEffect(() => {
-		if (!fetchFootprint || !Array.isArray(parts)) return;
-		for (const p of parts) {
-			const fpId = p.footprint ?? p.props?.footprint;
-			if (shouldFetchFp(fpId, cache, pendingRef.current)) {
-				fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache);
-			}
+		if (!fetchFootprint) return;
+		const ids = footprintIdsToFetch(parts, {
+			visible,
+			embedded,
+			cache,
+			pending: pendingRef.current,
+		});
+		for (const fpId of ids) {
+			fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache);
 		}
-	}, [parts, fetchFootprint, cache]);
+	}, [parts, embedded, fetchFootprint, cache, visible]);
 
 	return cache;
 }
@@ -1672,13 +1680,9 @@ function partFpId(part) {
 }
 
 // A board file embeds every placed footprint; fetch from the library only the rest.
-function usePadGeometry(parts, board, fetchFootprint) {
+function usePadGeometry(parts, board, fetchFootprint, visible) {
 	const embedded = board?.footprints;
-	const toFetch = useMemo(
-		() => (parts ?? []).filter((p) => !embedded?.[p.id]),
-		[parts, embedded],
-	);
-	const fpCache = useFootprintCache(toFetch, fetchFootprint);
+	const fpCache = useFootprintCache(parts, embedded, fetchFootprint, visible);
 	const fpLookup = useCallback(
 		(p) => embedded?.[p.id] ?? fpCache[partFpId(p)] ?? null,
 		[embedded, fpCache],
@@ -2225,6 +2229,7 @@ function usePcbCanvasState({
 	onBoardChange,
 	onChange,
 	fetchFootprint,
+	visible,
 }) {
 	const svgRef = useRef(null);
 	const ir = editor?.state?.ir;
@@ -2234,6 +2239,7 @@ function usePcbCanvasState({
 		ir?.parts,
 		board,
 		fetchFootprint,
+		visible,
 	);
 	const history = useBoardHistory(board, onBoardChange);
 	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
@@ -2307,6 +2313,7 @@ export default function PcbCanvas({
 	onChange,
 	fetchFootprint,
 	markers = [],
+	visible = true,
 }) {
 	const s = usePcbCanvasState({
 		editor,
@@ -2314,6 +2321,7 @@ export default function PcbCanvas({
 		onBoardChange,
 		onChange,
 		fetchFootprint,
+		visible,
 	});
 
 	return (
