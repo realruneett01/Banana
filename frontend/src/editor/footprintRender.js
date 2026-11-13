@@ -286,9 +286,11 @@ function transformPoint(pt, pl) {
 	return [x + rx, y + ry];
 }
 
+// pl.rot is an SVG angle (clockwise) but padRot is KiCad's (counter-clockwise),
+// so it is subtracted; the X mirror on B reverses it once more.
 function transformRot(padRot, pl) {
 	const rot = pl.rot ?? 0;
-	const base = pl.side === "B" ? rot - padRot : rot + padRot;
+	const base = pl.side === "B" ? rot + padRot : rot - padRot;
 	return ((base % 360) + 360) % 360;
 }
 

@@ -99,11 +99,12 @@ function isCoordHead(head) {
 	return heads.includes(head);
 }
 
+// KiCad flips a footprint to the back top-bottom: local Y is negated.
 function mirrorNodeCoordinates(node) {
 	if (!Array.isArray(node)) return;
 	const head = node[0]?.sym;
-	if (isCoordHead(head) && Number.isFinite(node[1])) {
-		node[1] = roundCoord(-node[1]);
+	if (isCoordHead(head) && Number.isFinite(node[2])) {
+		node[2] = roundCoord(-node[2]);
 	}
 	for (let i = 1; i < node.length; i++) {
 		mirrorNodeCoordinates(node[i]);
@@ -241,6 +242,29 @@ function applyFootprintSideB(fpNode) {
 		if (["at", "uuid", "layer"].includes(head)) continue;
 		flipNodeLayers(child);
 		mirrorNodeCoordinates(child);
+		// The flip negates a pad's angle; text is turned to read from below.
+		if (head === "pad") turnItem(child, (a) => -a);
+		if (TEXT_HEADS.includes(head)) turnItem(child, (a) => 180 - a);
+	}
+}
+
+const TEXT_HEADS = ["property", "fp_text"];
+
+function turnItem(item, fn) {
+	const at = findChildByTag(item, "at");
+	if (!at) return;
+	const angle = ((fn(Number(at[3]) || 0) % 360) + 360) % 360 || 0;
+	if (angle || at.length > 3) at[3] = roundCoord(angle);
+}
+
+// Board files store pad and text angles absolute: add the footprint's own.
+function rotateFootprintItems(fpNode, rot) {
+	if (!rot) return;
+	for (const child of fpNode) {
+		const head = Array.isArray(child) ? child[0]?.sym : null;
+		if (head === "pad" || TEXT_HEADS.includes(head)) {
+			turnItem(child, (a) => a + rot);
+		}
 	}
 }
 
@@ -323,6 +347,7 @@ function configureFootprintNode(fpNode, edit, newUuid) {
 	updateOrAddProperty(fpNode, "Value", String(edit.value), valLayer);
 	updateFootprintUuids(fpNode, newUuid);
 	if (side === "B") applyFootprintSideB(fpNode);
+	rotateFootprintItems(fpNode, edit.rot ?? 0);
 }
 
 function handleAddFootprint(ast, edit, newUuid) {

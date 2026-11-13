@@ -1,3 +1,4 @@
+import { placementFor } from "./footprintRender.js";
 import { ratsnest as pureRatsnest } from "./ratsnest.js";
 
 // Each net is solved on its own, so the pure module needs only one non-empty net key.
@@ -241,7 +242,8 @@ export function ratsnest(ir, padPos, tracks = [], opts = {}) {
 function pointInPart(x, y, part) {
 	const rect = footprintRect(part);
 	if (!rect) return false;
-	const rad = (-rect.rot * Math.PI) / 180;
+	// Undo the SVG turn the part is drawn with.
+	const rad = (-placementFor(null, rect).rot * Math.PI) / 180;
 	const cos = Math.cos(rad);
 	const sin = Math.sin(rad);
 	const dx = x - rect.x;

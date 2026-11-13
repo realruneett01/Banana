@@ -270,7 +270,7 @@ describe("kicad-pcb-edit", () => {
 		assert.notEqual(extractUuid(pads[1]), "orig-pad2-uuid-0005");
 	});
 
-	test("addFootprint on back flips layers and mirrors X coordinates", () => {
+	test("addFootprint on back flips layers and flips top-bottom like KiCad", () => {
 		const { res, ast } = executeEdits(baseText, BACK_FP_EDITS);
 		assert.equal(res.ok, true);
 		const fp = findFootprint(ast, "R_BACK");
@@ -284,7 +284,15 @@ describe("kicad-pcb-edit", () => {
 			assert.ok(!lNode.includes("F.Cu"), "Pad layers must not contain F.Cu");
 		}
 		const p1At = pads[0].find((c) => Array.isArray(c) && c[0]?.sym === "at");
-		assert.equal(p1At?.[1], 0.8, "Pad 1 X coordinate must be mirrored to 0.8");
+		assert.equal(p1At?.[1], -0.8, "Pad 1 X coordinate must stay -0.8");
+		assert.equal(p1At?.[3], 90, "Pad 1 angle must carry the footprint's 90");
+		const ref = fp.find((c) => Array.isArray(c) && c[2] === "R_BACK");
+		const refAt = ref.find((c) => Array.isArray(c) && c[0]?.sym === "at");
+		assert.deepEqual(
+			refAt.slice(1),
+			[0, 1, 270],
+			"Reference text flips to y=1",
+		);
 	});
 
 	test("setPadNet declares GND once even when called twice", () => {

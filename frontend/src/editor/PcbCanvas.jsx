@@ -562,11 +562,17 @@ function resolvePartColors(isFront, isSelected) {
 	return { stroke, strokeWidth: 0.25 };
 }
 
+// SVG transform for a part outline, turned KiCad's way like its footprint.
+function partRotation(rect) {
+	if (!rect.rot) return undefined;
+	return `rotate(${placementFor(null, rect).rot} ${rect.x} ${rect.y})`;
+}
+
 function PartShape({ rect, isSelected }) {
 	const isFront = rect.side !== "B";
 	const { stroke, strokeWidth } = resolvePartColors(isFront, isSelected);
 	const fill = isFront ? "rgba(56, 189, 248, 0.2)" : "rgba(167, 139, 250, 0.2)";
-	const rot = rect.rot ? `rotate(${rect.rot} ${rect.x} ${rect.y})` : undefined;
+	const rot = partRotation(rect);
 	return (
 		<g transform={rot} style={{ cursor: "move" }}>
 			<rect
@@ -776,7 +782,7 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 	);
 	const label = refLabelPlacement(fp, part.placement);
 	const isBack = rect.side === "B";
-	const rot = rect.rot ? `rotate(${rect.rot} ${rect.x} ${rect.y})` : undefined;
+	const rot = partRotation(rect);
 	return (
 		<g style={{ cursor: "move" }}>
 			{isSelected && (

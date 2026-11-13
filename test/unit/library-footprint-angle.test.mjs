@@ -6,7 +6,9 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import { patchKicadText } from "../../backend/src/engine/kicad-inplace.js";
 import { createKicadLibrary } from "../../backend/src/engine/kicad-library.js";
+import { applyPcbEdits } from "../../backend/src/engine/kicad-pcb-edit.js";
 import { kicadPcbToIr } from "../../backend/src/engine/kicad-pcb-to-ir.js";
+import { parse } from "../../backend/src/engine/sexpr.js";
 import {
 	footprintToPrimitives,
 	padWorldPositions,
@@ -167,5 +169,151 @@ describe("rotation round trip", () => {
 			["U1", 30],
 			["U2", -135],
 		]);
+	});
+});
+
+// A pad at 30 degrees inside the footprint, off centre, so a wrong sign on
+// either the pad angle or the flip shows up.
+const P30_MOD = `(footprint "P30" (version 20240108) (generator "test") (layer "F.Cu")
+  (property "Reference" "REF**" (at 0.5 -2 30) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (property "Value" "P30" (at 0 2 0) (layer "F.Fab") (effects (font (size 1 1) (thickness 0.15))))
+  (fp_line (start -1 -1) (end 2 -1) (stroke (width 0.12) (type solid)) (layer "F.SilkS"))
+  (pad "1" smd rect (at 1 0.5 30) (size 1 2) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (pad "2" smd rect (at -2 -1) (size 0.5 1) (layers "F.Cu" "F.Paste" "F.Mask"))
+)`;
+
+// ref: [x, on the back]
+const P30_REFS = { U2: [30, false], U4: [50, true] };
+
+function p30Footprint(ref, x) {
+	return P30_MOD.replace(
+		'"P30" (version 20240108) (generator "test")',
+		'"T:P30"',
+	)
+		.replace('"REF**"', `"${ref}"`)
+		.replace('(layer "F.Cu")', `(layer "F.Cu") (at ${x} 20)`);
+}
+
+function p30Board() {
+	const fps = Object.entries(P30_REFS).map(([ref, [x]]) =>
+		p30Footprint(ref, x),
+	);
+	return `(kicad_pcb (version 20240108) (generator "test")
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal) (34 "B.Paste" user) (35 "F.Paste" user) (36 "B.SilkS" user) (37 "F.SilkS" user) (38 "B.Mask" user) (39 "F.Mask" user) (48 "B.Fab" user) (49 "F.Fab" user))
+  ${fps.join("\n  ")})`;
+}
+
+const PCBNEW_P30 = [
+	"import sys, json, pcbnew",
+	"b = pcbnew.LoadBoard(sys.argv[1])",
+	"pads = {}",
+	"for ref, back in (('U2', False), ('U4', True)):",
+	"    fp = b.FindFootprintByReference(ref)",
+	"    if back: fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_TOP_BOTTOM)",
+	"    fp.SetOrientationDegrees(45)",
+	"    pads[ref] = {p.GetNumber(): [pcbnew.ToMM(p.GetPosition().x), pcbnew.ToMM(p.GetPosition().y), p.GetOrientationDegrees()] for p in fp.Pads()}",
+	"b.Save(sys.argv[2])",
+	"print(json.dumps(pads))",
+].join("\n");
+
+// KiCad itself turns both parts to 45 degrees, flipping U4 to the back first,
+// and reports every pad's board position and absolute angle.
+function pcbnewP30(dir) {
+	const src = path.join(dir, "in.kicad_pcb");
+	const out = path.join(dir, "out.kicad_pcb");
+	fs.writeFileSync(src, p30Board());
+	const json = execFileSync(KIPYTHON, ["-I", "-c", PCBNEW_P30, src, out]);
+	return { pads: JSON.parse(String(json)), text: fs.readFileSync(out, "utf8") };
+}
+
+const mod180 = (a) => Math.round((((a % 180) + 180) % 180) * 1e3) / 1e3;
+
+function assertPadsMatch(fp, placement, expected, label) {
+	const { pads } = transformPrimitives(
+		footprintToPrimitives(fp),
+		placementFor(fp, placement),
+	);
+	for (const pad of pads) {
+		const [x, y, orient] = expected[pad.number];
+		const off = Math.hypot(pad.center[0] - x, pad.center[1] - y);
+		assert.ok(off < 1e-3, `${label} pad ${pad.number} off by ${off} mm`);
+		// SVG turns clockwise on a Y-down board: KiCad's angle negated.
+		const name = `${label} pad ${pad.number}`;
+		assert.equal(mod180(pad.rot), mod180(-orient), name);
+	}
+}
+
+function nodeSym(n) {
+	return typeof n === "object" && n !== null ? n.sym : n;
+}
+
+function childAt(node) {
+	return node.find((c) => Array.isArray(c) && nodeSym(c[0]) === "at");
+}
+
+// [name, x, y, angle] of every pad and Reference text of footprint `ref`.
+function footprintAts(text, ref) {
+	const fp = parse(text)
+		.filter((n) => Array.isArray(n) && nodeSym(n[0]) === "footprint")
+		.find((n) => JSON.stringify(n).includes(`"${ref}"`));
+	const items = fp.filter(
+		(n) =>
+			Array.isArray(n) &&
+			(nodeSym(n[0]) === "pad" ||
+				(nodeSym(n[0]) === "property" && n[1] === "Reference")),
+	);
+	const r4 = (n) => Math.round(Number(n) * 1e4) / 1e4;
+	return items.map((n) => {
+		const at = childAt(n);
+		const angle = (((Number(at[3]) || 0) % 360) + 360) % 360;
+		return [String(n[1]), r4(at[1]), r4(at[2]), r4(angle)];
+	});
+}
+
+describe("pad at 30 degrees in a footprint at 45, checked against pcbnew", {
+	skip: fs.existsSync(KIPYTHON) ? false : `missing ${KIPYTHON}`,
+}, () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "p30-"));
+	fs.mkdirSync(path.join(dir, "T.pretty"));
+	fs.writeFileSync(path.join(dir, "T.pretty", "P30.kicad_mod"), P30_MOD);
+	const kicad = fs.existsSync(KIPYTHON) ? pcbnewP30(dir) : null;
+
+	test("embedded and library pads land on KiCad's pads, front and back", async () => {
+		const { ir, board } = importBoard(kicad.text);
+		const lib = createKicadLibrary({ footprintDir: dir });
+		const libFp = await lib.getFootprint("T:P30");
+		assert.ok(libFp?.pads.length, "library footprint T:P30 not found");
+		for (const part of ir.parts) {
+			const want = kicad.pads[part.ref];
+			const emb = board.footprints[part.id];
+			assertPadsMatch(emb, part.placement, want, `${part.ref} embedded`);
+			assertPadsMatch(libFp, part.placement, want, `${part.ref} library`);
+		}
+	});
+
+	test("adding the footprint writes what pcbnew writes, Flip() included", () => {
+		const edits = Object.entries(P30_REFS).map(([ref, [x, back]]) => ({
+			op: "addFootprint",
+			libId: "T:P30",
+			source: P30_MOD,
+			ref,
+			value: "P30",
+			x,
+			y: 20,
+			rot: 45,
+			side: back ? "B" : "F",
+		}));
+		const res = applyPcbEdits(
+			'(kicad_pcb (version 20240108) (generator "test"))',
+			edits,
+		);
+		assert.equal(res.ok, true, res.error);
+		for (const ref of Object.keys(P30_REFS)) {
+			assert.deepEqual(
+				footprintAts(res.text, ref),
+				footprintAts(kicad.text, ref),
+				ref,
+			);
+		}
 	});
 });

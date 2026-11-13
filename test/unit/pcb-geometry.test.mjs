@@ -298,4 +298,20 @@ describe("pcbGeometry - hitTest", () => {
 		const hit = hitTest(ir, board, [100, 100]);
 		assert.equal(hit, null);
 	});
+
+	// KiCad turns +30 counter-clockwise on a Y-down board, so the part's long
+	// axis points along (cos 30, -sin 30); along (cos 30, +sin 30) is outside.
+	for (const side of ["F", "B"]) {
+		test(`part rotated 30 degrees on ${side} is hit KiCad's way round`, () => {
+			const part = {
+				id: "part_u1",
+				ref: "U1",
+				props: { sizeMm: { w: 10, h: 2 } },
+				placement: { x: 50, y: 50, rot: 30, side },
+			};
+			const along = (sy) => [50 + 4 * Math.cos(Math.PI / 6), 50 + sy * 4 * 0.5];
+			assert.equal(hitTest({ parts: [part] }, {}, along(-1))?.id, "part_u1");
+			assert.equal(hitTest({ parts: [part] }, {}, along(1)), null);
+		});
+	}
 });
