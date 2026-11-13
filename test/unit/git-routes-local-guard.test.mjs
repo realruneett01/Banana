@@ -121,52 +121,28 @@ describe("git router local repository guards and /file endpoint", () => {
 		});
 	}
 
+	// [name, file] with no commit
+	const BAD_FILE_CASES = [
+		["absolute path leading slash", "/test.kicad_sch"],
+		["absolute path with drive", "C:/test.kicad_sch"],
+		["../ escape prefix", "../test.kicad_sch"],
+		["../ escape embedded", "sub/../../test.kicad_sch"],
+		["wrong extension .txt", "test.txt"],
+		["wrong extension .kicad_pcb.bak", "test.kicad_pcb.bak"],
+	];
+	// [name, commit] for a valid file
+	const BAD_COMMIT_CASES = [
+		["bad commit too short", "abc"],
+		["bad commit non-hex", "123xyz"],
+		["bad commit flag injection", "--help"],
+	];
 	const VALIDATION_CASES = [
-		{
-			name: "absolute path leading slash",
-			file: "/test.kicad_sch",
-			commit: null,
-		},
-		{
-			name: "absolute path with drive",
-			file: "C:/test.kicad_sch",
-			commit: null,
-		},
-		{
-			name: "../ escape prefix",
-			file: "../test.kicad_sch",
-			commit: null,
-		},
-		{
-			name: "../ escape embedded",
-			file: "sub/../../test.kicad_sch",
-			commit: null,
-		},
-		{
-			name: "wrong extension .txt",
-			file: "test.txt",
-			commit: null,
-		},
-		{
-			name: "wrong extension .kicad_pcb.bak",
-			file: "test.kicad_pcb.bak",
-			commit: null,
-		},
-		{
-			name: "bad commit too short",
+		...BAD_FILE_CASES.map(([name, file]) => ({ name, file, commit: null })),
+		...BAD_COMMIT_CASES.map(([name, commit]) => ({
+			name,
 			file: "test.kicad_sch",
-			commit: "abc",
-		},
-		{
-			name: "bad commit non-hex",
-			file: "test.kicad_sch",
-			commit: "123xyz",
-		},
-		{
-			name: "bad commit flag injection",
-			file: "test.kicad_sch",
-			commit: "--help",
-		},
+			commit,
+		})),
 	];
 
 	for (const tc of VALIDATION_CASES) {

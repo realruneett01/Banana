@@ -223,6 +223,130 @@ const EXPECTED_R0805_PADS = [
 	},
 ];
 
+// [title, method, args, expected, minTotal]
+const SEARCH_CASES = [
+	[
+		"searchSymbols ranks exact name > prefix > contains",
+		"searchSymbols",
+		["R"],
+		[
+			{ name: "R", libId: "Device:R" },
+			{ name: "R_Small", libId: "Device:R_Small" },
+		],
+		2,
+	],
+	[
+		"searchSymbols respects limit parameter",
+		"searchSymbols",
+		["R", { limit: 1 }],
+		[{ name: "R" }],
+	],
+	[
+		"searchSymbols matches keywords and description",
+		"searchSymbols",
+		["transistor"],
+		[{ libId: "Transistor:Q_NPN_BCE" }],
+	],
+	[
+		"searchFootprints ranks exact name > prefix > contains",
+		"searchFootprints",
+		["R_0805"],
+		[{ libId: "Resistor_SMD:R_0805", name: "R_0805" }],
+	],
+	[
+		"searchFootprints matches description and tags",
+		"searchFootprints",
+		["1206"],
+		[{ libId: "Resistor_SMD:R_1206" }],
+	],
+];
+
+const EMPTY_PAGE = { items: [], total: 0 };
+
+// [title, method, args, expected]: lib[method](...args) deep-equals expected.
+const LOOKUP_CASES = [
+	[
+		"getSymbol returns null for non-existent symbol",
+		"getSymbol",
+		["Device:NonExistent"],
+		null,
+	],
+	[
+		"getFootprint returns null for non-existent footprint",
+		"getFootprint",
+		["Resistor_SMD:NonExistent"],
+		null,
+	],
+	...[
+		[
+			"symbols",
+			[
+				{ name: "Device", count: 2 },
+				{ name: "Gate", count: 2 },
+				{ name: "Transistor", count: 1 },
+			],
+		],
+		[
+			"footprints",
+			[
+				{ name: "LED_SMD", count: 1 },
+				{ name: "Resistor_SMD", count: 2 },
+			],
+		],
+		["bogus", []],
+	].map(([kind, expected]) => [
+		`listLibraries('${kind}') returns expected libraries`,
+		"listLibraries",
+		[kind],
+		expected,
+	]),
+	...[
+		["symbols", "Unknown"],
+		["bogus", "Device"],
+	].map((args) => [
+		`listLibraryItems('${args[0]}', '${args[1]}') returns empty`,
+		"listLibraryItems",
+		args,
+		EMPTY_PAGE,
+	]),
+	...[
+		[
+			"getSymbolSource",
+			"Gate:Gate_Ext",
+			{
+				libId: "Gate:Gate_Ext",
+				text: SYMBOL_GATE_EXT_TEXT,
+				parentText: SYMBOL_GATE_BASE_TEXT,
+			},
+		],
+		[
+			"getSymbolSource",
+			"Gate:Gate_Base",
+			{
+				libId: "Gate:Gate_Base",
+				text: SYMBOL_GATE_BASE_TEXT,
+				parentText: null,
+			},
+		],
+		["getSymbolSource", "Gate:NonExistent", null],
+		["getSymbolSource", "../x:y", null],
+		["getSymbolSource", "a:..\\b", null],
+		[
+			"getFootprintSource",
+			"LED_SMD:LED_0603",
+			{ libId: "LED_SMD:LED_0603", text: FP_LED0603_CONTENT },
+		],
+		["getFootprintSource", "LED_SMD:NonExistent", null],
+		["getFootprintSource", "../x:y", null],
+		["getFootprintSource", "a:..\\b", null],
+	].map(([method, id, expected]) => [
+		`${method}('${id}') returns expected result`,
+		method,
+		[id],
+		expected,
+	]),
+];
+
 function assertProperties(actual, expected) {
 	for (const [k, v] of Object.entries(expected)) {
 		assert.equal(actual[k], v);
@@ -286,9 +410,11 @@ describe("kicad-library", () => {
 			[rDir, "R_1206.kicad_mod", FP_R1206_CONTENT],
 			[ledDir, "LED_0603.kicad_mod", FP_LED0603_CONTENT],
 		];
-		for (const [dir, file, content] of fixtureFiles) {
-			await fs.promises.writeFile(path.join(dir, file), content, "utf8");
-		}
+		await Promise.all(
+			fixtureFiles.map(([dir, file, content]) =>
+				fs.promises.writeFile(path.join(dir, file), content, "utf8"),
+			),
+		);
 
 		lib = createKicadLibrary({ symbolDir, footprintDir });
 	});
@@ -299,40 +425,16 @@ describe("kicad-library", () => {
 		}
 	});
 
-	function runSearchCases(cases) {
-		for (const tc of cases) {
-			test(tc.title, async () => {
-				const results = await tc.search();
-				assertSearchResults(results, tc.expected, tc.minTotal);
-			});
-		}
-	}
-
 	test("available() returns true when dirs exist", async () => {
 		assert.equal(await lib.available(), true);
 	});
 
-	runSearchCases([
-		{
-			title: "searchSymbols ranks exact name > prefix > contains",
-			search: () => lib.searchSymbols("R"),
-			minTotal: 2,
-			expected: [
-				{ name: "R", libId: "Device:R" },
-				{ name: "R_Small", libId: "Device:R_Small" },
-			],
-		},
-		{
-			title: "searchSymbols respects limit parameter",
-			search: () => lib.searchSymbols("R", { limit: 1 }),
-			expected: [{ name: "R" }],
-		},
-		{
-			title: "searchSymbols matches keywords and description",
-			search: () => lib.searchSymbols("transistor"),
-			expected: [{ libId: "Transistor:Q_NPN_BCE" }],
-		},
-	]);
+	for (const [title, method, args, expected, minTotal] of SEARCH_CASES) {
+		test(title, async () => {
+			const results = await lib[method](...args);
+			assertSearchResults(results, expected, minTotal);
+		});
+	}
 
 	test("getSymbol extracts properties, pins, and graphics", async () => {
 		const sym = await lib.getSymbol("Device:R");
@@ -342,34 +444,17 @@ describe("kicad-library", () => {
 		assertElements(sym.pins, EXPECTED_R_PINS);
 	});
 
-	test("getSymbol returns null for non-existent symbol", async () => {
-		const sym = await lib.getSymbol("Device:NonExistent");
-		assert.equal(sym, null);
-	});
-
-	runSearchCases([
-		{
-			title: "searchFootprints ranks exact name > prefix > contains",
-			search: () => lib.searchFootprints("R_0805"),
-			expected: [{ libId: "Resistor_SMD:R_0805", name: "R_0805" }],
-		},
-		{
-			title: "searchFootprints matches description and tags",
-			search: () => lib.searchFootprints("1206"),
-			expected: [{ libId: "Resistor_SMD:R_1206" }],
-		},
-	]);
-
 	test("getFootprint extracts pads and graphics", async () => {
 		const fp = await lib.getFootprint("Resistor_SMD:R_0805");
 		assertEntity(fp, "Resistor_SMD:R_0805");
 		assertElements(fp.pads, EXPECTED_R0805_PADS);
 	});
 
-	test("getFootprint returns null for non-existent footprint", async () => {
-		const fp = await lib.getFootprint("Resistor_SMD:NonExistent");
-		assert.equal(fp, null);
-	});
+	for (const [title, method, args, expected] of LOOKUP_CASES) {
+		test(title, async () => {
+			assert.deepEqual(await lib[method](...args), expected);
+		});
+	}
 
 	test("rejects path traversal and invalid libIds", async () => {
 		for (const invalidId of INVALID_LIB_IDS) {
@@ -399,34 +484,6 @@ describe("kicad-library", () => {
 		});
 	});
 
-	const listLibrariesCases = [
-		{
-			kind: "symbols",
-			expected: [
-				{ name: "Device", count: 2 },
-				{ name: "Gate", count: 2 },
-				{ name: "Transistor", count: 1 },
-			],
-		},
-		{
-			kind: "footprints",
-			expected: [
-				{ name: "LED_SMD", count: 1 },
-				{ name: "Resistor_SMD", count: 2 },
-			],
-		},
-		{
-			kind: "bogus",
-			expected: [],
-		},
-	];
-	for (const tc of listLibrariesCases) {
-		test(`listLibraries('${tc.kind}') returns expected libraries`, async () => {
-			const actual = await lib.listLibraries(tc.kind);
-			assert.deepEqual(actual, tc.expected);
-		});
-	}
-
 	test("listLibraryItems paging (limit 1 offset 1) and total", async () => {
 		const page = await lib.listLibraryItems("symbols", "Device", {
 			limit: 1,
@@ -437,64 +494,4 @@ describe("kicad-library", () => {
 		assert.equal(page.items[0].name, "R_Small");
 		assert.equal(page.items[0].libId, "Device:R_Small");
 	});
-
-	const emptyLibraryItemsCases = [
-		{ kind: "symbols", libName: "Unknown" },
-		{ kind: "bogus", libName: "Device" },
-	];
-	for (const tc of emptyLibraryItemsCases) {
-		test(`listLibraryItems('${tc.kind}', '${tc.libName}') returns empty`, async () => {
-			const actual = await lib.listLibraryItems(tc.kind, tc.libName);
-			assert.deepEqual(actual, { items: [], total: 0 });
-		});
-	}
-
-	const symbolSourceCases = [
-		{
-			id: "Gate:Gate_Ext",
-			expected: {
-				libId: "Gate:Gate_Ext",
-				text: SYMBOL_GATE_EXT_TEXT,
-				parentText: SYMBOL_GATE_BASE_TEXT,
-			},
-		},
-		{
-			id: "Gate:Gate_Base",
-			expected: {
-				libId: "Gate:Gate_Base",
-				text: SYMBOL_GATE_BASE_TEXT,
-				parentText: null,
-			},
-		},
-		{ id: "Gate:NonExistent", expected: null },
-		{ id: "../x:y", expected: null },
-		{ id: "a:..\\b", expected: null },
-	];
-
-	for (const tc of symbolSourceCases) {
-		test(`getSymbolSource('${tc.id}') returns expected result`, async () => {
-			const res = await lib.getSymbolSource(tc.id);
-			assert.deepEqual(res, tc.expected);
-		});
-	}
-
-	const footprintSourceCases = [
-		{
-			id: "LED_SMD:LED_0603",
-			expected: {
-				libId: "LED_SMD:LED_0603",
-				text: FP_LED0603_CONTENT,
-			},
-		},
-		{ id: "LED_SMD:NonExistent", expected: null },
-		{ id: "../x:y", expected: null },
-		{ id: "a:..\\b", expected: null },
-	];
-
-	for (const tc of footprintSourceCases) {
-		test(`getFootprintSource('${tc.id}') returns expected result`, async () => {
-			const res = await lib.getFootprintSource(tc.id);
-			assert.deepEqual(res, tc.expected);
-		});
-	}
 });

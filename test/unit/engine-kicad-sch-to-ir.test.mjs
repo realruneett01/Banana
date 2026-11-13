@@ -29,7 +29,7 @@ const makeResistorLibSymbol = () =>
 const makeCapacitorLibSymbol = () =>
 	makeTwoPinLibSymbol("Device:C", [0, 2.54, 270], [0, -2.54, 90]);
 
-function makeTestPart(idNum, ref, value, symbol, footprint) {
+function makeTestPart([idNum, ref, value, symbol, footprint]) {
 	const hex = String(idNum).padStart(12, "0");
 	return {
 		id: `part_00000000-0000-0000-0000-${hex}`,
@@ -81,6 +81,16 @@ function makeDuplicateRefSch(ref1, ref2, unitStr = "") {
 			(property "Footprint" "R_0603")
 		)
 	)`;
+}
+
+const importSch = (sch) => kicadSchToIr(sch, { idFn: makeIdCounter() });
+
+// Imports sch, asserts ok and that ir[kind] has `count` entries.
+function importExpecting(sch, kind, count) {
+	const res = importSch(sch);
+	assert.equal(res.ok, true);
+	assert.equal(res.ir[kind].length, count);
+	return res;
 }
 
 function normalizeNetMembership(ir) {
@@ -200,9 +210,7 @@ describe("kicadSchToIr garbage and invalid input", () => {
 
 describe("kicadSchToIr symbol and property parsing", () => {
 	test("parses symbol properties and validates circuit IR", () => {
-		const res = kicadSchToIr(SYMBOL_PARSING_SCH, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.parts.length, 1);
+		const res = importExpecting(SYMBOL_PARSING_SCH, "parts", 1);
 		const part = res.ir.parts[0];
 		assert.equal(part.ref, "R1");
 		assert.equal(part.value, "10k");
@@ -213,27 +221,21 @@ describe("kicadSchToIr symbol and property parsing", () => {
 	});
 
 	test("parses symbol extra props and placement", () => {
-		const res = kicadSchToIr(SYMBOL_PARSING_SCH, { idFn: makeIdCounter() });
+		const res = importSch(SYMBOL_PARSING_SCH);
 		const part = res.ir.parts[0];
 		assert.deepEqual(part.props, { Tolerance: "1%", Manufacturer: "Yageo" });
 		assert.deepEqual(part.placement, { x: 100, y: 150, rot: 90, side: "F" });
 	});
 
 	test("skips power symbols and #-prefixed references", () => {
-		const res = kicadSchToIr(POWER_AND_VIRTUAL_SYMBOLS_SCH, {
-			idFn: makeIdCounter(),
-		});
+		const res = importExpecting(POWER_AND_VIRTUAL_SYMBOLS_SCH, "parts", 1);
 		assert.equal(res.ir.parts[0].ref, "R1");
-		assert.equal(res.ir.parts.length, 1);
-		assert.equal(res.ok, true);
 	});
 });
 
 describe("kicadSchToIr net connectivity and naming", () => {
 	test("wires join pin coordinates and label names the net", () => {
-		const res = kicadSchToIr(LABELED_NET_SCH, { idFn: makeIdCounter() });
-		assert.equal(res.ok, true);
-		assert.equal(res.ir.nets.length, 1);
+		const res = importExpecting(LABELED_NET_SCH, "nets", 1);
 		assert.equal(res.ir.nets[0].name, "SIG_OUT");
 
 		const partMap = new Map(res.ir.parts.map((p) => [p.id, p.ref]));
@@ -244,14 +246,12 @@ describe("kicadSchToIr net connectivity and naming", () => {
 	});
 
 	test("unlabeled connected pins receive Net-(<ref>-Pad<pin>) name", () => {
-		const res = kicadSchToIr(UNLABELED_NET_SCH, { idFn: makeIdCounter() });
-		assert.equal(res.ir.nets[0].name, "Net-(R1-Pad2)");
-		assert.equal(res.ir.nets.length, 1);
-		assert.equal(res.ok, true);
+		const [net] = importExpecting(UNLABELED_NET_SCH, "nets", 1).ir.nets;
+		assert.equal(net.name, "Net-(R1-Pad2)");
 	});
 
 	test("records warning on unsupported buses and sheets without failing", () => {
-		const res = kicadSchToIr(BUS_AND_SHEET_SCH, { idFn: makeIdCounter() });
+		const res = importSch(BUS_AND_SHEET_SCH);
 		assert.equal(res.ok, true);
 		assert.equal(
 			res.warnings.some((w) => w.includes("bus")),
@@ -261,33 +261,21 @@ describe("kicadSchToIr net connectivity and naming", () => {
 	});
 
 	test("computes pin positions with rotation and mirror", () => {
-		const res = kicadSchToIr(ROTATION_MIRROR_SCH, { idFn: makeIdCounter() });
-		assert.equal(res.ir.nets.length, 1);
+		const res = importExpecting(ROTATION_MIRROR_SCH, "nets", 1);
 		assert.equal(res.ir.nets[0].pins[0].pin, "1");
-		assert.equal(res.ok, true);
 		assert.equal(res.ir.nets[0].name, "NET_PIN1");
 	});
 });
 
 describe("kicadSchToIr round trip with kicad-sch-writer", () => {
+	const R_0603 = "Resistor_SMD:R_0603_1608Metric";
+	// parts: [idNum, ref, value, symbol, footprint]
 	const ROUND_TRIP_CIRCUITS = [
 		{
 			name: "SingleResistorNet",
 			parts: [
-				makeTestPart(
-					1,
-					"R1",
-					"10k",
-					"Device:R",
-					"Resistor_SMD:R_0603_1608Metric",
-				),
-				makeTestPart(
-					2,
-					"R2",
-					"4.7k",
-					"Device:R",
-					"Resistor_SMD:R_0603_1608Metric",
-				),
+				makeTestPart([1, "R1", "10k", "Device:R", R_0603]),
+				makeTestPart([2, "R2", "4.7k", "Device:R", R_0603]),
 			],
 			nets: [
 				makeTestNet(1, "VCC", [
@@ -303,20 +291,14 @@ describe("kicadSchToIr round trip with kicad-sch-writer", () => {
 		{
 			name: "RC_Filter",
 			parts: [
-				makeTestPart(
-					11,
-					"R1",
-					"1k",
-					"Device:R",
-					"Resistor_SMD:R_0603_1608Metric",
-				),
-				makeTestPart(
+				makeTestPart([11, "R1", "1k", "Device:R", R_0603]),
+				makeTestPart([
 					12,
 					"C1",
 					"100n",
 					"Device:C",
 					"Capacitor_SMD:C_0603_1608Metric",
-				),
+				]),
 			],
 			nets: [
 				makeTestNet(11, "AUDIO_IN", [[11, "1"]]),
@@ -450,7 +432,7 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 
 	for (const tc of TEST_CASES) {
 		test(tc.name, () => {
-			const res = kicadSchToIr(tc.sch, { idFn: makeIdCounter() });
+			const res = importSch(tc.sch);
 			assert.equal(res.ok, tc.expectedOk);
 			const partRefs = res.ir.parts.map((p) => p.ref);
 			assert.deepEqual(partRefs, tc.expectedParts);

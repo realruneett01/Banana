@@ -42,23 +42,16 @@ const BASE_PART = {
 };
 
 const BASE_PADS = [
-	{
-		number: "1",
-		type: "smd",
-		shape: "roundrect",
-		at: [-1, 0],
-		size: [1, 1],
-		layers: ["F.Cu", "F.Mask"],
-	},
-	{
-		number: "2",
-		type: "smd",
-		shape: "roundrect",
-		at: [1, 0],
-		size: [1, 1],
-		layers: ["F.Cu", "F.Mask"],
-	},
-];
+	["1", [-1, 0]],
+	["2", [1, 0]],
+].map(([number, at]) => ({
+	number,
+	type: "smd",
+	shape: "roundrect",
+	at,
+	size: [1, 1],
+	layers: ["F.Cu", "F.Mask"],
+}));
 
 const FRONT_FP_EDITS = [
 	{
@@ -76,9 +69,7 @@ const FRONT_FP_EDITS = [
 
 const BACK_FP_EDITS = [
 	{
-		op: "addFootprint",
-		libId: "Resistor_SMD:R_0603",
-		source: MINIMAL_FP_SOURCE,
+		...FRONT_FP_EDITS[0],
 		ref: "R_BACK",
 		value: "1k",
 		x: 15,
@@ -125,17 +116,7 @@ const RENAME_AND_DELETE_EDITS = [
 ];
 
 const CHAINED_EDITS = [
-	{
-		op: "addFootprint",
-		libId: "Resistor_SMD:R_0603",
-		source: MINIMAL_FP_SOURCE,
-		ref: "R1",
-		value: "10k",
-		x: 10,
-		y: 10,
-		rot: 0,
-		side: "F",
-	},
+	...FRONT_FP_EDITS,
 	{ op: "setPadNet", ref: "R1", pad: "1", net: "VCC" },
 	{
 		op: "addTrack",
@@ -151,6 +132,11 @@ const CHAINED_EDITS = [
 	{ op: "addVia", net: "VCC", x: 15, y: 15 },
 ];
 
+// addTrack edit on F.Cu, net 1, for the error table.
+function trackEdit(width, points) {
+	return { op: "addTrack", layer: "F.Cu", width, points, net: 1 };
+}
+
 const ERROR_TABLE = [
 	{ name: "unknown operation", edit: { op: "unknownOp" } },
 	{ name: "delete missing ref", edit: { op: "deleteFootprint", ref: "NO_FP" } },
@@ -160,39 +146,21 @@ const ERROR_TABLE = [
 	},
 	{
 		name: "addTrack NaN width",
-		edit: {
-			op: "addTrack",
-			layer: "F.Cu",
-			width: Number.NaN,
-			points: [
-				{ x: 0, y: 0 },
-				{ x: 1, y: 1 },
-			],
-			net: 1,
-		},
+		edit: trackEdit(Number.NaN, [
+			{ x: 0, y: 0 },
+			{ x: 1, y: 1 },
+		]),
 	},
 	{
 		name: "addTrack NaN coords",
-		edit: {
-			op: "addTrack",
-			layer: "F.Cu",
-			width: 0.2,
-			points: [
-				{ x: 0, y: 0 },
-				{ x: Number.NaN, y: 1 },
-			],
-			net: 1,
-		},
+		edit: trackEdit(0.2, [
+			{ x: 0, y: 0 },
+			{ x: Number.NaN, y: 1 },
+		]),
 	},
 	{
 		name: "addTrack single point",
-		edit: {
-			op: "addTrack",
-			layer: "F.Cu",
-			width: 0.2,
-			points: [{ x: 0, y: 0 }],
-			net: 1,
-		},
+		edit: trackEdit(0.2, [{ x: 0, y: 0 }]),
 	},
 	{
 		name: "addVia NaN coords",

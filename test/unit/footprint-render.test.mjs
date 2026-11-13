@@ -288,35 +288,40 @@ function runCases(cases, fn) {
 }
 
 describe("footprintRender", () => {
-	describe("pad shapes and rotation", () => {
-		runCases(PAD_SHAPE_CASES, (tc) => {
-			const res = footprintToPrimitives({ pads: [tc.pad], graphics: [] });
-			assert.equal(res.pads.length, 1);
-			assertPadProperties(res.pads[0], tc.expected);
-		});
-	});
-
-	describe("side B mirroring and layer mapping", () => {
-		runCases(SIDE_B_CASES, (tc) => {
-			const prims = { pads: tc.inputPads, graphics: tc.inputGraphics };
-			const res = transformPrimitives(prims, tc.placement);
-			assertSideBResult(res, tc);
-		});
-	});
-
-	describe("pad world positions", () => {
-		runCases(PAD_WORLD_CASES, (tc) => {
-			const positions = padWorldPositions(tc.fp, tc.placement);
-			assert.deepEqual(positions, tc.expected);
-		});
-	});
-
-	describe("padHitTest", () => {
-		runCases(HIT_TEST_CASES, (tc) => {
-			const hit = padHitTest(tc.prims, tc.point);
-			assert.equal(hit, tc.expected);
-		});
-	});
+	// [describe name, cases, per-case check]
+	const SUITES = [
+		[
+			"pad shapes and rotation",
+			PAD_SHAPE_CASES,
+			(tc) => {
+				const res = footprintToPrimitives({ pads: [tc.pad], graphics: [] });
+				assert.equal(res.pads.length, 1);
+				assertPadProperties(res.pads[0], tc.expected);
+			},
+		],
+		[
+			"side B mirroring and layer mapping",
+			SIDE_B_CASES,
+			(tc) => {
+				const prims = { pads: tc.inputPads, graphics: tc.inputGraphics };
+				assertSideBResult(transformPrimitives(prims, tc.placement), tc);
+			},
+		],
+		[
+			"pad world positions",
+			PAD_WORLD_CASES,
+			(tc) =>
+				assert.deepEqual(padWorldPositions(tc.fp, tc.placement), tc.expected),
+		],
+		[
+			"padHitTest",
+			HIT_TEST_CASES,
+			(tc) => assert.equal(padHitTest(tc.prims, tc.point), tc.expected),
+		],
+	];
+	for (const [name, cases, check] of SUITES) {
+		describe(name, () => runCases(cases, check));
+	}
 
 	describe("arc conversion", () => {
 		runCases(ARC_CONVERSION_CASES, (tc) => {

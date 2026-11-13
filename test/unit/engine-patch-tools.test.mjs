@@ -91,6 +91,21 @@ function setupToolHarness(fsFiles = {}, execOptions = {}, fsOptions = {}) {
 	return { registry, fakeFs, fakeExec };
 }
 
+// Approved design.patch call against REPO_DIR.
+function callPatch(registry, files, message) {
+	return registry.call(
+		"design.patch",
+		{ repoPath: REPO_DIR, files, message },
+		{ approved: true },
+	);
+}
+
+function assertRejected(res, fakeFs, fakeExec, errorMatch) {
+	assert.equal(res.ok, false);
+	if (errorMatch) assert.match(res.error, errorMatch);
+	assertNothingCommitted(fakeFs, fakeExec);
+}
+
 function assertHappyPathResults(res, fakeFs, fakeExec, tc) {
 	for (const [filePath, expectedContent] of tc.expectedWrites) {
 		assert.equal(fakeFs.written.get(filePath), expectedContent);
@@ -230,15 +245,7 @@ describe("engine-patch-tools happy paths", () => {
 	for (const tc of HAPPY_PATH_CASES) {
 		test(tc.name, async () => {
 			const { registry, fakeFs, fakeExec } = setupToolHarness(tc.initialFiles);
-			const res = await registry.call(
-				"design.patch",
-				{
-					repoPath: REPO_DIR,
-					files: tc.files,
-					message: tc.message,
-				},
-				{ approved: true },
-			);
+			const res = await callPatch(registry, tc.files, tc.message);
 			assertHappyPathResults(res, fakeFs, fakeExec, tc);
 		});
 	}
@@ -266,24 +273,9 @@ describe("engine-patch-tools path attack validations", () => {
 	for (const tc of PATH_ATTACK_CASES) {
 		test(`rejects attack: ${tc.name}`, async () => {
 			const { registry, fakeFs, fakeExec } = setupToolHarness();
-			const res = await registry.call(
-				"design.patch",
-				{
-					repoPath: REPO_DIR,
-					files: [
-						{
-							path: tc.path,
-							kind: tc.kind,
-							edits: DEFAULT_EDITS,
-						},
-					],
-					message: "Attack attempt",
-				},
-				{ approved: true },
-			);
-
-			assertNothingCommitted(fakeFs, fakeExec);
-			assert.equal(res.ok, false);
+			const files = [{ path: tc.path, kind: tc.kind, edits: DEFAULT_EDITS }];
+			const res = await callPatch(registry, files, "Attack attempt");
+			assertRejected(res, fakeFs, fakeExec);
 		});
 	}
 });
@@ -401,11 +393,7 @@ describe("engine-patch-tools input boundary validations", () => {
 			const res = await registry.call("design.patch", tc.payload, {
 				approved: true,
 			});
-			assert.equal(res.ok, false);
-			if (tc.expectedErrorMatch) {
-				assert.match(res.error, tc.expectedErrorMatch);
-			}
-			assertNothingCommitted(fakeFs, fakeExec);
+			assertRejected(res, fakeFs, fakeExec, tc.expectedErrorMatch);
 		});
 	}
 });
@@ -460,18 +448,8 @@ describe("engine-patch-tools failure modes and all-or-nothing", () => {
 	for (const tc of FAILURE_CASES) {
 		test(tc.name, async () => {
 			const { registry, fakeFs, fakeExec } = setupToolHarness(tc.setupFiles);
-			const res = await registry.call(
-				"design.patch",
-				{
-					repoPath: REPO_DIR,
-					files: tc.files,
-					message: tc.message,
-				},
-				{ approved: true },
-			);
-			assert.match(res.error, tc.errorMatch);
-			assert.equal(res.ok, false);
-			assertNothingCommitted(fakeFs, fakeExec);
+			const res = await callPatch(registry, tc.files, tc.message);
+			assertRejected(res, fakeFs, fakeExec, tc.errorMatch);
 		});
 	}
 });
@@ -528,15 +506,7 @@ describe("engine-patch-tools hardening and registry integration", () => {
 				{},
 				tc.fsOptions,
 			);
-			const res = await registry.call(
-				"design.patch",
-				{
-					repoPath: REPO_DIR,
-					files: tc.files,
-					message: tc.message,
-				},
-				{ approved: true },
-			);
+			const res = await callPatch(registry, tc.files, tc.message);
 			assert.equal(res.ok, false);
 			assert.equal(res.error, tc.expectedError);
 			assert.equal(fakeFs.written.size, 0);
@@ -555,21 +525,10 @@ describe("engine-patch-tools hardening and registry integration", () => {
 			{},
 			{ realPaths },
 		);
-		const res = await registry.call(
-			"design.patch",
-			{
-				repoPath: REPO_DIR,
-				files: [
-					{
-						path: "hardware/board.kicad_sch",
-						kind: "sch",
-						edits: DEFAULT_EDITS,
-					},
-				],
-				message: "Valid realpath",
-			},
-			{ approved: true },
-		);
+		const files = [
+			{ path: "hardware/board.kicad_sch", kind: "sch", edits: DEFAULT_EDITS },
+		];
+		const res = await callPatch(registry, files, "Valid realpath");
 		assert.ok(fakeFs.written.has(schPath));
 		assert.equal(res.ok, true);
 		assert.equal(res.output.commit, COMMIT_HASH);

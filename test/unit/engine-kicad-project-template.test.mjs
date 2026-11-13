@@ -5,88 +5,66 @@ import {
 	sanitizeProjectName,
 } from "../../backend/src/engine/kicad-project-template.js";
 
+// [name, input, expected]
 const SANITIZE_CASES = [
-	{ name: "trims whitespace", input: "  my_project  ", expected: "my_project" },
-	{
-		name: "converts spaces to underscore",
-		input: "my project",
-		expected: "my_project",
-	},
-	{
-		name: "collapses multiple spaces",
-		input: "my   cool   board",
-		expected: "my_cool_board",
-	},
-	{
-		name: "replaces slashes with underscore",
-		input: "my/sub/project",
-		expected: "my_sub_project",
-	},
-	{
-		name: "replaces backslashes with underscore",
-		input: "my\\dir\\project",
-		expected: "my_dir_project",
-	},
-	{
-		name: "handles ../ traversal",
-		input: "../my_project",
-		expected: "_my_project",
-	},
-	{ name: "handles bare ../", input: "../", expected: "_" },
-	{
-		name: "strips leading dots",
-		input: "...my-board",
-		expected: "my-board",
-	},
-	{
-		name: "truncates 80 chars to 64",
-		input: "a".repeat(80),
-		expected: "a".repeat(64),
-	},
-	{ name: "rejects empty string", input: "", expected: null },
-	{ name: "rejects whitespace only", input: "    ", expected: null },
-	{ name: "rejects only dots", input: "....", expected: null },
-	{ name: "rejects non-string input", input: 12345, expected: null },
-	{ name: "rejects null input", input: null, expected: null },
-	{ name: "rejects reserved CON", input: "CON", expected: null },
-	{ name: "rejects reserved con lowercase", input: "con", expected: null },
-	{ name: "rejects reserved com3", input: "com3", expected: null },
-	{ name: "rejects reserved COM3 uppercase", input: "COM3", expected: null },
-	{ name: "rejects reserved AUX", input: "aux", expected: null },
-	{ name: "rejects reserved NUL", input: "NUL", expected: null },
-	{ name: "rejects reserved PRN", input: "prn", expected: null },
-	{ name: "rejects reserved LPT1", input: "Lpt1", expected: null },
-	{
-		name: "allows non-reserved starting with CON",
-		input: "console",
-		expected: "console",
-	},
-	{
-		name: "allows non-reserved starting with COM",
-		input: "com3board",
-		expected: "com3board",
-	},
+	["trims whitespace", "  my_project  ", "my_project"],
+	["converts spaces to underscore", "my project", "my_project"],
+	["collapses multiple spaces", "my   cool   board", "my_cool_board"],
+	["replaces slashes with underscore", "my/sub/project", "my_sub_project"],
+	[
+		"replaces backslashes with underscore",
+		"my\\dir\\project",
+		"my_dir_project",
+	],
+	["handles ../ traversal", "../my_project", "_my_project"],
+	["handles bare ../", "../", "_"],
+	["strips leading dots", "...my-board", "my-board"],
+	["truncates 80 chars to 64", "a".repeat(80), "a".repeat(64)],
+	["allows non-reserved starting with CON", "console", "console"],
+	["allows non-reserved starting with COM", "com3board", "com3board"],
+];
+
+// [name, input]: sanitizeProjectName returns null
+const REJECTED_NAME_CASES = [
+	["rejects empty string", ""],
+	["rejects whitespace only", "    "],
+	["rejects only dots", "...."],
+	["rejects non-string input", 12345],
+	["rejects null input", null],
+	["rejects reserved CON", "CON"],
+	["rejects reserved con lowercase", "con"],
+	["rejects reserved com3", "com3"],
+	["rejects reserved COM3 uppercase", "COM3"],
+	["rejects reserved AUX", "aux"],
+	["rejects reserved NUL", "NUL"],
+	["rejects reserved PRN", "prn"],
+	["rejects reserved LPT1", "Lpt1"],
 ];
 
 describe("sanitizeProjectName", () => {
-	for (const { name, input, expected } of SANITIZE_CASES) {
+	const cases = [
+		...SANITIZE_CASES,
+		...REJECTED_NAME_CASES.map(([name, input]) => [name, input, null]),
+	];
+	for (const [name, input, expected] of cases) {
 		test(`handles ${name}`, () => {
 			assert.equal(sanitizeProjectName(input), expected);
 		});
 	}
 });
 
+// [name, input]
 const INVALID_PROJECT_CASES = [
-	{ name: "empty name", input: "" },
-	{ name: "reserved name CON", input: "CON" },
-	{ name: "reserved name com3", input: "com3" },
-	{ name: "only whitespace", input: "   " },
-	{ name: "only dots", input: "..." },
-	{ name: "non-string", input: null },
+	["empty name", ""],
+	["reserved name CON", "CON"],
+	["reserved name com3", "com3"],
+	["only whitespace", "   "],
+	["only dots", "..."],
+	["non-string", null],
 ];
 
 describe("createProjectFiles validation", () => {
-	for (const { name, input } of INVALID_PROJECT_CASES) {
+	for (const [name, input] of INVALID_PROJECT_CASES) {
 		test(`rejects ${name}`, () => {
 			const res = createProjectFiles(input);
 			assert.deepEqual(res, {

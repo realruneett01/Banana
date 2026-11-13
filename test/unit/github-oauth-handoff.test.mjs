@@ -56,15 +56,11 @@ describe("HandoffStore Unit Tests", () => {
 
 		const c4 = store.put("t4");
 		assert.equal(store.size, 3);
-		const testCases = [
-			[c1, null, "oldest evicted"],
-			[c2, "t2", "newer preserved"],
-			[c3, "t3", "newer preserved"],
-			[c4, "t4", "newest preserved"],
-		];
-		for (const [key, expected, desc] of testCases) {
-			assert.equal(store.take(key), expected, desc);
-		}
+		// oldest evicted, newer entries preserved
+		assert.deepEqual(
+			[c1, c2, c3, c4].map((key) => store.take(key)),
+			[null, "t2", "t3", "t4"],
+		);
 	});
 });
 
@@ -105,15 +101,33 @@ describe("OAuth Callback & Handoff Integration", () => {
 		await stopServer(server);
 	});
 
-	it("redirect location contains github_handoff and never the token", async () => {
+	const callbackUrl = (code, state) =>
+		`${baseUrl}/api/auth/github/callback?code=${code}&state=${state}`;
+
+	// Runs the OAuth callback with a fresh state; asserts 302, returns Location.
+	async function redirectLocation(code) {
 		process.env.FRONTEND_URL = "https://banana.app";
-		const state = stateStore.generate();
-		const res = await fetch(
-			`${baseUrl}/api/auth/github/callback?code=good_code&state=${state}`,
-			{ redirect: "manual" },
-		);
+		const url = callbackUrl(code, stateStore.generate());
+		const res = await fetch(url, { redirect: "manual" });
 		assert.equal(res.status, 302);
-		const location = res.headers.get("location");
+		return res.headers.get("location");
+	}
+
+	function postHandoff(body) {
+		return fetch(`${baseUrl}/api/auth/github/handoff`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	async function assertInvalidHandoff(res) {
+		assert.equal(res.status, 400);
+		assert.deepEqual(await res.json(), { error: "Invalid handoff code" });
+	}
+
+	it("redirect location contains github_handoff and never the token", async () => {
+		const location = await redirectLocation("good_code");
 		assert.match(
 			location,
 			/^https:\/\/banana\.app\/#github_handoff=[0-9a-f]{64}$/,
@@ -124,36 +138,20 @@ describe("OAuth Callback & Handoff Integration", () => {
 
 	it("handoff returns token once then 400 with Cache-Control: no-store", async () => {
 		const code = customStore.put("token_single_use");
-		const postHandoff = (c) =>
-			fetch(`${baseUrl}/api/auth/github/handoff`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ code: c }),
-			});
 
-		const res1 = await postHandoff(code);
+		const res1 = await postHandoff({ code });
 		assert.equal(res1.status, 200);
 		assert.equal(res1.headers.get("cache-control"), "no-store");
 		const data1 = await res1.json();
 		assert.deepEqual(data1, { token: "token_single_use" });
 
-		const res2 = await postHandoff(code);
-		assert.equal(res2.status, 400);
-		const data2 = await res2.json();
-		assert.deepEqual(data2, { error: "Invalid handoff code" });
+		await assertInvalidHandoff(await postHandoff({ code }));
 	});
 
 	it("expired code (fake clock) returns 400", async () => {
 		const code = customStore.put("token_to_expire");
 		fakeTime += 70_000;
-		const res = await fetch(`${baseUrl}/api/auth/github/handoff`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ code }),
-		});
-		assert.equal(res.status, 400);
-		const data = await res.json();
-		assert.deepEqual(data, { error: "Invalid handoff code" });
+		await assertInvalidHandoff(await postHandoff({ code }));
 	});
 
 	const malformedCases = [
@@ -168,26 +166,12 @@ describe("OAuth Callback & Handoff Integration", () => {
 	];
 	for (const tc of malformedCases) {
 		it(`rejects ${tc.name} with 400 Invalid handoff code`, async () => {
-			const res = await fetch(`${baseUrl}/api/auth/github/handoff`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify(tc.body),
-			});
-			assert.equal(res.status, 400);
-			const data = await res.json();
-			assert.deepEqual(data, { error: "Invalid handoff code" });
+			await assertInvalidHandoff(await postHandoff(tc.body));
 		});
 	}
 
 	it("error redirect has fixed oauth_failed and no error message text", async () => {
-		process.env.FRONTEND_URL = "https://banana.app";
-		const state = stateStore.generate();
-		const res = await fetch(
-			`${baseUrl}/api/auth/github/callback?code=throw_error&state=${state}`,
-			{ redirect: "manual" },
-		);
-		assert.equal(res.status, 302);
-		const location = res.headers.get("location");
+		const location = await redirectLocation("throw_error");
 		assert.equal(location, "https://banana.app/#github_error=oauth_failed");
 		assert.doesNotMatch(location, /sensitive_internal_error_code_xyz/);
 	});
@@ -195,11 +179,8 @@ describe("OAuth Callback & Handoff Integration", () => {
 	it("responds 500 FRONTEND_URL must be configured in production without FRONTEND_URL", async () => {
 		process.env.NODE_ENV = "production";
 		delete process.env.FRONTEND_URL;
-		const res = await fetch(
-			`${baseUrl}/api/auth/github/callback?code=good_code&state=any`,
-		);
+		const res = await fetch(callbackUrl("good_code", "any"));
 		assert.equal(res.status, 500);
-		const text = await res.text();
-		assert.equal(text, "FRONTEND_URL must be configured");
+		assert.equal(await res.text(), "FRONTEND_URL must be configured");
 	});
 });

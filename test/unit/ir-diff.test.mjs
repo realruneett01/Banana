@@ -27,10 +27,21 @@ const diffParts = (before = [], after = []) =>
 const diffNets = (before = [], after = []) =>
 	diffIr(makeDesign([], before), makeDesign([], after));
 
-function runSingleItemCase(group, bucket, before, after, spec) {
-	const diffFn = group === "parts" ? diffParts : diffNets;
-	const result = diffFn(before, after);
-	assertSingleItem(result, group, bucket, spec);
+// Each case: { title, bucket, before?, after?, value, summary }; before/after
+// are item overrides (omitted = no item on that side). Parts are keyed by ref,
+// nets by name.
+function defineSingleItemCases(group, cases) {
+	const [make, diffFn, key] =
+		group === "parts"
+			? [makePart, diffParts, "ref"]
+			: [makeNet, diffNets, "name"];
+	const toList = (overrides) => (overrides ? [make(overrides)] : []);
+	for (const { title, bucket, before, after, value, summary } of cases) {
+		test(title, () => {
+			const result = diffFn(toList(before), toList(after));
+			assertSingleItem(result, group, bucket, { key, value, summary });
+		});
+	}
 }
 
 function assertSingleItem(result, group, bucket, spec) {
@@ -126,28 +137,22 @@ function makeMultiChangeAfter() {
 }
 
 describe("irDiff - parts", () => {
-	const PART_ITEM_CASES = [
+	defineSingleItemCases("parts", [
 		{
 			title: "detects added part",
 			bucket: "added",
-			before: [],
-			after: [makePart({ id: "part_added", ref: "C1" })],
-			spec: { key: "ref", value: "C1", summary: "1 part added" },
+			after: { id: "part_added", ref: "C1" },
+			value: "C1",
+			summary: "1 part added",
 		},
 		{
 			title: "detects removed part",
 			bucket: "removed",
-			before: [makePart({ id: "part_rm", ref: "R1" })],
-			after: [],
-			spec: { key: "ref", value: "R1", summary: "1 part removed" },
+			before: { id: "part_rm", ref: "R1" },
+			value: "R1",
+			summary: "1 part removed",
 		},
-	];
-
-	for (const tc of PART_ITEM_CASES) {
-		test(tc.title, () => {
-			runSingleItemCase("parts", tc.bucket, tc.before, tc.after, tc.spec);
-		});
-	}
+	]);
 
 	test("detects changed part metadata", () => {
 		const result = diffParts(
@@ -218,28 +223,23 @@ describe("irDiff - parts", () => {
 });
 
 describe("irDiff - nets", () => {
-	const NET_ITEM_CASES = [
+	const VCC_NET = { id: "net_vcc", name: "VCC" };
+	defineSingleItemCases("nets", [
 		{
 			title: "detects added net",
 			bucket: "added",
-			before: [],
-			after: [makeNet({ id: "net_vcc", name: "VCC" })],
-			spec: { key: "name", value: "VCC", summary: "1 net added" },
+			after: VCC_NET,
+			value: "VCC",
+			summary: "1 net added",
 		},
 		{
 			title: "detects removed net",
 			bucket: "removed",
-			before: [makeNet({ id: "net_vcc", name: "VCC" })],
-			after: [],
-			spec: { key: "name", value: "VCC", summary: "1 net removed" },
+			before: VCC_NET,
+			value: "VCC",
+			summary: "1 net removed",
 		},
-	];
-
-	for (const tc of NET_ITEM_CASES) {
-		test(tc.title, () => {
-			runSingleItemCase("nets", tc.bucket, tc.before, tc.after, tc.spec);
-		});
-	}
+	]);
 
 	const PINS_SINGLE = [{ partId: "part_1", pin: "1" }];
 	const PINS_PAIR = [
