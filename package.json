@@ -14,7 +14,8 @@
 		"desktop": "electron .",
 		"desktop:dev": "concurrently -k \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\" \"wait-on tcp:5173 && electron .\"",
 		"desktop:build": "npm run build --workspace=frontend && electron-builder",
-		"test": "node --test test/**/*.test.mjs test/**/*.test.cjs"
+		"test": "node --test test/**/*.test.mjs test/**/*.test.cjs",
+		"test:fuzz": "node --test test/fuzz/*.fuzz.mjs"
 	},
 	"build": {
 		"appId": "com.banana.diffstudio",

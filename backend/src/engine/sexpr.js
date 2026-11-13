@@ -1,6 +1,8 @@
 export const TAB = "\t";
 
 const NUMERIC_PATTERN = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+// KiCad files nest about 10 deep; deeper input would overflow the stack in recursive walkers.
+const MAX_DEPTH = 1000;
 
 export function sym(name) {
 	return { sym: name };
@@ -181,6 +183,11 @@ function addNodeToStack(node, stack, rootLists) {
 
 function handleToken(token, stack, rootLists) {
 	if (token.type === "LPAREN") {
+		if (stack.length >= MAX_DEPTH) {
+			throw new Error(
+				`Nesting deeper than ${MAX_DEPTH} at offset ${token.offset}`,
+			);
+		}
 		stack.push({ list: [], offset: token.offset });
 		return;
 	}
