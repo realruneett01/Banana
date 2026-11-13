@@ -306,7 +306,8 @@ function transformArcGraphic(g, pl, layer) {
 	const mid = g.mid ? transformPoint(g.mid, pl) : undefined;
 	const end = transformPoint(g.end, pl);
 	const center = g.center ? transformPoint(g.center, pl) : undefined;
-	const arc = { ...g, layer, start, mid, end, center };
+	// Drop the untransformed path so it is rebuilt from the moved points.
+	const arc = { ...g, layer, start, mid, end, center, d: undefined };
 	arc.d = arcToSvgPath(arc);
 	return arc;
 }
@@ -367,13 +368,17 @@ function calcPadWorldCoord(pad, pl) {
 }
 
 /**
- * Placement to transform a footprint with. A footprint embedded in a board
- * file is already flipped for its side, and KiCad turns positive angles
- * counter-clockwise on a Y-down board, so the angle is negated for it.
+ * Placement to transform a footprint with. Placement angles are KiCad's
+ * (counter-clockwise on a Y-down board, written to the file as is), so the
+ * angle is negated. A footprint embedded in a board file is already flipped
+ * for its side. A library footprint on B is flipped top-bottom as KiCad does;
+ * that is the X mirror applied here turned a further 180 degrees.
  */
 export function placementFor(fp, placement = {}) {
-	if (!fp?.embedded) return placement;
-	return { ...placement, rot: -(placement.rot ?? 0), side: "F" };
+	const rot = -(placement.rot ?? 0);
+	if (fp?.embedded) return { ...placement, rot, side: "F" };
+	if (placement.side !== "B") return { ...placement, rot };
+	return { ...placement, rot: rot + 180 };
 }
 
 // SVG rotation for a KiCad text angle (counter-clockwise, Y down), turned

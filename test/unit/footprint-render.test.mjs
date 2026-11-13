@@ -134,16 +134,16 @@ const TWO_PAD_FP = {
 
 const PAD_WORLD_CASES = [
 	{
-		name: "front side with translation and rotation",
+		name: "front side rotates counter-clockwise like KiCad (Y down)",
 		fp: TWO_PAD_FP,
 		placement: { x: 50, y: 30, rot: 90, side: "F" },
-		expected: { 1: [50, 29], 2: [50, 31] },
+		expected: { 1: [50, 31], 2: [50, 29] },
 	},
 	{
-		name: "back side mirrors X coordinates",
+		name: "back side flips top-bottom like KiCad, keeping X",
 		fp: TWO_PAD_FP,
 		placement: { x: 50, y: 30, rot: 0, side: "B" },
-		expected: { 1: [51, 30], 2: [49, 30] },
+		expected: { 1: [49, 30], 2: [51, 30] },
 	},
 	{
 		name: "empty or null footprint returns empty object",
