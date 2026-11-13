@@ -129,6 +129,22 @@ function createCorsOriginValidator(isDesktop) {
 	};
 }
 
+// Routes whose JSON body carries a whole design ({ir, board} or file contents).
+// Measured: KiCad demo CM5_MINIMA_3 is 1.1 MB, jetson-agx-thor-baseboard 11 MB.
+// Everything else keeps express.json's 100 kB default (smaller DoS surface).
+export const DESIGN_BODY_LIMIT = "32mb";
+const DESIGN_BODY_ROUTES = [
+	"/api/editor/check",
+	"/api/editor/export",
+	"/api/editor/bom",
+	"/api/editor/netlist",
+	"/api/editor/commit",
+	"/api/erc/run",
+	"/api/circuit/simulate",
+	"/api/circuit/suggest-faults",
+	"/api/git/commit-files",
+];
+
 export function createApp(options = {}) {
 	const app = express();
 
@@ -146,6 +162,8 @@ export function createApp(options = {}) {
 	app.use(cors({ origin: createCorsOriginValidator(isDesktop) }));
 	// MCP over HTTP for web AI clients (own bearer + host/origin checks)
 	app.use(createMcpHttpRouter());
+	// Runs first; the global parser below skips bodies already parsed (req._body).
+	app.post(DESIGN_BODY_ROUTES, express.json({ limit: DESIGN_BODY_LIMIT }));
 	app.use(express.json());
 
 	// API routes
