@@ -32,13 +32,13 @@ import {
 	ratsnest,
 	snapToGrid,
 } from "./pcbGeometry.js";
-import {
-	addVia,
-	constrainAngle,
-	proposeRoute,
-	WIDTH_PRESETS,
-} from "./routingModel.js";
+import { addVia, WIDTH_PRESETS } from "./routingModel.js";
 import { getLayerColor, PCB_THEME } from "./theme.js";
+import {
+	legPoints,
+	proposePostureRoute,
+	togglePosture,
+} from "./trackPosture.js";
 import {
 	bboxOfPoints,
 	fitToBounds,
@@ -308,8 +308,16 @@ function handleRoutingAction(key, ctx) {
 	return true;
 }
 
+function handlePostureKey(e, key, ctx) {
+	if (key !== "/" || !hasModifier(e)) return false;
+	ctx.togglePosture();
+	return true;
+}
+
 function handleRoutingKeys(e, key, ctx) {
-	if (!handleRoutingAction(key, ctx)) return false;
+	const handled =
+		handlePostureKey(e, key, ctx) || handleRoutingAction(key, ctx);
+	if (!handled) return false;
 	e.preventDefault();
 	return true;
 }
@@ -1068,14 +1076,17 @@ function PcbToolbar({
 	);
 }
 
-function PcbStatusBar({ isRouting, widthPreset, routeMode }) {
+function PcbStatusBar({ isRouting, widthPreset, routeMode, posture }) {
 	return (
 		<div style={STATUS_BAR_STYLE}>
 			<span>
 				Width:{" "}
 				<strong style={{ color: "#f1f5f9" }}>{widthPreset?.label}</strong> (
 				{widthPreset?.hint}) [W] | Mode:{" "}
-				<strong style={{ color: "#f1f5f9" }}>{routeMode}°</strong> [/]
+				<strong style={{ color: "#f1f5f9" }}>
+					{routeMode}° {posture}
+				</strong>{" "}
+				[/, Ctrl+/]
 			</span>
 			<span>
 				{isRouting
@@ -1191,6 +1202,7 @@ function executeViaPlacement(viaCtx) {
 		widthMm,
 		netId,
 		routeMode,
+		posture,
 		pushBoard,
 		toggleLayer,
 		setPoints,
@@ -1199,7 +1211,7 @@ function executeViaPlacement(viaCtx) {
 	const start = points[points.length - 1] ?? cursorPos ?? [0, 0];
 	const target = cursorPos ?? start;
 	const cornerPts =
-		points.length > 0 ? constrainAngle(start, target, routeMode) : [];
+		points.length > 0 ? legPoints(start, target, routeMode, posture) : [];
 	const fullPoints = points.length > 0 ? [...points, ...cornerPts] : [start];
 	const viaAt = fullPoints[fullPoints.length - 1];
 
@@ -1228,16 +1240,19 @@ function checkCommitAllowed(routeCtx, target, isShiftHeld) {
 		routeCtx;
 	if (points.length === 0 || isShiftHeld) return true;
 	const start = points[points.length - 1];
-	const prop = proposeRoute({
-		start,
-		cursor: target,
-		layer: activeLayer,
-		widthMm,
-		clearanceMm: 0.2,
-		board,
-		netId: currentNetId,
-		mode: routeMode,
-	});
+	const prop = proposePostureRoute(
+		{
+			start,
+			cursor: target,
+			layer: activeLayer,
+			widthMm,
+			clearanceMm: 0.2,
+			board,
+			netId: currentNetId,
+			mode: routeMode,
+		},
+		routeCtx.posture,
+	);
 	return prop.collisions.length === 0;
 }
 
@@ -1255,7 +1270,11 @@ function useRouteMode() {
 	const toggleRouteMode = useCallback(() => {
 		setRouteMode((m) => (m === "45" ? "90" : "45"));
 	}, []);
-	return { routeMode, toggleRouteMode };
+	const [posture, setPosture] = useState("straight-first");
+	const togglePostureMode = useCallback(() => {
+		setPosture((p) => togglePosture(p));
+	}, []);
+	return { routeMode, toggleRouteMode, posture, togglePostureMode };
 }
 
 function useRouteSession() {
@@ -1299,21 +1318,25 @@ function useRouteProposed({
 	board,
 	currentNetId,
 	routeMode,
+	posture,
 }) {
 	return useMemo(() => {
 		if (!isRouting || points.length === 0 || !cursorPos) {
 			return { points: [], collisions: [] };
 		}
-		return proposeRoute({
-			start: points[points.length - 1],
-			cursor: cursorPos,
-			layer: activeLayer,
-			widthMm,
-			clearanceMm: 0.2,
-			board,
-			netId: currentNetId,
-			mode: routeMode,
-		});
+		return proposePostureRoute(
+			{
+				start: points[points.length - 1],
+				cursor: cursorPos,
+				layer: activeLayer,
+				widthMm,
+				clearanceMm: 0.2,
+				board,
+				netId: currentNetId,
+				mode: routeMode,
+			},
+			posture,
+		);
 	}, [
 		isRouting,
 		points,
@@ -1323,6 +1346,7 @@ function useRouteProposed({
 		board,
 		currentNetId,
 		routeMode,
+		posture,
 	]);
 }
 
@@ -1334,6 +1358,7 @@ function useRouteClick({
 	activeLayer,
 	widthMm,
 	routeMode,
+	posture,
 	svgRef,
 	view,
 }) {
@@ -1360,13 +1385,11 @@ function useRouteClick({
 				board,
 				currentNetId,
 				routeMode,
+				posture,
 			};
 			if (!checkCommitAllowed(routeCtx, target, e.shiftKey)) return;
-			const start = points[points.length - 1];
-			setPoints((prev) => [
-				...prev,
-				...constrainAngle(start, target, routeMode),
-			]);
+			const legs = legPoints(points.at(-1), target, routeMode, posture);
+			setPoints((prev) => [...prev, ...legs]);
 		},
 		[
 			isRouting,
@@ -1378,6 +1401,7 @@ function useRouteClick({
 			activeLayer,
 			widthMm,
 			routeMode,
+			posture,
 			svgRef,
 			view,
 			setCurrentNetId,
@@ -1439,6 +1463,7 @@ function useRouteVia({
 	activeLayer,
 	widthMm,
 	routeMode,
+	posture,
 	pushBoard,
 	toggleLayer,
 }) {
@@ -1453,6 +1478,7 @@ function useRouteVia({
 			widthMm,
 			netId: currentNetId,
 			routeMode,
+			posture,
 			pushBoard,
 			toggleLayer,
 			setPoints,
@@ -1466,6 +1492,7 @@ function useRouteVia({
 		widthMm,
 		currentNetId,
 		routeMode,
+		posture,
 		pushBoard,
 		toggleLayer,
 		setPoints,
@@ -1478,6 +1505,7 @@ function useRouteHandlers(session, routingProps) {
 		activeLayer,
 		widthMm,
 		routeMode,
+		posture,
 		pushBoard,
 		toggleLayer,
 		svgRef,
@@ -1493,6 +1521,7 @@ function useRouteHandlers(session, routingProps) {
 		activeLayer,
 		widthMm,
 		routeMode,
+		posture,
 		svgRef,
 		view,
 	});
@@ -1510,6 +1539,7 @@ function useRouteHandlers(session, routingProps) {
 		activeLayer,
 		widthMm,
 		routeMode,
+		posture,
 		pushBoard,
 		toggleLayer,
 	});
@@ -1523,7 +1553,8 @@ function useRouteHandlers(session, routingProps) {
 
 function useRoutingState(props) {
 	const session = useRouteSession();
-	const { routeMode, toggleRouteMode } = useRouteMode();
+	const { routeMode, toggleRouteMode, posture, togglePostureMode } =
+		useRouteMode();
 	const { widthPreset, widthMm, cycleWidthPreset } = useRoutePreset();
 
 	const proposedRoute = useRouteProposed({
@@ -1535,12 +1566,14 @@ function useRoutingState(props) {
 		board: props.board,
 		currentNetId: session.currentNetId,
 		routeMode,
+		posture,
 	});
 
 	const handlers = useRouteHandlers(session, {
 		...props,
 		widthMm,
 		routeMode,
+		posture,
 	});
 
 	return {
@@ -1548,6 +1581,8 @@ function useRoutingState(props) {
 		points: session.points,
 		cursorPos: session.cursorPos,
 		routeMode,
+		posture,
+		togglePostureMode,
 		widthPreset,
 		widthMm,
 		proposedRoute,
@@ -1737,6 +1772,7 @@ function buildShortcuts(ctx) {
 		toggleLayer: ctx.layers.toggleLayer,
 		toggleRoute: ctx.route.toggleRoute,
 		toggleRouteMode: ctx.route.toggleRouteMode,
+		togglePosture: ctx.route.togglePostureMode,
 		cycleWidthPreset: ctx.route.cycleWidthPreset,
 		placeVia: ctx.route.placeViaAndSwitchLayer,
 		isRouting: ctx.route.isRouting,
@@ -2295,6 +2331,7 @@ export default function PcbCanvas({
 				isRouting={s.route.isRouting}
 				widthPreset={s.route.widthPreset}
 				routeMode={s.route.routeMode}
+				posture={s.route.posture}
 			/>
 		</div>
 	);

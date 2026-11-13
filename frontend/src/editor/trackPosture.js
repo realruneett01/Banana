@@ -1,4 +1,4 @@
-import { constrainAngle } from "./routingModel.js";
+import { constrainAngle, proposeRoute } from "./routingModel.js";
 
 const MODES = Object.freeze(["straight-first", "diagonal-first"]);
 
@@ -21,4 +21,32 @@ export function posture45(start, end, mode = "straight-first") {
 export function togglePosture(mode) {
 	const idx = MODES.indexOf(mode);
 	return MODES[(idx + 1) % MODES.length];
+}
+
+/**
+ * Corner points of the pending route leg (start excluded), honouring the posture in 45-degree
+ * mode. Preview and commit both use this so the drawn track always matches the preview.
+ */
+export function legPoints(start, target, routeMode, posture) {
+	if (routeMode === "45") return posture45(start, target, posture).slice(1);
+	return constrainAngle(start, target, routeMode);
+}
+
+/**
+ * proposeRoute over the posture path: each leg is already 45/90-aligned, so proposeRoute keeps it
+ * as one straight segment; collision segment indices are remapped to the full path.
+ */
+export function proposePostureRoute(options, posture) {
+	const { start, cursor, mode } = options;
+	const legs = legPoints(start, cursor, mode, posture);
+	const points = [[start[0], start[1]], ...legs];
+	const collisions = legs.flatMap((end, i) =>
+		proposeRoute({
+			...options,
+			start: points[i],
+			cursor: end,
+			mode: "45",
+		}).collisions.map((c) => ({ ...c, segmentIndex: i })),
+	);
+	return { points, collisions };
 }
