@@ -29,6 +29,10 @@ import { useGithubSync } from "./useGithubSync.js";
 
 const { Text, Title } = Typography;
 
+const DARK_BORDER = "#232738";
+const YELLOW_ACCENT = "#fadb14";
+const MUTED_GRAY = "#8b949e";
+
 const BANANA_BUTTON_STYLE = Object.freeze({
 	background: "linear-gradient(135deg, #fadb14 0%, #faad14 100%)",
 	color: "#000",
@@ -36,15 +40,19 @@ const BANANA_BUTTON_STYLE = Object.freeze({
 	border: "none",
 });
 
-const FLEX_ROW_BETWEEN = Object.freeze({
+const FLEX_ALIGN_CENTER = Object.freeze({
 	display: "flex",
 	alignItems: "center",
+});
+
+const FLEX_ROW_BETWEEN = Object.freeze({
+	...FLEX_ALIGN_CENTER,
 	justifyContent: "space-between",
 });
 
 const DARK_SURFACE = Object.freeze({
 	background: "#0f1015",
-	borderColor: "#232738",
+	borderColor: DARK_BORDER,
 });
 
 const makeFlexCenter = (isInline = false) => ({
@@ -53,10 +61,17 @@ const makeFlexCenter = (isInline = false) => ({
 	justifyContent: "center",
 });
 
+const mutedLabel = (marginBottom) => ({
+	fontSize: "11px",
+	color: MUTED_GRAY,
+	display: "block",
+	marginBottom,
+});
+
 const STYLES = Object.freeze({
 	cardPrompt: {
 		background: "linear-gradient(180deg, #161821 0%, #0f1015 100%)",
-		borderColor: "#232738",
+		borderColor: DARK_BORDER,
 		borderRadius: "8px",
 		textAlign: "center",
 		padding: "16px 8px",
@@ -68,18 +83,13 @@ const STYLES = Object.freeze({
 		borderRadius: "50%",
 		background: "#24292e",
 		marginBottom: "12px",
-		border: "2px solid #fadb14",
+		border: `2px solid ${YELLOW_ACCENT}`,
 	},
-	mutedBlock: {
-		fontSize: "11px",
-		color: "#8b949e",
-		display: "block",
-		marginBottom: "16px",
-	},
+	mutedBlock: mutedLabel("16px"),
 	accountBadge: {
 		...FLEX_ROW_BETWEEN,
 		...DARK_SURFACE,
-		border: "1px solid #232738",
+		border: `1px solid ${DARK_BORDER}`,
 		borderRadius: "6px",
 		padding: "8px 12px",
 		marginBottom: "14px",
@@ -88,10 +98,10 @@ const STYLES = Object.freeze({
 		width: 22,
 		height: 22,
 		borderRadius: "50%",
-		border: "1px solid #fadb14",
+		border: `1px solid ${YELLOW_ACCENT}`,
 	},
 	yellowLink: {
-		color: "#fadb14",
+		color: YELLOW_ACCENT,
 		fontSize: "11px",
 		padding: 0,
 	},
@@ -119,14 +129,13 @@ const STYLES = Object.freeze({
 		margin: 0,
 	},
 	commitTrailContainer: {
-		borderTop: "1px solid #232738",
+		borderTop: `1px solid ${DARK_BORDER}`,
 		paddingTop: "16px",
 		marginTop: "16px",
 	},
 	commitTrailTitle: {
-		color: "#fadb14",
-		display: "flex",
-		alignItems: "center",
+		...FLEX_ALIGN_CENTER,
+		color: YELLOW_ACCENT,
 		gap: "8px",
 		marginBottom: "12px",
 		fontSize: "13px",
@@ -136,12 +145,7 @@ const STYLES = Object.freeze({
 		overflowY: "auto",
 		paddingRight: "4px",
 	},
-	targetLabel: {
-		fontSize: "11px",
-		color: "#8b949e",
-		display: "block",
-		marginBottom: "6px",
-	},
+	targetLabel: mutedLabel("6px"),
 });
 
 const matchesFilter = (val, input) =>
@@ -362,8 +366,11 @@ function ManualRepoInputControl(props) {
 }
 
 function FullWidthSearchSelect(props) {
-	const { placeholder, loading, value, onChange, filterOption, children } =
+	const { placeholder, loading, value, onChange, filterField, children } =
 		props;
+	const filterOption = filterField
+		? (input, option) => matchesFilter(option?.[filterField], input)
+		: undefined;
 	return (
 		<Select
 			showSearch
@@ -396,7 +403,7 @@ function RepoSelectDropdown(props) {
 			loading={loadingRepos}
 			value={selectedValue}
 			onChange={handleChange}
-			filterOption={(input, option) => matchesFilter(option?.value, input)}
+			filterField="value"
 		>
 			{repos.map((r) => {
 				const full = `${r.owner}/${r.name}`;
@@ -492,7 +499,7 @@ function PullRequestSelectDropdown(props) {
 			loading={loading}
 			value={selectedNumber}
 			onChange={onSelect}
-			filterOption={(input, option) => matchesFilter(option?.label, input)}
+			filterField="label"
 		>
 			{pulls.map((pr) => (
 				<Select.Option

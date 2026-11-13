@@ -96,25 +96,15 @@ const LINK_STYLE = Object.freeze({
 	gap: "4px",
 });
 
-const YELLOW_BTN_STYLE = Object.freeze({
-	background: YELLOW_ACCENT,
-	color: "#000",
-	fontWeight: 600,
-	border: "none",
-});
+const buttonStyle = (background, color, extra) =>
+	Object.freeze({ background, color, fontWeight: 600, ...extra });
 
-const GREEN_BTN_STYLE = Object.freeze({
-	background: "#52c41a",
+const YELLOW_BTN_STYLE = buttonStyle(YELLOW_ACCENT, "#000", { border: "none" });
+const GREEN_BTN_STYLE = buttonStyle("#52c41a", "#000", {
 	borderColor: "#52c41a",
-	color: "#000",
-	fontWeight: 600,
 });
-
-const DARK_BTN_STYLE = Object.freeze({
-	background: "#24292e",
+const DARK_BTN_STYLE = buttonStyle("#24292e", "#fff", {
 	borderColor: "#444c56",
-	color: "#fff",
-	fontWeight: 600,
 });
 
 const DEVICE_POLL_ERRORS = Object.freeze({

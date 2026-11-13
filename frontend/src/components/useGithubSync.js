@@ -213,32 +213,9 @@ function useHardwareFiles(
 	return { hardwareFiles, loadingFiles, loadFiles };
 }
 
-export function useGithubSync(props) {
-	const {
-		githubToken,
-		selectedRepo,
-		setSelectedRepo,
-		setBaseCommit,
-		setTargetCommit,
-		relativeFilePath,
-		setRelativeFilePath,
-		compareMode,
-		form,
-	} = props;
-
+function usePullSelection(props, loadFiles) {
+	const { selectedRepo, form, setBaseCommit, setTargetCommit } = props;
 	const [selectedPull, setSelectedPull] = useState(null);
-
-	const { repos, loadingRepos, refreshRepos } = useRepoList(
-		githubToken,
-		selectedRepo,
-		setSelectedRepo,
-	);
-	const { hardwareFiles, loadingFiles, loadFiles } = useHardwareFiles(
-		githubToken,
-		selectedRepo,
-		form,
-		setRelativeFilePath,
-	);
 
 	const handleSelectPull = useCallback(
 		(pr, owner = selectedRepo?.owner, repo = selectedRepo?.name) => {
@@ -256,47 +233,40 @@ export function useGithubSync(props) {
 		[selectedRepo, form, setBaseCommit, setTargetCommit, loadFiles],
 	);
 
-	const {
-		branches,
-		loadingBranches,
-		baseBranch,
-		setBaseBranch,
-		targetBranch,
-		setTargetBranch,
-		pulls,
-		loadingPulls,
-	} = useBranchesAndPulls(githubToken, selectedRepo, handleSelectPull);
+	return { selectedPull, handleSelectPull };
+}
 
-	const { baseCommits, targetCommits, loadingCommits } = useBranchCommits({
+export function useGithubSync(props) {
+	const { githubToken, selectedRepo, setSelectedRepo, setRelativeFilePath } =
+		props;
+
+	const repoList = useRepoList(githubToken, selectedRepo, setSelectedRepo);
+	const files = useHardwareFiles(
 		githubToken,
 		selectedRepo,
-		compareMode,
-		baseBranch,
-		targetBranch,
-		relativeFilePath,
-		setBaseCommit,
-		setTargetCommit,
-		form,
+		props.form,
+		setRelativeFilePath,
+	);
+	const pullSelection = usePullSelection(props, files.loadFiles);
+	const branchState = useBranchesAndPulls(
+		githubToken,
+		selectedRepo,
+		pullSelection.handleSelectPull,
+	);
+	const commits = useBranchCommits({
+		...props,
+		baseBranch: branchState.baseBranch,
+		targetBranch: branchState.targetBranch,
 	});
 
 	return {
-		repos,
-		loadingRepos,
-		fetchRepos: refreshRepos,
-		pulls,
-		loadingPulls,
-		selectedPull,
-		handleSelectPull,
-		branches,
-		loadingBranches,
-		baseBranch,
-		setBaseBranch,
-		targetBranch,
-		setTargetBranch,
-		baseCommits,
-		targetCommits,
-		loadingCommits,
-		hardwareFiles,
-		loadingFiles,
+		...branchState,
+		...pullSelection,
+		...commits,
+		repos: repoList.repos,
+		loadingRepos: repoList.loadingRepos,
+		fetchRepos: repoList.refreshRepos,
+		hardwareFiles: files.hardwareFiles,
+		loadingFiles: files.loadingFiles,
 	};
 }

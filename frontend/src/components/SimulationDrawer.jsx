@@ -8,50 +8,53 @@ import IssuesPanel from "./IssuesPanel.jsx";
 import { useRunCommits } from "./runCommits.js";
 import { useSimulation } from "./useSimulation.js";
 
+const TEXT_COLOR = "#e2e8f0";
+const PANEL_BORDER = "1px solid #1e2438";
+
+const flexColumn = (gap, extra) =>
+	Object.freeze({ display: "flex", flexDirection: "column", gap, ...extra });
+
+const flexRowCentered = (extra) =>
+	Object.freeze({
+		display: "flex",
+		alignItems: "center",
+		gap: "8px",
+		...extra,
+	});
+
+const buttonStyle = (background, borderColor, color, fontWeight) =>
+	Object.freeze({ background, borderColor, color, fontWeight });
+
 const DRAWER_STYLES = Object.freeze({
 	header: {
 		background: "#121520",
-		borderBottom: "1px solid #1e2438",
+		borderBottom: PANEL_BORDER,
 		padding: "12px 16px",
-		color: "#e2e8f0",
+		color: TEXT_COLOR,
 	},
-	body: {
+	body: flexColumn("14px", {
 		background: "#0f121d",
 		padding: "14px",
-		color: "#e2e8f0",
-		display: "flex",
-		flexDirection: "column",
-		gap: "14px",
+		color: TEXT_COLOR,
 		overflowY: "auto",
-	},
+	}),
 });
 
-const CARD_STYLE = Object.freeze({
+const CARD_STYLE = flexColumn("10px", {
 	background: "rgba(22, 26, 42, 0.8)",
 	border: "1px solid #23283e",
 	borderRadius: "8px",
 	padding: "12px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "10px",
 });
 
-const ROW_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
-	flexWrap: "wrap",
-});
+const ROW_STYLE = flexRowCentered({ flexWrap: "wrap" });
 
-const TITLE_STYLE = Object.freeze({
+const TITLE_STYLE = flexRowCentered({
 	fontSize: "12px",
 	fontWeight: 700,
 	textTransform: "uppercase",
 	letterSpacing: "0.06em",
-	color: "#e2e8f0",
-	display: "flex",
-	alignItems: "center",
-	gap: "8px",
+	color: TEXT_COLOR,
 });
 
 const STATUS_DOT_STYLE = Object.freeze({
@@ -72,35 +75,19 @@ const REASON_STYLE = Object.freeze({
 	padding: "4px 8px",
 });
 
-const PRIMARY_BTN_STYLE = Object.freeze({
-	background: "#fadb14",
-	borderColor: "#fadb14",
-	color: "#0f1015",
-	fontWeight: 700,
-});
+const PRIMARY_BTN_STYLE = buttonStyle("#fadb14", "#fadb14", "#0f1015", 700);
 
-const SECONDARY_BTN_STYLE = Object.freeze({
-	background: "#1a1f33",
-	borderColor: "#283250",
-	color: "#cbd5e1",
-	fontWeight: 600,
-});
+const SECONDARY_BTN_STYLE = buttonStyle("#1a1f33", "#283250", "#cbd5e1", 600);
 
-const PANEL_WRAPPER_STYLE = Object.freeze({
+const PANEL_WRAPPER_STYLE = flexColumn(undefined, {
 	height: "360px",
-	border: "1px solid #1e2438",
+	border: PANEL_BORDER,
 	borderRadius: "8px",
 	overflow: "hidden",
-	display: "flex",
-	flexDirection: "column",
 	flexShrink: 0,
 });
 
-const RUN_TAB_STYLE = Object.freeze({
-	display: "flex",
-	flexDirection: "column",
-	gap: "14px",
-});
+const RUN_TAB_STYLE = flexColumn("14px");
 
 function createEnvId() {
 	return `env_${crypto.randomUUID()}`;

@@ -2,14 +2,21 @@ import { Alert, Button, List, Space, Tag, Typography } from "antd";
 import { useMemo } from "react";
 import { diffIr } from "../irDiff.js";
 
-const CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	flexDirection: "column",
-	gap: "12px",
+const MUTED_COLOR = "#94a3b8";
+const TEXT_COLOR = "#e2e8f0";
+const DIVIDER = "1px solid #23283e";
+
+const flexColumn = (gap, extra) =>
+	Object.freeze({ display: "flex", flexDirection: "column", gap, ...extra });
+
+const textStyle = (color, fontSize, extra) =>
+	Object.freeze({ color, fontSize, ...extra });
+
+const CONTAINER_STYLE = flexColumn("12px", {
 	padding: "12px",
 	background: "#161a2a",
 	borderRadius: "6px",
-	border: "1px solid #23283e",
+	border: DIVIDER,
 });
 
 const ALERT_STYLE = Object.freeze({
@@ -17,53 +24,27 @@ const ALERT_STYLE = Object.freeze({
 	borderColor: "#3b4468",
 });
 
-const SECTION_STYLE = Object.freeze({
-	display: "flex",
-	flexDirection: "column",
-	gap: "4px",
-});
+const SECTION_STYLE = flexColumn("4px");
 
-const LABEL_STYLE = Object.freeze({
-	color: "#94a3b8",
-	fontSize: "12px",
+const LABEL_STYLE = textStyle(MUTED_COLOR, "12px", {
 	textTransform: "uppercase",
 	letterSpacing: "0.05em",
 });
 
-const TEXT_STYLE = Object.freeze({
-	color: "#e2e8f0",
-	fontSize: "13px",
-});
+const TEXT_STYLE = textStyle(TEXT_COLOR, "13px");
 
-const MUTED_TEXT_STYLE = Object.freeze({
-	color: "#94a3b8",
-	fontSize: "12px",
-});
+const MUTED_TEXT_STYLE = textStyle(MUTED_COLOR, "12px");
 
-const SUMMARY_STYLE = Object.freeze({
-	color: "#e2e8f0",
-	fontSize: "13px",
-	margin: 0,
-});
+const SUMMARY_STYLE = textStyle(TEXT_COLOR, "13px", { margin: 0 });
 
 const ITEM_STYLE = Object.freeze({
 	padding: "4px 0",
-	borderBottom: "1px solid #23283e",
+	borderBottom: DIVIDER,
 });
 
-const COLUMN_STYLE = Object.freeze({
-	display: "flex",
-	flexDirection: "column",
-	gap: "2px",
-	width: "100%",
-});
+const COLUMN_STYLE = flexColumn("2px", { width: "100%" });
 
-const INDENT_STYLE = Object.freeze({
-	paddingLeft: "16px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "2px",
-});
+const INDENT_STYLE = flexColumn("2px", { paddingLeft: "16px" });
 
 const BUTTON_ROW_STYLE = Object.freeze({
 	display: "flex",
@@ -107,6 +88,18 @@ function formatPinList(pins, before, after) {
 	return pins.map((p) => formatPin(p, before, after)).join(", ");
 }
 
+function DiffSection({ title, items, renderItem }) {
+	if (!items?.length) return null;
+	return (
+		<div style={SECTION_STYLE}>
+			<Typography.Text strong style={LABEL_STYLE}>
+				{title}
+			</Typography.Text>
+			<List size="small" dataSource={items} renderItem={renderItem} />
+		</div>
+	);
+}
+
 function AddedPartItem({ part }) {
 	return (
 		<List.Item style={ITEM_STYLE}>
@@ -123,42 +116,14 @@ function AddedPartItem({ part }) {
 	);
 }
 
-function AddedPartsList({ parts }) {
-	if (!parts?.length) return null;
+function RemovedPartItem({ part }) {
 	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Added Parts
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={parts}
-				renderItem={(part) => <AddedPartItem part={part} />}
-			/>
-		</div>
-	);
-}
-
-function RemovedPartsList({ parts }) {
-	if (!parts?.length) return null;
-	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Removed Parts
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={parts}
-				renderItem={(part) => (
-					<List.Item style={ITEM_STYLE}>
-						<Space>
-							<Tag color="red">Removed</Tag>
-							<Typography.Text style={TEXT_STYLE}>{part.ref}</Typography.Text>
-						</Space>
-					</List.Item>
-				)}
-			/>
-		</div>
+		<List.Item style={ITEM_STYLE}>
+			<Space>
+				<Tag color="red">Removed</Tag>
+				<Typography.Text style={TEXT_STYLE}>{part.ref}</Typography.Text>
+			</Space>
+		</List.Item>
 	);
 }
 
@@ -186,22 +151,6 @@ function ChangedPartItem({ part }) {
 	);
 }
 
-function ChangedPartsList({ parts }) {
-	if (!parts?.length) return null;
-	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Changed Parts
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={parts}
-				renderItem={(part) => <ChangedPartItem part={part} />}
-			/>
-		</div>
-	);
-}
-
 function NetPinItem({ net, before, after, color, label }) {
 	const pins = formatPinList(net.pins, before, after);
 	return (
@@ -214,54 +163,6 @@ function NetPinItem({ net, before, after, color, label }) {
 				</Typography.Text>
 			</Space>
 		</List.Item>
-	);
-}
-
-function AddedNetsList({ nets, before, after }) {
-	if (!nets?.length) return null;
-	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Added Connections
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={nets}
-				renderItem={(net) => (
-					<NetPinItem
-						net={net}
-						before={before}
-						after={after}
-						color="green"
-						label="Added"
-					/>
-				)}
-			/>
-		</div>
-	);
-}
-
-function RemovedNetsList({ nets, before, after }) {
-	if (!nets?.length) return null;
-	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Removed Connections
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={nets}
-				renderItem={(net) => (
-					<NetPinItem
-						net={net}
-						before={before}
-						after={after}
-						color="red"
-						label="Removed"
-					/>
-				)}
-			/>
-		</div>
 	);
 }
 
@@ -299,23 +200,41 @@ function ChangedNetItem({ net, before, after }) {
 	);
 }
 
-function ChangedNetsList({ nets, before, after }) {
-	if (!nets?.length) return null;
-	return (
-		<div style={SECTION_STYLE}>
-			<Typography.Text strong style={LABEL_STYLE}>
-				Changed Connections
-			</Typography.Text>
-			<List
-				size="small"
-				dataSource={nets}
-				renderItem={(net) => (
-					<ChangedNetItem net={net} before={before} after={after} />
-				)}
-			/>
-		</div>
-	);
-}
+const renderNetPin = (color, label) => (net, before, after) => (
+	<NetPinItem
+		net={net}
+		before={before}
+		after={after}
+		color={color}
+		label={label}
+	/>
+);
+
+const DIFF_SECTIONS = Object.freeze([
+	["parts", "added", "Added Parts", (part) => <AddedPartItem part={part} />],
+	[
+		"parts",
+		"removed",
+		"Removed Parts",
+		(part) => <RemovedPartItem part={part} />,
+	],
+	[
+		"parts",
+		"changed",
+		"Changed Parts",
+		(part) => <ChangedPartItem part={part} />,
+	],
+	["nets", "added", "Added Connections", renderNetPin("green", "Added")],
+	["nets", "removed", "Removed Connections", renderNetPin("red", "Removed")],
+	[
+		"nets",
+		"changed",
+		"Changed Connections",
+		(net, before, after) => (
+			<ChangedNetItem net={net} before={before} after={after} />
+		),
+	],
+]);
 
 function ReviewButtons({ onAccept, onReject, after }) {
 	return (
@@ -347,12 +266,14 @@ export default function IrDiffReview({ before, after, onAccept, onReject }) {
 			<Typography.Text strong style={SUMMARY_STYLE}>
 				{diff.summary}
 			</Typography.Text>
-			<AddedPartsList parts={diff.parts.added} />
-			<RemovedPartsList parts={diff.parts.removed} />
-			<ChangedPartsList parts={diff.parts.changed} />
-			<AddedNetsList nets={diff.nets.added} before={before} after={after} />
-			<RemovedNetsList nets={diff.nets.removed} before={before} after={after} />
-			<ChangedNetsList nets={diff.nets.changed} before={before} after={after} />
+			{DIFF_SECTIONS.map(([group, kind, title, render]) => (
+				<DiffSection
+					key={`${group}-${kind}`}
+					title={title}
+					items={diff[group][kind]}
+					renderItem={(item) => render(item, before, after)}
+				/>
+			))}
 			<ReviewButtons onAccept={onAccept} onReject={onReject} after={after} />
 		</section>
 	);

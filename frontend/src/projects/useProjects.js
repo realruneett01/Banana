@@ -26,8 +26,8 @@ function saveRecentProjects(items) {
 			const bounded = items.slice(0, MAX_RECENT);
 			window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bounded));
 		}
-	} catch {
-		// Ignore storage write failures
+	} catch (err) {
+		console.warn("Failed to save recent projects:", err);
 	}
 }
 
@@ -42,8 +42,8 @@ async function getAuthHeader() {
 			const token = await window.banana.getApiToken();
 			if (token) return { "x-banana-auth": token };
 		}
-	} catch {
-		// Ignore token retrieval errors
+	} catch (err) {
+		console.warn("Failed to read desktop API token:", err);
 	}
 	return {};
 }
@@ -117,8 +117,8 @@ async function fetchKicadStatus() {
 			const status = await window.banana.kicad.status();
 			return status || null;
 		}
-	} catch {
-		// Desktop bridge status query failed
+	} catch (err) {
+		console.warn("KiCad status query failed:", err);
 	}
 	return null;
 }

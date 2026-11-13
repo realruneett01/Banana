@@ -195,18 +195,13 @@ function runDualViewportAnimation(params, refs, setters) {
 	requestAnimationFrame(tick);
 }
 
-function useSyncedDragHandlers({
+function useDragStart({
 	dragRef,
 	outerRef,
-	synced,
 	baseTransformRef,
 	targetTransformRef,
-	leftContentRef,
-	rightContentRef,
-	setBaseTransform,
-	setTargetTransform,
 }) {
-	const onMouseDown = useCallback(
+	return useCallback(
 		(e) => {
 			if (e.button !== 0 || !outerRef.current) return;
 			const rect = outerRef.current.getBoundingClientRect();
@@ -226,8 +221,12 @@ function useSyncedDragHandlers({
 		},
 		[outerRef, baseTransformRef, targetTransformRef, dragRef],
 	);
+}
 
-	const onMouseMove = useCallback(
+function useDragMove(ctx) {
+	const { dragRef, synced, baseTransformRef, targetTransformRef } = ctx;
+	const { leftContentRef, rightContentRef } = ctx;
+	return useCallback(
 		(e) => {
 			if (!dragRef.current.active) return;
 			const delta = {
@@ -253,8 +252,12 @@ function useSyncedDragHandlers({
 			dragRef,
 		],
 	);
+}
 
-	const onMouseUp = useCallback(
+function useDragEnd(ctx) {
+	const { dragRef, outerRef, baseTransformRef, targetTransformRef } = ctx;
+	const { setBaseTransform, setTargetTransform } = ctx;
+	return useCallback(
 		(e) => {
 			if (!dragRef.current.active) return;
 			dragRef.current.active = false;
@@ -272,7 +275,12 @@ function useSyncedDragHandlers({
 			dragRef,
 		],
 	);
+}
 
+function useSyncedDragHandlers(ctx) {
+	const onMouseDown = useDragStart(ctx);
+	const onMouseMove = useDragMove(ctx);
+	const onMouseUp = useDragEnd(ctx);
 	return { onMouseDown, onMouseMove, onMouseUp };
 }
 
