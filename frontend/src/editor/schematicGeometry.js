@@ -270,7 +270,7 @@ function addPartPinPositions(map, part, nets) {
 	}
 }
 
-function buildAllPinPos(parts, nets) {
+export function buildAllPinPos(parts, nets) {
 	const map = new Map();
 	for (const part of parts) {
 		addPartPinPositions(map, part, nets);

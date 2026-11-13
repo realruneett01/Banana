@@ -121,38 +121,13 @@ const UNSUPPORTED_CASES = [
 		"D1 moved to the other side of the board",
 	),
 	unsupp(
-		"added part unsupported",
+		"added part without library symbol unsupported",
 		irWithParts(),
 		singlePartIr({ id: "r5", ref: "R5" }),
-		"R5 was added",
+		"R5 has no library symbol",
 	),
 	unsupp(
-		"removed part unsupported",
-		singlePartIr({ id: "c2", ref: "C2" }),
-		irWithParts(),
-		"C2 was removed",
-	),
-	unsupp(
-		"renamed part unsupported",
-		singlePartIr({ id: "p1", ref: "R1" }),
-		singlePartIr({ id: "p1", ref: "R10" }),
-		"R1 was renamed to R10",
-	),
-	unsupp(
-		"footprint change unsupported",
-		singlePartIr({ id: "u1", ref: "U1", footprint: "SOIC-8" }),
-		singlePartIr({ id: "u1", ref: "U1", footprint: "TSSOP-8" }),
-		"U1 changed footprint",
-	),
-	unsupp(
-		"net change unsupported",
-		irWithNets(
-			makeNet({
-				id: "n1",
-				name: "VCC",
-				pins: [{ partId: "p1", pin: "1" }],
-			}),
-		),
+		"pin removed from a net unsupported",
 		irWithNets(
 			makeNet({
 				id: "n1",
@@ -163,7 +138,14 @@ const UNSUPPORTED_CASES = [
 				],
 			}),
 		),
-		"connection VCC changed",
+		irWithNets(
+			makeNet({
+				id: "n1",
+				name: "VCC",
+				pins: [{ partId: "p1", pin: "1" }],
+			}),
+		),
+		"connection VCC lost a pin",
 	),
 	unsupp(
 		"non-finite coordinates unsupported",
