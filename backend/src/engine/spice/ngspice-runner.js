@@ -280,13 +280,14 @@ async function executeSimulation(cfg, workDir, netlist) {
 }
 
 // Exported so netlist writers (ir-to-spice) strip exactly what this gate rejects.
-export const NETLIST_LIMITS = {
+// Frozen (with its arrays) so no importer can loosen the gate at runtime.
+export const NETLIST_LIMITS = Object.freeze({
 	maxBytes: 500 * 1024,
 	forbiddenChars: /[\0`]/,
-	forbiddenSubstrings: ["$("],
+	forbiddenSubstrings: Object.freeze(["$("]),
 	filePathChars: /[/\\~"'>]/,
 	filePathParam: /^(file|path)\s*=/i,
-	forbiddenPrefixes: [
+	forbiddenPrefixes: Object.freeze([
 		".control",
 		".endc",
 		".exec",
@@ -299,8 +300,8 @@ export const NETLIST_LIMITS = {
 		"system",
 		"*ng_script",
 		"* ng_script",
-	],
-};
+	]),
+});
 
 function hasExtensionWithoutParens(token) {
 	if (/[()]/.test(token)) return false;
