@@ -48,7 +48,7 @@ async function getAuthHeader() {
 	return {};
 }
 
-async function createProjectHeaders() {
+export async function createProjectHeaders() {
 	const auth = await getAuthHeader();
 	return {
 		"Content-Type": "application/json",

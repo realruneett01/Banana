@@ -237,7 +237,11 @@ async function buildFileEntry(fsImpl, dir, name) {
 		return null;
 	}
 	try {
-		const stat = await fsImpl.stat(path.join(dir, name));
+		const realFile = await fsImpl.realpath(path.join(dir, name));
+		if (path.dirname(realFile) !== dir) {
+			return null;
+		}
+		const stat = await fsImpl.stat(realFile);
 		if (!stat?.isFile?.()) {
 			return null;
 		}

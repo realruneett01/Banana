@@ -9,6 +9,8 @@ import {
 	Typography,
 } from "antd";
 import { useState } from "react";
+import ProjectFiles from "./ProjectFiles.jsx";
+import { joinPath } from "./projectFiles.js";
 import { useProjects } from "./useProjects.js";
 
 const CONTAINER_STYLE = Object.freeze({
@@ -18,13 +20,6 @@ const CONTAINER_STYLE = Object.freeze({
 	width: "100%",
 	boxSizing: "border-box",
 });
-
-function joinPath(dir, file) {
-	if (!dir || !file) return "";
-	const sep = dir.includes("\\") ? "\\" : "/";
-	const trimmed = dir.endsWith(sep) ? dir.slice(0, -1) : dir;
-	return `${trimmed}${sep}${file}`;
-}
 
 function findFilePath(projectRoot, files, ext, name) {
 	const list = Array.isArray(files) ? files : [];
@@ -148,9 +143,12 @@ function openKiCadFile(item) {
 	openKiCadProject(item.projectRoot, path);
 }
 
-function ItemActions({ item, kicadStatus, onOpenFile }) {
+function ItemActions({ item, kicadStatus, onOpenFile, onSelect }) {
 	return (
 		<Space>
+			<Button type="link" onClick={() => onSelect?.(item.projectRoot)}>
+				Files
+			</Button>
 			<Button
 				type="link"
 				onClick={() =>
@@ -174,7 +172,7 @@ function ItemActions({ item, kicadStatus, onOpenFile }) {
 	);
 }
 
-export function RecentItem({ item, kicadStatus, onOpenFile }) {
+export function RecentItem({ item, kicadStatus, onOpenFile, onSelect }) {
 	return (
 		<List.Item
 			actions={[
@@ -183,6 +181,7 @@ export function RecentItem({ item, kicadStatus, onOpenFile }) {
 					item={item}
 					kicadStatus={kicadStatus}
 					onOpenFile={onOpenFile}
+					onSelect={onSelect}
 				/>,
 			]}
 		>
@@ -191,7 +190,7 @@ export function RecentItem({ item, kicadStatus, onOpenFile }) {
 	);
 }
 
-export function RecentProjects({ recent, kicadStatus, onOpenFile }) {
+export function RecentProjects({ recent, kicadStatus, onOpenFile, onSelect }) {
 	if (!recent || recent.length === 0) {
 		return (
 			<Empty
@@ -209,6 +208,7 @@ export function RecentProjects({ recent, kicadStatus, onOpenFile }) {
 					item={item}
 					kicadStatus={kicadStatus}
 					onOpenFile={onOpenFile}
+					onSelect={onSelect}
 				/>
 			)}
 		/>
@@ -217,16 +217,21 @@ export function RecentProjects({ recent, kicadStatus, onOpenFile }) {
 
 export default function ProjectHome({ onOpenFile }) {
 	const { recent, createProject, kicadStatus } = useProjects();
+	const [activeRoot, setActiveRoot] = useState("");
 
 	return (
 		<div style={CONTAINER_STYLE}>
 			<Typography.Title level={2}>Project Manager</Typography.Title>
 			<NewProjectCard onCreate={createProject} />
+			{activeRoot && (
+				<ProjectFiles projectRoot={activeRoot} onOpenFile={onOpenFile} />
+			)}
 			<Card title="Recent Projects">
 				<RecentProjects
 					recent={recent}
 					kicadStatus={kicadStatus}
 					onOpenFile={onOpenFile}
+					onSelect={setActiveRoot}
 				/>
 			</Card>
 		</div>
