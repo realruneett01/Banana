@@ -4,6 +4,7 @@ import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
+import { createMcpHttpRouter } from "./mcp/http.js";
 import agentRouter from "./routes/agent-routes.js";
 import circuitRouter from "./routes/circuit-routes.js";
 import editorRouter from "./routes/editor-routes.js";
@@ -143,6 +144,8 @@ export function createApp(options = {}) {
 	setupSecurityTokenValidation(app, options.apiSecret);
 
 	app.use(cors({ origin: createCorsOriginValidator(isDesktop) }));
+	// MCP over HTTP for web AI clients (own bearer + host/origin checks)
+	app.use(createMcpHttpRouter());
 	app.use(express.json());
 
 	// API routes
