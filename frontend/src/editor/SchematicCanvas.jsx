@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { boxSelect, normalizeBox } from "./boxSelect.js";
 import { applyCommand } from "./editorModel.js";
 import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
+import { partItems } from "./partBounds.js";
 import {
 	hitTest,
 	partBox,
@@ -775,8 +777,26 @@ function handlePointerDownHit(hit, hitCtx) {
 	} else if (hit?.kind === "wire") {
 		dispatchCmd({ type: "select", ids: [hit.id] });
 	} else {
-		dispatchCmd({ type: "select", ids: [] });
+		handleEmptyPointerDown(hitCtx);
 	}
+}
+
+function handleEmptyPointerDown({
+	wireMode,
+	dispatchCmd,
+	setBoxDrag,
+	worldPt,
+}) {
+	dispatchCmd({ type: "select", ids: [] });
+	if (!wireMode) setBoxDrag({ start: worldPt, end: worldPt });
+}
+
+function commitBoxSelect(boxDrag, editorState) {
+	if (!boxDrag) return;
+	const { doc, symbolCache, dispatchCmd } = editorState;
+	const items = partItems(doc.ir, symbolCache);
+	const ids = boxSelect(items, boxDrag.start, boxDrag.end);
+	if (ids.length) dispatchCmd({ type: "select", ids });
 }
 
 function updatePartDrag(dragState, worldPt, setDragPos) {
@@ -835,10 +855,10 @@ function onPointerDownEvent(e, ctx) {
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
 	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
 	const { doc, dispatchCmd } = editorState;
-	const { panDragRef, setDragState, keyboardMove } = dragInit;
+	const { panDragRef, setDragState, setBoxDrag, keyboardMove } = dragInit;
 	const hitCtx = useMemo(
-		() => ({ wireMode, wireState, dispatchCmd, setDragState }),
-		[wireMode, wireState, dispatchCmd, setDragState],
+		() => ({ wireMode, wireState, dispatchCmd, setDragState, setBoxDrag }),
+		[wireMode, wireState, dispatchCmd, setDragState, setBoxDrag],
 	);
 
 	return useCallback(
@@ -859,7 +879,8 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 }
 
 function usePointerMove(svgRef, vp, dragState, moveCtx) {
-	const { panDragRef, setDragPos, setCursorWorld } = moveCtx;
+	const { panDragRef, setDragPos, setCursorWorld, boxDrag, setBoxDrag } =
+		moveCtx;
 
 	return useCallback(
 		(e) => {
@@ -871,39 +892,71 @@ function usePointerMove(svgRef, vp, dragState, moveCtx) {
 				return;
 			}
 			if (dragState) updatePartDrag(dragState, worldPt, setDragPos);
+			if (boxDrag) setBoxDrag({ ...boxDrag, end: worldPt });
 		},
-		[dragState, setDragPos, vp, svgRef, panDragRef, setCursorWorld],
+		[
+			dragState,
+			setDragPos,
+			vp,
+			svgRef,
+			panDragRef,
+			setCursorWorld,
+			boxDrag,
+			setBoxDrag,
+		],
 	);
 }
 
 function usePointerUp(editorState, wireState, dragState, upCtx) {
 	const { dispatchCmd } = editorState;
 	const { dragPos, setDragPos } = wireState;
-	const { panDragRef, setDragState } = upCtx;
+	const { panDragRef, setDragState, boxDrag, setBoxDrag } = upCtx;
 
 	return useCallback(() => {
 		panDragRef.current = null;
 		commitPartDrag(dragState, dragPos, dispatchCmd);
+		commitBoxSelect(boxDrag, editorState);
+		setBoxDrag(null);
 		setDragState(null);
 		setDragPos(null);
-	}, [dragState, dragPos, dispatchCmd, setDragPos, panDragRef, setDragState]);
+	}, [
+		dragState,
+		dragPos,
+		dispatchCmd,
+		editorState,
+		boxDrag,
+		setBoxDrag,
+		setDragPos,
+		panDragRef,
+		setDragState,
+	]);
 }
 
 function usePointerInteractions(svgRef, editorState, wireState) {
 	const panDragRef = useRef(null);
 	const [dragState, setDragState] = useState(null);
 	const [cursorWorld, setCursorWorld] = useState(null);
+	const [boxDrag, setBoxDrag] = useState(null);
 
 	const keyboardMove = Boolean(dragState?.keyboard);
 	const dragInit = useMemo(
-		() => ({ panDragRef, setDragState, keyboardMove }),
+		() => ({ panDragRef, setDragState, setBoxDrag, keyboardMove }),
 		[keyboardMove],
 	);
 	const moveCtx = useMemo(
-		() => ({ panDragRef, setDragPos: wireState.setDragPos, setCursorWorld }),
-		[wireState.setDragPos],
+		() => ({
+			panDragRef,
+			setDragPos: wireState.setDragPos,
+			setCursorWorld,
+			boxDrag,
+			setBoxDrag,
+		}),
+		[wireState.setDragPos, boxDrag],
 	);
-	const upCtx = useMemo(() => ({ panDragRef, setDragState }), []);
+	const upCtx = useMemo(
+		() => ({ panDragRef, setDragState, boxDrag, setBoxDrag }),
+		[boxDrag],
+	);
 
 	const onPointerDown = usePointerDown(
 		svgRef,
@@ -928,6 +981,7 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 		cursorWorld,
 		setCursorWorld,
 		setDragState,
+		boxDrag,
 	};
 }
 
@@ -1034,8 +1088,8 @@ function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 	const { ed, symbolCache, allPinPos } = model;
 	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
 	const editorState = useMemo(
-		() => ({ doc: ed.doc, dispatchCmd: ed.dispatchCmd }),
-		[ed.doc, ed.dispatchCmd],
+		() => ({ doc: ed.doc, dispatchCmd: ed.dispatchCmd, symbolCache }),
+		[ed.doc, ed.dispatchCmd, symbolCache],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
 	const keyCtx = useKeyContext(ed, wire, ptr, { vp, svgRef, allPinPos });
@@ -1207,6 +1261,31 @@ function SchematicProblemsOverlay({ parts, problems }) {
 	);
 }
 
+function SchematicSelectionBox({ boxDrag, vp, theme }) {
+	if (!boxDrag) return null;
+	const box = normalizeBox(
+		worldToScreen(boxDrag.start, vp),
+		worldToScreen(boxDrag.end, vp),
+	);
+	const color = getSchematicColor(theme, "selection");
+	const rightToLeft = boxDrag.end.x < boxDrag.start.x;
+	return (
+		<rect
+			className="schematic-box-select"
+			x={box.minX}
+			y={box.minY}
+			width={box.maxX - box.minX}
+			height={box.maxY - box.minY}
+			stroke={color}
+			strokeWidth={1}
+			strokeDasharray={rightToLeft ? "4 3" : undefined}
+			fill={color}
+			fillOpacity={0.08}
+			pointerEvents="none"
+		/>
+	);
+}
+
 function SchematicCrosshair({ cursorWorld, vp, theme }) {
 	if (!cursorWorld) return null;
 	const snapped = snapPoint(cursorWorld, 1.27);
@@ -1361,6 +1440,11 @@ export default function SchematicCanvas({
 					problems={problems}
 					theme={theme}
 					highlightNet={hl.highlightNet}
+				/>
+				<SchematicSelectionBox
+					boxDrag={s.ptr.boxDrag}
+					vp={s.vp}
+					theme={theme}
 				/>
 				<SchematicCrosshair
 					cursorWorld={s.ptr.cursorWorld}
