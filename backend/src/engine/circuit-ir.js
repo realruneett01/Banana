@@ -35,6 +35,7 @@ export const CIRCUIT_IR_SCHEMA = {
 				footprint: stringProp,
 				props: { type: "object" },
 				pinTypes: { type: "object" },
+				pinNames: { type: "object" },
 				placement: {
 					type: "object",
 					required: ["x", "y", "rot", "side"],
@@ -54,6 +55,8 @@ export const CIRCUIT_IR_SCHEMA = {
 		nets: arrayOfObjects(["id", "name", "pins"], {
 			id: stringProp,
 			name: stringProp,
+			// true when a power port, PWR_FLAG or off-sheet link drives the net
+			driven: { type: "boolean" },
 			pins: arrayOfObjects(["partId", "pin"], {
 				partId: stringProp,
 				pin: stringProp,

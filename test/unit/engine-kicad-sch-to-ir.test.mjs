@@ -316,14 +316,15 @@ describe("kicadSchToIr round trip with kicad-sch-writer", () => {
 		"Device:C": makeCapacitorLibSymbol(),
 	};
 
+	// Sheet-space (Y-down) offsets of the Y-up lib pins above.
 	const pinOffsets = {
 		"Device:R": {
 			1: { dx: -5, dy: 0 },
 			2: { dx: 5, dy: 0 },
 		},
 		"Device:C": {
-			1: { dx: 0, dy: 2.54 },
-			2: { dx: 0, dy: -2.54 },
+			1: { dx: 0, dy: -2.54 },
+			2: { dx: 0, dy: 2.54 },
 		},
 	};
 
@@ -389,8 +390,8 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 		)
 		(label "NET_A" (at 55 50 0))
 		(label "NET_B" (at 105 50 0))
-		(label "NET_VCC1" (at 50 60 0))
-		(label "NET_VCC2" (at 100 60 0))
+		(label "NET_VCC1" (at 50 40 0))
+		(label "NET_VCC2" (at 100 40 0))
 	)`;
 
 	const UNANNOTATED_SCH = makeDuplicateRefSch("R?", "R?");
@@ -443,4 +444,70 @@ describe("kicadSchToIr multi-unit symbols and unannotated references", () => {
 			assertExpectedNets(res.ir.nets, res.ir.parts, tc.expectedNets);
 		});
 	}
+});
+
+// KiCad file format: lib_symbols pin coordinates are Y-up, schematic sheet
+// coordinates are Y-down, and a symbol's (at x y angle) turns it
+// counter-clockwise as seen on the sheet; (mirror ...) applies after rotation.
+describe("kicadSchToIr KiCad symbol coordinate conventions", () => {
+	const VERTICAL_LIB = `(lib_symbols
+		(symbol "Device:C"
+			(pin passive line (at 0 2.54 270) (number "1"))
+			(pin passive line (at 0 -2.54 90) (number "2"))
+		)
+	)`;
+
+	function oneSymbolSch(lib, symbolAttrs, labels) {
+		return `(kicad_sch
+			(version 20250114)
+			${lib}
+			(symbol ${symbolAttrs}
+				(property "Reference" "C1")
+				(property "Value" "100n")
+				(property "Footprint" "C_0603")
+			)
+			${labels}
+		)`;
+	}
+
+	function labelledPins(sch) {
+		const res = importSch(sch);
+		assert.equal(res.ok, true, JSON.stringify(res.errors));
+		return Object.fromEntries(
+			res.ir.nets.map((n) => [n.name, n.pins.map((p) => p.pin).join(",")]),
+		);
+	}
+
+	test("lib pin with positive Y lands above the symbol origin", () => {
+		const sch = oneSymbolSch(
+			VERTICAL_LIB,
+			`(lib_id "Device:C") (at 50 50 0)`,
+			`(label "TOP" (at 50 47.46 0)) (label "BOTTOM" (at 50 52.54 0))`,
+		);
+		assert.deepEqual(labelledPins(sch), { TOP: "1", BOTTOM: "2" });
+	});
+
+	test("rotation 90 turns a top pin to the left of the symbol", () => {
+		const sch = oneSymbolSch(
+			VERTICAL_LIB,
+			`(lib_id "Device:C") (at 50 50 90)`,
+			`(label "LEFT" (at 47.46 50 0)) (label "RIGHT" (at 52.54 50 0))`,
+		);
+		assert.deepEqual(labelledPins(sch), { LEFT: "1", RIGHT: "2" });
+	});
+
+	test("instance lib_name selects the matching lib_symbols entry", () => {
+		const lib = `(lib_symbols
+			(symbol "C_1"
+				(pin passive line (at 0 2.54 270) (number "1"))
+				(pin passive line (at 0 -2.54 90) (number "2"))
+			)
+		)`;
+		const sch = oneSymbolSch(
+			lib,
+			`(lib_name "C_1") (lib_id "Device:C") (at 50 50 0)`,
+			`(label "TOP" (at 50 47.46 0))`,
+		);
+		assert.deepEqual(labelledPins(sch), { TOP: "1" });
+	});
 });

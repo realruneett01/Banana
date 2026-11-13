@@ -188,3 +188,77 @@ describe("checkNet empty / no conflict", () => {
 		assert.deepEqual(checkNet(pins), []);
 	});
 });
+
+describe("checkNet unspecified pins", () => {
+	test("one warning per net listing every unspecified pin", () => {
+		const pins = [
+			pin("U1", "unspecified"),
+			pin("U2", "unspecified"),
+			pin("U3", "input"),
+			pin("U4", "output"),
+		];
+		const found = checkNet(pins).filter((i) => i.message.includes("unspec"));
+		assert.equal(found.length, 1);
+		assert.equal(found[0].severity, "warning");
+		assert.deepEqual(
+			found[0].pins.map((p) => p.ref),
+			["U1", "U2"],
+		);
+	});
+
+	test("lone unspecified pin -> no warning", () => {
+		assert.deepEqual(checkNet([pin("U1", "unspecified")]), []);
+	});
+});
+
+// kicad-cli ERC treats same-named output pins of one symbol (a regulator's
+// parallel SW pads) as one pin, but still flags differently named outputs
+// and same-named power outputs (vme-wren power-supply demos).
+// [case, [ref, type, name] of pin A, same for pin B, expected issue count]
+const PARALLEL_OUTPUT_CASES = [
+	[
+		"same part, same name outputs",
+		["U1", "output", "SW"],
+		["U1", "output", "SW"],
+		0,
+	],
+	[
+		"same part, different names",
+		["U1", "output", "A"],
+		["U1", "output", "B"],
+		1,
+	],
+	[
+		"same name on different parts",
+		["U1", "output", "SW"],
+		["U2", "output", "SW"],
+		1,
+	],
+	[
+		"same part, same name power outputs",
+		["U1", "power_out", "V"],
+		["U1", "power_out", "V"],
+		1,
+	],
+];
+
+describe("checkNet parallel output pins of one part", () => {
+	const named = ([ref, type, name]) => ({ ...pin(ref, type), name });
+	for (const [name, a, b, count] of PARALLEL_OUTPUT_CASES) {
+		test(`${name} -> ${count} issue(s)`, () => {
+			assert.equal(checkNet([named(a), named(b)]).length, count);
+		});
+	}
+});
+
+describe("checkNet driven by something outside the pin list", () => {
+	test("driven net skips undriven input and power_in checks", () => {
+		const pins = [pin("U1", "input"), pin("U2", "power_in")];
+		assert.deepEqual(checkNet(pins, { driven: true }), []);
+	});
+
+	test("driven net still reports pin-pair conflicts", () => {
+		const pins = [pin("U1", "output"), pin("U2", "output")];
+		assert.equal(checkNet(pins, { driven: true }).length, 1);
+	});
+});

@@ -112,9 +112,11 @@ function extractPinType(pinNode) {
 function recordPin(node, pins, unit, style) {
 	const at = extractAt(node);
 	const num = extractPinNumber(node);
-	if (at && num) {
+	// Power ports often have an empty pin number; parts drop those later.
+	if (at && extractChildNode(node, "number")) {
 		const type = extractPinType(node);
-		pins.push({ pin: num, x: at.x, y: at.y, unit, style, type });
+		const name = extractChildText(node, "name");
+		pins.push({ pin: num, name, x: at.x, y: at.y, unit, style, type });
 	}
 }
 
@@ -152,6 +154,15 @@ function dedupeLibPins(pins) {
 	);
 }
 
+// Lib entries with a (power ...) marker are power ports or PWR_FLAG.
+function collectPowerLibs(libSymbolsNode) {
+	const names = new Set();
+	for (const child of libSymbolsNode?.slice(1) ?? []) {
+		if (extractChildNode(child, "power")) names.add(nodeSym(child[1]));
+	}
+	return names;
+}
+
 function parseLibSymbols(libSymbolsNode) {
 	const map = new Map();
 	if (!Array.isArray(libSymbolsNode)) return map;
@@ -175,11 +186,14 @@ function applyRotation(x, y, rot) {
 	};
 }
 
+// Library pins are Y-up; the sheet is Y-down, so the symbol angle turns
+// counter-clockwise on screen. Mirroring applies after the rotation.
 function transformOffset(px, py, rot, mirror) {
-	const mx = mirror === "y" ? -px : px;
-	const my = mirror === "x" ? -py : py;
-	const rotated = applyRotation(mx, my, rot);
-	return { dx: rotated.x, dy: rotated.y };
+	const r = applyRotation(px, -py, -rot);
+	return {
+		dx: mirror === "y" ? -r.x : r.x,
+		dy: mirror === "x" ? -r.y : r.y,
+	};
 }
 
 function inRange(val, min, max) {
@@ -260,11 +274,23 @@ function processLabelNode(child, ctx) {
 	if (!at) return;
 	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 	recordPointLabel(key, text, ctx);
+	// Global and hierarchical labels reach other sheets, where a driver may be.
+	if (child[0].sym !== "label") ctx.drivenPoints.add(key);
 }
 
 function processJunctionNode(child, ctx) {
 	const at = extractAt(child);
 	if (at) connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+}
+
+// Sheet pins link this sheet's wires to a sub-sheet that may drive them.
+function processSheetPins(sheetNode, ctx) {
+	for (const pin of sheetNode.filter((c) => matchHead(c, "pin"))) {
+		const at = extractAt(pin);
+		if (!at) continue;
+		const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+		ctx.drivenPoints.add(key);
+	}
 }
 
 function handleUnsupportedHead(head, ctx) {
@@ -279,6 +305,7 @@ function processAstNode(child, ctx) {
 	if (head === "wire") return addWireSegments(child, ctx.segments, ctx.uf);
 	if (head === "junction") return processJunctionNode(child, ctx);
 	if (LABEL_HEADS.has(head)) return processLabelNode(child, ctx);
+	if (head === "sheet") processSheetPins(child, ctx);
 	handleUnsupportedHead(head, ctx);
 }
 
@@ -336,9 +363,10 @@ function parseSymbolData(symNode) {
 	const libId = extractLibId(symNode);
 	const props = extractProperties(symNode);
 	const ref = props.get("Reference") || "";
-	if (shouldSkipSymbol(libId, ref)) return null;
 	return {
+		virtual: shouldSkipSymbol(libId, ref),
 		libId,
+		libKey: extractChildText(symNode, "lib_name") || libId,
 		ref,
 		props,
 		at: extractSymbolPlacement(symNode),
@@ -417,13 +445,17 @@ function resolveTargetPart(parsed, symState, ctx) {
 	return { part, isNew: true };
 }
 
+function connectLibPin(lp, at, mirror, ctx) {
+	const offset = transformOffset(lp.x, lp.y, at.rot, mirror);
+	const px = at.x + offset.dx;
+	const py = at.y + offset.dy;
+	return connectPointToSegments(px, py, ctx.segments, ctx.uf);
+}
+
 function connectPartPins(partData, libPins, ctx) {
 	const { part, at, mirror } = partData;
 	for (const lp of libPins) {
-		const offset = transformOffset(lp.x, lp.y, at.rot, mirror);
-		const px = at.x + offset.dx;
-		const py = at.y + offset.dy;
-		const key = connectPointToSegments(px, py, ctx.segments, ctx.uf);
+		const key = connectLibPin(lp, at, mirror, ctx);
 		if (!ctx.pointPins.has(key)) ctx.pointPins.set(key, []);
 		ctx.pointPins.get(key).push({
 			partId: part.id,
@@ -449,13 +481,24 @@ function recordPinTypes(part, pins) {
 	}
 }
 
+// "~" is KiCad's marker for an unnamed pin.
+function recordPinNames(part, pins) {
+	for (const { pin, name } of pins) {
+		if (!name || name === "~") continue;
+		part.pinNames ??= {};
+		part.pinNames[pin] = name;
+	}
+}
+
 function connectSymbolPins(child, libMap, parsed, target) {
-	const rawPins = findSymbolPins(child, libMap, parsed.libId);
+	const rawPins = findSymbolPins(child, libMap, parsed.libKey);
 	if (!rawPins) {
 		target.ctx.warnings.push(`missing library symbol ${parsed.libId}`);
 		return;
 	}
-	const pins = pinsForInstance(rawPins, parsed.unit, parsed.style);
+	const pins = pinsForInstance(rawPins, parsed.unit, parsed.style).filter(
+		(p) => p.pin,
+	);
 	const partData = {
 		part: target.part,
 		at: parsed.at,
@@ -463,11 +506,28 @@ function connectSymbolPins(child, libMap, parsed, target) {
 	};
 	connectPartPins(partData, pins, target.ctx);
 	recordPinTypes(target.part, pins);
+	recordPinNames(target.part, pins);
+}
+
+// Power ports and PWR_FLAG are not parts, but they drive their net; a
+// power_in port also names it by its Value, globally like a global label.
+function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
+	if (!ctx.powerLibs.has(parsed.libKey)) return;
+	const libPins = libSymbolsMap.get(parsed.libKey);
+	const netName = parsed.props.get("Value");
+	for (const lp of pinsForInstance(libPins, parsed.unit, parsed.style)) {
+		const key = connectLibPin(lp, parsed.at, parsed.mirror, ctx);
+		ctx.drivenPoints.add(key);
+		if (lp.type === "power_in" && netName) recordPointLabel(key, netName, ctx);
+	}
 }
 
 function processSingleSymbol(child, libSymbolsMap, ctx, symState) {
 	const parsed = parseSymbolData(child);
-	if (!parsed) return null;
+	if (parsed.virtual) {
+		connectPowerSymbol(parsed, libSymbolsMap, ctx);
+		return null;
+	}
 	const { part, isNew } = resolveTargetPart(parsed, symState, ctx);
 	connectSymbolPins(child, libSymbolsMap, parsed, { part, ctx });
 	return isNew ? part : null;
@@ -526,7 +586,7 @@ function shouldSkipNet(pins, labels) {
 	return pins.length === 1 && labels.length === 0;
 }
 
-function buildNets(compPins, compLabels, idFn) {
+function buildNets(compPins, compLabels, drivenRoots, idFn) {
 	const nets = [];
 	for (const [root, rawPins] of compPins) {
 		const pins = dedupePins(rawPins);
@@ -535,6 +595,7 @@ function buildNets(compPins, compLabels, idFn) {
 		nets.push({
 			id: idFn("net"),
 			name: determineNetName(pins, labels),
+			...(drivenRoots.has(root) && { driven: true }),
 			pins: pins.map((p) => ({ partId: p.partId, pin: p.pin })),
 		});
 	}
@@ -555,6 +616,7 @@ function createParseContext() {
 		pointPins: new Map(),
 		pointLabels: new Map(),
 		labelFirstPoint: new Map(),
+		drivenPoints: new Set(),
 		warnings: [],
 	};
 }
@@ -597,9 +659,11 @@ function assembleCircuit(ast, ctx, idFn) {
 	populateContextElements(ast, ctx);
 	const libNode = extractChildNode(ast, "lib_symbols");
 	const libMap = parseLibSymbols(libNode);
+	ctx.powerLibs = collectPowerLibs(libNode);
 	const parts = processSymbols(ast, libMap, ctx, idFn);
 	const { compPins, compLabels } = groupComponents(ctx);
-	const nets = buildNets(compPins, compLabels, idFn);
+	const drivenRoots = new Set([...ctx.drivenPoints].map((k) => ctx.uf.find(k)));
+	const nets = buildNets(compPins, compLabels, drivenRoots, idFn);
 	return { parts, nets };
 }
 

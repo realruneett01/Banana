@@ -201,7 +201,9 @@ function typedNetPins(net, partsById) {
 	for (const p of net.pins ?? []) {
 		const part = partsById.get(p?.partId);
 		const type = part?.pinTypes?.[p.pin];
-		if (type) typed.push({ partId: p.partId, pin: p.pin, type, ref: part.ref });
+		if (!type) continue;
+		const name = part.pinNames?.[p.pin];
+		typed.push({ partId: p.partId, pin: p.pin, type, name, ref: part.ref });
 	}
 	return typed;
 }
@@ -225,7 +227,7 @@ function collectPinTypeIssues(nets, partsById, commit) {
 	for (const net of nets) {
 		const typed = typedNetPins(net, partsById);
 		if (typed.length === 0) continue;
-		for (const result of checkNet(typed)) {
+		for (const result of checkNet(typed, { driven: net.driven === true })) {
 			issues.push(createPinTypeIssue(net, result, commit));
 		}
 	}
