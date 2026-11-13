@@ -70,6 +70,8 @@ function setupTestHarness(files, library, customPatch) {
 		fsImpl: fakeFs.fsImpl,
 		library,
 		patchKicadText: customPatch ?? patchKicadText,
+		// Library fixtures are placeholder text, not real KiCad symbols.
+		validateKicad: async () => ({ ok: true }),
 	});
 	return { registry, fakeFs, fakeExec };
 }

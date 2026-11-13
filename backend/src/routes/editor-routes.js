@@ -6,6 +6,7 @@ import { kicadPcbToIr } from "../engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
 import { kicadSchToIr } from "../engine/kicad-sch-to-ir.js";
 import { irToKicadSch } from "../engine/kicad-sch-writer.js";
+import { KICAD_REJECT_ERROR } from "../engine/kicad-validate.js";
 import { createRegistry } from "../engine/tool-registry.js";
 import { registerPatchTools } from "../engine/tools/patch-tools.js";
 import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
@@ -251,6 +252,10 @@ async function executeCommit(reqBody, patchDeps) {
 function dispatchCommitResult(res, result) {
 	if (result.ok) {
 		return res.status(200).json(result.output);
+	}
+	if (result.error?.startsWith?.(`${KICAD_REJECT_ERROR}: `)) {
+		const detail = result.error.slice(KICAD_REJECT_ERROR.length + 2);
+		return res.status(422).json({ error: KICAD_REJECT_ERROR, detail });
 	}
 	if (isValidationOrPatchError(result.error)) {
 		return res.status(400).json({ error: result.error });

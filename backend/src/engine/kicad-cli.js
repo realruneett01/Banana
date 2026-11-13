@@ -116,6 +116,7 @@ function invokeExec(exec, cliPath, args, options) {
 
 function extractFailureError(failure) {
 	if (failure?.err) {
+		failure.err.stderr ??= failure.stderr;
 		return failure.err;
 	}
 	return new Error(failure?.stderr || "Execution failed");
@@ -185,6 +186,13 @@ async function exportNetlistInternal(ctx, schPath, outPath, format) {
 	return outPath;
 }
 
+async function exportDrillInternal(ctx, pcbPath, outDir) {
+	validateFilePaths(pcbPath, ".kicad_pcb", outDir);
+	const args = ["pcb", "export", "drill", "--output", outDir, pcbPath];
+	await executeCommand(ctx.exec, ctx.cliPath, args, ctx.execOptions);
+	return outDir;
+}
+
 async function versionInternal(ctx) {
 	const res = await executeCommand(
 		ctx.exec,
@@ -214,6 +222,7 @@ export function createKicadCli({
 		runDrc: (pcbPath, outJsonPath) => runDrcInternal(ctx, pcbPath, outJsonPath),
 		exportNetlist: (schPath, outPath, format = "kicadsexpr") =>
 			exportNetlistInternal(ctx, schPath, outPath, format),
+		exportDrill: (pcbPath, outDir) => exportDrillInternal(ctx, pcbPath, outDir),
 		version: () => versionInternal(ctx),
 	};
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { patchKicadText } from "../kicad-inplace.js";
 import { createKicadLibrary } from "../kicad-library.js";
+import { createKicadValidator, KICAD_REJECT_ERROR } from "../kicad-validate.js";
 import {
 	commitFiles,
 	ensureGitWorkTree,
@@ -208,6 +209,7 @@ async function readAndPatchFile(deps, target) {
 	return {
 		relPath: file.path,
 		resolvedPath,
+		kind,
 		text: res.text,
 		applied: res.applied ?? edits.length,
 		skipped: res.skipped ?? [],
@@ -226,6 +228,17 @@ async function processPatchTargets(deps, targets) {
 		throw new Error("No edits were applied");
 	}
 	return results;
+}
+
+async function validatePatchedFiles(validateKicad, results) {
+	for (const item of results) {
+		const check = await validateKicad(item.kind, item.text);
+		if (!check.ok) {
+			throw new Error(
+				`${KICAD_REJECT_ERROR}: ${item.relPath}: ${check.detail}`,
+			);
+		}
+	}
 }
 
 async function writeAllPatchedFiles(fsImpl, results) {
@@ -285,6 +298,7 @@ function createPatchHandler(deps) {
 		await ensureGitWorkTree(execFileFn, input.repoPath);
 
 		const results = await processPatchTargets(deps, targets);
+		await validatePatchedFiles(deps.validateKicad, results);
 		await writeAllPatchedFiles(fsImpl, results);
 		return await commitPatchedFiles(
 			execFileFn,
@@ -300,12 +314,14 @@ export function registerPatchTools(registry, deps = {}) {
 	const fsImpl = deps.fsImpl ?? fs.promises;
 	const patchFn = deps.patchKicadText ?? patchKicadText;
 	const library = deps.library ?? createKicadLibrary();
+	const validateKicad = deps.validateKicad ?? createKicadValidator();
 
 	const handler = createPatchHandler({
 		execFileFn,
 		fsImpl,
 		patchFn,
 		library,
+		validateKicad,
 	});
 
 	registry.register({
