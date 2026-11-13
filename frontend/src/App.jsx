@@ -21,6 +21,7 @@ import SimulationStudio from "./components/sim3d/SimulationStudio.jsx";
 import { WorkspaceAuditSidebar } from "./components/WorkspaceAuditSidebar";
 import { WorkspaceControlSidebar } from "./components/WorkspaceControlSidebar";
 import EditorScreen from "./editor/EditorScreen.jsx";
+import { useKicadFileFeed } from "./kicad/useKicadSaves.js";
 import { shouldShowProjectHome } from "./projects/openProject.js";
 import ProjectHome from "./projects/ProjectHome.jsx";
 import { useDesignLoop } from "./useDesignLoop.js";
@@ -501,6 +502,7 @@ export default function App() {
 	const { setLeftCollapsed, setRightCollapsed } = ws.edgeTabsProps;
 
 	useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed);
+	useKicadFileFeed();
 
 	return (
 		<ConfigProvider theme={THEME_CONFIG}>

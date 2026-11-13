@@ -4,11 +4,21 @@ import { createProjectHeaders } from "../projects/useProjects.js";
 import {
 	buildWorktreeDiffValues,
 	commitWorktreeFile,
+	kicadFileChanges,
+	normalizePath,
 } from "./commitWorktree.js";
 
-function normalizePath(p) {
-	if (!p || typeof p !== "string") return "";
-	return p.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+// Mount once near the app root: owns the session-long KiCad subscription.
+export function useKicadFileFeed() {
+	useEffect(() => {
+		kicadFileChanges.start();
+		return kicadFileChanges.stop;
+	}, []);
+}
+
+function pendingFor(repoPath) {
+	const filePath = kicadFileChanges.latestFor(repoPath);
+	return filePath ? { filePath } : null;
 }
 
 function arePathsEqual(a, b) {
@@ -35,23 +45,15 @@ function useKicadSubscription({
 	onFileChange,
 }) {
 	useEffect(() => {
-		if (typeof window === "undefined" || !window.banana?.kicad?.onFileChanged) {
-			return;
-		}
-		const unsubscribe = window.banana.kicad.onFileChanged((payload) => {
-			if (!payload) return;
-			const { projectRoot, filePath } = payload;
+		return kicadFileChanges.subscribe(({ projectRoot, filePath }) => {
 			if (!arePathsEqual(projectRoot, repoPath)) return;
 			onFileChange(filePath);
 			onWorktreeDiff?.(buildWorktreeDiffValues(repoPath, baseCommit, filePath));
 		});
-		return () => {
-			if (typeof unsubscribe === "function") unsubscribe();
-		};
 	}, [repoPath, baseCommit, onWorktreeDiff, onFileChange]);
 }
 
-function useCommitCallback({ repoPath, pending, setPending }) {
+function useCommitCallback({ repoPath, pending, clearPending }) {
 	return useCallback(
 		async (commitMessage) => {
 			if (!pending?.filePath) {
@@ -62,27 +64,34 @@ function useCommitCallback({ repoPath, pending, setPending }) {
 				filePath: pending.filePath,
 				message: commitMessage,
 			});
-			if (result.ok) setPending(null);
+			if (result.ok) clearPending();
 			return result;
 		},
-		[repoPath, pending, setPending],
+		[repoPath, pending, clearPending],
 	);
 }
 
 export function useKicadSaves(options = {}) {
 	const { repoPath, baseCommit, onWorktreeDiff } = options;
-	const [pending, setPending] = useState(null);
+	const [pending, setPending] = useState(() => pendingFor(repoPath));
 	const [prevRepo, setPrevRepo] = useState(repoPath);
 
 	if (repoPath !== prevRepo) {
 		setPrevRepo(repoPath);
-		setPending(null);
+		setPending(pendingFor(repoPath));
 	}
 
 	const onFileChange = useCallback((filePath) => setPending({ filePath }), []);
-	const dismiss = useCallback(() => setPending(null), []);
+	const dismiss = useCallback(() => {
+		kicadFileChanges.clear(repoPath);
+		setPending(null);
+	}, [repoPath]);
 	useKicadSubscription({ repoPath, baseCommit, onWorktreeDiff, onFileChange });
-	const commitPending = useCommitCallback({ repoPath, pending, setPending });
+	const commitPending = useCommitCallback({
+		repoPath,
+		pending,
+		clearPending: dismiss,
+	});
 
 	return { pending, commitPending, dismiss };
 }

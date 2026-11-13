@@ -1,5 +1,53 @@
 import { emitCommitCreated } from "../designEvents.js";
 
+export function normalizePath(p) {
+	if (!p || typeof p !== "string") return "";
+	return p.trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+// One app-level subscription to KiCad file changes, fanned out to readers.
+// Remembers the last changed file per project so late readers still see it.
+export function createFileChangeHub(getSource) {
+	const readers = new Set();
+	const latest = new Map();
+	let release = null;
+
+	const emit = (payload) => {
+		if (!payload) return;
+		latest.set(normalizePath(payload.projectRoot), payload.filePath);
+		for (const reader of readers) reader(payload);
+	};
+
+	const start = () => {
+		const source = release ? null : getSource();
+		if (typeof source !== "function") return;
+		const unsubscribe = source(emit);
+		release = typeof unsubscribe === "function" ? unsubscribe : () => {};
+	};
+
+	const stop = () => {
+		release?.();
+		release = null;
+	};
+
+	const subscribe = (reader) => {
+		readers.add(reader);
+		return () => readers.delete(reader);
+	};
+
+	return {
+		start,
+		stop,
+		subscribe,
+		latestFor: (repoPath) => latest.get(normalizePath(repoPath)) ?? null,
+		clear: (repoPath) => latest.delete(normalizePath(repoPath)),
+	};
+}
+
+export const kicadFileChanges = createFileChangeHub(
+	() => globalThis.window?.banana?.kicad?.onFileChanged,
+);
+
 export function normalizeCommitMessage(message) {
 	return typeof message === "string" ? message.trim() : "";
 }
