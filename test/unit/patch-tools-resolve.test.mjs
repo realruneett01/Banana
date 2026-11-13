@@ -29,27 +29,28 @@ const SERVER_FP =
 function createFakeFs(initialFiles = {}) {
 	const files = new Map(Object.entries(initialFiles));
 	const written = new Map();
-	const readFile = async (p) => {
-		if (!files.has(p)) throw new Error(`ENOENT: ${p}`);
-		return files.get(p);
+	const fsImpl = {
+		async readFile(p) {
+			if (files.has(p)) return files.get(p);
+			throw new Error(`ENOENT: ${p}`);
+		},
+		async writeFile(p, data) {
+			written.set(p, data);
+		},
 	};
-	const writeFile = async (p, data) => {
-		written.set(p, data);
-	};
-	return { files, written, fsImpl: { readFile, writeFile } };
+	return { files, written, fsImpl };
+}
+
+function fakeStdout(args) {
+	if (args.includes("--is-inside-work-tree")) return "true\n";
+	return args.includes("HEAD") ? `${COMMIT_HASH}\n` : "";
 }
 
 function createFakeExecFile() {
 	const calls = [];
 	const execFileFn = async (cmd, args, opts) => {
 		calls.push({ cmd, args, opts });
-		if (args.includes("--is-inside-work-tree")) {
-			return { stdout: "true\n" };
-		}
-		if (args.includes("HEAD")) {
-			return { stdout: `${COMMIT_HASH}\n` };
-		}
-		return { stdout: "" };
+		return { stdout: fakeStdout(args) };
 	};
 	return { calls, execFileFn };
 }
@@ -89,14 +90,14 @@ function callPatchTool(registry, tc) {
 	);
 }
 
+const isGitWrite = (c) => ["add", "commit"].some((a) => c.args.includes(a));
+
 function assertFailure(res, fakeFs, fakeExec, expectedError) {
-	assert.equal(res.ok, false);
-	assert.equal(res.error, expectedError);
-	assert.equal(fakeFs.written.size, 0);
-	const gitWrites = fakeExec.calls.filter(
-		(c) => c.args.includes("add") || c.args.includes("commit"),
+	// The call fails with the expected error, writes no file and runs no git write.
+	assert.deepEqual(
+		[res.ok, res.error, fakeFs.written.size, fakeExec.calls.some(isGitWrite)],
+		[false, expectedError, 0, false],
 	);
-	assert.equal(gitWrites.length, 0);
 }
 
 function assertSuccess(res, writtenText, capturedOpts, tc) {
@@ -141,11 +142,32 @@ async function runResolveTestCase(tc) {
 	assertSuccess(res, fakeFs.written.get(absPath), capturedOpts, tc);
 }
 
+const SCH_PATH = "hw/board.kicad_sch";
+const PCB_PATH = "hw/board.kicad_pcb";
+const MALICIOUS = {
+	libSymbol: "MALICIOUS_CLIENT_SYM",
+	source: "MALICIOUS_CLIENT_SRC",
+};
+
+// A case whose libId the library does not know: the call must fail cleanly.
+function missingCase(name, filePath, fileContent, edit) {
+	return {
+		name,
+		filePath,
+		fileContent,
+		edits: [edit],
+		symMap: {},
+		fpMap: {},
+		expectOk: false,
+		expectedError: `Library item not found: ${edit.libId}`,
+	};
+}
+
 describe("patch-tools library resolution", () => {
 	const TABLE_CASES = [
 		{
 			name: "client libSymbol stripped and replaced by server symbol",
-			filePath: "hw/board.kicad_sch",
+			filePath: SCH_PATH,
 			fileContent: SAMPLE_SCH,
 			edits: [
 				{
@@ -154,22 +176,21 @@ describe("patch-tools library resolution", () => {
 					libId: "Device:R",
 					x: 10,
 					y: 20,
-					libSymbol: "MALICIOUS_CLIENT_SYM",
-					source: "MALICIOUS_CLIENT_SRC",
+					...MALICIOUS,
 				},
 			],
 			symMap: { "Device:R": { text: SERVER_SYM, parentText: PARENT_SYM } },
 			fpMap: {},
 			expectOk: true,
 			expectedInWritten: ['symbol "Device:R"'],
-			forbiddenInWritten: ["MALICIOUS_CLIENT_SYM", "MALICIOUS_CLIENT_SRC"],
+			forbiddenInWritten: Object.values(MALICIOUS),
 			expectedLibSymbol: SERVER_SYM,
 			expectedParentLibSymbol: PARENT_SYM,
 			expectedKind: "sch",
 		},
 		{
 			name: "client source stripped and replaced by server footprint",
-			filePath: "hw/board.kicad_pcb",
+			filePath: PCB_PATH,
 			fileContent: SAMPLE_PCB,
 			edits: [
 				{
@@ -179,47 +200,35 @@ describe("patch-tools library resolution", () => {
 					value: "10k",
 					x: 15,
 					y: 25,
-					source: "MALICIOUS_CLIENT_SRC",
-					libSymbol: "MALICIOUS_CLIENT_SYM",
+					...MALICIOUS,
 				},
 			],
 			symMap: {},
 			fpMap: { "Resistor_SMD:R_0603": { text: SERVER_FP } },
 			expectOk: true,
 			expectedInWritten: ["Resistor_SMD:R_0603"],
-			forbiddenInWritten: ["MALICIOUS_CLIENT_SRC", "MALICIOUS_CLIENT_SYM"],
-			expectedParentLibSymbol: undefined,
+			forbiddenInWritten: Object.values(MALICIOUS),
 			expectedKind: "pcb",
 		},
-		{
-			name: "missing symbol libId fails call without writing files",
-			filePath: "hw/board.kicad_sch",
-			fileContent: SAMPLE_SCH,
-			edits: [{ op: "addSymbol", ref: "R1", libId: "Missing:R", x: 10, y: 20 }],
-			symMap: {},
-			fpMap: {},
-			expectOk: false,
-			expectedError: "Library item not found: Missing:R",
-		},
-		{
-			name: "missing footprint libId fails call without writing files",
-			filePath: "hw/board.kicad_pcb",
-			fileContent: SAMPLE_PCB,
-			edits: [
-				{
-					op: "addFootprint",
-					ref: "R1",
-					libId: "Missing:FP",
-					value: "10k",
-					x: 10,
-					y: 20,
-				},
-			],
-			symMap: {},
-			fpMap: {},
-			expectOk: false,
-			expectedError: "Library item not found: Missing:FP",
-		},
+		missingCase(
+			"missing symbol libId fails call without writing files",
+			SCH_PATH,
+			SAMPLE_SCH,
+			{ op: "addSymbol", ref: "R1", libId: "Missing:R", x: 10, y: 20 },
+		),
+		missingCase(
+			"missing footprint libId fails call without writing files",
+			PCB_PATH,
+			SAMPLE_PCB,
+			{
+				op: "addFootprint",
+				ref: "R1",
+				libId: "Missing:FP",
+				value: "10k",
+				x: 10,
+				y: 20,
+			},
+		),
 	];
 
 	for (const tc of TABLE_CASES) {

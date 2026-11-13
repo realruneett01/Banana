@@ -5,36 +5,23 @@ import {
 	createOllamaAdapter,
 } from "../../backend/src/engine/model-adapter.js";
 
-function setOrClearEnv(key, value) {
-	if (value === undefined) {
-		delete process.env[key];
-	} else {
-		process.env[key] = value;
+// Sets (or deletes, for undefined) each env var; returns the previous values.
+function applyEnv(entries) {
+	const previous = {};
+	for (const [key, value] of Object.entries(entries)) {
+		previous[key] = process.env[key];
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
 	}
-}
-
-async function withEnv(key, value, fn) {
-	const prev = process.env[key];
-	setOrClearEnv(key, value);
-	try {
-		return await fn();
-	} finally {
-		setOrClearEnv(key, prev);
-	}
+	return previous;
 }
 
 async function withEnvs(entries, fn) {
-	const prevs = {};
-	for (const [k, v] of Object.entries(entries)) {
-		prevs[k] = process.env[k];
-		setOrClearEnv(k, v);
-	}
+	const previous = applyEnv(entries);
 	try {
 		return await fn();
 	} finally {
-		for (const [k, v] of Object.entries(prevs)) {
-			setOrClearEnv(k, v);
-		}
+		applyEnv(previous);
 	}
 }
 
@@ -47,198 +34,129 @@ function createMockTransport(responsePayload) {
 	return { transport, getCaptured: () => captured };
 }
 
-const GEMINI_BYOK_CASES = [
-	{
-		label: "uses valid BYO key in x-goog-api-key header",
-		apiKey: "byo-gemini-key-1",
-		envKey: "env-gemini-key",
-		expectedHeader: "byo-gemini-key-1",
-	},
-	{
-		label: "falls back to env key when apiKey is undefined",
-		apiKey: undefined,
-		envKey: "env-gemini-key",
-		expectedHeader: "env-gemini-key",
-	},
-	{
-		label: "falls back to env key when apiKey has internal whitespace",
-		apiKey: "byo key with spaces",
-		envKey: "env-gemini-key",
-		expectedHeader: "env-gemini-key",
-	},
-	{
-		label: "falls back to env key when apiKey exceeds 300 chars",
-		apiKey: "k".repeat(301),
-		envKey: "env-gemini-key",
-		expectedHeader: "env-gemini-key",
-	},
-	{
-		label: "trims surrounding whitespace from BYO key",
-		apiKey: "  trimmed-gemini-key  ",
-		envKey: "env-gemini-key",
-		expectedHeader: "trimmed-gemini-key",
-	},
-];
+// Runs one generate({}) through a mock transport and returns the request it sent.
+async function captureRequest(options, reply) {
+	const mock = createMockTransport(reply);
+	const adapter = createModelAdapter({ ...options, transport: mock.transport });
+	await adapter.generate({});
+	return mock.getCaptured();
+}
 
-describe("gemini BYOK header resolution", () => {
-	for (const tc of GEMINI_BYOK_CASES) {
-		test(tc.label, async () => {
-			await withEnv("GEMINI_API_KEY", tc.envKey, async () => {
-				const mock = createMockTransport({ candidates: [] });
-				const adapter = createModelAdapter({
-					provider: "gemini",
-					transport: mock.transport,
-					apiKey: tc.apiKey,
-				});
-				await adapter.generate({});
-				const captured = mock.getCaptured();
-				assert.equal(captured.headers["x-goog-api-key"], tc.expectedHeader);
-			});
-		});
-	}
-});
+const OLLAMA_REPLY = { message: { content: "ok" } };
 
-const CLAUDE_BYOK_CASES = [
-	{
-		label: "uses valid BYO key in x-api-key header",
-		apiKey: "byo-claude-key-1",
-		envKey: "env-claude-key",
-		expectedHeader: "byo-claude-key-1",
-	},
-	{
-		label: "falls back to env key when apiKey is undefined",
-		apiKey: undefined,
-		envKey: "env-claude-key",
-		expectedHeader: "env-claude-key",
-	},
-	{
-		label: "falls back to env key when apiKey has internal whitespace",
-		apiKey: "invalid key with spaces",
-		envKey: "env-claude-key",
-		expectedHeader: "env-claude-key",
-	},
-	{
-		label: "falls back to env key when apiKey exceeds 300 chars",
-		apiKey: "c".repeat(301),
-		envKey: "env-claude-key",
-		expectedHeader: "env-claude-key",
-	},
-	{
-		label: "trims surrounding whitespace from BYO key",
-		apiKey: "  trimmed-claude-key  ",
-		envKey: "env-claude-key",
-		expectedHeader: "trimmed-claude-key",
-	},
-];
-
-describe("claude BYOK header resolution", () => {
-	for (const tc of CLAUDE_BYOK_CASES) {
-		test(tc.label, async () => {
-			await withEnv("ANTHROPIC_API_KEY", tc.envKey, async () => {
-				const mock = createMockTransport({ content: [] });
-				const adapter = createModelAdapter({
-					provider: "claude",
-					transport: mock.transport,
-					apiKey: tc.apiKey,
-				});
-				await adapter.generate({});
-				const captured = mock.getCaptured();
-				assert.equal(captured.headers["x-api-key"], tc.expectedHeader);
-			});
-		});
-	}
-});
-
-const REDACTION_CASES = [
+const BYOK_PROVIDERS = [
 	{
 		provider: "gemini",
-		apiKey: "secret-byo-gemini-token",
-		envKey: "env-fallback-key",
 		envVar: "GEMINI_API_KEY",
+		header: "x-goog-api-key",
+		reply: { candidates: [] },
+		keys: ["byo-gemini-key-1", "env-gemini-key", "byo key with spaces", "k"],
 	},
 	{
 		provider: "claude",
-		apiKey: "secret-byo-claude-token",
-		envKey: "env-fallback-key",
 		envVar: "ANTHROPIC_API_KEY",
+		header: "x-api-key",
+		keys: [
+			"byo-claude-key-1",
+			"env-claude-key",
+			"invalid key with spaces",
+			"c",
+		],
+		reply: { content: [] },
 	},
 ];
 
+// [label, apiKey, expected header value]
+function byokCases({ provider, header, keys }) {
+	const [byo, env, spaced, longChar] = keys;
+	const trimmed = `trimmed-${provider}-key`;
+	return [
+		[`uses valid BYO key in ${header} header`, byo, byo],
+		["falls back to env key when apiKey is undefined", undefined, env],
+		["falls back to env key when apiKey has internal whitespace", spaced, env],
+		[
+			"falls back to env key when apiKey exceeds 300 chars",
+			longChar.repeat(301),
+			env,
+		],
+		["trims surrounding whitespace from BYO key", `  ${trimmed}  `, trimmed],
+	];
+}
+
+for (const p of BYOK_PROVIDERS) {
+	describe(`${p.provider} BYOK header resolution`, () => {
+		for (const [label, apiKey, expected] of byokCases(p)) {
+			test(label, () =>
+				withEnvs({ [p.envVar]: p.keys[1] }, async () => {
+					const options = { provider: p.provider, apiKey };
+					const captured = await captureRequest(options, p.reply);
+					assert.equal(captured.headers[p.header], expected);
+				}),
+			);
+		}
+	});
+}
+
 describe("error redaction for BYO keys", () => {
-	for (const tc of REDACTION_CASES) {
-		test(`redacts BYO key in ${tc.provider} transport error`, async () => {
-			await withEnv(tc.envVar, tc.envKey, async () => {
+	for (const { provider, envVar } of BYOK_PROVIDERS) {
+		const apiKey = `secret-byo-${provider}-token`;
+		test(`redacts BYO key in ${provider} transport error`, () =>
+			withEnvs({ [envVar]: "env-fallback-key" }, async () => {
 				const leakingTransport = async () => {
-					throw new Error(`Connection error for auth token: ${tc.apiKey}`);
+					throw new Error(`Connection error for auth token: ${apiKey}`);
 				};
 				const adapter = createModelAdapter({
-					provider: tc.provider,
+					provider,
 					transport: leakingTransport,
-					apiKey: tc.apiKey,
+					apiKey,
 				});
 				await assert.rejects(
 					() => adapter.generate({}),
 					(err) => {
-						assert.ok(!err.message.includes(tc.apiKey));
+						assert.ok(!err.message.includes(apiKey));
 						assert.match(err.message, /\[REDACTED\]/);
 						return true;
 					},
 				);
-			});
-		});
+			}));
 	}
 });
 
 describe("ollama adapter registration", () => {
-	test("createModelAdapter returns ollama adapter", () => {
-		const adapter = createModelAdapter({ provider: "ollama" });
-		assert.equal(adapter.provider, "ollama");
-		assert.equal(typeof adapter.generate, "function");
-	});
-
-	test("createOllamaAdapter returns ollama adapter", () => {
-		const adapter = createOllamaAdapter();
-		assert.equal(adapter.provider, "ollama");
-		assert.equal(typeof adapter.generate, "function");
-	});
+	const FACTORIES = [
+		["createModelAdapter", () => createModelAdapter({ provider: "ollama" })],
+		["createOllamaAdapter", () => createOllamaAdapter()],
+	];
+	for (const [name, factory] of FACTORIES) {
+		test(`${name} returns ollama adapter`, () => {
+			const adapter = factory();
+			assert.equal(adapter.provider, "ollama");
+			assert.equal(typeof adapter.generate, "function");
+		});
+	}
 });
 
+// [label, options.model, OLLAMA_MODEL env, expected model]
 const OLLAMA_MODEL_CASES = [
-	{
-		label: "defaults to qwen2.5:7b when neither option nor env is set",
-		optionModel: undefined,
-		envModel: undefined,
-		expected: "qwen2.5:7b",
-	},
-	{
-		label: "respects process.env.OLLAMA_MODEL",
-		optionModel: undefined,
-		envModel: "llama3:8b",
-		expected: "llama3:8b",
-	},
-	{
-		label: "prefers options.model over env",
-		optionModel: "mistral:7b",
-		envModel: "llama3:8b",
-		expected: "mistral:7b",
-	},
+	[
+		"defaults to qwen2.5:7b when neither option nor env is set",
+		undefined,
+		undefined,
+		"qwen2.5:7b",
+	],
+	["respects process.env.OLLAMA_MODEL", undefined, "llama3:8b", "llama3:8b"],
+	["prefers options.model over env", "mistral:7b", "llama3:8b", "mistral:7b"],
 ];
 
 describe("ollama model selection", () => {
-	for (const tc of OLLAMA_MODEL_CASES) {
-		test(tc.label, async () => {
-			await withEnv("OLLAMA_MODEL", tc.envModel, async () => {
-				const mock = createMockTransport({ message: { content: "ok" } });
-				const adapter = createModelAdapter({
-					provider: "ollama",
-					transport: mock.transport,
-					model: tc.optionModel,
-				});
-				await adapter.generate({});
-				const captured = mock.getCaptured();
-				assert.equal(captured.body.model, tc.expected);
-			});
-		});
+	for (const [label, model, envModel, expected] of OLLAMA_MODEL_CASES) {
+		test(label, () =>
+			withEnvs({ OLLAMA_MODEL: envModel }, async () => {
+				const options = { provider: "ollama", model };
+				const captured = await captureRequest(options, OLLAMA_REPLY);
+				assert.equal(captured.body.model, expected);
+			}),
+		);
 	}
 });
 
@@ -325,85 +243,43 @@ describe("ollama chat request and tool call response", () => {
 	});
 });
 
+// [label, OLLAMA_URL, OLLAMA_ALLOW_REMOTE, shouldThrow]; allowed URLs post to <url>/api/chat.
 const OLLAMA_URL_CASES = [
-	{
-		label: "throws when pointing to remote example.com by default",
-		url: "http://example.com:11434",
-		allowRemote: undefined,
-		shouldThrow: true,
-	},
-	{
-		label: "allows remote example.com when OLLAMA_ALLOW_REMOTE=1",
-		url: "http://example.com:11434",
-		allowRemote: "1",
-		shouldThrow: false,
-		expectedUrl: "http://example.com:11434/api/chat",
-	},
-	{
-		label: "allows 127.0.0.1 with port",
-		url: "http://127.0.0.1:11434",
-		allowRemote: undefined,
-		shouldThrow: false,
-		expectedUrl: "http://127.0.0.1:11434/api/chat",
-	},
-	{
-		label: "allows localhost with port",
-		url: "http://localhost:11434",
-		allowRemote: undefined,
-		shouldThrow: false,
-		expectedUrl: "http://localhost:11434/api/chat",
-	},
-	{
-		label: "allows [::1] with port",
-		url: "http://[::1]:11434",
-		allowRemote: undefined,
-		shouldThrow: false,
-		expectedUrl: "http://[::1]:11434/api/chat",
-	},
-	{
-		label: "throws when protocol is ftp",
-		url: "ftp://127.0.0.1:11434",
-		allowRemote: "1",
-		shouldThrow: true,
-	},
-	{
-		label: "throws when URL is malformed",
-		url: "invalid-url",
-		allowRemote: "1",
-		shouldThrow: true,
-	},
+	[
+		"throws when pointing to remote example.com by default",
+		"http://example.com:11434",
+		undefined,
+		true,
+	],
+	[
+		"allows remote example.com when OLLAMA_ALLOW_REMOTE=1",
+		"http://example.com:11434",
+		"1",
+		false,
+	],
+	["allows 127.0.0.1 with port", "http://127.0.0.1:11434", undefined, false],
+	["allows localhost with port", "http://localhost:11434", undefined, false],
+	["allows [::1] with port", "http://[::1]:11434", undefined, false],
+	["throws when protocol is ftp", "ftp://127.0.0.1:11434", "1", true],
+	["throws when URL is malformed", "invalid-url", "1", true],
 ];
 
 describe("ollama URL validation and remote restriction", () => {
-	for (const tc of OLLAMA_URL_CASES) {
-		test(tc.label, async () => {
-			const envSettings = {
-				OLLAMA_URL: tc.url,
-				OLLAMA_ALLOW_REMOTE: tc.allowRemote,
-			};
-			await withEnvs(envSettings, async () => {
-				const mock = createMockTransport({ message: { content: "ok" } });
-				const adapter = createModelAdapter({
-					provider: "ollama",
-					transport: mock.transport,
-				});
-				if (tc.shouldThrow) {
-					await assert.rejects(
-						() => adapter.generate({}),
-						(err) => {
-							assert.equal(
-								err.message,
-								"Ollama URL must point to this machine",
-							);
-							return true;
-						},
-					);
-				} else {
-					await adapter.generate({});
-					const captured = mock.getCaptured();
-					assert.equal(captured.url, tc.expectedUrl);
-				}
-			});
-		});
+	for (const [label, url, allowRemote, shouldThrow] of OLLAMA_URL_CASES) {
+		test(label, () =>
+			withEnvs(
+				{ OLLAMA_URL: url, OLLAMA_ALLOW_REMOTE: allowRemote },
+				async () => {
+					const request = captureRequest({ provider: "ollama" }, OLLAMA_REPLY);
+					if (shouldThrow) {
+						await assert.rejects(request, {
+							message: "Ollama URL must point to this machine",
+						});
+						return;
+					}
+					assert.equal((await request).url, `${url}/api/chat`);
+				},
+			),
+		);
 	}
 });

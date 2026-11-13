@@ -15,9 +15,14 @@ async function assertInvalidOAuthState(res) {
 	assert.equal(await res.text(), "Invalid OAuth state");
 }
 
-function assertRedirectFragment(res, key, expectedValue) {
+// Asserts a 302 redirect and returns its Location header.
+function redirectLocation(res) {
 	assert.equal(res.status, 302);
-	const location = res.headers.get("location");
+	return res.headers.get("location");
+}
+
+function assertRedirectFragment(res, key, expectedValue) {
+	const location = redirectLocation(res);
 	if (expectedValue) {
 		assert.equal(location, expectedValue);
 	} else {
@@ -197,15 +202,20 @@ describe("OAuth State & Origin Hardening", () => {
 			}
 		});
 
+		// GET the OAuth callback with `query`, without following redirects.
+		const callback = (query, fetchFn = fetch) =>
+			fetchFn(`${baseUrl}/api/auth/github/callback?${query}`, {
+				redirect: "manual",
+			});
+
 		it("GET /api/auth/github/url generates random state and ignores client-supplied state", async () => {
 			config.githubClientId = "test-client-id";
 			delete process.env.FRONTEND_URL;
 			const res = await fetch(
 				`${baseUrl}/api/auth/github/url?state=attacker_supplied_state`,
 			);
-			assert.equal(res.status, 200);
 			const data = await res.json();
-			assert.equal(data.configured, true);
+			assert.deepEqual([res.status, data.configured], [200, true]);
 			assert.doesNotMatch(data.url, /attacker_supplied_state/);
 
 			const match = data.url.match(/state=([0-9a-f]{32})/);
@@ -235,44 +245,28 @@ describe("OAuth State & Origin Hardening", () => {
 		for (const tc of rejectionCases) {
 			it(`GET /api/auth/github/callback rejects ${tc.name}`, async () => {
 				tc.setup?.();
-				const res = await fetch(
-					`${baseUrl}/api/auth/github/callback?${tc.query}`,
-				);
-				await assertInvalidOAuthState(res);
+				await assertInvalidOAuthState(await callback(tc.query));
 			});
 		}
 
 		it("GET /api/auth/github/callback accepts state once and rejects reuse", async () => {
-			const validState = stateStore.generate();
+			const query = `code=c1&state=${stateStore.generate()}`;
 			process.env.FRONTEND_URL = "http://localhost:5173";
 
 			// First callback request consumes the state
-			const res1 = await fetch(
-				`${baseUrl}/api/auth/github/callback?code=c1&state=${validState}`,
-				{ redirect: "manual" },
-			);
-			assert.equal(res1.status, 302);
-			const loc1 = res1.headers.get("location");
+			const loc1 = redirectLocation(await callback(query));
 			assert.match(loc1, /^http:\/\/localhost:5173\/#/);
 
 			// Second callback request with identical state must be rejected
-			const res2 = await fetch(
-				`${baseUrl}/api/auth/github/callback?code=c1&state=${validState}`,
-				{ redirect: "manual" },
-			);
-			await assertInvalidOAuthState(res2);
+			await assertInvalidOAuthState(await callback(query));
 		});
 
 		it("redirects with URL fragment #github_error= on exchange failure", async () => {
-			const validState = stateStore.generate();
+			const query = `code=bad_code&state=${stateStore.generate()}`;
 			process.env.FRONTEND_URL = "https://banana.app";
 			config.githubClientId = ""; // forces exchangeCodeForToken to fail
 
-			const res = await fetch(
-				`${baseUrl}/api/auth/github/callback?code=bad_code&state=${validState}`,
-				{ redirect: "manual" },
-			);
-			assertRedirectFragment(res, "github_error");
+			assertRedirectFragment(await callback(query), "github_error");
 		});
 
 		it("redirects with URL fragment #github_handoff= on exchange success", async () => {
@@ -296,18 +290,15 @@ describe("OAuth State & Origin Hardening", () => {
 			};
 
 			try {
-				const res = await originalFetch(
-					`${baseUrl}/api/auth/github/callback?code=valid_code&state=${validState}`,
-					{ redirect: "manual" },
-				);
-				assert.equal(res.status, 302);
-				const location = res.headers.get("location");
+				const query = `code=valid_code&state=${validState}`;
+				const location = redirectLocation(await callback(query, originalFetch));
 				assert.match(
 					location,
 					/^https:\/\/banana\.app\/#github_handoff=[0-9a-f]{64}$/,
 				);
-				assert.doesNotMatch(location, /gho_super_secret_token/);
-				assert.doesNotMatch(location, /github_token/);
+				for (const leak of [/gho_super_secret_token/, /github_token/]) {
+					assert.doesNotMatch(location, leak);
+				}
 			} finally {
 				globalThis.fetch = originalFetch;
 			}

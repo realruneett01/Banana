@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
-import http from "node:http";
-import os from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import express from "express";
 import { createProjectRouter } from "../../backend/src/routes/project-routes.js";
+import { listenOnLoopback, requestJson } from "../helpers/tests_3-http.mjs";
 
-const VALID_ROOT = path.resolve(os.tmpdir(), "banana-test-project-files");
-const NO_PRO_ROOT = path.resolve(os.tmpdir(), "banana-test-no-pro");
+const VALID_ROOT = path.resolve(tmpdir(), "banana-test-project-files");
+const NO_PRO_ROOT = path.resolve(tmpdir(), "banana-test-no-pro");
 const FILE_ROOT = path.join(VALID_ROOT, "some-file.txt");
+const PRO_FILE = path.join(VALID_ROOT, "main.kicad_pro");
+const IMPORT_PATH = "/api/projects/import";
 
 function makeFsError(code, message) {
 	const err = new Error(message || code);
@@ -16,25 +18,44 @@ function makeFsError(code, message) {
 	return err;
 }
 
+// One fake file record; every fake file has the same fixed mtime.
+const fileRecord = (content, buf) => ({
+	content,
+	size: buf.length,
+	mtime: new Date("2026-01-01T00:00:00.000Z"),
+});
+
 function normalizeFileMap(files) {
 	const fileMap = new Map();
 	for (const [k, v] of Object.entries(files)) {
 		const res = path.resolve(k);
 		if (v && typeof v === "object" && !Buffer.isBuffer(v)) {
 			const content = v.content ?? "";
-			const size = v.size ?? Buffer.byteLength(content);
-			const mtime = v.mtime ?? new Date("2026-01-01T00:00:00.000Z");
-			fileMap.set(res, { content, size, mtime });
-		} else {
-			const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v ?? ""));
+			const record = fileRecord(content, Buffer.from(content));
 			fileMap.set(res, {
-				content: v,
-				size: buf.length,
-				mtime: new Date("2026-01-01T00:00:00.000Z"),
+				...record,
+				size: v.size ?? record.size,
+				mtime: v.mtime ?? record.mtime,
 			});
+		} else {
+			fileMap.set(
+				res,
+				fileRecord(v, Buffer.isBuffer(v) ? v : Buffer.from(String(v ?? ""))),
+			);
 		}
 	}
 	return fileMap;
+}
+
+function listChildren(res, dirSet, fileMap) {
+	const entries = new Set();
+	for (const d of dirSet) {
+		if (path.dirname(d) === res && d !== res) entries.add(path.basename(d));
+	}
+	for (const f of fileMap.keys()) {
+		if (path.dirname(f) === res) entries.add(path.basename(f));
+	}
+	return Array.from(entries);
 }
 
 function createFakeFs({ dirs = [], files = {}, failWrite = false } = {}) {
@@ -52,32 +73,15 @@ function createFakeFs({ dirs = [], files = {}, failWrite = false } = {}) {
 			const res = path.resolve(p);
 			if (dirSet.has(res))
 				return { isDirectory: () => true, isFile: () => false };
-			if (fileMap.has(res)) {
-				const meta = fileMap.get(res);
-				return {
-					isDirectory: () => false,
-					isFile: () => true,
-					size: meta.size,
-					mtime: meta.mtime,
-				};
-			}
-			throw makeFsError("ENOENT", `stat '${p}'`);
+			const meta = fileMap.get(res);
+			if (!meta) throw makeFsError("ENOENT", `stat '${p}'`);
+			const { size, mtime } = meta;
+			return { isDirectory: () => false, isFile: () => true, size, mtime };
 		},
 		async readdir(p) {
 			const res = path.resolve(p);
 			if (!dirSet.has(res)) throw makeFsError("ENOENT", `readdir '${p}'`);
-			const entries = new Set();
-			for (const d of dirSet) {
-				if (path.dirname(d) === res && d !== res) {
-					entries.add(path.basename(d));
-				}
-			}
-			for (const f of fileMap.keys()) {
-				if (path.dirname(f) === res) {
-					entries.add(path.basename(f));
-				}
-			}
-			return Array.from(entries);
+			return listChildren(res, dirSet, fileMap);
 		},
 		async writeFile(p, content, options) {
 			if (failWrite) throw new Error("Disk write failed");
@@ -89,315 +93,210 @@ function createFakeFs({ dirs = [], files = {}, failWrite = false } = {}) {
 			const buf = Buffer.isBuffer(content)
 				? content
 				: Buffer.from(String(content));
-			fileMap.set(res, {
-				content,
-				size: buf.length,
-				mtime: new Date("2026-01-01T00:00:00.000Z"),
-			});
+			fileMap.set(res, fileRecord(content, buf));
 		},
 	};
 }
 
-async function startServer(router, allowLocal = true) {
+function startServer(router, allowLocal = true) {
 	const app = express();
 	app.locals.allowLocalRepos = allowLocal;
 	app.use("/api", router);
-	const server = http.createServer(app);
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	return {
-		port: server.address().port,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	return listenOnLoopback(app);
 }
 
-async function getJson(port, routePath) {
-	const res = await fetch(`http://127.0.0.1:${port}${routePath}`);
-	const text = await res.text();
-	let json = null;
+const getJson = (port, routePath) => requestJson(port, routePath);
+const postJson = (port, routePath, body) => requestJson(port, routePath, body);
+
+/** Runs `fn(srv, fakeFs)` against a project router backed by a fake fs. */
+async function withProjectServer(
+	{ fsSpec, allowLocal = true, isLocalAllowed },
+	fn,
+) {
+	const fakeFs = createFakeFs(fsSpec);
+	const options = isLocalAllowed
+		? { isLocalAllowed, fsImpl: fakeFs }
+		: { fsImpl: fakeFs };
+	const srv = await startServer(createProjectRouter(options), allowLocal);
 	try {
-		json = JSON.parse(text);
-	} catch {
-		json = null;
+		return await fn(srv, fakeFs);
+	} finally {
+		await srv.close();
 	}
-	return { status: res.status, json };
 }
 
-async function postJson(port, routePath, body) {
-	const res = await fetch(`http://127.0.0.1:${port}${routePath}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	const text = await res.text();
-	let json = null;
-	try {
-		json = JSON.parse(text);
-	} catch {
-		json = null;
+/** Asserts the status and that no absolute project path leaks into the reply. */
+function assertStatusNoLeak(res, status, roots = [VALID_ROOT]) {
+	assert.equal(res.status, status);
+	for (const root of roots) {
+		assert.ok(!JSON.stringify(res.json).includes(root));
 	}
-	return { status: res.status, json };
 }
 
-const TABLE_400_CASES = [
-	{
-		label: "GET missing projectRoot query param",
-		method: "GET",
-		path: "/api/projects/files",
-	},
-	{
-		label: "GET relative projectRoot",
-		method: "GET",
-		path: "/api/projects/files?projectRoot=relative/path",
-	},
-	{
-		label: "GET projectRoot with NUL byte",
-		method: "GET",
-		path: `/api/projects/files?projectRoot=${encodeURIComponent(`${VALID_ROOT}\0bad`)}`,
-	},
-	{
-		label: "GET projectRoot is a file",
-		method: "GET",
-		path: `/api/projects/files?projectRoot=${encodeURIComponent(FILE_ROOT)}`,
-	},
-	{
-		label: "GET projectRoot missing .kicad_pro",
-		method: "GET",
-		path: `/api/projects/files?projectRoot=${encodeURIComponent(NO_PRO_ROOT)}`,
-	},
-	{
-		label: "POST import missing projectRoot",
-		method: "POST",
-		path: "/api/projects/import",
-		body: { name: "test.kicad_sch", contentBase64: "aGVsbG8=" },
-	},
-	{
-		label: "POST import relative projectRoot",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: "relative/path",
-			name: "test.kicad_sch",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import projectRoot missing .kicad_pro",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: NO_PRO_ROOT,
-			name: "test.kicad_sch",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import name containing ../",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "../escape.kicad_sch",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import name containing slash",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "nested/test.kicad_sch",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import name containing backslash",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "nested\\test.kicad_sch",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import wrong extension .kicad_pro",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "project.kicad_pro",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import wrong extension .txt",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "readme.txt",
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import name exceeding 128 characters",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: `${"a".repeat(125)}.kicad_sch`,
-			contentBase64: "aGVsbG8=",
-		},
-	},
-	{
-		label: "POST import missing contentBase64",
-		method: "POST",
-		path: "/api/projects/import",
-		body: { projectRoot: VALID_ROOT, name: "valid.kicad_sch" },
-	},
-	{
-		label: "POST import contentBase64 exceeding 20 MB",
-		method: "POST",
-		path: "/api/projects/import",
-		body: {
-			projectRoot: VALID_ROOT,
-			name: "huge.kicad_sch",
-			contentBase64: Buffer.alloc(20 * 1024 * 1024 + 16, "x").toString(
-				"base64",
-			),
-		},
-	},
+const filesUrl = (root) =>
+	`/api/projects/files?projectRoot=${encodeURIComponent(root)}`;
+
+// A well-formed import body for `name` (base64 of "hello").
+const importBody = (name, projectRoot = VALID_ROOT) => ({
+	projectRoot,
+	name,
+	contentBase64: "aGVsbG8=",
+});
+
+// [label, GET path]
+const GET_400 = [
+	["GET missing projectRoot query param", "/api/projects/files"],
+	["GET relative projectRoot", "/api/projects/files?projectRoot=relative/path"],
+	["GET projectRoot with NUL byte", filesUrl(`${VALID_ROOT}\0bad`)],
+	["GET projectRoot is a file", filesUrl(FILE_ROOT)],
+	["GET projectRoot missing .kicad_pro", filesUrl(NO_PRO_ROOT)],
 ];
 
+const HUGE_BASE64 = Buffer.alloc(20 * 1024 * 1024 + 16, "x").toString("base64");
+
+// [label, POST import body]
+const POST_400 = [
+	[
+		"POST import missing projectRoot",
+		{ name: "test.kicad_sch", contentBase64: "aGVsbG8=" },
+	],
+	[
+		"POST import relative projectRoot",
+		importBody("test.kicad_sch", "relative/path"),
+	],
+	[
+		"POST import projectRoot missing .kicad_pro",
+		importBody("test.kicad_sch", NO_PRO_ROOT),
+	],
+	["POST import name containing ../", importBody("../escape.kicad_sch")],
+	["POST import name containing slash", importBody("nested/test.kicad_sch")],
+	[
+		"POST import name containing backslash",
+		importBody("nested\\test.kicad_sch"),
+	],
+	["POST import wrong extension .kicad_pro", importBody("project.kicad_pro")],
+	["POST import wrong extension .txt", importBody("readme.txt")],
+	[
+		"POST import name exceeding 128 characters",
+		importBody(`${"a".repeat(125)}.kicad_sch`),
+	],
+	[
+		"POST import missing contentBase64",
+		{ projectRoot: VALID_ROOT, name: "valid.kicad_sch" },
+	],
+	[
+		"POST import contentBase64 exceeding 20 MB",
+		{ ...importBody("huge.kicad_sch"), contentBase64: HUGE_BASE64 },
+	],
+];
+
+const TABLE_400_CASES = [
+	...GET_400.map(([label, path]) => ({ label, method: "GET", path })),
+	...POST_400.map(([label, body]) => ({
+		label,
+		method: "POST",
+		path: IMPORT_PATH,
+		body,
+	})),
+];
+
+// file name -> content
+const LISTED_FILES = {
+	"main.kicad_pro": "pro content",
+	"sheet.kicad_sch": "sch content",
+	"board.kicad_pcb": "pcb content",
+	"device.kicad_sym": "sym content",
+	"foot.kicad_mod": "mod content",
+	"notes.txt": "plain notes",
+	".hidden.kicad_sch": "hidden",
+	"sheet.kicad_sch~": "backup tilde",
+	"_autosave-sheet.kicad_sch": "autosave",
+	"board.kicad_pcb.lck": "lock file",
+	"sheet-bak.kicad_sch": "backup dash",
+};
+
+// listed file name -> expected kind
+const EXPECTED_KINDS = {
+	"board.kicad_pcb": "pcb",
+	"device.kicad_sym": "symbols",
+	"foot.kicad_mod": "footprint",
+	"main.kicad_pro": "project",
+	"notes.txt": "other",
+	"sheet.kicad_sch": "schematic",
+};
+
+function assertListedFile(file) {
+	assert.equal(file.kind, EXPECTED_KINDS[file.name]);
+	assert.equal(typeof file.size, "number");
+	assert.ok(file.size > 0);
+	assert.equal(typeof file.modified, "string");
+}
+
+const base64 = (text) => Buffer.from(text).toString("base64");
+
 describe("project files routes", () => {
-	test("returns 403 for GET and POST when local repos are disabled", async () => {
-		const fakeFs = createFakeFs({ dirs: [VALID_ROOT] });
-		const router = createProjectRouter({
-			isLocalAllowed: () => false,
-			fsImpl: fakeFs,
-		});
-		const srv = await startServer(router, false);
-		try {
-			const getRes = await getJson(
-				srv.port,
-				`/api/projects/files?projectRoot=${encodeURIComponent(VALID_ROOT)}`,
-			);
-			assert.equal(getRes.status, 403);
-			assert.ok(!JSON.stringify(getRes.json).includes(VALID_ROOT));
+	test("returns 403 for GET and POST when local repos are disabled", () =>
+		withProjectServer(
+			{
+				fsSpec: { dirs: [VALID_ROOT] },
+				allowLocal: false,
+				isLocalAllowed: () => false,
+			},
+			async (srv) => {
+				assertStatusNoLeak(await getJson(srv.port, filesUrl(VALID_ROOT)), 403);
+				const body = importBody("test.kicad_sch");
+				assertStatusNoLeak(await postJson(srv.port, IMPORT_PATH, body), 403);
+			},
+		));
 
-			const postRes = await postJson(srv.port, "/api/projects/import", {
-				projectRoot: VALID_ROOT,
-				name: "test.kicad_sch",
-				contentBase64: "aGVsbG8=",
-			});
-			assert.equal(postRes.status, 403);
-			assert.ok(!JSON.stringify(postRes.json).includes(VALID_ROOT));
-		} finally {
-			await srv.close();
-		}
-	});
-
-	test("GET /projects/files filters non-kicad, lock, backup files and classifies kinds", async () => {
+	test("GET /projects/files filters non-kicad, lock, backup files and classifies kinds", () => {
 		const subDir = path.join(VALID_ROOT, "subfolder");
-		const fakeFs = createFakeFs({
-			dirs: [VALID_ROOT, subDir],
-			files: {
-				[path.join(VALID_ROOT, "main.kicad_pro")]: "pro content",
-				[path.join(VALID_ROOT, "sheet.kicad_sch")]: "sch content",
-				[path.join(VALID_ROOT, "board.kicad_pcb")]: "pcb content",
-				[path.join(VALID_ROOT, "device.kicad_sym")]: "sym content",
-				[path.join(VALID_ROOT, "foot.kicad_mod")]: "mod content",
-				[path.join(VALID_ROOT, "notes.txt")]: "plain notes",
-				[path.join(VALID_ROOT, ".hidden.kicad_sch")]: "hidden",
-				[path.join(VALID_ROOT, "sheet.kicad_sch~")]: "backup tilde",
-				[path.join(VALID_ROOT, "_autosave-sheet.kicad_sch")]: "autosave",
-				[path.join(VALID_ROOT, "board.kicad_pcb.lck")]: "lock file",
-				[path.join(VALID_ROOT, "sheet-bak.kicad_sch")]: "backup dash",
-			},
-		});
-		const router = createProjectRouter({ fsImpl: fakeFs });
-		const srv = await startServer(router, true);
-		try {
-			const res = await getJson(
-				srv.port,
-				`/api/projects/files?projectRoot=${encodeURIComponent(VALID_ROOT)}`,
-			);
-			assert.equal(res.status, 200);
+		const files = Object.fromEntries(
+			Object.entries(LISTED_FILES).map(([name, text]) => [
+				path.join(VALID_ROOT, name),
+				text,
+			]),
+		);
+		const fsSpec = { dirs: [VALID_ROOT, subDir], files };
+		return withProjectServer({ fsSpec }, async (srv) => {
+			const res = await getJson(srv.port, filesUrl(VALID_ROOT));
+			assertStatusNoLeak(res, 200);
 			assert.ok(Array.isArray(res.json?.files));
-			const files = res.json.files;
-			assert.equal(files.length, 6);
-			const expectedKinds = {
-				"board.kicad_pcb": "pcb",
-				"device.kicad_sym": "symbols",
-				"foot.kicad_mod": "footprint",
-				"main.kicad_pro": "project",
-				"notes.txt": "other",
-				"sheet.kicad_sch": "schematic",
-			};
-			for (const file of files) {
-				assert.equal(file.kind, expectedKinds[file.name]);
-				assert.equal(typeof file.size, "number");
-				assert.ok(file.size > 0);
-				assert.equal(typeof file.modified, "string");
-			}
-			assert.ok(!JSON.stringify(res.json).includes(VALID_ROOT));
-		} finally {
-			await srv.close();
-		}
+			assert.equal(res.json.files.length, 6);
+			res.json.files.forEach(assertListedFile);
+		});
 	});
 
-	test("POST /projects/import writes file with flag wx and does not commit", async () => {
-		const fakeFs = createFakeFs({
-			dirs: [VALID_ROOT],
-			files: {
-				[path.join(VALID_ROOT, "main.kicad_pro")]: "pro content",
-			},
-		});
-		const router = createProjectRouter({ fsImpl: fakeFs });
-		const srv = await startServer(router, true);
-		try {
+	test("POST /projects/import writes file with flag wx and does not commit", () => {
+		const fsSpec = { dirs: [VALID_ROOT], files: { [PRO_FILE]: "pro content" } };
+		return withProjectServer({ fsSpec }, async (srv, fakeFs) => {
 			const body = {
-				projectRoot: VALID_ROOT,
-				name: "extra.kicad_sch",
-				contentBase64: Buffer.from("(kicad_sch content)").toString("base64"),
+				...importBody("extra.kicad_sch"),
+				contentBase64: base64("(kicad_sch content)"),
 			};
-			const res = await postJson(srv.port, "/api/projects/import", body);
-			assert.equal(res.status, 201);
+			const res = await postJson(srv.port, IMPORT_PATH, body);
+			assertStatusNoLeak(res, 201);
 			assert.equal(res.json?.name, "extra.kicad_sch");
 			assert.equal(fakeFs.writes.length, 1);
-			const write = fakeFs.writes[0];
+			const [write] = fakeFs.writes;
 			assert.equal(write.path, path.join(VALID_ROOT, "extra.kicad_sch"));
 			assert.equal(write.options?.flag, "wx");
-			assert.ok(!JSON.stringify(res.json).includes(VALID_ROOT));
-		} finally {
-			await srv.close();
-		}
+		});
 	});
 
-	test("POST /projects/import returns 409 when target file already exists", async () => {
+	test("POST /projects/import returns 409 when target file already exists", () => {
 		const existingPath = path.join(VALID_ROOT, "existing.kicad_sch");
-		const fakeFs = createFakeFs({
-			dirs: [VALID_ROOT],
-			files: {
-				[path.join(VALID_ROOT, "main.kicad_pro")]: "pro content",
-				[existingPath]: "already here",
+		const files = { [PRO_FILE]: "pro content", [existingPath]: "already here" };
+		return withProjectServer(
+			{ fsSpec: { dirs: [VALID_ROOT], files } },
+			async (srv) => {
+				const body = {
+					...importBody("existing.kicad_sch"),
+					contentBase64: base64("new content"),
+				};
+				assertStatusNoLeak(await postJson(srv.port, IMPORT_PATH, body), 409);
 			},
-		});
-		const router = createProjectRouter({ fsImpl: fakeFs });
-		const srv = await startServer(router, true);
-		try {
-			const body = {
-				projectRoot: VALID_ROOT,
-				name: "existing.kicad_sch",
-				contentBase64: Buffer.from("new content").toString("base64"),
-			};
-			const res = await postJson(srv.port, "/api/projects/import", body);
-			assert.equal(res.status, 409);
-			assert.ok(!JSON.stringify(res.json).includes(VALID_ROOT));
-		} finally {
-			await srv.close();
-		}
+		);
 	});
 
 	describe("validation 400 cases table", () => {
@@ -405,10 +304,7 @@ describe("project files routes", () => {
 		before(async () => {
 			const fakeFs = createFakeFs({
 				dirs: [VALID_ROOT, NO_PRO_ROOT],
-				files: {
-					[path.join(VALID_ROOT, "main.kicad_pro")]: "pro",
-					[FILE_ROOT]: "not a directory",
-				},
+				files: { [PRO_FILE]: "pro", [FILE_ROOT]: "not a directory" },
 			});
 			const router = createProjectRouter({ fsImpl: fakeFs });
 			srv = await startServer(router, true);
@@ -424,10 +320,8 @@ describe("project files routes", () => {
 					item.method === "GET"
 						? await getJson(srv.port, item.path)
 						: await postJson(srv.port, item.path, item.body);
-				assert.equal(res.status, 400);
 				assert.ok(typeof res.json?.error === "string");
-				assert.ok(!JSON.stringify(res.json).includes(VALID_ROOT));
-				assert.ok(!JSON.stringify(res.json).includes(NO_PRO_ROOT));
+				assertStatusNoLeak(res, 400, [VALID_ROOT, NO_PRO_ROOT]);
 			});
 		}
 	});

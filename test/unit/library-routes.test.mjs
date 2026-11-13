@@ -128,15 +128,18 @@ function assertArrayResult(res, key) {
 	assert.ok(Array.isArray(res.json[key]));
 }
 
-function assertSearchMatch(res, key, expectedId) {
+function assertSearchMatch(res, { key, expectedId }) {
 	assertArrayResult(res, key);
 	assert.equal(res.json[key][0].libId, expectedId);
 }
 
-function assertGetMatch(res, key, expectedId) {
+function assertGetMatch(res, { key, expectedId }) {
 	assertSuccess(res);
 	assert.equal(res.json[key]?.libId, expectedId);
 }
+
+const assertNotFound = (res) => assertErrorResponse(res, 404);
+const assertBadRequest = (res) => assertErrorResponse(res, 400);
 
 function assertUnavailable(res) {
 	assert.equal(res.status, 503);
@@ -173,51 +176,61 @@ function runTestCases(cases, queryFn, assertFn) {
 	}
 }
 
-const toNamedCases = (rows) => rows.map(([name, path]) => ({ name, path }));
+// Turns [name, path, ...extra] rows into case objects keyed by `columns`.
+const toCases = (rows, columns = ["name", "path"]) =>
+	rows.map((row) => Object.fromEntries(columns.map((col, i) => [col, row[i]])));
 
-const SEARCH_CASES = [
-	[
-		"GET /api/library/symbols with q",
-		"/api/library/symbols?q=res",
-		"symbols",
-		"Device:R",
-	],
-	[
-		"GET /api/library/symbols with q and limit",
-		"/api/library/symbols?q=res&limit=10",
-		"symbols",
-		"Device:R",
-	],
-	[
-		"GET /api/library/footprints with q",
-		"/api/library/footprints?q=0805",
-		"footprints",
-		"Resistor_SMD:R_0805",
-	],
-	[
-		"GET /api/library/footprints with q and limit",
-		"/api/library/footprints?q=0805&limit=25",
-		"footprints",
-		"Resistor_SMD:R_0805",
-	],
-].map(([name, path, key, expectedId]) => ({ name, path, key, expectedId }));
+const SEARCH_COLUMNS = ["name", "path", "key", "expectedId"];
 
-const GET_CASES = [
+const SEARCH_CASES = toCases(
 	[
-		"GET /api/library/symbols/:libId",
-		"/api/library/symbols/Device:R",
-		"symbol",
-		"Device:R",
+		[
+			"GET /api/library/symbols with q",
+			"/api/library/symbols?q=res",
+			"symbols",
+			"Device:R",
+		],
+		[
+			"GET /api/library/symbols with q and limit",
+			"/api/library/symbols?q=res&limit=10",
+			"symbols",
+			"Device:R",
+		],
+		[
+			"GET /api/library/footprints with q",
+			"/api/library/footprints?q=0805",
+			"footprints",
+			"Resistor_SMD:R_0805",
+		],
+		[
+			"GET /api/library/footprints with q and limit",
+			"/api/library/footprints?q=0805&limit=25",
+			"footprints",
+			"Resistor_SMD:R_0805",
+		],
 	],
-	[
-		"GET /api/library/footprints/:libId",
-		"/api/library/footprints/Resistor_SMD:R_0805",
-		"footprint",
-		"Resistor_SMD:R_0805",
-	],
-].map(([name, path, key, expectedId]) => ({ name, path, key, expectedId }));
+	SEARCH_COLUMNS,
+);
 
-const NOT_FOUND_CASES = toNamedCases([
+const GET_CASES = toCases(
+	[
+		[
+			"GET /api/library/symbols/:libId",
+			"/api/library/symbols/Device:R",
+			"symbol",
+			"Device:R",
+		],
+		[
+			"GET /api/library/footprints/:libId",
+			"/api/library/footprints/Resistor_SMD:R_0805",
+			"footprint",
+			"Resistor_SMD:R_0805",
+		],
+	],
+	SEARCH_COLUMNS,
+);
+
+const NOT_FOUND_CASES = toCases([
 	["GET missing symbol returns 404", "/api/library/symbols/Device:NotFound"],
 	[
 		"GET missing footprint returns 404",
@@ -225,7 +238,7 @@ const NOT_FOUND_CASES = toNamedCases([
 	],
 ]);
 
-const VALIDATION_CASES = toNamedCases([
+const VALIDATION_CASES = toCases([
 	["symbols missing q", "/api/library/symbols"],
 	["symbols empty q", "/api/library/symbols?q="],
 	["symbols whitespace q", "/api/library/symbols?q=%20%20"],
@@ -243,7 +256,7 @@ const VALIDATION_CASES = toNamedCases([
 	],
 ]);
 
-const BROWSE_VALIDATION_CASES = toNamedCases([
+const BROWSE_VALIDATION_CASES = toCases([
 	["invalid lib name traversal", "/api/library/symbols/libraries/..%2F.."],
 	["invalid lib name spaces", "/api/library/symbols/libraries/a%20b"],
 	["bad offset negative", "/api/library/symbols/libraries/Device?offset=-1"],
@@ -254,24 +267,26 @@ const BROWSE_VALIDATION_CASES = toNamedCases([
 	["limit 501 above max", "/api/library/symbols/libraries/Device?limit=501"],
 ]);
 
-const CORE_ENDPOINTS = [
-	["symbols search", "/api/library/symbols?q=res"],
-	["symbol get", "/api/library/symbols/Device:R"],
-	["footprints search", "/api/library/footprints?q=0805"],
-	["footprint get", "/api/library/footprints/Resistor_SMD:R_0805"],
-	["symbols libraries", "/api/library/symbols/libraries"],
-	["symbols library items", "/api/library/symbols/libraries/Device"],
-];
+const CORE_ENDPOINTS = toCases(
+	[
+		["symbols search", "/api/library/symbols?q=res"],
+		["symbol get", "/api/library/symbols/Device:R"],
+		["footprints search", "/api/library/footprints?q=0805"],
+		["footprint get", "/api/library/footprints/Resistor_SMD:R_0805"],
+		["symbols libraries", "/api/library/symbols/libraries"],
+		["symbols library items", "/api/library/symbols/libraries/Device"],
+	],
+	["label", "path"],
+);
 
-const UNAVAILABLE_CASES = CORE_ENDPOINTS.map(([label, path]) => ({
-	name: `${label} when unavailable`,
-	path,
-}));
+const endpointCases = (suffix) =>
+	CORE_ENDPOINTS.map(({ label, path }) => ({
+		name: `${label} ${suffix}`,
+		path,
+	}));
 
-const CACHE_HEADER_CASES = CORE_ENDPOINTS.map(([label, path]) => ({
-	name: `${label} cache header`,
-	path,
-}));
+const UNAVAILABLE_CASES = endpointCases("when unavailable");
+const CACHE_HEADER_CASES = endpointCases("cache header");
 
 const STATUS_CASES = [
 	{
@@ -294,23 +309,25 @@ const STATUS_CASES = [
 	},
 ];
 
+const firstLibraryIs = (name) => (json) =>
+	assert.equal(json.libraries[0].name, name);
+
 const BROWSE_LIST_CASES = [
-	{
-		name: "GET /api/library/symbols/libraries returns 200 with libraries list",
-		path: "/api/library/symbols/libraries",
-		check: (json) => assert.equal(json.libraries[0].name, "Device"),
-	},
-	{
-		name: "GET /api/library/footprints/libraries returns 200 with libraries list",
-		path: "/api/library/footprints/libraries",
-		check: (json) => assert.equal(json.libraries[0].name, "Resistor_SMD"),
-	},
-	{
-		name: "GET /api/library/symbols/libraries is not treated as a libId",
-		path: "/api/library/symbols/libraries",
-		check: (json) => assert.equal(json.error, undefined),
-	},
-];
+	["symbols", "returns 200 with libraries list", firstLibraryIs("Device")],
+	[
+		"footprints",
+		"returns 200 with libraries list",
+		firstLibraryIs("Resistor_SMD"),
+	],
+	[
+		"symbols",
+		"is not treated as a libId",
+		(json) => assert.equal(json.error, undefined),
+	],
+].map(([kind, what, check]) => {
+	const path = `/api/library/${kind}/libraries`;
+	return { name: `GET ${path} ${what}`, path, check };
+});
 
 const DUAL_BASE = [
 	["/library/status", "available", { expected: true }],
@@ -361,29 +378,19 @@ describe("library-routes", () => {
 		}
 	});
 
-	describe("search endpoints", () => {
-		runTestCases(SEARCH_CASES, query, (res, tc) =>
-			assertSearchMatch(res, tc.key, tc.expectedId),
-		);
-	});
+	// [describe title, cases, query fn, assert fn]
+	const describeSuites = (suites) => {
+		for (const [title, cases, queryFn, assertFn] of suites) {
+			describe(title, () => runTestCases(cases, queryFn, assertFn));
+		}
+	};
 
-	describe("get endpoints", () => {
-		runTestCases(GET_CASES, query, (res, tc) =>
-			assertGetMatch(res, tc.key, tc.expectedId),
-		);
-	});
-
-	describe("404 not found", () => {
-		runTestCases(NOT_FOUND_CASES, query, (res) =>
-			assertErrorResponse(res, 404),
-		);
-	});
-
-	describe("400 validation", () => {
-		runTestCases(VALIDATION_CASES, query, (res) =>
-			assertErrorResponse(res, 400),
-		);
-	});
+	describeSuites([
+		["search endpoints", SEARCH_CASES, query, assertSearchMatch],
+		["get endpoints", GET_CASES, query, assertGetMatch],
+		["404 not found", NOT_FOUND_CASES, query, assertNotFound],
+		["400 validation", VALIDATION_CASES, query, assertBadRequest],
+	]);
 
 	describe("library browsing endpoints", () => {
 		runTestCases(BROWSE_LIST_CASES, query, assertLibraryList);
@@ -408,19 +415,21 @@ describe("library-routes", () => {
 		});
 	});
 
-	describe("library browsing 400 validation", () => {
-		runTestCases(BROWSE_VALIDATION_CASES, query, (res) =>
-			assertErrorResponse(res, 400),
-		);
-	});
-
-	describe("503 service unavailable", () => {
-		runTestCases(UNAVAILABLE_CASES, queryUnavail, assertUnavailable);
-	});
-
-	describe("cache headers", () => {
-		runTestCases(CACHE_HEADER_CASES, query, assertCacheHeader);
-	});
+	describeSuites([
+		[
+			"library browsing 400 validation",
+			BROWSE_VALIDATION_CASES,
+			query,
+			assertBadRequest,
+		],
+		[
+			"503 service unavailable",
+			UNAVAILABLE_CASES,
+			queryUnavail,
+			assertUnavailable,
+		],
+		["cache headers", CACHE_HEADER_CASES, query, assertCacheHeader],
+	]);
 
 	describe("dual /x and /api/x router mounting", () => {
 		let directServer;
