@@ -1,39 +1,34 @@
 import { Alert, Button, Select, Spin, Tag } from "antd";
 import { useMemo, useState } from "react";
+import {
+	centerRow,
+	column,
+	FILL_BOX,
+	FLEX_COLUMN,
+} from "../utils/fe_a-styles.js";
 
 const panelStyles = Object.freeze({
 	panel: {
-		display: "flex",
-		flexDirection: "column",
-		width: "100%",
-		height: "100%",
+		...FLEX_COLUMN,
+		...FILL_BOX,
 		background: "#0f121d",
 		color: "#e2e8f0",
 		userSelect: "none",
 		overflow: "hidden",
 	},
-	header: {
-		display: "flex",
-		flexDirection: "column",
+	header: column("10px", {
 		padding: "12px 14px",
 		borderBottom: "1px solid #1e2438",
 		background: "#121520",
-		gap: "10px",
 		flexShrink: 0,
-	},
+	}),
 	controlsRow: {
 		display: "flex",
 		alignItems: "flex-end",
 		gap: "10px",
 		flexWrap: "wrap",
 	},
-	selectorGroup: {
-		display: "flex",
-		flexDirection: "column",
-		gap: "4px",
-		flex: 1,
-		minWidth: "120px",
-	},
+	selectorGroup: column("4px", { flex: 1, minWidth: "120px" }),
 	label: {
 		fontSize: "11px",
 		fontWeight: 700,
@@ -41,65 +36,23 @@ const panelStyles = Object.freeze({
 		letterSpacing: "0.06em",
 		color: "#94a3b8",
 	},
-	select: {
-		width: "100%",
-	},
-	compareButton: {
-		flexShrink: 0,
-	},
-	body: {
-		display: "flex",
-		flexDirection: "column",
-		flex: 1,
-		overflowY: "auto",
-		padding: "12px 14px",
-		gap: "14px",
-	},
-	spin: {
-		display: "flex",
-		justifyContent: "center",
-		padding: "16px",
-	},
-	alert: {
-		marginBottom: "8px",
-	},
-	resultsContainer: {
-		display: "flex",
-		flexDirection: "column",
-		gap: "16px",
-	},
-	section: {
-		display: "flex",
-		flexDirection: "column",
-		gap: "8px",
-	},
-	sectionHeader: {
-		display: "flex",
-		alignItems: "center",
-		gap: "8px",
-	},
-	issueList: {
-		display: "flex",
-		flexDirection: "column",
-		gap: "6px",
-	},
-	issueRow: {
-		display: "flex",
-		alignItems: "center",
+	select: { width: "100%" },
+	compareButton: { flexShrink: 0 },
+	body: column("14px", { flex: 1, overflowY: "auto", padding: "12px 14px" }),
+	spin: { display: "flex", justifyContent: "center", padding: "16px" },
+	alert: { marginBottom: "8px" },
+	resultsContainer: column("16px"),
+	section: column("8px"),
+	sectionHeader: centerRow("8px"),
+	issueList: column("6px"),
+	issueRow: centerRow("8px", {
 		justifyContent: "space-between",
-		gap: "8px",
 		padding: "8px 10px",
 		borderRadius: "6px",
 		border: "1px solid #23283e",
 		background: "rgba(22, 26, 42, 0.8)",
-	},
-	issueContent: {
-		display: "flex",
-		alignItems: "center",
-		gap: "8px",
-		flex: 1,
-		minWidth: 0,
-	},
+	}),
+	issueContent: centerRow("8px", { flex: 1, minWidth: 0 }),
 	issueMessage: {
 		fontSize: "12px",
 		fontWeight: 600,
@@ -286,27 +239,20 @@ function CompareResults({ result, onSelectItem }) {
 
 	return (
 		<div style={panelStyles.resultsContainer}>
-			<IssueSection
-				title="Fixed"
-				count={fixed.length}
-				color="green"
-				items={fixed}
-				onSelectItem={onSelectItem}
-			/>
-			<IssueSection
-				title="Still open"
-				count={stillOpen.length}
-				color="amber"
-				items={stillOpen}
-				onSelectItem={onSelectItem}
-			/>
-			<IssueSection
-				title="New"
-				count={newIssues.length}
-				color="red"
-				items={newIssues}
-				onSelectItem={onSelectItem}
-			/>
+			{[
+				["Fixed", "green", fixed],
+				["Still open", "amber", stillOpen],
+				["New", "red", newIssues],
+			].map(([title, color, items]) => (
+				<IssueSection
+					key={title}
+					title={title}
+					count={items.length}
+					color={color}
+					items={items}
+					onSelectItem={onSelectItem}
+				/>
+			))}
 		</div>
 	);
 }

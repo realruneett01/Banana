@@ -16,6 +16,7 @@ import {
 	isLayerActive,
 	isLayerSolo,
 } from "./utils/diffLayerUtils.js";
+import { FILL_BOX, FLEX_CENTERED, FLEX_COLUMN } from "./utils/fe_a-styles.js";
 import { drawFocusRing } from "./utils/focusRingUtils.js";
 
 const RED_FILTER =
@@ -35,7 +36,6 @@ const DIFF_RING_CLASS_MAP = {
 	add: "diff-added",
 };
 
-const FILL_BOX = { width: "100%", height: "100%" };
 const FULL_ABSOLUTE_STYLE = {
 	position: "absolute",
 	top: 0,
@@ -52,9 +52,7 @@ const SVG_LAYER_STYLE = {
 
 const LAYER_PANE_STYLE = {
 	...FULL_ABSOLUTE_STYLE,
-	display: "flex",
-	justifyContent: "center",
-	alignItems: "center",
+	...FLEX_CENTERED,
 };
 
 const TARGET_PANE_BASE_STYLE = {
@@ -79,12 +77,11 @@ const CANVAS_CONTAINER_STYLE = {
 	...FILL_BOX,
 	position: "relative",
 	minHeight: "450px",
+	...FLEX_COLUMN,
 	overflow: "hidden",
 	background: "#0d0f18",
 	borderRadius: "8px",
 	border: "1px solid #232738",
-	display: "flex",
-	flexDirection: "column",
 };
 
 function areSvgPropsEqual(prev, next) {

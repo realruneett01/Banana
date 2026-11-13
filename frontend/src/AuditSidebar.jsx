@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getCleanLayerName } from "./utils/auditLogUtils.js";
+import { column, inlineBadge } from "./utils/fe_a-styles.js";
 
 function makeAction(rgb, color, label, borderAlpha = "0.45") {
 	return {
@@ -69,24 +70,26 @@ function findFocusedIndex(modifications, activeDiffIdx) {
 	return modifications.findIndex((m, i) => isDiffMatch(m, activeDiffIdx, i));
 }
 
+function cardTheme(border, background, boxShadow) {
+	return { border, background, boxShadow };
+}
+
 const CARD_PALETTE = {
-	selected: {
-		border: "1px solid #fadb14",
-		background:
-			"linear-gradient(135deg, rgba(250, 219, 20, 0.16) 0%, rgba(24, 29, 46, 0.98) 100%)",
-		boxShadow:
-			"0 0 14px rgba(250, 219, 20, 0.35), inset 0 0 8px rgba(250, 219, 20, 0.1)",
-	},
-	hovered: {
-		border: "1px solid #3b4468",
-		background: "#1c2238",
-		boxShadow: "0 4px 10px rgba(0, 0, 0, 0.4)",
-	},
-	normal: {
-		border: "1px solid #23283e",
-		background: "rgba(22, 26, 42, 0.8)",
-		boxShadow: "0 2px 6px rgba(0, 0, 0, 0.25)",
-	},
+	selected: cardTheme(
+		"1px solid #fadb14",
+		"linear-gradient(135deg, rgba(250, 219, 20, 0.16) 0%, rgba(24, 29, 46, 0.98) 100%)",
+		"0 0 14px rgba(250, 219, 20, 0.35), inset 0 0 8px rgba(250, 219, 20, 0.1)",
+	),
+	hovered: cardTheme(
+		"1px solid #3b4468",
+		"#1c2238",
+		"0 4px 10px rgba(0, 0, 0, 0.4)",
+	),
+	normal: cardTheme(
+		"1px solid #23283e",
+		"rgba(22, 26, 42, 0.8)",
+		"0 2px 6px rgba(0, 0, 0, 0.25)",
+	),
 };
 
 function resolveCardTheme(isSelected, hovered) {
@@ -99,9 +102,7 @@ const CARD_LAYOUT = {
 	borderRadius: "6px",
 	cursor: "pointer",
 	transition: "all 0.18s ease-in-out",
-	display: "flex",
-	flexDirection: "column",
-	gap: "6px",
+	...column("6px"),
 	position: "relative",
 };
 
@@ -149,10 +150,7 @@ function IndicatorDot({ size, color, shadow = false }) {
 	);
 }
 
-const FOCUSED_BADGE_STYLE = {
-	display: "inline-flex",
-	alignItems: "center",
-	gap: "4px",
+const FOCUSED_BADGE_STYLE = inlineBadge("4px", {
 	fontSize: "9px",
 	fontWeight: 800,
 	letterSpacing: "0.05em",
@@ -160,7 +158,7 @@ const FOCUSED_BADGE_STYLE = {
 	borderRadius: "4px",
 	background: "#fadb14",
 	color: "#0f1015",
-};
+});
 
 function FocusedBadge() {
 	return (
@@ -386,29 +384,33 @@ function makeHoverProps(hoverStyle, restStyle) {
 	};
 }
 
+function btnVariant(base, rest, hover) {
+	return { base, rest, hover };
+}
+
 const BTN_CONFIG = {
-	collapse: {
-		base: {
+	collapse: btnVariant(
+		{
 			border: "none",
 			padding: "4px",
 			transition: "color 0.15s, background 0.15s",
 		},
-		rest: { color: "#94a3b8", background: "transparent" },
-		hover: { color: "#fadb14", background: "rgba(250, 219, 20, 0.1)" },
-	},
-	nav: {
-		base: {
+		{ color: "#94a3b8", background: "transparent" },
+		{ color: "#fadb14", background: "rgba(250, 219, 20, 0.1)" },
+	),
+	nav: btnVariant(
+		{
 			background: "#1a1f33",
 			border: "1px solid #283250",
 			padding: "2px 7px",
 			fontSize: "11px",
 			lineHeight: "1.2",
 		},
-		rest: { color: "#cbd5e1", borderColor: "#283250" },
-		hover: { color: "#fadb14", borderColor: "#fadb14" },
-	},
-	exit: {
-		base: {
+		{ color: "#cbd5e1", borderColor: "#283250" },
+		{ color: "#fadb14", borderColor: "#fadb14" },
+	),
+	exit: btnVariant(
+		{
 			border: "1px solid #fadb14",
 			color: "#fadb14",
 			padding: "2px 8px",
@@ -416,9 +418,9 @@ const BTN_CONFIG = {
 			fontWeight: 600,
 			marginLeft: "4px",
 		},
-		rest: { background: "rgba(250, 219, 20, 0.15)" },
-		hover: { background: "rgba(250, 219, 20, 0.28)" },
-	},
+		{ background: "rgba(250, 219, 20, 0.15)" },
+		{ background: "rgba(250, 219, 20, 0.28)" },
+	),
 };
 
 function HoverButton({ variant = "nav", onClick, title, children }) {

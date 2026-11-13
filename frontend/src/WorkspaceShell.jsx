@@ -97,87 +97,72 @@ function BackendStatusBadge({ backendStatus, compact }) {
 	);
 }
 
+function ShellActionButton({
+	title,
+	icon,
+	onClick,
+	compact,
+	label,
+	ariaLabel,
+}) {
+	return (
+		<Tooltip title={title}>
+			<Button
+				type="primary"
+				icon={icon}
+				onClick={() => onClick?.()}
+				className="bn-copilot-btn"
+				style={{ height: BUTTON_HEIGHT }}
+				aria-label={ariaLabel}
+			>
+				{!compact && label}
+			</Button>
+		</Tooltip>
+	);
+}
+
 function CopilotButton({ onOpenCopilot, compact }) {
 	return (
-		<Tooltip title="Open Banana Hardware Copilot (AI PCB Diff Assistant)">
-			<Button
-				type="primary"
-				icon={<RobotOutlined />}
-				onClick={() => onOpenCopilot?.()}
-				className="bn-copilot-btn"
-				style={{ height: BUTTON_HEIGHT }}
-			>
-				{!compact && "Copilot"}
-			</Button>
-		</Tooltip>
+		<ShellActionButton
+			title="Open Banana Hardware Copilot (AI PCB Diff Assistant)"
+			icon={<RobotOutlined />}
+			onClick={onOpenCopilot}
+			compact={compact}
+			label="Copilot"
+		/>
 	);
 }
 
-function AgentButton({ onOpenAgent, compact }) {
-	return (
-		<Tooltip title="Design with AI">
-			<Button
-				type="primary"
-				icon={<ExperimentOutlined />}
-				onClick={() => onOpenAgent?.()}
-				className="bn-copilot-btn"
-				style={{ height: BUTTON_HEIGHT }}
-				aria-label="Design with AI"
-			>
-				{!compact && "Design with AI"}
-			</Button>
-		</Tooltip>
-	);
+const LABELLED_ACTIONS = [
+	["onOpenAgent", "Design with AI", ExperimentOutlined],
+	["onOpenSimulation", "Simulate", ThunderboltOutlined],
+	["onOpenStudio", "3D Studio", ThunderboltFilled],
+	["onOpenEditor", "Editor", EditOutlined],
+];
+
+function LabelledActionButtons(props) {
+	return LABELLED_ACTIONS.map(([handler, label, Icon]) => (
+		<ShellActionButton
+			key={handler}
+			title={label}
+			icon={<Icon />}
+			onClick={props[handler]}
+			compact={props.compact}
+			label={label}
+			ariaLabel={label}
+		/>
+	));
 }
 
-function SimulationButton({ onOpenSimulation, compact }) {
+function CompactIconButton({ icon, onClick, label }) {
 	return (
-		<Tooltip title="Simulate">
-			<Button
-				type="primary"
-				icon={<ThunderboltOutlined />}
-				onClick={() => onOpenSimulation?.()}
-				className="bn-copilot-btn"
-				style={{ height: BUTTON_HEIGHT }}
-				aria-label="Simulate"
-			>
-				{!compact && "Simulate"}
-			</Button>
-		</Tooltip>
-	);
-}
-
-function StudioButton({ onOpenStudio, compact }) {
-	return (
-		<Tooltip title="3D Studio">
-			<Button
-				type="primary"
-				icon={<ThunderboltFilled />}
-				onClick={() => onOpenStudio?.()}
-				className="bn-copilot-btn"
-				style={{ height: BUTTON_HEIGHT }}
-				aria-label="3D Studio"
-			>
-				{!compact && "3D Studio"}
-			</Button>
-		</Tooltip>
-	);
-}
-
-function EditorButton({ onOpenEditor, compact }) {
-	return (
-		<Tooltip title="Editor">
-			<Button
-				type="primary"
-				icon={<EditOutlined />}
-				onClick={() => onOpenEditor?.()}
-				className="bn-copilot-btn"
-				style={{ height: BUTTON_HEIGHT }}
-				aria-label="Editor"
-			>
-				{!compact && "Editor"}
-			</Button>
-		</Tooltip>
+		<Button
+			type="text"
+			className="bn-icon-btn"
+			icon={icon}
+			onClick={onClick}
+			aria-label={label}
+		/>
 	);
 }
 
@@ -185,12 +170,10 @@ function HeaderLeft({ compact, onOpenControls }) {
 	return (
 		<div className="bn-header-left">
 			{compact && (
-				<Button
-					type="text"
-					className="bn-icon-btn"
+				<CompactIconButton
 					icon={<MenuOutlined />}
 					onClick={onOpenControls}
-					aria-label="Open controls"
+					label="Open controls"
 				/>
 			)}
 			<BrandLogo compact={compact} />
@@ -212,20 +195,12 @@ function HeaderActions(props) {
 				compact={compact}
 			/>
 			<CopilotButton onOpenCopilot={props.onOpenCopilot} compact={compact} />
-			<AgentButton onOpenAgent={props.onOpenAgent} compact={compact} />
-			<SimulationButton
-				onOpenSimulation={props.onOpenSimulation}
-				compact={compact}
-			/>
-			<StudioButton onOpenStudio={props.onOpenStudio} compact={compact} />
-			<EditorButton onOpenEditor={props.onOpenEditor} compact={compact} />
+			<LabelledActionButtons {...props} />
 			{compact && (
-				<Button
-					type="text"
-					className="bn-icon-btn"
+				<CompactIconButton
 					icon={<UnorderedListOutlined />}
 					onClick={props.onOpenAudit}
-					aria-label="Open audit list"
+					label="Open audit list"
 				/>
 			)}
 		</Space>

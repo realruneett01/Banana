@@ -24,48 +24,48 @@ import {
 import { useEffect, useRef } from "react";
 import ChatSettingsModal from "./ChatSettingsModal.jsx";
 import { useChatbotAi } from "./useChatbotAi.js";
+import {
+	centerRow,
+	column,
+	ELLIPSIS,
+	FLEX_CENTER,
+	FLEX_CENTERED,
+	FLEX_COLUMN,
+} from "./utils/fe_a-styles.js";
 
 const { Text } = Typography;
 const { TextArea } = Input;
 
-const PROMPT_ENTRIES = [
-	{
-		Icon: AimOutlined,
-		label: "Explain detected diffs",
-		prompt:
-			"Analyze all detected changes on this PCB: explain what was done, what the electrical and physical changes are, and how I can make the layout better.",
-	},
-	{
-		Icon: SafetyCertificateOutlined,
-		label: "Check DRC & clearance risks",
-		prompt:
-			"Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts, and how should I fix them?",
-	},
-	{
-		Icon: BulbOutlined,
-		label: "Optimize layout & routing",
-		prompt:
-			"Review the current routing and component changes. What are the top 3 concrete improvements I can make to reduce noise, improve return paths, and optimize thermals?",
-	},
-	{
-		Icon: FileSearchOutlined,
-		label: "Trace width & current rules",
-		prompt:
-			"What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?",
-	},
-	{
-		Icon: CompassOutlined,
-		label: "Differential pairs & SI",
-		prompt:
-			"What are the best practices for differential pair length matching, via stitching, and continuous ground return paths in KiCad?",
-	},
-];
+const PROMPT_ENTRIES = {
+	"Explain detected diffs": [
+		AimOutlined,
+		"Analyze all detected changes on this PCB: explain what was done, what the electrical and physical changes are, and how I can make the layout better.",
+	],
+	"Check DRC & clearance risks": [
+		SafetyCertificateOutlined,
+		"Are there any potential DRC, clearance, or solder bridge risks caused by the recent track and component shifts, and how should I fix them?",
+	],
+	"Optimize layout & routing": [
+		BulbOutlined,
+		"Review the current routing and component changes. What are the top 3 concrete improvements I can make to reduce noise, improve return paths, and optimize thermals?",
+	],
+	"Trace width & current rules": [
+		FileSearchOutlined,
+		"What are the recommended KiCad trace widths and IPC-2152 current carrying limits for power vs signal lines?",
+	],
+	"Differential pairs & SI": [
+		CompassOutlined,
+		"What are the best practices for differential pair length matching, via stitching, and continuous ground return paths in KiCad?",
+	],
+};
 
-const QUICK_PROMPTS = PROMPT_ENTRIES.map(({ Icon, label, prompt }) => ({
-	icon: <Icon />,
-	label,
-	prompt,
-}));
+const QUICK_PROMPTS = Object.entries(PROMPT_ENTRIES).map(
+	([label, [Icon, prompt]]) => ({
+		icon: <Icon />,
+		label,
+		prompt,
+	}),
+);
 
 const makeTheme = (opts) => ({
 	align: opts.align,
@@ -95,15 +95,20 @@ const MSG_THEMES = {
 	}),
 };
 
+const PANEL_BG = "#161821";
+const PANEL_BORDER = "#232738";
+const ACCENT = "#fadb14";
+const MUTED_TEXT = "#a6adbb";
+const PANEL_FIELD = { background: PANEL_BG, borderColor: PANEL_BORDER };
+
 const DRAWER_STYLES = {
 	header: {
-		background: "#161821",
-		borderBottom: "1px solid #232738",
+		background: PANEL_BG,
+		borderBottom: `1px solid ${PANEL_BORDER}`,
 		padding: "12px 16px",
 	},
 	body: {
-		display: "flex",
-		flexDirection: "column",
+		...FLEX_COLUMN,
 		background: "#0f1015",
 		padding: "12px",
 		overflow: "hidden",
@@ -112,9 +117,7 @@ const DRAWER_STYLES = {
 
 const UI_STYLES = {
 	avatar: {
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "center",
+		...FLEX_CENTERED,
 		width: 28,
 		height: 28,
 		borderRadius: "50%",
@@ -124,40 +127,21 @@ const UI_STYLES = {
 		fontSize: 14,
 		boxShadow: "0 0 10px rgba(250, 219, 20, 0.4)",
 	},
-	headerTag: {
-		fontSize: "10px",
-		lineHeight: "16px",
-		padding: "0 5px",
-	},
-	headerBox: {
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "space-between",
-		width: "100%",
-	},
+	headerTag: { fontSize: "10px", lineHeight: "16px", padding: "0 5px" },
+	headerBox: { ...FLEX_CENTER, justifyContent: "space-between", width: "100%" },
 	contextBar: {
-		background: "#161821",
-		border: "1px solid #232738",
-		display: "flex",
-		alignItems: "center",
+		background: PANEL_BG,
+		border: `1px solid ${PANEL_BORDER}`,
+		...FLEX_CENTER,
 		fontSize: "11px",
-		color: "#a6adbb",
+		color: MUTED_TEXT,
 		borderRadius: "6px",
 		padding: "8px 12px",
 		marginBottom: "10px",
 		justifyContent: "space-between",
 	},
-	contextContent: {
-		display: "flex",
-		alignItems: "center",
-		gap: "6px",
-		overflow: "hidden",
-		textOverflow: "ellipsis",
-		whiteSpace: "nowrap",
-	},
-	banner: {
-		display: "flex",
-		alignItems: "center",
+	contextContent: centerRow("6px", ELLIPSIS),
+	banner: centerRow("6px", {
 		background: "rgba(22, 119, 255, 0.08)",
 		border: "1px solid rgba(22, 119, 255, 0.25)",
 		borderRadius: "6px",
@@ -165,27 +149,17 @@ const UI_STYLES = {
 		marginBottom: "8px",
 		fontSize: "11px",
 		color: "#69b1ff",
-		gap: "6px",
-	},
+	}),
 	missingKey: {
 		marginBottom: "10px",
 		background: "#1a1813",
 		borderColor: "#d48806",
 	},
-	msgList: {
-		display: "flex",
-		flexDirection: "column",
-		flex: 1,
-		overflowY: "auto",
-		paddingRight: "4px",
-		gap: "12px",
-	},
 	promptBtn: {
+		...PANEL_FIELD,
 		fontSize: "11px",
-		color: "#a6adbb",
-		borderColor: "#232738",
+		color: MUTED_TEXT,
 		borderRadius: "12px",
-		background: "#161821",
 	},
 	promptsScroll: {
 		padding: "8px 0",
@@ -197,6 +171,7 @@ const UI_STYLES = {
 		scrollbarWidth: "none",
 		msOverflowStyle: "none",
 	},
+	msgList: column("12px", { flex: 1, overflowY: "auto", paddingRight: "4px" }),
 	inputBox: {
 		display: "flex",
 		gap: "8px",
@@ -204,21 +179,18 @@ const UI_STYLES = {
 		paddingTop: "6px",
 	},
 	inputArea: {
-		background: "#161821",
-		borderColor: "#232738",
+		...PANEL_FIELD,
 		color: "#fff",
 		borderRadius: "8px",
 		fontSize: "13px",
 	},
 	sendBtn: {
-		display: "flex",
-		alignItems: "center",
-		justifyContent: "center",
+		...FLEX_CENTERED,
 		height: "38px",
 		width: "38px",
 		borderRadius: "8px",
-		background: "#fadb14",
-		borderColor: "#fadb14",
+		background: ACCENT,
+		borderColor: ACCENT,
 		color: "#000",
 	},
 	auditTag: {
@@ -228,23 +200,13 @@ const UI_STYLES = {
 		boxShadow: "0 0 8px rgba(250, 219, 20, 0.25)",
 		transition: "all 0.2s",
 	},
+	thinkingDot: { width: 6, height: 6, borderRadius: "50%", background: ACCENT },
+	thinkingBox: centerRow("4px", { marginTop: "6px" }),
 	authorLabel: {
 		fontSize: "10px",
 		color: "#6b6375",
 		marginTop: "3px",
 		padding: "0 4px",
-	},
-	thinkingDot: {
-		width: 6,
-		height: 6,
-		borderRadius: "50%",
-		background: "#fadb14",
-	},
-	thinkingBox: {
-		display: "flex",
-		alignItems: "center",
-		marginTop: "6px",
-		gap: "4px",
 	},
 };
 

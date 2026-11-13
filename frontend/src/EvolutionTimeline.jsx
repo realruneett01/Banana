@@ -8,6 +8,14 @@ import {
 	StepForwardOutlined,
 } from "@ant-design/icons";
 import { Button, Segmented, Tag, Tooltip } from "antd";
+import {
+	centerRow,
+	column,
+	ELLIPSIS,
+	FLEX_CENTER,
+	FLEX_CENTERED,
+	inlineBadge,
+} from "./utils/fe_a-styles.js";
 
 const EVOLUTION_CONTAINER_STYLE = Object.freeze({
 	position: "absolute",
@@ -18,22 +26,18 @@ const EVOLUTION_CONTAINER_STYLE = Object.freeze({
 	backgroundColor: "rgba(15, 23, 42, 0.94)",
 	backdropFilter: "blur(12px)",
 	WebkitBackdropFilter: "blur(12px)",
+	...column("10px"),
 	border: "1px solid rgba(59, 130, 246, 0.35)",
 	borderRadius: "12px",
 	boxShadow:
 		"0 12px 32px rgba(0, 0, 0, 0.55), 0 0 16px rgba(59, 130, 246, 0.2)",
 	padding: "12px 18px",
-	display: "flex",
-	flexDirection: "column",
-	gap: "10px",
 	userSelect: "none",
 	transition: "all 0.25s ease-in-out",
 });
 
 const EVOLUTION_TAG_STYLE = Object.freeze({
-	display: "inline-flex",
-	alignItems: "center",
-	gap: "6px",
+	...inlineBadge("6px"),
 	padding: "3px 10px",
 	borderRadius: "6px",
 	fontWeight: 700,
@@ -45,25 +49,20 @@ const EVOLUTION_TAG_STYLE = Object.freeze({
 	margin: 0,
 });
 
-const COMMIT_SUMMARY_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "6px",
-	fontSize: "12px",
-	color: "#cbd5e1",
-	fontFamily: "monospace",
-	whiteSpace: "nowrap",
-	overflow: "hidden",
-	textOverflow: "ellipsis",
-});
+const COMMIT_SUMMARY_STYLE = Object.freeze(
+	centerRow("6px", {
+		fontSize: "12px",
+		color: "#cbd5e1",
+		fontFamily: "monospace",
+		...ELLIPSIS,
+	}),
+);
 
 const COMMIT_MESSAGE_STYLE = Object.freeze({
 	color: "#e2e8f0",
 	fontWeight: 500,
 	maxWidth: "380px",
-	overflow: "hidden",
-	textOverflow: "ellipsis",
-	whiteSpace: "nowrap",
+	...ELLIPSIS,
 });
 
 const CLOSE_BTN_STYLE = Object.freeze({
@@ -73,9 +72,7 @@ const CLOSE_BTN_STYLE = Object.freeze({
 	borderRadius: "6px",
 	width: "24px",
 	height: "24px",
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
+	...FLEX_CENTERED,
 	cursor: "pointer",
 	fontSize: "11px",
 	transition: "all 0.15s",
@@ -92,26 +89,19 @@ const SEGMENTED_STYLE = Object.freeze({
 	border: "1px solid rgba(51, 65, 85, 0.6)",
 });
 
-const HEADER_CONTAINER_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "space-between",
-	gap: "12px",
-});
+const HEADER_CONTAINER_STYLE = Object.freeze(
+	centerRow("12px", { justifyContent: "space-between" }),
+);
 
-const HEADER_INFO_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "10px",
-	minWidth: 0,
-});
+const HEADER_INFO_STYLE = Object.freeze(centerRow("10px", { minWidth: 0 }));
 
-const HEADER_CONTROLS_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	gap: "10px",
-	flexShrink: 0,
-});
+const HEADER_CONTROLS_STYLE = Object.freeze(
+	centerRow("10px", { flexShrink: 0 }),
+);
+
+function smallNode(bg, border, boxShadow, textColor) {
+	return { size: "16px", bg, border, boxShadow, textColor, fontWeight: 500 };
+}
 
 const NODE_STYLES = Object.freeze({
 	target: {
@@ -122,22 +112,13 @@ const NODE_STYLES = Object.freeze({
 		textColor: "#34d399",
 		fontWeight: 700,
 	},
-	past: {
-		size: "16px",
-		bg: "#3b82f6",
-		border: "2px solid #60a5fa",
-		boxShadow: "0 0 6px rgba(59, 130, 246, 0.4)",
-		textColor: "#93c5fd",
-		fontWeight: 500,
-	},
-	future: {
-		size: "16px",
-		bg: "#1e293b",
-		border: "2px solid #475569",
-		boxShadow: "none",
-		textColor: "#64748b",
-		fontWeight: 500,
-	},
+	past: smallNode(
+		"#3b82f6",
+		"2px solid #60a5fa",
+		"0 0 6px rgba(59, 130, 246, 0.4)",
+		"#93c5fd",
+	),
+	future: smallNode("#1e293b", "2px solid #475569", "none", "#64748b"),
 });
 
 const TARGET_DOT_STYLE = Object.freeze({
@@ -149,8 +130,7 @@ const TARGET_DOT_STYLE = Object.freeze({
 
 const TRACK_CONTAINER_STYLE = Object.freeze({
 	position: "relative",
-	display: "flex",
-	alignItems: "center",
+	...FLEX_CENTER,
 	justifyContent: "space-between",
 	padding: "6px 8px",
 	marginTop: "2px",
@@ -164,13 +144,9 @@ const TRACK_BASE_STYLE = Object.freeze({
 	transform: "translateY(-50%)",
 });
 
-const TRANSPORT_STYLE = Object.freeze({
-	display: "flex",
-	alignItems: "center",
-	justifyContent: "center",
-	gap: "8px",
-	paddingTop: "2px",
-});
+const TRANSPORT_STYLE = Object.freeze(
+	centerRow("8px", { justifyContent: "center", paddingTop: "2px" }),
+);
 
 function getCommitHash(commit) {
 	return commit?.shortHash || commit?.hash?.substring(0, 7) || "";
