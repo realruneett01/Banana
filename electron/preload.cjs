@@ -1,5 +1,14 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+// Subscribe to a main-process event; returns an unsubscribe function.
+function subscribe(channel) {
+	return (callback) => {
+		const listener = (_event, payload) => callback(payload);
+		ipcRenderer.on(channel, listener);
+		return () => ipcRenderer.removeListener(channel, listener);
+	};
+}
+
 contextBridge.exposeInMainWorld("banana", {
 	isElectron: true,
 	platform: process.platform,
@@ -33,29 +42,14 @@ contextBridge.exposeInMainWorld("banana", {
 	updater: {
 		checkForUpdates: () => ipcRenderer.invoke("banana:check-for-updates"),
 		quitAndInstall: () => ipcRenderer.invoke("banana:quit-and-install"),
-		onUpdateAvailable: (callback) => {
-			const listener = (_, info) => callback(info);
-			ipcRenderer.on("banana:update-available", listener);
-			return () =>
-				ipcRenderer.removeListener("banana:update-available", listener);
-		},
-		onUpdateDownloaded: (callback) => {
-			const listener = (_, info) => callback(info);
-			ipcRenderer.on("banana:update-downloaded", listener);
-			return () =>
-				ipcRenderer.removeListener("banana:update-downloaded", listener);
-		},
+		onUpdateAvailable: subscribe("banana:update-available"),
+		onUpdateDownloaded: subscribe("banana:update-downloaded"),
 	},
 
 	// KiCad IPC integration
 	kicad: {
 		status: () => ipcRenderer.invoke("banana:kicad-status"),
 		open: (request) => ipcRenderer.invoke("banana:kicad-open", request),
-		onFileChanged: (callback) => {
-			const listener = (_e, detail) => callback(detail);
-			ipcRenderer.on("banana:kicad-file-changed", listener);
-			return () =>
-				ipcRenderer.removeListener("banana:kicad-file-changed", listener);
-		},
+		onFileChanged: subscribe("banana:kicad-file-changed"),
 	},
 });

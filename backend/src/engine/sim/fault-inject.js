@@ -1,5 +1,8 @@
+import { createRequire } from "node:module";
 import { validateCircuitIR } from "../circuit-ir.js";
 import { newId } from "../ids.js";
+
+const require = createRequire(import.meta.url);
 
 export const FAULT_KINDS = [
 	"open_trace",
@@ -12,64 +15,8 @@ export const FAULT_KINDS = [
 	"missing_ground",
 ];
 
-export const FAULT_INFO = {
-	open_trace: {
-		label: "Open Trace",
-		plainEnglish:
-			"A copper track is cracked, so current can't flow past the break. Like a cut wire.",
-		example:
-			"A cracked solder joint or scratched PCB trace stops power from reaching a component.",
-	},
-	short_nets: {
-		label: "Short Circuit",
-		plainEnglish:
-			"Two separate tracks are accidentally connected, letting current bypass normal components. Like two bare wires touching.",
-		example:
-			"A solder bridge connects 5V directly to ground or crosses two signal lines.",
-	},
-	part_open: {
-		label: "Part Open Circuit",
-		plainEnglish:
-			"A component has blown or burned out internally, disconnecting its pins completely. Like a burned-out lightbulb.",
-		example:
-			"A blown resistor or fused inductor leaves an open gap in the circuit.",
-	},
-	part_short: {
-		label: "Part Short Circuit",
-		plainEnglish:
-			"A component has failed internally such that all its pins are shorted together.",
-		example:
-			"A damaged capacitor breaks down internally and behaves like a solid wire.",
-	},
-	reverse_polarity: {
-		label: "Reverse Polarity",
-		plainEnglish:
-			"A polarized component is installed backwards, swapping its positive and negative terminals.",
-		example:
-			"An LED or electrolytic capacitor inserted back-to-front fails to turn on or burns out.",
-	},
-	value_drift: {
-		label: "Component Value Drift",
-		plainEnglish:
-			"A component's electrical value shifts far outside its nominal tolerance due to heat, age, or manufacturing defect.",
-		example:
-			"A 10k resistor drifts to 20k or 1k, upsetting the voltage divider ratio.",
-	},
-	overvoltage: {
-		label: "Overvoltage",
-		plainEnglish:
-			"A power source supplies a higher voltage than the circuit was designed to tolerate.",
-		example:
-			"Accidentally plugging a 12V supply into a 5V circuit or an unexpected power surge.",
-	},
-	missing_ground: {
-		label: "Missing Ground",
-		plainEnglish:
-			"The ground reference connection is lost, leaving signals without a return path.",
-		example:
-			"A disconnected ground wire or broken ground plane causes floating signals and unexpected behavior.",
-	},
-};
+// Plain-English fault descriptions live in JSON so the text table stays data.
+export const FAULT_INFO = require("./backend-fault-info.json");
 
 function findPart(ir, partId) {
 	if (!partId || typeof partId !== "string") {
@@ -128,12 +75,7 @@ function applyShortNets(ir, fault) {
 	if (nA.id === nB.id) {
 		return { ok: false, error: "Cannot short a net to itself" };
 	}
-	const existingKeys = new Set(nA.pins.map((p) => `${p.partId}:${p.pin}`));
-	for (const pin of nB.pins) {
-		if (!existingKeys.has(`${pin.partId}:${pin.pin}`)) {
-			nA.pins.push(pin);
-		}
-	}
+	mergeNetPins(nA, nB);
 	ir.nets = ir.nets.filter((n) => n.id !== nB.id);
 	const affectedParts = [...new Set(nA.pins.map((p) => p.partId))];
 	return {
@@ -322,7 +264,7 @@ function parseComponentValue(str) {
 	return { baseValue: num, baseUnit: unitStr };
 }
 
-function applyValueDrift(ir, fault) {
+function applyValueScale(ir, fault, spec) {
 	const part = findPart(ir, fault.partId);
 	if (!part) {
 		return { ok: false, error: `Part '${fault.partId}' not found` };
@@ -333,51 +275,37 @@ function applyValueDrift(ir, fault) {
 	}
 	const parsed = parseComponentValue(part.value);
 	if (!parsed) {
-		return {
-			ok: false,
-			error: `Cannot parse value '${part.value}' for part '${part.ref}'`,
-		};
+		return { ok: false, error: spec.parseError(part) };
 	}
 	const oldVal = part.value;
 	part.value = formatDriftedValue(parsed.baseValue * factor, parsed.baseUnit);
-	const netIds = ir.nets
-		.filter((n) => n.pins.some((p) => p.partId === part.id))
-		.map((n) => n.id);
+	const netIds = getTouchedNets(ir, part.id).map((n) => n.id);
 	return {
 		ok: true,
 		ir,
-		description: `Drifted value of ${part.ref} from ${oldVal} to ${part.value} (factor: ${factor})`,
+		description: `${spec.verb} ${part.ref} from ${oldVal} to ${part.value} (factor: ${factor})`,
 		affected: { partIds: [part.id], netIds },
 	};
 }
 
+const VALUE_DRIFT_SPEC = {
+	verb: "Drifted value of",
+	parseError: (part) =>
+		`Cannot parse value '${part.value}' for part '${part.ref}'`,
+};
+
+const OVERVOLTAGE_SPEC = {
+	verb: "Scaled voltage of source",
+	parseError: (part) =>
+		`Part '${part.ref}' value '${part.value}' cannot be scaled`,
+};
+
+function applyValueDrift(ir, fault) {
+	return applyValueScale(ir, fault, VALUE_DRIFT_SPEC);
+}
+
 function applyOvervoltage(ir, fault) {
-	const part = findPart(ir, fault.partId);
-	if (!part) {
-		return { ok: false, error: `Part '${fault.partId}' not found` };
-	}
-	const factor = fault.factor;
-	if (typeof factor !== "number" || factor <= 0 || Number.isNaN(factor)) {
-		return { ok: false, error: "factor must be a positive number" };
-	}
-	const parsed = parseComponentValue(part.value);
-	if (!parsed) {
-		return {
-			ok: false,
-			error: `Part '${part.ref}' value '${part.value}' cannot be scaled`,
-		};
-	}
-	const oldVal = part.value;
-	part.value = formatDriftedValue(parsed.baseValue * factor, parsed.baseUnit);
-	const netIds = ir.nets
-		.filter((n) => n.pins.some((p) => p.partId === part.id))
-		.map((n) => n.id);
-	return {
-		ok: true,
-		ir,
-		description: `Scaled voltage of source ${part.ref} from ${oldVal} to ${part.value} (factor: ${factor})`,
-		affected: { partIds: [part.id], netIds },
-	};
+	return applyValueScale(ir, fault, OVERVOLTAGE_SPEC);
 }
 
 function isGroundNet(net) {

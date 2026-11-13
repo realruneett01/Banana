@@ -22,24 +22,22 @@ function resolveAmbientBounds(env) {
 	};
 }
 
+function makeCorner(id, label, tempC, scales = {}) {
+	return {
+		id,
+		label,
+		tempC: clampTemp(tempC),
+		valueScale: scales.valueScale ?? 1,
+		supplyScale: scales.supplyScale ?? 1,
+	};
+}
+
 function createToleranceCorners(bounds, tolPct) {
 	if (!(tolPct > 0)) return [];
 	const tol = tolPct / 100;
 	return [
-		{
-			id: "worst-low",
-			label: "Worst-Low",
-			tempC: clampTemp(bounds.max),
-			valueScale: 1 - tol,
-			supplyScale: 1,
-		},
-		{
-			id: "worst-high",
-			label: "Worst-High",
-			tempC: clampTemp(bounds.min),
-			valueScale: 1 + tol,
-			supplyScale: 1,
-		},
+		makeCorner("worst-low", "Worst-Low", bounds.max, { valueScale: 1 - tol }),
+		makeCorner("worst-high", "Worst-High", bounds.min, { valueScale: 1 + tol }),
 	];
 }
 
@@ -47,50 +45,21 @@ function createSupplyCorners(bounds, supplyPct) {
 	if (!(supplyPct > 0)) return [];
 	const tol = supplyPct / 100;
 	return [
-		{
-			id: "supply-low",
-			label: "Supply-Low",
-			tempC: clampTemp(bounds.mid),
-			valueScale: 1,
+		makeCorner("supply-low", "Supply-Low", bounds.mid, {
 			supplyScale: 1 - tol,
-		},
-		{
-			id: "supply-high",
-			label: "Supply-High",
-			tempC: clampTemp(bounds.mid),
-			valueScale: 1,
+		}),
+		makeCorner("supply-high", "Supply-High", bounds.mid, {
 			supplyScale: 1 + tol,
-		},
+		}),
 	];
 }
 
 export function cornersFor(env, { tolerancePct = 5, supplyPct = 0 } = {}) {
 	const bounds = resolveAmbientBounds(env);
-	const baseCorners = [
-		{
-			id: "nominal",
-			label: "Nominal",
-			tempC: clampTemp(bounds.mid),
-			valueScale: 1,
-			supplyScale: 1,
-		},
-		{
-			id: "cold",
-			label: "Cold",
-			tempC: clampTemp(bounds.min),
-			valueScale: 1,
-			supplyScale: 1,
-		},
-		{
-			id: "hot",
-			label: "Hot",
-			tempC: clampTemp(bounds.max),
-			valueScale: 1,
-			supplyScale: 1,
-		},
-	];
 	return [
-		...baseCorners,
+		makeCorner("nominal", "Nominal", bounds.mid),
+		makeCorner("cold", "Cold", bounds.min),
+		makeCorner("hot", "Hot", bounds.max),
 		...createToleranceCorners(bounds, tolerancePct),
 		...createSupplyCorners(bounds, supplyPct),
 	];
@@ -105,18 +74,10 @@ function scalePassiveLine(tokens, valueScale) {
 	return tokens.join(" ");
 }
 
-function scaleDcSource(tokens, scale) {
-	const val = parseSiValue(tokens[4]);
+function scaleSourceAt(tokens, index, scale) {
+	const val = parseSiValue(tokens[index]);
 	if (!Number.isNaN(val)) {
-		tokens[4] = Number((val * scale).toFixed(6)).toString();
-	}
-	return tokens.join(" ");
-}
-
-function scalePlainSource(tokens, scale) {
-	const val = parseSiValue(tokens[3]);
-	if (!Number.isNaN(val)) {
-		tokens[3] = Number((val * scale).toFixed(6)).toString();
+		tokens[index] = Number((val * scale).toFixed(6)).toString();
 	}
 	return tokens.join(" ");
 }
@@ -125,10 +86,10 @@ function scaleVoltageLine(tokens, supplyScale) {
 	const scale = supplyScale ?? 1;
 	const isExplicitDc = tokens.length >= 5 && tokens[3].toUpperCase() === "DC";
 	if (isExplicitDc) {
-		return scaleDcSource(tokens, scale);
+		return scaleSourceAt(tokens, 4, scale);
 	}
 	if (tokens.length >= 4) {
-		return scalePlainSource(tokens, scale);
+		return scaleSourceAt(tokens, 3, scale);
 	}
 	return tokens.join(" ");
 }

@@ -169,13 +169,21 @@ function checkFallbackRunning(bound, state) {
 	return state.sawRunning;
 }
 
+function logIgnored(context, err) {
+	console.debug(`[ngspice] ${context}:`, err?.message ?? err);
+}
+
+function tryCommand(bound, command) {
+	try {
+		bound.ngSpice_Command(command);
+	} catch (err) {
+		logIgnored(`command '${command}' failed`, err);
+	}
+}
+
 function haltSimulation(bound, threadState) {
 	if (threadState.finished) return true;
-	try {
-		bound.ngSpice_Command("bg_halt");
-	} catch {
-		// Ignore error on halt if simulation already ended
-	}
+	tryCommand(bound, "bg_halt");
 	return false;
 }
 
@@ -205,8 +213,8 @@ async function safeRemoveDir(dirPath, parentDir) {
 	}
 	try {
 		await fs.promises.rm(dirPath, { recursive: true, force: true });
-	} catch {
-		// Ignore error removing temporary work directory
+	} catch (err) {
+		logIgnored("could not remove work directory", err);
 	}
 }
 
@@ -270,16 +278,8 @@ async function readSimulationOutput(rawPath, log) {
 }
 
 function resetCircuit(bound) {
-	try {
-		bound.ngSpice_Command("destroy all");
-	} catch {
-		// Ignore error resetting existing plots
-	}
-	try {
-		bound.ngSpice_Command("remcirc");
-	} catch {
-		// Ignore error removing existing circuit
-	}
+	tryCommand(bound, "destroy all");
+	tryCommand(bound, "remcirc");
 }
 
 async function runCircuit(bound, netlist, options) {
@@ -339,8 +339,8 @@ function makeAvailableLoader(cfg, state) {
 			if (!resolvedPath) return false;
 			state.bound = bindLibrary(cfg.koffiImpl, resolvedPath);
 			return initNgspice(state.bound) === 0;
-		} catch {
-			// Ignore load failure when library cannot be bound or initialized
+		} catch (err) {
+			logIgnored("library could not be bound or initialized", err);
 			return false;
 		}
 	};

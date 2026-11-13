@@ -1,18 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-const KINDS = [
-	"part",
-	"net",
-	"pin",
-	"trace",
-	"via",
-	"zone",
-	"sheet",
-	"issue",
-	"sim",
-	"env",
-	"tool",
-];
+const KINDS = "part net pin trace via zone sheet issue sim env tool".split(" ");
 
 const ALLOWED_KINDS = new Set(KINDS);
 

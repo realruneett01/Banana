@@ -7,21 +7,19 @@ const LIB_NAME_REGEX = /^[A-Za-z0-9_.+-]{1,100}$/;
 const CACHE_CONTROL_HEADER = "public, max-age=3600";
 const UNAVAILABLE_ERROR = "KiCad libraries are not installed on this server";
 
+function libraryEntity(kind, single, title) {
+	return {
+		kind,
+		single,
+		title,
+		search: `search${title}s`,
+		get: `get${title}`,
+	};
+}
+
 const ENTITIES = [
-	{
-		kind: "symbols",
-		single: "symbol",
-		title: "Symbol",
-		search: "searchSymbols",
-		get: "getSymbol",
-	},
-	{
-		kind: "footprints",
-		single: "footprint",
-		title: "Footprint",
-		search: "searchFootprints",
-		get: "getFootprint",
-	},
+	libraryEntity("symbols", "symbol", "Symbol"),
+	libraryEntity("footprints", "footprint", "Footprint"),
 ];
 
 let lazyLibrary = null;
@@ -67,22 +65,16 @@ function isValidOffset(num) {
 	return num >= 0;
 }
 
+const OFFSET_ERROR = "Query parameter 'offset' must be an integer >= 0";
+
 function parseOffset(rawOffset) {
 	if (rawOffset === undefined || rawOffset === "") {
 		return { ok: true, offset: 0 };
 	}
-	if (typeof rawOffset === "string" && rawOffset.trim() === "") {
-		return {
-			ok: false,
-			error: "Query parameter 'offset' must be an integer >= 0",
-		};
-	}
-	const num = Number(rawOffset);
+	const isBlank = typeof rawOffset === "string" && rawOffset.trim() === "";
+	const num = isBlank ? Number.NaN : Number(rawOffset);
 	if (!isValidOffset(num)) {
-		return {
-			ok: false,
-			error: "Query parameter 'offset' must be an integer >= 0",
-		};
+		return { ok: false, error: OFFSET_ERROR };
 	}
 	return { ok: true, offset: num };
 }
@@ -151,85 +143,79 @@ async function handleStatus(req, res) {
 	}
 }
 
-function createSearchHandler(entity) {
+// Shared wrapper: resolves the library, answers 503 when it is missing, and
+// maps any thrown error to a generic 500 so routes never leak paths or stacks.
+function libraryHandler(failMessage, handle) {
 	return async (req, res) => {
 		const library = resolveLibrary(req);
 		if (!(await ensureAvailable(library, res))) return;
-
-		const val = validateSearch(req.query);
-		if (!val.ok) {
-			return res.status(400).json({ error: val.error });
-		}
-
 		try {
+			return await handle(req, res, library);
+		} catch (_err) {
+			return res.status(500).json({ error: failMessage });
+		}
+	};
+}
+
+function createSearchHandler(entity) {
+	return libraryHandler(
+		`Failed to search ${entity.kind}`,
+		async (req, res, library) => {
+			const val = validateSearch(req.query);
+			if (!val.ok) {
+				return res.status(400).json({ error: val.error });
+			}
 			const items = await library[entity.search](req.query.q, {
 				limit: val.limit,
 			});
 			return sendCachedJson(res, { [entity.kind]: items });
-		} catch (_err) {
-			// Broad catch to guarantee route never leaks paths or stack traces
-			return res.status(500).json({ error: `Failed to search ${entity.kind}` });
-		}
-	};
+		},
+	);
 }
 
 function createListLibrariesHandler(entity) {
-	return async (req, res) => {
-		const library = resolveLibrary(req);
-		if (!(await ensureAvailable(library, res))) return;
-
-		try {
+	return libraryHandler(
+		`Failed to list ${entity.kind}`,
+		async (_req, res, library) => {
 			const libraries = await library.listLibraries(entity.kind);
 			return sendCachedJson(res, { libraries });
-		} catch (_err) {
-			// Broad catch to guarantee route never leaks paths or stack traces
-			return res.status(500).json({ error: `Failed to list ${entity.kind}` });
-		}
-	};
+		},
+	);
 }
 
 function createListItemsHandler(entity) {
-	return async (req, res) => {
-		const library = resolveLibrary(req);
-		if (!(await ensureAvailable(library, res))) return;
-
-		const val = validateListItemsParams(req.params.lib, req.query);
-		if (!val.ok) {
-			return res.status(400).json({ error: val.error });
-		}
-
-		try {
-			const { lib } = req.params;
+	return libraryHandler(
+		`Failed to list ${entity.kind}`,
+		async (req, res, library) => {
+			const val = validateListItemsParams(req.params.lib, req.query);
+			if (!val.ok) {
+				return res.status(400).json({ error: val.error });
+			}
 			const { limit, offset } = val;
-			const result = await library.listLibraryItems(entity.kind, lib, {
-				limit,
-				offset,
-			});
+			const result = await library.listLibraryItems(
+				entity.kind,
+				req.params.lib,
+				{
+					limit,
+					offset,
+				},
+			);
 			if (isLibraryNotFound(result)) {
 				return res.status(404).json({ error: "Library not found" });
 			}
-			return sendCachedJson(res, {
-				items: result.items,
-				total: result.total,
-			});
-		} catch (_err) {
-			// Broad catch to guarantee route never leaks paths or stack traces
-			return res.status(500).json({ error: `Failed to list ${entity.kind}` });
-		}
-	};
+			return sendCachedJson(res, { items: result.items, total: result.total });
+		},
+	);
 }
 
 function createGetHandler(entity) {
-	return async (req, res) => {
-		const library = resolveLibrary(req);
-		if (!(await ensureAvailable(library, res))) return;
-
-		const { libId } = req.params;
-		if (!isValidLibId(libId)) {
-			return res.status(400).json({ error: "Invalid library identifier" });
-		}
-
-		try {
+	return libraryHandler(
+		`Failed to get ${entity.single}`,
+		async (req, res, library) => {
+			const { libId } = req.params;
+			if (!isValidLibId(libId)) {
+				return res.status(400).json({ error: "Invalid library identifier" });
+			}
 			const item = await library[entity.get](libId);
 			if (!item) {
 				return res
@@ -237,11 +223,8 @@ function createGetHandler(entity) {
 					.json({ error: `${entity.title} not found: ${libId}` });
 			}
 			return sendCachedJson(res, { [entity.single]: item });
-		} catch (_err) {
-			// Broad catch to guarantee route never leaks paths or stack traces
-			return res.status(500).json({ error: `Failed to get ${entity.single}` });
-		}
-	};
+		},
+	);
 }
 
 export function createLibraryRouter() {

@@ -98,32 +98,36 @@ function checkEnum(schema, value, path, errors) {
 	}
 }
 
-function checkMinimum(schema, value, path, errors) {
-	if (typeof schema.minimum !== "number" || typeof value !== "number") {
-		return;
-	}
-	if (value < schema.minimum) {
-		errors.push(`${path}: must be >= ${schema.minimum}`);
-	}
+function boundChecker(keyword, valueType, fails, message) {
+	return (schema, value, path, errors) => {
+		const bound = schema[keyword];
+		if (typeof bound !== "number" || typeof value !== valueType) {
+			return;
+		}
+		if (fails(value, bound)) {
+			errors.push(`${path}: ${message(bound)}`);
+		}
+	};
 }
 
-function checkMaximum(schema, value, path, errors) {
-	if (typeof schema.maximum !== "number" || typeof value !== "number") {
-		return;
-	}
-	if (value > schema.maximum) {
-		errors.push(`${path}: must be <= ${schema.maximum}`);
-	}
-}
-
-function checkMinLength(schema, value, path, errors) {
-	if (typeof schema.minLength !== "number" || typeof value !== "string") {
-		return;
-	}
-	if (value.length < schema.minLength) {
-		errors.push(`${path}: must be at least ${schema.minLength} characters`);
-	}
-}
+const checkMinimum = boundChecker(
+	"minimum",
+	"number",
+	(v, b) => v < b,
+	(b) => `must be >= ${b}`,
+);
+const checkMaximum = boundChecker(
+	"maximum",
+	"number",
+	(v, b) => v > b,
+	(b) => `must be <= ${b}`,
+);
+const checkMinLength = boundChecker(
+	"minLength",
+	"string",
+	(v, b) => v.length < b,
+	(b) => `must be at least ${b} characters`,
+);
 
 function checkPattern(schema, value, path, errors) {
 	if (typeof schema.pattern !== "string" || typeof value !== "string") {

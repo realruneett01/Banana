@@ -4,41 +4,39 @@ import { config } from "../../config.js";
 import { autoPlace } from "../auto-place.js";
 import { createFreerouting, irToDsn, parseSes } from "../freerouting.js";
 
-const ROUTE_INPUT_SCHEMA = {
-	type: "object",
-	required: ["ir", "boardW", "boardH"],
-	additionalProperties: false,
-	properties: {
-		ir: { type: "object" },
-		boardW: { type: "number" },
-		boardH: { type: "number" },
-		rules: {
-			type: "object",
-			additionalProperties: false,
-			properties: {
-				traceWidthMm: { type: "number" },
-				clearanceMm: { type: "number" },
-			},
-		},
-	},
-};
+function closedObject(properties, required) {
+	const schema = { type: "object" };
+	if (required) schema.required = required;
+	schema.additionalProperties = false;
+	schema.properties = properties;
+	return schema;
+}
 
-const ROUTE_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["placedIr", "routes"],
-	additionalProperties: false,
-	properties: {
-		placedIr: { type: "object" },
+const NUMBER = { type: "number" };
+const OBJECT = { type: "object" };
+const ARRAY = { type: "array" };
+
+const ROUTE_INPUT_SCHEMA = closedObject(
+	{
+		ir: OBJECT,
+		boardW: NUMBER,
+		boardH: NUMBER,
+		rules: closedObject({ traceWidthMm: NUMBER, clearanceMm: NUMBER }),
+	},
+	["ir", "boardW", "boardH"],
+);
+
+const ROUTE_OUTPUT_SCHEMA = closedObject(
+	{
+		placedIr: OBJECT,
 		routes: {
 			type: "object",
 			required: ["wires", "vias"],
-			properties: {
-				wires: { type: "array" },
-				vias: { type: "array" },
-			},
+			properties: { wires: ARRAY, vias: ARRAY },
 		},
 	},
-};
+	["placedIr", "routes"],
+);
 
 function hasPlacement(part) {
 	const p = part?.placement;
