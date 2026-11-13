@@ -158,6 +158,7 @@ function useRepoInfoLoader({
 				}
 				if (!silent)
 					message.success(`Repository detected: ${data.resolvedPath}`);
+				return data;
 			} catch (err) {
 				message.error(err.message);
 			}

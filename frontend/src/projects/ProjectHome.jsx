@@ -9,6 +9,7 @@ import {
 	Typography,
 } from "antd";
 import { useState } from "react";
+import { createdProjectTarget } from "./openProject.js";
 import ProjectFiles from "./ProjectFiles.jsx";
 import { joinPath } from "./projectFiles.js";
 import { useProjects } from "./useProjects.js";
@@ -218,11 +219,17 @@ export function RecentProjects({ recent, kicadStatus, onOpenFile, onSelect }) {
 export default function ProjectHome({ onOpenFile }) {
 	const { recent, createProject, kicadStatus } = useProjects();
 	const [activeRoot, setActiveRoot] = useState("");
+	const handleCreate = async (params) => {
+		const res = await createProject(params);
+		const target = res.ok ? createdProjectTarget(res.project) : null;
+		if (target) onOpenFile?.(target);
+		return res;
+	};
 
 	return (
 		<div style={CONTAINER_STYLE}>
 			<Typography.Title level={2}>Project Manager</Typography.Title>
-			<NewProjectCard onCreate={createProject} />
+			<NewProjectCard onCreate={handleCreate} />
 			{activeRoot && (
 				<ProjectFiles projectRoot={activeRoot} onOpenFile={onOpenFile} />
 			)}

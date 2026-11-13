@@ -2,6 +2,7 @@ import {
 	EditOutlined,
 	ExperimentOutlined,
 	FileSearchOutlined,
+	FolderOpenOutlined,
 	GithubOutlined,
 	MenuOutlined,
 	RobotOutlined,
@@ -134,6 +135,7 @@ function CopilotButton({ onOpenCopilot, compact }) {
 }
 
 const LABELLED_ACTIONS = [
+	["onOpenProjects", "Projects", FolderOpenOutlined],
 	["onOpenAgent", "Design with AI", ExperimentOutlined],
 	["onOpenSimulation", "Simulate", ThunderboltOutlined],
 	["onOpenStudio", "3D Studio", ThunderboltFilled],

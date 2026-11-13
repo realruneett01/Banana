@@ -1,5 +1,6 @@
 import { Form } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { pickDiffCommits, planProjectOpen } from "./projects/openProject.js";
 import { useBackendHealthAndGithub } from "./useBackendHealthAndGithub.js";
 import { useDiffFocus } from "./useDiffFocus.js";
 import { useDiffLoader } from "./useDiffLoader.js";
@@ -482,6 +483,42 @@ function useWorkspaceInteractions({
 	return { focus, padLabelProps, handleSelectCopilotMod };
 }
 
+function applyOpenSelection(selection, { form, revisions }) {
+	revisions.setRelativeFilePath(selection.relativeFilePath);
+	revisions.setBaseCommit(selection.baseCommit);
+	revisions.setTargetCommit(selection.targetCommit);
+	form.setFieldsValue({
+		relativeFilePath: selection.relativeFilePath,
+		baseCommit: selection.baseCommit,
+		targetCommit: selection.targetCommit,
+	});
+}
+
+async function runOpenProjectFile(target, ctx) {
+	const plan = planProjectOpen(target);
+	if (!plan) return null;
+	const info = await ctx.localRepo.loadRepoInfo(plan.repoPath, true);
+	if (!info) return null;
+	const pair = pickDiffCommits(info.commits);
+	const selection = {
+		repoPath: info.resolvedPath,
+		relativeFilePath: plan.relativeFilePath,
+		...(pair ?? { baseCommit: "", targetCommit: "" }),
+	};
+	applyOpenSelection(selection, ctx);
+	if (pair) ctx.fetchDiff(selection);
+	return { ...plan.editorRepo, repoPath: info.resolvedPath };
+}
+
+function useOpenProjectFile(ctx) {
+	const { form, revisions, localRepo, fetchDiff } = ctx;
+	return useCallback(
+		(target) =>
+			runOpenProjectFile(target, { form, revisions, localRepo, fetchDiff }),
+		[form, revisions, localRepo, fetchDiff],
+	);
+}
+
 export function useWorkspaceState() {
 	const [form] = Form.useForm();
 	const sideBySideRef = useRef(null);
@@ -498,13 +535,23 @@ export function useWorkspaceState() {
 		gh: integrations.gh,
 	});
 
-	return assembleWorkspaceState({
+	const openProjectFile = useOpenProjectFile({
 		form,
-		sideBySideRef,
-		diffCanvasRef,
 		revisions,
-		viewer,
-		...integrations,
-		...interactions,
+		localRepo: integrations.localRepo,
+		fetchDiff: integrations.diffLoader.fetchDiff,
 	});
+
+	return {
+		...assembleWorkspaceState({
+			form,
+			sideBySideRef,
+			diffCanvasRef,
+			revisions,
+			viewer,
+			...integrations,
+			...interactions,
+		}),
+		openProjectFile,
+	};
 }

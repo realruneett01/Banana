@@ -9,7 +9,7 @@ import {
 	Space,
 	theme,
 } from "antd";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import "./harness.css";
 import ChatbotDrawer from "./ChatbotDrawer";
 import AgentDesignPanel from "./components/AgentDesignPanel.jsx";
@@ -21,6 +21,8 @@ import SimulationStudio from "./components/sim3d/SimulationStudio.jsx";
 import { WorkspaceAuditSidebar } from "./components/WorkspaceAuditSidebar";
 import { WorkspaceControlSidebar } from "./components/WorkspaceControlSidebar";
 import EditorScreen from "./editor/EditorScreen.jsx";
+import { shouldShowProjectHome } from "./projects/openProject.js";
+import ProjectHome from "./projects/ProjectHome.jsx";
 import { useDesignLoop } from "./useDesignLoop.js";
 import { useWorkspaceState } from "./useWorkspaceState.js";
 import WorkspaceShell from "./WorkspaceShell";
@@ -175,13 +177,57 @@ async function runEditCurrentFile(loop, repo) {
 	await importAndOpenDesign(loop, kind, text);
 }
 
-export function useEditCurrentFile(loop, repo) {
+function useEditCurrentFile(loop, repo) {
 	const hasFile = Boolean(repo?.schPath || repo?.pcbPath);
 	const canEdit = Boolean(repo?.repoPath && hasFile);
 	const onEdit = useCallback(() => {
 		runEditCurrentFile(loop, repo);
 	}, [loop, repo]);
-	return { canEdit, onEdit, editCurrentFile: onEdit };
+	return { canEdit, onEdit };
+}
+
+function useProjectHome(ws, loop) {
+	const repoPath = ws.sidebarProps?.localProps?.repoPath;
+	const [homeRequested, setHomeRequested] = useState(false);
+	const { openProjectFile } = ws;
+	const openFile = useCallback(
+		async (target) => {
+			const editorRepo = await openProjectFile(target);
+			if (!editorRepo) return;
+			setHomeRequested(false);
+			await runEditCurrentFile(loop, editorRepo);
+		},
+		[openProjectFile, loop],
+	);
+	return {
+		showHome: shouldShowProjectHome({ homeRequested, repoPath }),
+		openFile,
+		toggleHome: () => setHomeRequested((v) => !v),
+	};
+}
+
+function ProjectHomeView({ onOpenFile }) {
+	return (
+		<Content
+			style={{ height: "calc(100vh - var(--bn-header-h))", overflow: "auto" }}
+		>
+			<ProjectHome onOpenFile={onOpenFile} />
+		</Content>
+	);
+}
+
+function WorkspaceBody({ ws, compact }) {
+	return (
+		<Layout>
+			<WorkspaceControlSidebar {...ws.sidebarProps} compact={compact} />
+			<MainViewport
+				compact={compact}
+				edgeTabsProps={ws.edgeTabsProps}
+				viewportProps={ws.viewportProps}
+			/>
+			<WorkspaceAuditSidebar {...ws.auditProps} compact={compact} />
+		</Layout>
+	);
 }
 
 function useOpenKicadFile(loop) {
@@ -410,6 +456,7 @@ function AppLayout({ ws, compact }) {
 	const loop = useDesignLoop();
 	const { setLeftCollapsed, setRightCollapsed } = ws.edgeTabsProps;
 	const repo = buildEditorRepo(ws);
+	const home = useProjectHome(ws, loop);
 
 	return (
 		<Layout style={{ minHeight: "100vh", background: "var(--bn-bg)" }}>
@@ -422,16 +469,13 @@ function AppLayout({ ws, compact }) {
 				onOpenSimulation={() => loop.openSimulation()}
 				onOpenStudio={() => loop.openStudio()}
 				onOpenEditor={() => loop.openEditor()}
+				onOpenProjects={home.toggleHome}
 			/>
-			<Layout>
-				<WorkspaceControlSidebar {...ws.sidebarProps} compact={compact} />
-				<MainViewport
-					compact={compact}
-					edgeTabsProps={ws.edgeTabsProps}
-					viewportProps={ws.viewportProps}
-				/>
-				<WorkspaceAuditSidebar {...ws.auditProps} compact={compact} />
-			</Layout>
+			{home.showHome ? (
+				<ProjectHomeView onOpenFile={home.openFile} />
+			) : (
+				<WorkspaceBody ws={ws} compact={compact} />
+			)}
 			<ChatbotDrawer {...ws.copilotProps} />
 			<GithubConnectModal {...ws.githubModalProps} />
 			<DesignDrawers
