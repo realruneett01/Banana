@@ -33,15 +33,35 @@ describe("form connection", () => {
 		assert.equal(shouldWriteToForm(unmounted), true);
 	});
 
-	it("guarded form skips calls until the Form mounts, then passes through", () => {
+	it("before mount, writes stay pending and reads return them", () => {
+		const form = fakeForm();
+		const guarded = guardFormWrites(form, () => NEVER);
+		guarded.setFieldsValue({ repoPath: "/r", baseCommit: "x" });
+		guarded.setFieldValue("baseCommit", "a");
+		assert.equal(guarded.getFieldValue("repoPath"), "/r");
+		assert.equal(guarded.getFieldValue("baseCommit"), "a");
+		assert.equal(guarded.getFieldValue("targetCommit"), undefined);
+		assert.deepEqual(form.calls, []);
+	});
+
+	it("flush hands pending values to the form once, in one call", () => {
+		const form = fakeForm();
+		const guarded = guardFormWrites(form, () => NEVER);
+		guarded.flush();
+		assert.deepEqual(form.calls, []);
+		guarded.setFieldsValue({ repoPath: "/r" });
+		guarded.setFieldValue("baseCommit", "a");
+		guarded.flush();
+		guarded.flush();
+		assert.deepEqual(form.calls, [
+			["setFieldsValue", { repoPath: "/r", baseCommit: "a" }],
+		]);
+	});
+
+	it("after mount, calls go straight through to the form", () => {
 		const form = fakeForm();
 		let connection = NEVER;
 		const guarded = guardFormWrites(form, () => connection);
-		guarded.setFieldsValue({ repoPath: "/r" });
-		guarded.setFieldValue("baseCommit", "a");
-		assert.equal(guarded.getFieldValue("targetCommit"), undefined);
-		assert.deepEqual(form.calls, []);
-
 		connection = nextFormConnection(connection, true);
 		guarded.setFieldsValue({ repoPath: "/r" });
 		guarded.setFieldValue("baseCommit", "a");

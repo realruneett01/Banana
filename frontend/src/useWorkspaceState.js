@@ -527,12 +527,19 @@ function useOpenProjectFile(ctx) {
 function useWorkspaceForm() {
 	const [form] = Form.useForm();
 	const connectionRef = useRef(nextFormConnection(null, false));
-	const onFormMountChange = useCallback((mounted) => {
-		connectionRef.current = nextFormConnection(connectionRef.current, mounted);
-	}, []);
 	const guardedForm = useMemo(
 		() => guardFormWrites(form, () => connectionRef.current),
 		[form],
+	);
+	const onFormMountChange = useCallback(
+		(mounted) => {
+			connectionRef.current = nextFormConnection(
+				connectionRef.current,
+				mounted,
+			);
+			if (mounted) guardedForm.flush();
+		},
+		[guardedForm],
 	);
 	return { form, guardedForm, onFormMountChange };
 }
