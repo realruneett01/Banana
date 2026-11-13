@@ -183,6 +183,29 @@ function ensureNetDeclaration(ast, netName) {
 	return nextNum;
 }
 
+// KiCad 10 boards have no top-level (net N "name") table: tracks, vias and
+// pads name their net inline as (net "GND"), and unconnected items omit it.
+function usesNamedNets(ast) {
+	return !ast.some((c, i) => i > 0 && Array.isArray(c) && c[0]?.sym === "net");
+}
+
+function namedNetNodes(net) {
+	if (isString(net)) return [[sym("net"), net]];
+	return net === 0 ? [] : null;
+}
+
+// Returns the (net ...) children for a new track or via, or null if invalid.
+function netNodesFor(ast, net) {
+	if (usesNamedNets(ast)) return namedNetNodes(net);
+	const netNum = resolveNetNumber(ast, net);
+	return netNum === null ? null : [[sym("net"), netNum]];
+}
+
+function padNetNode(ast, netName) {
+	if (usesNamedNets(ast)) return [sym("net"), netName];
+	return [sym("net"), ensureNetDeclaration(ast, netName), netName];
+}
+
 function resolveNetNumber(ast, net) {
 	if (typeof net === "number" && Number.isFinite(net)) {
 		return net;
@@ -336,15 +359,13 @@ function handleSetFootprintField(ast, edit) {
 	return { ok: true };
 }
 
-function updateMatchingPads(matchingPads, netNum, netName) {
+function updateMatchingPads(matchingPads, netNode) {
 	for (const padNode of matchingPads) {
-		const netChild = findChildByTag(padNode, "net");
-		if (netChild) {
-			netChild[1] = netNum;
-			netChild[2] = netName;
-		} else {
-			padNode.push([sym("net"), netNum, netName]);
-		}
+		const idx = padNode.findIndex(
+			(c) => Array.isArray(c) && c[0]?.sym === "net",
+		);
+		if (idx === -1) padNode.push([...netNode]);
+		else padNode[idx] = [...netNode];
 	}
 }
 
@@ -374,8 +395,7 @@ function handleSetPadNet(ast, edit) {
 	if (matching.length === 0) {
 		return { ok: false, error: `Pad ${edit.pad} not found on ${edit.ref}` };
 	}
-	const netNum = ensureNetDeclaration(ast, edit.net);
-	updateMatchingPads(matching, netNum, edit.net);
+	updateMatchingPads(matching, padNetNode(ast, edit.net));
 	return { ok: true };
 }
 
@@ -398,8 +418,8 @@ function validateTrackParams(edit) {
 function handleAddTrack(ast, edit, newUuid) {
 	const err = validateTrackParams(edit);
 	if (err) return { ok: false, error: err };
-	const netNum = resolveNetNumber(ast, edit.net);
-	if (netNum === null) return { ok: false, error: "Invalid net" };
+	const netNodes = netNodesFor(ast, edit.net);
+	if (netNodes === null) return { ok: false, error: "Invalid net" };
 	const w = roundCoord(edit.width);
 	for (let i = 0; i < edit.points.length - 1; i++) {
 		const p1 = edit.points[i];
@@ -410,7 +430,7 @@ function handleAddTrack(ast, edit, newUuid) {
 			[sym("end"), roundCoord(p2.x), roundCoord(p2.y)],
 			[sym("width"), w],
 			[sym("layer"), edit.layer],
-			[sym("net"), netNum],
+			...structuredClone(netNodes),
 			[sym("uuid"), newUuid()],
 		]);
 	}
@@ -431,15 +451,15 @@ function handleAddVia(ast, edit, newUuid) {
 	const drill = edit.drill ?? 0.3;
 	const err = validateViaParams(edit, size, drill);
 	if (err) return { ok: false, error: err };
-	const netNum = resolveNetNumber(ast, edit.net);
-	if (netNum === null) return { ok: false, error: "Invalid net" };
+	const netNodes = netNodesFor(ast, edit.net);
+	if (netNodes === null) return { ok: false, error: "Invalid net" };
 	ast.push([
 		sym("via"),
 		[sym("at"), roundCoord(edit.x), roundCoord(edit.y)],
 		[sym("size"), roundCoord(size)],
 		[sym("drill"), roundCoord(drill)],
 		[sym("layers"), "F.Cu", "B.Cu"],
-		[sym("net"), netNum],
+		...netNodes,
 		[sym("uuid"), newUuid()],
 	]);
 	return { ok: true };

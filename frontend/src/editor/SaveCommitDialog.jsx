@@ -150,10 +150,14 @@ function useCommitMessageSync(open, summary, setCommitMessage, setErrorText) {
 }
 
 function useSaveCommit(options) {
-	const { beforeIr, afterIr, open } = options;
+	const { beforeIr, afterIr, beforeBoard, afterBoard, open } = options;
 	const edits = useMemo(
-		() => editsFromIrChange(beforeIr, afterIr),
-		[beforeIr, afterIr],
+		() =>
+			editsFromIrChange(beforeIr, afterIr, {
+				before: beforeBoard,
+				after: afterBoard,
+			}),
+		[beforeIr, afterIr, beforeBoard, afterBoard],
 	);
 	const [commitMessage, setCommitMessage] = useState(edits.summary || "");
 	const [loading, setLoading] = useState(false);

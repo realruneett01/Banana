@@ -13,6 +13,7 @@ const SUMMARY_WORDS = [
 	["field", "field"],
 	["connection", "connection"],
 	["track", "track"],
+	["via", "via"],
 ];
 
 function isFiniteCoord(coord) {
@@ -306,25 +307,50 @@ function trackPoints(track) {
 	return (points.length >= 2 ? points : [track.start, track.end]).map(toPoint);
 }
 
+function netNameOf(netId, ctx) {
+	return ctx.nets.find((n) => n.id === netId)?.name ?? 0;
+}
+
 function addTrackOp(track, ctx) {
-	const net = ctx.nets.find((n) => n.id === track.netId);
 	count(ctx, "track");
 	stage(ctx, "track", "pcb", {
 		op: "addTrack",
 		layer: track.layer ?? "F.Cu",
 		width: track.widthMm ?? track.width ?? 0.25,
 		points: trackPoints(track),
-		net: net?.name ?? 0,
+		net: netNameOf(track.netId, ctx),
 	});
 }
 
-function removeTrackOp(track, ctx) {
-	if (!track.uuid) {
-		ctx.unsupported.push(`a track on ${track.layer ?? "F.Cu"} was removed`);
+function addViaOp(via, ctx) {
+	const { x, y } = toPoint(via.at);
+	count(ctx, "via");
+	stage(ctx, "track", "pcb", {
+		op: "addVia",
+		x,
+		y,
+		size: via.sizeMm,
+		drill: via.drillMm,
+		net: netNameOf(via.netId, ctx),
+	});
+}
+
+// deleteTrack removes any segment, arc or via by its uuid.
+function removeByUuid(item, kind, where, ctx) {
+	if (!item.uuid) {
+		ctx.unsupported.push(`a ${kind}${where} was removed`);
 		return;
 	}
-	count(ctx, "track");
-	stage(ctx, "delete", "pcb", { op: "deleteTrack", uuid: track.uuid });
+	count(ctx, kind);
+	stage(ctx, "delete", "pcb", { op: "deleteTrack", uuid: item.uuid });
+}
+
+function removeTrackOp(track, ctx) {
+	removeByUuid(track, "track", ` on ${track.layer ?? "F.Cu"}`, ctx);
+}
+
+function removeViaOp(via, ctx) {
+	removeByUuid(via, "via", "", ctx);
 }
 
 function missingFrom(tracks, others) {
@@ -332,11 +358,16 @@ function missingFrom(tracks, others) {
 	return tracks.filter((t) => !keys.has(JSON.stringify(t)));
 }
 
+function processBoardItems(boards, key, [addOp, removeOp], ctx) {
+	const before = listOf(boards?.before?.[key]);
+	const after = listOf(boards?.after?.[key]);
+	for (const item of missingFrom(after, before)) addOp(item, ctx);
+	for (const item of missingFrom(before, after)) removeOp(item, ctx);
+}
+
 function processTracks(boards, ctx) {
-	const before = listOf(boards?.before?.tracks);
-	const after = listOf(boards?.after?.tracks);
-	for (const track of missingFrom(after, before)) addTrackOp(track, ctx);
-	for (const track of missingFrom(before, after)) removeTrackOp(track, ctx);
+	processBoardItems(boards, "tracks", [addTrackOp, removeTrackOp], ctx);
+	processBoardItems(boards, "vias", [addViaOp, removeViaOp], ctx);
 }
 
 function compareEdits(a, b) {
@@ -384,7 +415,8 @@ function collectEdits(diff, boards, ctx) {
 
 /**
  * Maps editor model changes onto KiCad patch ops for the backend patch
- * pipeline. `boards` ({ before, after }) is optional and adds track edits.
+ * pipeline. `boards` ({ before, after }) is optional and adds track and
+ * via edits.
  * Library sources are resolved server-side from each op's libId.
  */
 export function editsFromIrChange(before, after, boards) {

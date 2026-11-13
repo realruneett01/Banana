@@ -1168,13 +1168,15 @@ function useCommitController(save, getContext) {
 }
 
 function CommitDialog(props) {
-	const { commit, ir, docIr, api, repo } = props;
+	const { commit, ir, docIr, board, docBoard, api, repo } = props;
 	return (
 		<SaveCommitDialog
 			open={commit.open}
 			onClose={commit.closeCommit}
 			beforeIr={ir}
 			afterIr={docIr}
+			beforeBoard={board}
+			afterBoard={docBoard}
 			api={api}
 			repo={repo}
 			onCommitted={commit.onCommitted}
@@ -1228,7 +1230,7 @@ function useEditorScreen({
 	};
 }
 
-function EditorView({ s, ir, api, repo }) {
+function EditorView({ s, ir, board, api, repo }) {
 	return (
 		<main style={ROOT_STYLE} aria-label="Editor screen">
 			<EditorMainContent
@@ -1242,6 +1244,8 @@ function EditorView({ s, ir, api, repo }) {
 				commit={s.commit}
 				ir={ir}
 				docIr={s.ctrl.docState.ir}
+				board={board}
+				docBoard={s.ctrl.curBoard}
 				api={api}
 				repo={repo}
 			/>
@@ -1273,5 +1277,5 @@ export default function EditorScreen({
 		repo,
 		initialTab,
 	});
-	return <EditorView s={s} ir={ir} api={api} repo={repo} />;
+	return <EditorView s={s} ir={ir} board={board} api={api} repo={repo} />;
 }

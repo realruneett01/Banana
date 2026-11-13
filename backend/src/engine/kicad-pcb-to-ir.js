@@ -111,13 +111,29 @@ function parseFootprintPart(fpNode, idFn) {
 	};
 }
 
+// KiCad 9 writes (net 3 "GND") against a net table; KiCad 10 writes
+// (net "GND") with no number, so the name itself keys the net.
+function netKeyOf(netNode) {
+	if (!Array.isArray(netNode) || netNode.length < 2) return 0;
+	return typeof netNode[1] === "number" ? netNode[1] : nodeSym(netNode[1]);
+}
+
+function isNetKey(key) {
+	return typeof key === "string" ? key !== "" : key > 0;
+}
+
+function netNameOf(netNode) {
+	const key = netKeyOf(netNode);
+	if (typeof key === "string") return key;
+	return netNode.length > 2 ? nodeSym(netNode[2]) : "";
+}
+
 function parsePad(padNode, partId, padConnections) {
 	const padNum = nodeSym(padNode[1]);
 	const netNode = extractChildNode(padNode, "net");
-	if (!netNode || netNode.length < 2) return;
-	const netNum = Number(netNode[1]);
-	if (!Number.isFinite(netNum) || netNum === 0) return;
-	const netName = netNode.length > 2 ? nodeSym(netNode[2]) : "";
+	const netNum = netKeyOf(netNode);
+	if (!isNetKey(netNum)) return;
+	const netName = netNameOf(netNode);
 	padConnections.push({ netNum, netName, partId, pin: padNum });
 }
 
@@ -142,7 +158,7 @@ function collectDeclaredNets(ast, netInfoMap) {
 }
 
 function registerNetNumber(netNum, netName, netInfoMap) {
-	if (!Number.isFinite(netNum) || netNum <= 0) return;
+	if (!isNetKey(netNum)) return;
 	if (!netInfoMap.has(netNum)) {
 		const fallbackName = netName || `Net-${netNum}`;
 		netInfoMap.set(netNum, { number: netNum, name: fallbackName, pins: [] });
@@ -174,8 +190,13 @@ function dedupePins(pins) {
 	return out;
 }
 
+function compareNetEntries([a], [b]) {
+	if (typeof a === "number" && typeof b === "number") return a - b;
+	return String(a).localeCompare(String(b));
+}
+
 function buildIrNets(netInfoMap, idFn) {
-	const sortedEntries = [...netInfoMap.entries()].sort((a, b) => a[0] - b[0]);
+	const sortedEntries = [...netInfoMap.entries()].sort(compareNetEntries);
 	const irNets = [];
 	const netNumberToId = new Map();
 	for (const [netNum, info] of sortedEntries) {
@@ -190,13 +211,19 @@ function buildIrNets(netInfoMap, idFn) {
 	return { irNets, netNumberToId };
 }
 
+// The uuid lets a saved edit delete exactly this track or via.
+function uuidOf(node) {
+	const uuid = nodeSym(extractChildNode(node, "uuid")?.[1]);
+	return uuid ? { uuid } : {};
+}
+
 function parseTrack(node, netNumberToId) {
 	const startNode = extractChildNode(node, "start");
 	const endNode = extractChildNode(node, "end");
 	const widthNode = extractChildNode(node, "width");
-	const netNode = extractChildNode(node, "net");
-	const netNum = netNode ? Number(netNode[1]) : 0;
+	const netNum = netKeyOf(extractChildNode(node, "net"));
 	return {
+		...uuidOf(node),
 		netId: netNumberToId.get(netNum) ?? "",
 		layer: extractLayerName(node),
 		start: [roundCoord(startNode?.[1] || 0), roundCoord(startNode?.[2] || 0)],
@@ -209,9 +236,9 @@ function parseVia(node, netNumberToId) {
 	const at = extractAt(node);
 	const sizeNode = extractChildNode(node, "size");
 	const drillNode = extractChildNode(node, "drill");
-	const netNode = extractChildNode(node, "net");
-	const netNum = netNode ? Number(netNode[1]) : 0;
+	const netNum = netKeyOf(extractChildNode(node, "net"));
 	return {
+		...uuidOf(node),
 		netId: netNumberToId.get(netNum) ?? "",
 		at: [at.x, at.y],
 		drillMm: roundCoord(drillNode?.[1] || 0),
@@ -235,8 +262,7 @@ function extractPolygonPts(polyNode) {
 }
 
 function parseZone(node, netNumberToId) {
-	const netNode = extractChildNode(node, "net");
-	const netNum = netNode ? Number(netNode[1]) : 0;
+	const netNum = netKeyOf(extractChildNode(node, "net"));
 	const polyNode =
 		extractChildNode(node, "filled_polygon") ||
 		extractChildNode(node, "polygon");
@@ -428,10 +454,7 @@ function extractTitle(ast) {
 
 function scanElementNet(node, netInfoMap) {
 	const netNode = extractChildNode(node, "net");
-	if (netNode && netNode.length > 1) {
-		const n = Number(netNode[1]);
-		if (n > 0) registerNetNumber(n, "", netInfoMap);
-	}
+	registerNetNumber(netKeyOf(netNode), netNameOf(netNode ?? []), netInfoMap);
 }
 
 function scanElements(list, netInfoMap) {
