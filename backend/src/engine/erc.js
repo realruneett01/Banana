@@ -1,3 +1,4 @@
+import { checkNet } from "./erc-pin-matrix.js";
 import { newId } from "./ids.js";
 
 const POWER_RAIL_REGEX = /^(VCC|VDD|3V3|5V|\+?\d+V\d*|VBUS|VIN)$/i;
@@ -195,6 +196,42 @@ function collectPinShorts(pinMap, partsById, commit) {
 	return issues;
 }
 
+function typedNetPins(net, partsById) {
+	const typed = [];
+	for (const p of net.pins ?? []) {
+		const part = partsById.get(p?.partId);
+		const type = part?.pinTypes?.[p.pin];
+		if (type) typed.push({ partId: p.partId, pin: p.pin, type, ref: part.ref });
+	}
+	return typed;
+}
+
+function createPinTypeIssue(net, result, commit) {
+	const partIds = [...new Set(result.pins.map((p) => p.partId))];
+	const pins = result.pins.map((p) => `${p.ref}.${p.pin}`).join(", ");
+	return {
+		id: newId("issue"),
+		source: "erc",
+		severity: result.severity,
+		itemIds: [net.id, ...partIds],
+		message: `net ${net.name}: ${result.message} (${pins})`,
+		commit,
+		status: "open",
+	};
+}
+
+function collectPinTypeIssues(nets, partsById, commit) {
+	const issues = [];
+	for (const net of nets) {
+		const typed = typedNetPins(net, partsById);
+		if (typed.length === 0) continue;
+		for (const result of checkNet(typed)) {
+			issues.push(createPinTypeIssue(net, result, commit));
+		}
+	}
+	return issues;
+}
+
 function compareIssues(a, b) {
 	const rankA = SEVERITY_ORDER[a.severity] ?? 99;
 	const rankB = SEVERITY_ORDER[b.severity] ?? 99;
@@ -224,6 +261,7 @@ export function runErc(ir, { commit = "" } = {}) {
 	collectNetIssues(nets, railTargets, commit, issues);
 	collectPartIssues(parts, connectedPartIds, commit, issues);
 	issues.push(...collectPinShorts(pinMap, partsById, commit));
+	issues.push(...collectPinTypeIssues(nets, partsById, commit));
 
 	return issues.sort(compareIssues);
 }

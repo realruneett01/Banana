@@ -1,4 +1,5 @@
 import { validateCircuitIR } from "./circuit-ir.js";
+import { PIN_TYPES } from "./erc-pin-matrix.js";
 import { newId } from "./ids.js";
 import { parse } from "./sexpr.js";
 
@@ -101,11 +102,19 @@ function parseSubSymbolUnitStyle(node, unit, style) {
 	return { unit: Number(m[1]), style: Number(m[2]) };
 }
 
+const KNOWN_PIN_TYPES = new Set(PIN_TYPES);
+
+function extractPinType(pinNode) {
+	const type = nodeSym(pinNode[1]);
+	return KNOWN_PIN_TYPES.has(type) ? type : null;
+}
+
 function recordPin(node, pins, unit, style) {
 	const at = extractAt(node);
 	const num = extractPinNumber(node);
 	if (at && num) {
-		pins.push({ pin: num, x: at.x, y: at.y, unit, style });
+		const type = extractPinType(node);
+		pins.push({ pin: num, x: at.x, y: at.y, unit, style, type });
 	}
 }
 
@@ -432,6 +441,14 @@ function findSymbolPins(child, libSymbolsMap, symbolId) {
 	return localPins.length > 0 ? localPins : null;
 }
 
+function recordPinTypes(part, pins) {
+	for (const { pin, type } of pins) {
+		if (!type) continue;
+		part.pinTypes ??= {};
+		part.pinTypes[pin] = type;
+	}
+}
+
 function connectSymbolPins(child, libMap, parsed, target) {
 	const rawPins = findSymbolPins(child, libMap, parsed.libId);
 	if (!rawPins) {
@@ -445,6 +462,7 @@ function connectSymbolPins(child, libMap, parsed, target) {
 		mirror: parsed.mirror,
 	};
 	connectPartPins(partData, pins, target.ctx);
+	recordPinTypes(target.part, pins);
 }
 
 function processSingleSymbol(child, libSymbolsMap, ctx, symState) {

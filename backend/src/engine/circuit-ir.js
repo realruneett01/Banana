@@ -34,6 +34,7 @@ export const CIRCUIT_IR_SCHEMA = {
 				symbol: stringProp,
 				footprint: stringProp,
 				props: { type: "object" },
+				pinTypes: { type: "object" },
 				placement: {
 					type: "object",
 					required: ["x", "y", "rot", "side"],
