@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { API_BASE_URL } from "../config.js";
+import { createProjectHeaders } from "../projects/useProjects.js";
 import {
 	buildWorktreeDiffValues,
 	commitWorktreeFile,
@@ -15,20 +16,8 @@ function arePathsEqual(a, b) {
 	return normalizePath(a) === normalizePath(b);
 }
 
-async function getAuthHeader() {
-	try {
-		if (typeof window !== "undefined" && window.banana?.getApiToken) {
-			const token = await window.banana.getApiToken();
-			if (token) return { "x-banana-auth": token };
-		}
-	} catch {
-		// Ignore token retrieval errors
-	}
-	return {};
-}
-
 async function executeCommitPending({ repoPath, filePath, message }) {
-	const headers = await getAuthHeader();
+	const headers = await createProjectHeaders();
 	return await commitWorktreeFile({
 		apiBase: API_BASE_URL,
 		fetchImpl: fetch,

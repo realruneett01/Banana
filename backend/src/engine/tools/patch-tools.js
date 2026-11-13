@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import { patchKicadText } from "../kicad-inplace.js";
 import { createKicadLibrary } from "../kicad-library.js";
 import { createKicadValidator, KICAD_REJECT_ERROR } from "../kicad-validate.js";
@@ -11,8 +8,14 @@ import {
 	validateMessage,
 	validateRepoPath,
 } from "./commit-tools.js";
-
-const ROOT_OR_DRIVE = /^[a-zA-Z]:|^[/\\]/;
+import {
+	assertInsideRepo,
+	assertRelative,
+	commitOutputSchema,
+	defaultIoDeps,
+	MESSAGE_SCHEMA,
+	registerDestructiveTool,
+} from "./tool-shared.js";
 
 const PATCH_INPUT_SCHEMA = {
 	type: "object",
@@ -33,55 +36,29 @@ const PATCH_INPUT_SCHEMA = {
 				},
 			},
 		},
-		message: {
-			type: "string",
-			minLength: 1,
-			pattern: "^[\\s\\S]{1,200}$",
-		},
+		message: MESSAGE_SCHEMA,
 	},
 };
 
-const PATCH_OUTPUT_SCHEMA = {
+const PATCH_OUTPUT_SCHEMA = commitOutputSchema({
 	type: "object",
-	required: ["commit", "files"],
+	required: ["path", "applied", "skipped"],
 	additionalProperties: false,
 	properties: {
-		commit: { type: "string" },
-		files: {
-			type: "array",
-			items: {
-				type: "object",
-				required: ["path", "applied", "skipped"],
-				additionalProperties: false,
-				properties: {
-					path: { type: "string" },
-					applied: { type: "number" },
-					skipped: { type: "array" },
-				},
-			},
-		},
+		path: { type: "string" },
+		applied: { type: "number" },
+		skipped: { type: "array" },
 	},
-};
+});
 
 function validatePathFormat(filePath) {
 	if (typeof filePath !== "string" || filePath.length === 0) {
 		throw new Error("path must be a non-empty string");
 	}
-	if (path.isAbsolute(filePath) || ROOT_OR_DRIVE.test(filePath)) {
-		throw new Error("path must not be absolute");
-	}
+	assertRelative(filePath, "path");
 	if (filePath.includes("..") || filePath.includes("\\")) {
 		throw new Error("path must not contain traversal characters");
 	}
-}
-
-function validatePathInsideRepo(repoPath, filePath) {
-	const resolved = path.resolve(repoPath, filePath);
-	const rel = path.relative(repoPath, resolved);
-	if (rel.startsWith("..") || path.isAbsolute(rel)) {
-		throw new Error("path resolves outside repoPath");
-	}
-	return resolved;
 }
 
 function validateKindAndExtension(kind, filePath) {
@@ -111,7 +88,7 @@ function validateFileEntry(repoPath, file) {
 		throw new Error("file entry must be an object");
 	}
 	validatePathFormat(file.path);
-	const resolvedPath = validatePathInsideRepo(repoPath, file.path);
+	const resolvedPath = assertInsideRepo(repoPath, file.path, "path");
 	validateKindAndExtension(file.kind, file.path);
 	validateEdits(file.edits);
 	return resolvedPath;
@@ -267,10 +244,7 @@ async function checkTargetRealPath(fsImpl, realRepo, resolvedPath) {
 	} catch {
 		return;
 	}
-	const rel = path.relative(realRepo, realTarget);
-	if (rel.startsWith("..") || path.isAbsolute(rel)) {
-		throw new Error("path resolves outside repoPath");
-	}
+	assertInsideRepo(realRepo, realTarget, "path");
 }
 
 async function validateRealPaths(fsImpl, repoPath, targets) {
@@ -310,27 +284,19 @@ function createPatchHandler(deps) {
 }
 
 export function registerPatchTools(registry, deps = {}) {
-	const execFileFn = deps.execFileFn ?? promisify(execFile);
-	const fsImpl = deps.fsImpl ?? fs.promises;
-	const patchFn = deps.patchKicadText ?? patchKicadText;
-	const library = deps.library ?? createKicadLibrary();
-	const validateKicad = deps.validateKicad ?? createKicadValidator();
-
 	const handler = createPatchHandler({
-		execFileFn,
-		fsImpl,
-		patchFn,
-		library,
-		validateKicad,
+		...defaultIoDeps(deps),
+		patchFn: deps.patchKicadText ?? patchKicadText,
+		library: deps.library ?? createKicadLibrary(),
+		validateKicad: deps.validateKicad ?? createKicadValidator(),
 	});
 
-	registry.register({
+	registerDestructiveTool(registry, {
 		name: "design.patch",
 		description:
 			"Applies targeted in-place edits to KiCad files and creates a git commit",
 		inputSchema: PATCH_INPUT_SCHEMA,
 		outputSchema: PATCH_OUTPUT_SCHEMA,
-		permission: "destructive",
 		handler,
 	});
 }

@@ -1,12 +1,15 @@
-import { execFile } from "node:child_process";
-import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import { validateCircuitIR } from "../circuit-ir.js";
 import { irToKicadPcb } from "../kicad-pcb-writer.js";
 import { irToKicadSch } from "../kicad-sch-writer.js";
-
-const ROOT_OR_DRIVE = /^[a-zA-Z]:|^[/\\]/;
+import {
+	assertInsideRepo,
+	assertRelative,
+	commitOutputSchema,
+	defaultIoDeps,
+	MESSAGE_SCHEMA,
+	registerDestructiveTool,
+} from "./tool-shared.js";
 
 const GIT_ENV = {
 	GIT_AUTHOR_NAME: "Banana Agent",
@@ -29,26 +32,11 @@ const COMMIT_INPUT_SCHEMA = {
 		ir: { type: "object" },
 		boardW: { type: "number" },
 		boardH: { type: "number" },
-		message: {
-			type: "string",
-			minLength: 1,
-			pattern: "^[\\s\\S]{1,200}$",
-		},
+		message: MESSAGE_SCHEMA,
 	},
 };
 
-const COMMIT_OUTPUT_SCHEMA = {
-	type: "object",
-	required: ["commit", "files"],
-	additionalProperties: false,
-	properties: {
-		commit: { type: "string" },
-		files: {
-			type: "array",
-			items: { type: "string" },
-		},
-	},
-};
+const COMMIT_OUTPUT_SCHEMA = commitOutputSchema({ type: "string" });
 
 export function validateRepoPath(repoPath) {
 	if (typeof repoPath !== "string") {
@@ -61,18 +49,11 @@ export function validateRepoPath(repoPath) {
 
 export function validateDir(repoPath, rawDir) {
 	const dir = rawDir ?? "hardware";
-	if (path.isAbsolute(dir) || ROOT_OR_DRIVE.test(dir)) {
-		throw new Error("dir must not be absolute");
-	}
+	assertRelative(dir, "dir");
 	if (dir.includes("..")) {
 		throw new Error("dir must not contain '..'");
 	}
-	const resolvedDir = path.resolve(repoPath, dir);
-	const rel = path.relative(repoPath, resolvedDir);
-	if (rel.startsWith("..") || path.isAbsolute(rel)) {
-		throw new Error("dir resolves outside repoPath");
-	}
-	return resolvedDir;
+	return assertInsideRepo(repoPath, dir, "dir");
 }
 
 function validateDimensions(boardW, boardH) {
@@ -212,27 +193,19 @@ function createCommitHandler(deps) {
 }
 
 export function registerCommitTools(registry, deps = {}) {
-	const execFileFn = deps.execFileFn ?? promisify(execFile);
-	const fsImpl = deps.fsImpl ?? fs.promises;
-	const schWriter = deps.irToKicadSch ?? irToKicadSch;
-	const pcbWriter = deps.irToKicadPcb ?? irToKicadPcb;
-	const irValidator = deps.validateCircuitIR ?? validateCircuitIR;
-
 	const handler = createCommitHandler({
-		execFileFn,
-		fsImpl,
-		schWriter,
-		pcbWriter,
-		irValidator,
+		...defaultIoDeps(deps),
+		schWriter: deps.irToKicadSch ?? irToKicadSch,
+		pcbWriter: deps.irToKicadPcb ?? irToKicadPcb,
+		irValidator: deps.validateCircuitIR ?? validateCircuitIR,
 	});
 
-	registry.register({
+	registerDestructiveTool(registry, {
 		name: "design.commit",
 		description:
 			"Saves design to local git repo as KiCad files and creates a commit",
 		inputSchema: COMMIT_INPUT_SCHEMA,
 		outputSchema: COMMIT_OUTPUT_SCHEMA,
-		permission: "destructive",
 		handler,
 	});
 }
