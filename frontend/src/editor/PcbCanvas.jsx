@@ -2334,6 +2334,7 @@ export default function PcbCanvas({
 	fetchFootprint,
 	markers = [],
 	visible = true,
+	onCursorMove,
 }) {
 	const s = usePcbCanvasState({
 		editor,
@@ -2352,6 +2353,10 @@ export default function PcbCanvas({
 			tabIndex={0}
 			aria-label="PCB editor"
 			onKeyDown={(e) => handleShortcuts(e, s.shortcuts)}
+			onPointerMove={(e) => {
+				const [x, y] = screenToBoardCoords(e, s.svgRef.current, s.view);
+				onCursorMove?.({ x, y, zoom: s.view.zoom });
+			}}
 		>
 			<PcbToolbar
 				activeLayer={s.layers.layerState.active}

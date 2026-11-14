@@ -6,6 +6,7 @@ import {
 	pinPositions,
 	snapToGrid,
 	wireForNet,
+	wireHitTolerance,
 } from "../../frontend/src/editor/schematicGeometry.js";
 
 function assertPair(actual, [expectedX, expectedY], messages = []) {
@@ -269,5 +270,17 @@ describe("hitTest priorities", () => {
 	test("returns null when clicking empty space", () => {
 		const hit = hitTest(doc, [500, 500]);
 		assert.equal(hit, null);
+	});
+});
+
+describe("wireHitTolerance", () => {
+	test("is a fixed screen distance converted to world units", () => {
+		assert.equal(wireHitTolerance(4), 1);
+		assert.equal(wireHitTolerance(40), 0.1);
+	});
+
+	test("falls back to zoom 1 for a missing or bad zoom", () => {
+		assert.equal(wireHitTolerance(0), 4);
+		assert.equal(wireHitTolerance(undefined), 4);
 	});
 });

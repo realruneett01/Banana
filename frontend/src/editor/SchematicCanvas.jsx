@@ -11,6 +11,7 @@ import {
 	partBox,
 	pinPositions,
 	wireForNet,
+	wireHitTolerance,
 } from "./schematicGeometry.js";
 import {
 	getPrimKey,
@@ -154,12 +155,14 @@ function testWireHitWithMap(nets, allPinPos, pt, wireTol = 1.27) {
 	return null;
 }
 
-function schematicHitTest(doc, allPinPos, pt) {
+function schematicHitTest(doc, allPinPos, pt, zoom) {
 	const pinHit = testPinHitWithMap(allPinPos, pt);
 	if (pinHit) return pinHit;
-	const wireHit = testWireHitWithMap(doc.ir?.nets ?? [], allPinPos, pt);
+	const wireTol = wireHitTolerance(zoom);
+	const nets = doc.ir?.nets ?? [];
+	const wireHit = testWireHitWithMap(nets, allPinPos, pt, wireTol);
 	if (wireHit) return wireHit;
-	return hitTest(doc, [pt.x, pt.y]);
+	return hitTest(doc, [pt.x, pt.y], { wireTol });
 }
 
 function useSymbolCache(parts, fetchSymbol) {
@@ -694,7 +697,12 @@ function handleMoveKey(ctx) {
 // E: select the item under the cursor so the properties panel shows it.
 function handleEditKey(ctx) {
 	if (!ctx.cursorWorld) return;
-	const hit = schematicHitTest(ctx.doc, ctx.allPinPos, ctx.cursorWorld);
+	const hit = schematicHitTest(
+		ctx.doc,
+		ctx.allPinPos,
+		ctx.cursorWorld,
+		ctx.vp.zoom,
+	);
 	if (hit?.kind === "part" || hit?.kind === "wire") {
 		ctx.dispatchCmd({ type: "select", ids: [hit.id] });
 	}
@@ -853,7 +861,7 @@ function onPointerDownEvent(e, ctx) {
 	}
 	if (e.button !== 0 || ctx.keyboardMove) return;
 	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
-	const hit = schematicHitTest(doc, allPinPos, worldPt);
+	const hit = schematicHitTest(doc, allPinPos, worldPt, vp.zoom);
 	const el = e.currentTarget;
 	const capturePointer = () => el?.setPointerCapture?.(e.pointerId);
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt, capturePointer });
@@ -1369,7 +1377,8 @@ function useNetHighlight(s) {
 			if (isPanPointer(e.button, isSpaceDown) || e.button !== 0) return;
 			if (wire.wireMode || !svgRef.current) return;
 			const pt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
-			const next = nextHighlight(schematicHitTest(doc, allPinPos, pt), doc.ir);
+			const hit = schematicHitTest(doc, allPinPos, pt, vp.zoom);
+			const next = nextHighlight(hit, doc.ir);
 			if (next !== undefined) setHighlightNet(next);
 		},
 		[svgRef, vp, doc, allPinPos, wire.wireMode, isSpaceDown],
@@ -1414,15 +1423,24 @@ function SchematicSvgScene({ s, problems, theme, highlightNet }) {
 	);
 }
 
+// Feeds the editor status bar: cursor in world mm plus the current zoom.
+function useCursorReport(onCursorMove, cursorWorld, zoom) {
+	useEffect(() => {
+		onCursorMove?.({ x: cursorWorld?.x, y: cursorWorld?.y, zoom });
+	}, [onCursorMove, cursorWorld, zoom]);
+}
+
 export default function SchematicCanvas({
 	editor,
 	onChange,
 	fetchSymbol,
 	problems = [],
 	theme,
+	onCursorMove,
 }) {
 	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
 	const hl = useNetHighlight(s);
+	useCursorReport(onCursorMove, s.ptr.cursorWorld, s.vp.zoom);
 	const bg = getSchematicColor(theme, "background");
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area

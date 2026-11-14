@@ -67,6 +67,10 @@ function buildLibSymbols(parts, libSymbols, warnings) {
 	const seenSymbols = new Set();
 	const includedNodes = [];
 	for (const part of parts) {
+		if (!part.symbol) {
+			warnings.push(`no library symbol for ${part.ref}`);
+			continue;
+		}
 		if (seenSymbols.has(part.symbol)) {
 			continue;
 		}

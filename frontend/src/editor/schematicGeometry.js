@@ -1,5 +1,11 @@
 const PITCH = 2.54;
 const DEFAULT_WIDTH = 15.24;
+const WIRE_HIT_PX = 4;
+
+/** World-unit wire hit radius that stays WIRE_HIT_PX screen pixels at any zoom. */
+export function wireHitTolerance(zoom) {
+	return WIRE_HIT_PX / (zoom > 0 ? zoom : 1);
+}
 
 function roundGrid(num, grid) {
 	const snapped = Math.round(num / grid) * grid;

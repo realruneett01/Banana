@@ -1,4 +1,5 @@
 import {
+	App as AntApp,
 	Button,
 	ConfigProvider,
 	Drawer,
@@ -104,18 +105,19 @@ const EMPTY_PANEL_STYLE = {
 	width: "100%",
 };
 
-async function loadKicadFile(loop, file) {
+// `toast` is the App-context message API, so toasts follow the dark theme.
+async function loadKicadFile(loop, file, toast) {
 	const kind = file.name.endsWith(".kicad_pcb") ? "pcb" : "sch";
 	const text = await file.text();
 	let res;
 	try {
 		res = await loop.api.editorImport({ kind, text });
 	} catch {
-		message.error("Could not open file");
+		toast.error("Could not open file");
 		return;
 	}
 	if (!res?.ok) {
-		message.error(res?.data?.error || "Could not open file");
+		toast.error(res?.data?.error || "Could not open file");
 		return;
 	}
 	const opened = loop.openDesign({
@@ -125,7 +127,7 @@ async function loadKicadFile(loop, file) {
 		tab: kind === "pcb" ? "pcb" : "schematic",
 	});
 	if (opened === false) {
-		message.error("File did not contain a valid design");
+		toast.error("File did not contain a valid design");
 	}
 }
 
@@ -236,6 +238,7 @@ function WorkspaceBody({ ws, compact }) {
 
 function useOpenKicadFile(loop) {
 	const fileInputRef = useRef(null);
+	const { message: toast } = AntApp.useApp();
 	const openFileDialog = useCallback(() => {
 		fileInputRef.current?.click();
 	}, []);
@@ -244,13 +247,13 @@ function useOpenKicadFile(loop) {
 			const file = e.target.files?.[0];
 			try {
 				if (file) {
-					await loadKicadFile(loop, file);
+					await loadKicadFile(loop, file, toast);
 				}
 			} finally {
 				e.target.value = "";
 			}
 		},
-		[loop],
+		[loop, toast],
 	);
 	return { fileInputRef, openFileDialog, handleFileChosen };
 }
@@ -364,7 +367,7 @@ function StudioDrawer({ loop }) {
 					Undo last fix
 				</Button>
 			}
-			width="100%"
+			size="100%"
 			destroyOnHidden={false}
 			className="bn-drawer"
 			styles={{ body: { padding: 0, height: "100%" } }}
@@ -411,7 +414,7 @@ function EditorDrawer({ loop, repo, ws }) {
 			keyboard={false}
 			mask={{ closable: false }}
 			extra={<DesignStartPanel loop={loop} compact repo={resolvedRepo} />}
-			width="100%"
+			size="100%"
 			destroyOnHidden={false}
 			className="bn-drawer"
 			styles={{ body: { padding: 0, height: "100%" } }}
@@ -506,7 +509,9 @@ export default function App() {
 
 	return (
 		<ConfigProvider theme={THEME_CONFIG}>
-			<AppLayout ws={ws} compact={compact} />
+			<AntApp>
+				<AppLayout ws={ws} compact={compact} />
+			</AntApp>
 		</ConfigProvider>
 	);
 }

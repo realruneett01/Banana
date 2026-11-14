@@ -35,10 +35,11 @@ export const { get, subscribe, set } = createStore(DEFAULT_STATE);
 
 export function setCursor(pt) {
 	if (!pt) return;
-	const { x: curX, y: curY } = get();
+	const { x: curX, y: curY, zoom: curZoom } = get();
 	const x = pt.x ?? curX;
 	const y = pt.y ?? curY;
-	set({ x, y, dx: x - originX, dy: y - originY });
+	const zoom = pt.zoom ?? curZoom;
+	set({ x, y, dx: x - originX, dy: y - originY, zoom });
 }
 
 export function setOrigin(pt) {

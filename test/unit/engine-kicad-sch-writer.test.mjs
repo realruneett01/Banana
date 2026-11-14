@@ -287,3 +287,15 @@ describe("irToKicadSch lib_symbols and determinism", () => {
 		assert.deepEqual(res1.warnings, res2.warnings);
 	});
 });
+
+describe("irToKicadSch symbol-less parts", () => {
+	test("names the part ref instead of an empty library symbol", () => {
+		const p1 = makePart("000000000001", "U1", "");
+		const p2 = makePart("000000000002", "U2", "");
+		const ir = makeValidIR({ parts: [p1, p2] });
+		const { warnings } = convertAndParse(ir, { libSymbols: {} });
+		assert.ok(!warnings.includes("missing library symbol "));
+		assert.ok(warnings.includes("no library symbol for U1"));
+		assert.ok(warnings.includes("no library symbol for U2"));
+	});
+});

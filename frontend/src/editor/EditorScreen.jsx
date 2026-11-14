@@ -10,6 +10,7 @@ import {
 	UndoOutlined,
 } from "@ant-design/icons";
 import {
+	App as AntApp,
 	Button,
 	Modal,
 	message,
@@ -38,6 +39,7 @@ import {
 	setUnits,
 	subscribe,
 } from "./editorStatus.js";
+import { summarizeWarnings } from "./exportWarnings.js";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
@@ -222,7 +224,7 @@ function StatusBarSection({ status, activeTab }) {
 	const yStr = formatCoord(status.y ?? 0, status.units);
 	const dxStr = formatCoord(status.dx ?? 0, status.units);
 	const dyStr = formatCoord(status.dy ?? 0, status.units);
-	const zoomStr = status.zoom ?? 1;
+	const zoomStr = Number((status.zoom ?? 1).toFixed(2));
 	const handleCycle = () => setUnits(nextUnit(status.units));
 	return (
 		<div style={STATUS_COORDS_STYLE}>
@@ -802,15 +804,25 @@ function useDownloadActions({ api, ir }) {
 	};
 }
 
-// The export route warns when imported zones could not be refilled.
-function showZoneWarning(warnings) {
-	const zoneWarning = (warnings ?? []).find((w) =>
-		w.includes("zones not filled"),
-	);
-	if (zoneWarning) message.warning(zoneWarning, 8);
+// The export route returns writer warnings (missing symbols, pin offsets, unfilled zones).
+function showExportWarnings(toast, warnings) {
+	const summary = summarizeWarnings(warnings);
+	if (!summary) return;
+	toast.warning({
+		duration: 8,
+		content: (
+			<div style={{ textAlign: "left" }}>
+				<div>{`Exported with ${summary.total} warnings:`}</div>
+				{summary.lines.map((line) => (
+					<div key={line}>{line}</div>
+				))}
+			</div>
+		),
+	});
 }
 
 function useExportAction({ api, ir, board }) {
+	const { message: toast } = AntApp.useApp();
 	const [exporting, setExporting] = useState(false);
 	const exportKiCad = useCallback(async () => {
 		if (typeof api?.editorExport !== "function") return;
@@ -819,12 +831,12 @@ function useExportAction({ api, ir, board }) {
 			const res = await api.editorExport({ ir, board, title: ir?.name });
 			if (res?.ok && res.data?.files) {
 				downloadFiles(res.data.files);
-				showZoneWarning(res.data.warnings);
+				showExportWarnings(toast, res.data.warnings);
 			}
 		} finally {
 			setExporting(false);
 		}
-	}, [api, ir, board]);
+	}, [api, ir, board, toast]);
 	return { exportKiCad, exporting };
 }
 
