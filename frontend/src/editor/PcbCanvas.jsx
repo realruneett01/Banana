@@ -35,6 +35,7 @@ import {
 	hitTest,
 	ratsnest,
 	snapToGrid,
+	trackPath,
 } from "./pcbGeometry.js";
 import { addVia, WIDTH_PRESETS } from "./routingModel.js";
 import { getLayerColor, PCB_THEME } from "./theme.js";
@@ -489,12 +490,10 @@ function TracksLayer({ tracks, layer, selectedIndex }) {
 					: getLayerColor(PCB_THEME, track.layer);
 				const key = `track_${track.layer}_${track.start[0]}_${track.start[1]}_${track.end[0]}_${track.end[1]}`;
 				return (
-					<line
+					<path
 						key={key}
-						x1={track.start[0]}
-						y1={track.start[1]}
-						x2={track.end[0]}
-						y2={track.end[1]}
+						d={trackPath(track)}
+						fill="none"
 						stroke={color}
 						strokeWidth={track.widthMm || 0.25}
 						strokeLinecap="round"

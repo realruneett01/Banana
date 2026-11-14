@@ -40,7 +40,7 @@ function extractWidth(node, fallback = 0.15) {
 	return dw > 0 ? dw : fallback;
 }
 
-function calcArcCenter(p1, pm, p2) {
+export function calcArcCenter(p1, pm, p2) {
 	const [x1, y1] = p1;
 	const [x2, y2] = pm;
 	const [x3, y3] = p2;

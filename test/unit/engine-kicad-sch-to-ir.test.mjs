@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { validateCircuitIR } from "../../backend/src/engine/circuit-ir.js";
-import { kicadSchToIr } from "../../backend/src/engine/kicad-sch-to-ir.js";
+import {
+	kicadSchToErcGraph,
+	kicadSchToIr,
+} from "../../backend/src/engine/kicad-sch-to-ir.js";
 import { irToKicadSch } from "../../backend/src/engine/kicad-sch-writer.js";
 import { sym } from "../../backend/src/engine/sexpr.js";
 
@@ -583,5 +586,52 @@ describe("kicadSchToIr buses", () => {
 			`(label "~{OE}" (at 45 50 0)) (label "~{OE}" (at 95 50 0))`,
 		);
 		assert.deepEqual(pinOnes(sch), ["R1.1+R2.1"]);
+	});
+});
+
+// One symbol on a sheet used twice: KiCad keeps each instance's reference
+// and unit in (instances (project (path "/<root uuid>/<sheet uuid>" ...))).
+const instanceSch = `(kicad_sch
+	(version 20250114)
+	(uuid "root-u")
+	(lib_symbols
+		(symbol "Dev:DUAL"
+			(symbol "DUAL_1_1" (pin input line (at -5 0 0) (number "1")))
+			(symbol "DUAL_2_1" (pin output line (at -5 0 0) (number "2")))
+		)
+	)
+	(symbol (lib_id "Dev:DUAL") (at 50 50 0) (unit 1)
+		(property "Reference" "U1") (property "Value" "D") (property "Footprint" "F")
+		(instances (project "p"
+			(path "/root-u" (reference "U7") (unit 1))
+			(path "/root-u/s2" (reference "U9") (unit 2)))))
+)`;
+
+function instancePart(options) {
+	const graph = kicadSchToErcGraph(instanceSch, options);
+	assert.equal(graph.ok, true, JSON.stringify(graph.errors));
+	const [part] = graph.parts;
+	return { path: graph.path, ref: part.ref, pins: Object.keys(part.pinTypes) };
+}
+
+describe("kicadSchToErcGraph per-instance references", () => {
+	test("a root sheet uses the instance under its own uuid", () => {
+		const part = instancePart();
+		assert.deepEqual(part, { path: "/root-u", ref: "U7", pins: ["1"] });
+	});
+
+	test("a sub-sheet instance takes that path's reference and unit", () => {
+		const part = instancePart({ sheetPath: "/root-u/s2" });
+		assert.deepEqual(part, { path: "/root-u/s2", ref: "U9", pins: ["2"] });
+	});
+
+	test("a path without an instance keeps the Reference property", () => {
+		const part = instancePart({ sheetPath: "/other/s3" });
+		assert.deepEqual(part, { path: "/other/s3", ref: "U1", pins: ["1"] });
+	});
+
+	test("kicadSchToIr keeps the Reference property", () => {
+		const res = importSch(instanceSch);
+		assert.equal(res.ir.parts[0].ref, "U1");
 	});
 });

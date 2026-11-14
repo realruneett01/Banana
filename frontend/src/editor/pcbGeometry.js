@@ -1,4 +1,8 @@
-import { placementFor } from "./footprintRender.js";
+import {
+	arcToSvgPath,
+	calcArcCenter,
+	placementFor,
+} from "./footprintRender.js";
 import { ratsnest as pureRatsnest } from "./ratsnest.js";
 
 // Each net is solved on its own, so the pure module needs only one non-empty net key.
@@ -277,9 +281,63 @@ function checkViaHit(v, x, y) {
 	return Math.hypot(x - vx, y - vy) <= radius;
 }
 
+// A KiCad (arc ...) track bends through `mid`; a collinear mid is a straight line.
+function isArcTrack(t) {
+	if (!Array.isArray(t?.mid)) return false;
+	const [sx, sy] = ptCoords(t.start);
+	const [ex, ey] = ptCoords(t.end);
+	const [mx, my] = t.mid;
+	return Math.abs((mx - sx) * (ey - sy) - (my - sy) * (ex - sx)) > 1e-12;
+}
+
+/** SVG path for a track: a true arc through `mid` for arc tracks, else a line. */
+export function trackPath(t) {
+	const start = ptCoords(t.start);
+	const end = ptCoords(t.end);
+	if (!isArcTrack(t)) return `M ${start[0]} ${start[1]} L ${end[0]} ${end[1]}`;
+	const circle = calcArcCenter(start, t.mid, end);
+	return arcToSvgPath({ start, mid: t.mid, end, ...circle });
+}
+
+const TURN = 2 * Math.PI;
+
+function angleFrom(c, p) {
+	const [x, y] = ptCoords(p);
+	return Math.atan2(y - c[1], x - c[0]);
+}
+
+// Angle swept from a0 to a, counter-clockwise in maths terms, in [0, 2pi).
+function turnFrom(a0, a) {
+	return (((a - a0) % TURN) + TURN) % TURN;
+}
+
+function inArcSweep(c, t, p) {
+	const a0 = angleFrom(c, t.start);
+	const span = turnFrom(a0, angleFrom(c, t.end));
+	const viaMid = turnFrom(a0, angleFrom(c, t.mid)) < span;
+	return turnFrom(a0, angleFrom(c, p)) <= span === viaMid;
+}
+
+function distToArc(p, t) {
+	const { center, radius } = calcArcCenter(
+		ptCoords(t.start),
+		t.mid,
+		ptCoords(t.end),
+	);
+	if (!inArcSweep(center, t, p)) {
+		return Math.min(pointDistance(p, t.start), pointDistance(p, t.end));
+	}
+	return Math.abs(pointDistance(p, center) - radius);
+}
+
+function distToTrack(t, x, y) {
+	if (isArcTrack(t)) return distToArc([x, y], t);
+	return distToSegment(x, y, ptCoords(t.start), ptCoords(t.end));
+}
+
 function checkTrackHit(t, x, y) {
 	const tol = Math.max(0.5, (t.widthMm ?? 0.25) / 2 + 0.3);
-	return distToSegment(x, y, ptCoords(t.start), ptCoords(t.end)) <= tol;
+	return distToTrack(t, x, y) <= tol;
 }
 
 function hitTestParts(parts, x, y) {
