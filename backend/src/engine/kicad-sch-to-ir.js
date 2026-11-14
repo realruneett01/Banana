@@ -723,7 +723,35 @@ function groupComponents(ctx) {
 	const noConnectRoots = new Set(
 		[...ctx.noConnectPoints].map((k) => ctx.uf.find(k)),
 	);
-	return { compPins, compLabels, compErcPins, compLinks, noConnectRoots };
+	const compSites = new Map();
+	const compFlags = new Map();
+	appendGroupedItems(pointSites(ctx), compSites, ctx.uf);
+	appendGroupedItems(noConnectFlags(ctx), compFlags, ctx.uf);
+	const comps = { compPins, compLabels, compErcPins, compLinks };
+	return { ...comps, noConnectRoots, compSites, compFlags };
+}
+
+// Pin sites: one per part per point, as KiCad counts stacked pins once.
+function pointSites(ctx) {
+	const sites = new Map();
+	for (const [key, pins] of ctx.pointPins) {
+		sites.set(key, [...new Set(pins.map((p) => p.partId))]);
+	}
+	return sites;
+}
+
+const flagPin = (p) => (p.partId ? { partId: p.partId, pin: p.pin } : p);
+
+// The pins sitting exactly on each no-connect flag, one list per flag; a
+// flag on a bare wire has none.
+function noConnectFlags(ctx) {
+	const flags = new Map();
+	for (const key of ctx.noConnectPoints) {
+		const at = ctx.pointPins.get(key) ?? [];
+		const pins = [...at, ...(ctx.pointErcPins.get(key) ?? [])];
+		if (pins.length > 0) pushAt(flags, key, pins.map(flagPin));
+	}
+	return flags;
 }
 
 function dedupePins(pins) {
@@ -780,6 +808,15 @@ function isLoneGroup(group, labels) {
 	return pinCount <= 1 && labels.length === 0 && group.links.length === 0;
 }
 
+// For no_connect_connected: the group's pin sites (power-port pins count
+// one each) and, per no-connect flag, the pins under it.
+function noConnectFields(root, groups) {
+	const sites = groups.compSites.get(root)?.length ?? 0;
+	const ercSites = groups.compErcPins.get(root)?.length ?? 0;
+	const noConnects = groups.compFlags.get(root) ?? [];
+	return { pinSites: sites + ercSites, noConnects };
+}
+
 function buildErcGroup(root, groups) {
 	const pins = dedupePins(groups.compPins.get(root) ?? []);
 	const labels = [...(groups.compLabels.get(root) ?? [])];
@@ -790,6 +827,7 @@ function buildErcGroup(root, groups) {
 		ercPins: groups.compErcPins.get(root) ?? [],
 		links: groups.compLinks.get(root) ?? [],
 		...(groups.noConnectRoots.has(root) && { noConnect: true }),
+		...noConnectFields(root, groups),
 	};
 	return isLoneGroup(group, labels) ? null : group;
 }

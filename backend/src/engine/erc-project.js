@@ -108,6 +108,8 @@ function mergeGroups(groups) {
 		ercPins: groups.flatMap((g) => g.ercPins),
 		// kicad-cli skips not-driven checks on a net with a no-connect flag.
 		...(groups.some((g) => g.noConnect) && { driven: true }),
+		pinSites: groups.reduce((sum, g) => sum + g.pinSites, 0),
+		noConnectPins: groups.flatMap((g) => g.noConnects),
 	};
 }
 

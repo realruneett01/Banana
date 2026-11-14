@@ -18,6 +18,8 @@ const LIB = `(lib_symbols
 	(symbol "Dev:LOAD" (pin power_in line (at -5 0 0) (number "1")))
 	(symbol "Dev:SRC" (pin power_out line (at -5 0 0) (number "1")))
 	(symbol "Dev:IN" (pin input line (at -5 0 0) (number "1")))
+	(symbol "Dev:STACK" (pin passive line (at -5 0 0) (number "1"))
+		(pin passive line (at -5 0 0) (number "2")))
 	(symbol "power:VCC" (power) (pin power_in line (at 0 0 90) (number "1")))
 	(symbol "power:PWR_FLAG" (power)
 		(pin power_out line (at 0 0 90) (number "1")))
@@ -163,6 +165,55 @@ describe("runProjectErcFromTexts: KiCad drive semantics across sheets", () => {
 		);
 		const res = run({ "root.kicad_sch": root, "child.kicad_sch": loadOnVcc });
 		assert.deepEqual(notDriven(res), []);
+	});
+});
+
+const ncConnected = (res) =>
+	res.issues
+		.filter((i) => /no-connect flag is connected/.test(i.message))
+		.map((i) => `${i.severity} ${i.message}`);
+
+// kicad-cli no_connect_connected: a flagged pin whose net reaches another
+// pin, here or on another sheet (vme-wren IC30 pins 35/36, #PWR0667).
+describe("runProjectErcFromTexts: no_connect_connected", () => {
+	const nc = "(no_connect (at 45 50))";
+
+	test("a flagged pin wired to another pin is reported once", () => {
+		const res = run({ "root.kicad_sch": sch(`${twoPins("Dev:IN")} ${nc}`) });
+		assert.deepEqual(ncConnected(res), [
+			"warning net Net-(U1-Pad1): pin with a no-connect flag is connected (U1.1, U2.1)",
+		]);
+	});
+
+	test("a flagged power port joined to pins on another sheet", () => {
+		const root = sch(
+			`${sheet("s1", "child.kicad_sch")} ${vcc("#PWR02", "45 50")} ${nc}`,
+		);
+		const res = run({ "root.kicad_sch": root, "child.kicad_sch": loadOnVcc });
+		assert.deepEqual(ncConnected(res), [
+			"warning net VCC: pin with a no-connect flag is connected (#PWR02.1)",
+		]);
+	});
+
+	// jetson U11 pins 10/11/28 and cm5 GND: kicad-cli reports nothing.
+	test("stacked pins of one symbol under a flag are one pin site", () => {
+		const res = run({
+			"root.kicad_sch": sch(`${sym("Dev:STACK", "U1", "50 50")} ${nc}`),
+		});
+		assert.deepEqual(ncConnected(res), []);
+	});
+
+	test("a flag on a bare wire end is not a flagged pin", () => {
+		const wire = "(wire (pts (xy 45 50) (xy 60 50))) (no_connect (at 60 50))";
+		const res = run({ "root.kicad_sch": sch(`${twoPins("Dev:IN")} ${wire}`) });
+		assert.deepEqual(ncConnected(res), []);
+	});
+
+	test("a flagged pin alone is not reported", () => {
+		const res = run({
+			"root.kicad_sch": sch(`${sym("Dev:IN", "U1", "50 50")} ${nc}`),
+		});
+		assert.deepEqual(ncConnected(res), []);
 	});
 });
 

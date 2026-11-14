@@ -237,6 +237,29 @@ function collectPinTypeIssues(nets, partsById, commit) {
 	return issues;
 }
 
+// Part pins get their ref; ERC-only pins (power ports) already carry one.
+function namedPin(p, partsById) {
+	const part = partsById.get(p.partId);
+	return part ? { partId: p.partId, pin: p.pin, ref: part.ref } : p;
+}
+
+// KiCad's no_connect_connected: a no-connect flag on a pin whose net
+// reaches another pin site (stacked pins of one symbol count once).
+// `noConnectPins` lists the pins under each flag (erc-project.js).
+function collectNoConnectIssues(nets, partsById, commit) {
+	const issues = [];
+	for (const net of nets) {
+		if (!(net.pinSites > 1)) continue;
+		for (const pins of net.noConnectPins ?? []) {
+			const named = pins.map((p) => namedPin(p, partsById));
+			const message = "pin with a no-connect flag is connected";
+			const result = { severity: "warning", message, pins: named };
+			issues.push(createPinTypeIssue(net, result, commit));
+		}
+	}
+	return issues;
+}
+
 function compareIssues(a, b) {
 	const rankA = SEVERITY_ORDER[a.severity] ?? 99;
 	const rankB = SEVERITY_ORDER[b.severity] ?? 99;
@@ -257,7 +280,9 @@ function compareIssues(a, b) {
 // `driven` there only marks a net with a no-connect flag.
 export function runPinTypeErc(parts, nets, { commit = "" } = {}) {
 	const partsById = new Map(parts.map((p) => [p.id, p]));
-	return collectPinTypeIssues(nets, partsById, commit).sort(compareIssues);
+	const issues = collectPinTypeIssues(nets, partsById, commit);
+	issues.push(...collectNoConnectIssues(nets, partsById, commit));
+	return issues.sort(compareIssues);
 }
 
 export function runErc(ir, { commit = "" } = {}) {
