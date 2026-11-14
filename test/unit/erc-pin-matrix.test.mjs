@@ -153,13 +153,13 @@ describe("checkNet conflict counts", () => {
 		assert.equal(checkNet(pins, { driven: true }).length, 1);
 	});
 
-	test("parallel pads join the cluster as one pin", () => {
+	test("parallel pads are separate pins in the cluster", () => {
 		const pins = pinsOf([
 			["U1", "output", "SW"],
 			["U1", "output", "SW"],
 			["U2", "output"],
 		]);
-		assert.equal(conflictsOf(checkNet(pins)).length, 1);
+		assert.equal(conflictsOf(checkNet(pins)).length, 2);
 	});
 
 	test("error pairs are kept before warnings in a cluster", () => {
@@ -176,6 +176,13 @@ const DRIVE_CASES = {
 		[["input", "input"], true],
 		[["input"], true],
 		[["input", "output"], false],
+		// kicad-cli 10 (openair-max): unspecified pins do not drive an input;
+		// passive and bidirectional pins do.
+		[["input", "unspecified"], true],
+		[["input", "unspecified", "unspecified"], true],
+		[["input", "passive"], false],
+		[["input", "bidirectional"], false],
+		[["unspecified", "unspecified"], false],
 	],
 	"power_in not driven": [
 		[["power_in"], true],
@@ -231,12 +238,15 @@ describe("checkNet unspecified pins", () => {
 	});
 
 	// Typed pins that do not conflict with each other add no warning.
+	// The net is also undriven (openair-max USB_D-: kicad-cli pin_not_driven).
 	test("unspecified + input + input -> 1 warning", () => {
 		const found = checkNet(netOf(["unspecified", "input", "input"]));
 		assert.deepEqual(
-			found.map((i) => [i.severity, i.pins.map((p) => p.ref)]),
+			conflictsOf(found).map((i) => [i.severity, i.pins.map((p) => p.ref)]),
 			[["warning", ["U1", "U2"]]],
 		);
+		const undriven = found.filter((i) => /only inputs/.test(i.message));
+		assert.equal(undriven.length, 1);
 	});
 
 	test("3 unspecified pins only -> k-1 = 2 warnings", () => {
@@ -272,12 +282,13 @@ describe("checkNet unspecified pins", () => {
 	});
 });
 
-// kicad-cli ERC treats same-named output pins of one symbol (a regulator's
-// parallel SW pads) as one pin, but still flags differently named outputs
-// and same-named power outputs (vme-wren power-supply demos).
+// kicad-cli ERC on the whole vme-wren project flags same-named output pins
+// of one symbol too (power-supply-1 IC29 SW pads 8-12: 4 errors). Only a
+// sub-sheet run on its own skips them, because its symbol instance paths do
+// not match the new root.
 // Pin A is U1 "SW" of the given type; [type, ref B, name B, expected issues]
 const PARALLEL_OUTPUT_CASES = [
-	["output", "U1", "SW", 0], // same part, same name outputs
+	["output", "U1", "SW", 1], // same part, same name outputs
 	["output", "U1", "B", 1], // same part, different names
 	["output", "U2", "SW", 1], // same name on different parts
 	["power_out", "U1", "SW", 1], // same part, same name power outputs
