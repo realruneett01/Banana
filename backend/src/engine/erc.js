@@ -258,14 +258,17 @@ function namedPin(p, partsById) {
 // KiCad's no_connect_connected: a no-connect flag on a pin whose net
 // reaches another pin site (stacked pins of one symbol count once).
 // `noConnectPins` lists the pins under each flag (erc-project.js).
-function collectNoConnectIssues(nets, partsById, commit) {
+// kicad-cli honours rule_severities.no_connect_connected (error / ignore).
+function collectNoConnectIssues(nets, partsById, { commit, settings }) {
+	const severity = ruleSeverity(settings, "no_connect_connected", "warning");
+	if (severity === "ignore") return [];
 	const issues = [];
 	for (const net of nets) {
 		if (!(net.pinSites > 1)) continue;
 		for (const pins of net.noConnectPins ?? []) {
 			const named = pins.map((p) => namedPin(p, partsById));
 			const message = "pin with a no-connect flag is connected";
-			const result = { severity: "warning", message, pins: named };
+			const result = { severity, message, pins: named };
 			issues.push(createPinTypeIssue(net, result, commit));
 		}
 	}
@@ -293,8 +296,9 @@ function compareIssues(a, b) {
 // project's rule severities (loadErcSettings in erc-settings.js).
 export function runPinTypeErc(parts, nets, { commit = "", settings } = {}) {
 	const partsById = new Map(parts.map((p) => [p.id, p]));
-	const issues = collectPinTypeIssues(nets, partsById, { commit, settings });
-	issues.push(...collectNoConnectIssues(nets, partsById, commit));
+	const options = { commit, settings };
+	const issues = collectPinTypeIssues(nets, partsById, options);
+	issues.push(...collectNoConnectIssues(nets, partsById, options));
 	return issues.sort(compareIssues);
 }
 

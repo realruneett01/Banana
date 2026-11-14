@@ -215,6 +215,37 @@ describe("runProjectErcFromTexts: no_connect_connected", () => {
 		});
 		assert.deepEqual(ncConnected(res), []);
 	});
+
+	// kicad-cli 10 on vme-wren with rule_severities.no_connect_connected set to
+	// "error" reports 5 errors, and with "ignore" none.
+	for (const [severity, expected] of [
+		["error", ["error"]],
+		["ignore", []],
+	]) {
+		test(`rule severity ${severity} applies`, () => {
+			const texts = { "root.kicad_sch": sch(`${twoPins("Dev:IN")} ${nc}`) };
+			const settings = { ruleSeverities: { no_connect_connected: severity } };
+			const res = runProjectErcFromTexts(texts, "root.kicad_sch", { settings });
+			assert.deepEqual(
+				ncConnected(res).map((m) => m.split(" ")[0]),
+				expected,
+			);
+		});
+	}
+});
+
+const ROYALBLUE_ROOT =
+	"C:/Program Files/KiCad/10.0/share/kicad/demos/royalblue54L_feather/RoyalBlue54L-Feather.kicad_sch";
+
+// kicad-cli on the whole project: 0 pin_to_pin, as its .kicad_pro ignores it.
+describe("runProjectErc applies the project's .kicad_pro", () => {
+	const skip = !fs.existsSync(ROYALBLUE_ROOT) && "KiCad 10 demos not installed";
+	test("royalblue54L_feather reports no pin_to_pin", { skip }, () => {
+		const res = runProjectErc(ROYALBLUE_ROOT);
+		const conflicts = res.issues.filter((i) => /conflict/.test(i.message));
+		assert.equal(conflicts.length, 0);
+		assert.equal(notDriven(res).filter((m) => /power_in/.test(m)).length, 5);
+	});
 });
 
 describe("runErc (one sheet): no-connect flag", () => {

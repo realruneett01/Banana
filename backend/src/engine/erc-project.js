@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { runPinTypeErc } from "./erc.js";
+import { loadErcSettings } from "./erc-settings.js";
 import { newId } from "./ids.js";
 import { kicadSchToErcGraph, UnionFind } from "./kicad-sch-to-ir.js";
 
@@ -130,23 +131,30 @@ function mergeNets(instances) {
 	return [...byRoot.values()].map(mergeGroups).filter(hasPeers);
 }
 
-function runWithReader(rootFile, readSheet, commit) {
+// `options`: { commit, settings } for runPinTypeErc.
+function runWithReader(rootFile, readSheet, options) {
 	const { instances, warnings } = walkProject(rootFile, readSheet);
 	if (instances.length === 0) return { ok: false, errors: warnings };
 	const parts = instances.flatMap((inst) => inst.graph.parts);
-	const issues = runPinTypeErc(parts, mergeNets(instances), { commit });
+	const issues = runPinTypeErc(parts, mergeNets(instances), options);
 	return { ok: true, issues, warnings, sheets: instances.length };
 }
 
 // `texts` maps sheet file names (as in the Sheetfile property) to contents.
-export function runProjectErcFromTexts(texts, rootFile, { commit = "" } = {}) {
+// `settings`: project rule severities (parseErcSettings in erc-settings.js).
+export function runProjectErcFromTexts(
+	texts,
+	rootFile,
+	{ commit = "", settings } = {},
+) {
 	const readSheet = (file) => {
 		if (!Object.hasOwn(texts ?? {}, file)) {
 			throw new Error(`missing sheet: ${file}`);
 		}
 		return texts[file];
 	};
-	return runWithReader(normalizeSheetFile(rootFile), readSheet, commit);
+	const options = { commit, settings };
+	return runWithReader(normalizeSheetFile(rootFile), readSheet, options);
 }
 
 function isInside(dir, target) {
@@ -188,5 +196,7 @@ export function runProjectErc(rootPath, { commit = "" } = {}) {
 		return { ok: false, errors: [`missing root sheet: ${rootPath}`] };
 	}
 	const { rootFile, readSheet } = projectReader(rootPath);
-	return runWithReader(rootFile, readSheet, commit);
+	// kicad-cli applies the <root>.kicad_pro rule severities.
+	const settings = loadErcSettings(rootPath);
+	return runWithReader(rootFile, readSheet, { commit, settings });
 }
