@@ -33,7 +33,9 @@ import {
 	deleteTrack,
 	footprintRect,
 	hitTest,
+	missingFootprintIds,
 	ratsnest,
+	routePreviewLegs,
 	snapToGrid,
 	trackKey,
 	trackPath,
@@ -372,13 +374,24 @@ function isTextInput(target) {
 	return tag === "input" || tag === "textarea" || target.isContentEditable;
 }
 
+function cancelRouting(ctx) {
+	if (!ctx.isRouting) return false;
+	ctx.cancelRoute();
+	return true;
+}
+
+// Escape: first an outline drag in progress, else leave the route tool.
+function handleEscape(e, key, ctx) {
+	if (key !== "escape") return false;
+	const handled = Boolean(ctx.cancelOutline?.()) || cancelRouting(ctx);
+	if (handled) e.preventDefault();
+	return handled;
+}
+
 function handleShortcuts(e, ctx) {
 	if (isTextInput(e.target)) return;
 	const key = e.key.toLowerCase();
-	if (key === "escape" && ctx.cancelOutline?.()) {
-		e.preventDefault();
-		return;
-	}
+	if (handleEscape(e, key, ctx)) return;
 	if (handleHistoryShortcuts(e, key, ctx)) return;
 	if (handleLayerShortcuts(e, ctx)) return;
 	handleToolKeys(e, key, ctx);
@@ -805,17 +818,50 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 					layerState={layerState}
 				/>
 			))}
-			{prims.pads.map((pad) => (
+			{prims.pads.map((pad, i) => (
 				<FootprintPad
-					key={`pad_${pad.number}`}
+					// biome-ignore lint/suspicious/noArrayIndexKey: pads keep file order; numbers repeat (MP) or are empty
+					key={`pad_${i}_${pad.number}`}
 					pad={pad}
 					isBack={isBack}
 					layerState={layerState}
 				/>
 			))}
-			<PartRefLabel rect={rect} label={label} />
+			{!fp.refLabel?.hide && <PartRefLabel rect={rect} label={label} />}
 		</g>
 	);
+}
+
+// While routing, a click on a part (its pads) bubbles to the router instead of selecting.
+function handlePartClick(e, partId, isRouting, onSelectPart) {
+	if (isRouting) return;
+	e.stopPropagation();
+	onSelectPart(partId);
+}
+
+// Keyboard focus ring: a fixed screen-pixel stroke, so it does not grow with zoom.
+function PartFocusRing({ rect }) {
+	return (
+		<rect
+			x={rect.x - rect.w / 2}
+			y={rect.y - rect.h / 2}
+			width={rect.w}
+			height={rect.h}
+			fill="none"
+			stroke="#38bdf8"
+			strokeWidth={1.5}
+			vectorEffect="non-scaling-stroke"
+			transform={partRotation(rect)}
+			pointerEvents="none"
+		/>
+	);
+}
+
+const PART_G_STYLE = Object.freeze({ outline: "none" });
+
+function isPartShown(rect, layerState) {
+	if (!rect) return false;
+	return isVisible(layerState, rect.side === "B" ? "B.SilkS" : "F.SilkS");
 }
 
 function PartItem({
@@ -825,24 +871,25 @@ function PartItem({
 	onSelectPart,
 	onStartDrag,
 	fp,
+	isRouting,
 }) {
+	const [focused, setFocused] = useState(false);
 	const rect = footprintRect(part);
-	if (!rect) return null;
-	const layerKey = rect.side === "B" ? "B.SilkS" : "F.SilkS";
-	if (!isVisible(layerState, layerKey)) return null;
+	if (!isPartShown(rect, layerState)) return null;
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: SVG elements cannot be replaced with HTML button
 		<g
 			role="button"
 			tabIndex={0}
 			aria-label={`Part ${rect.ref}`}
-			onClick={(e) => {
-				e.stopPropagation();
-				onSelectPart(part.id);
-			}}
+			style={PART_G_STYLE}
+			onFocus={() => setFocused(true)}
+			onBlur={() => setFocused(false)}
+			onClick={(e) => handlePartClick(e, part.id, isRouting, onSelectPart)}
 			onKeyDown={(e) => handlePartKey(e, part.id, onSelectPart)}
-			onPointerDown={(e) => onStartDrag(e, part)}
+			onPointerDown={(e) => !isRouting && onStartDrag(e, part)}
 		>
+			{focused && <PartFocusRing rect={rect} />}
 			{fp ? (
 				<FootprintShape
 					fp={fp}
@@ -866,6 +913,7 @@ function PartsLayer({
 	onSelectPart,
 	onStartDrag,
 	fpLookup,
+	isRouting,
 }) {
 	if (!Array.isArray(parts)) return null;
 	const isSilk = layer === "F.SilkS" || layer === "B.SilkS";
@@ -887,6 +935,7 @@ function PartsLayer({
 					onSelectPart={onSelectPart}
 					onStartDrag={onStartDrag}
 					fp={fpLookup?.(p)}
+					isRouting={isRouting}
 				/>
 			))}
 		</g>
@@ -968,20 +1017,16 @@ function hasPreviewContent(points, proposed) {
 }
 
 function RoutingSegments({ points, color, widthMm }) {
-	return points.map((pt, i) => {
-		if (i === 0) return null;
-		const prev = points[i - 1];
-		return (
-			<RoutingProposedSegment
-				key={`route_${prev[0]}_${prev[1]}_${pt[0]}_${pt[1]}`}
-				p1={prev}
-				p2={pt}
-				isColliding={false}
-				color={color}
-				widthMm={widthMm}
-			/>
-		);
-	});
+	return routePreviewLegs(points).map((leg) => (
+		<RoutingProposedSegment
+			key={leg.key}
+			p1={leg.p1}
+			p2={leg.p2}
+			isColliding={false}
+			color={color}
+			widthMm={widthMm}
+		/>
+	));
 }
 
 function ProposedSegments({ points, collisions, color, widthMm }) {
@@ -990,7 +1035,8 @@ function ProposedSegments({ points, collisions, color, widthMm }) {
 		const isColliding = collisions.some((c) => c.segmentIndex === i);
 		return (
 			<RoutingProposedSegment
-				key={`prop_${prev[0]}_${prev[1]}_${pt[0]}_${pt[1]}`}
+				// biome-ignore lint/suspicious/noArrayIndexKey: the leg index is its identity (collision segmentIndex)
+				key={`prop_${i}`}
 				p1={prev}
 				p2={pt}
 				isColliding={isColliding}
@@ -1206,10 +1252,11 @@ function detectNetAtPoint(ir, board, pt, padPositions) {
 	);
 }
 
+// Start snaps to a track end, pad or part centre; a later click snaps to a pad centre.
 function resolveRouteTarget(raw, hasPoints, snapCtx) {
 	const snapped = snapToGrid(raw, 0.25);
 	if (!hasPoints) return findSnapEndpoint(snapped, snapCtx);
-	return snapped;
+	return findPadSnap(snapCtx.ir?.parts, snapCtx.padPositions, raw) ?? snapped;
 }
 
 function executeViaPlacement(viaCtx) {
@@ -1340,6 +1387,7 @@ function useRouteProposed({
 	routeMode,
 	posture,
 	pads,
+	netNames,
 }) {
 	return useMemo(() => {
 		if (!isRouting || points.length === 0 || !cursorPos) {
@@ -1356,6 +1404,7 @@ function useRouteProposed({
 				pads,
 				netId: currentNetId,
 				mode: routeMode,
+				netNames,
 			},
 			posture,
 		);
@@ -1370,6 +1419,7 @@ function useRouteProposed({
 		routeMode,
 		posture,
 		pads,
+		netNames,
 	]);
 }
 
@@ -1402,12 +1452,16 @@ function useRouteClick({
 				setPoints([target]);
 				return;
 			}
+			// A route started off-net takes the net of the pad it finishes on.
+			const netId =
+				currentNetId || detectNetAtPoint(ir, board, target, padPositions);
+			setCurrentNetId(netId);
 			const routeCtx = {
 				points,
 				activeLayer,
 				widthMm,
 				board,
-				currentNetId,
+				currentNetId: netId,
 				routeMode,
 				posture,
 				pads,
@@ -1596,6 +1650,7 @@ function useRoutingState(props) {
 		routeMode,
 		posture,
 		pads: props.pads,
+		netNames: props.netNames,
 	});
 
 	const handlers = useRouteHandlers(session, {
@@ -1617,6 +1672,7 @@ function useRoutingState(props) {
 		proposedRoute,
 		...handlers,
 		toggleRoute: session.toggleRoute,
+		cancelRoute: session.resetSession,
 		toggleRouteMode,
 		cycleWidthPreset,
 	};
@@ -1707,9 +1763,38 @@ function usePadGeometry(parts, board, fetchFootprint, visible) {
 			fpLookup,
 			padPositions: boardPadPositions(parts, fpLookup),
 			padRadius: boardPadRadii(parts, fpLookup),
+			missingFootprints: missingFootprintIds(parts, embedded, fpCache).length,
 		}),
-		[parts, fpLookup],
+		[parts, fpLookup, embedded, fpCache],
 	);
+}
+
+const FOOTPRINT_NOTE_STYLE = Object.freeze({
+	position: "absolute",
+	left: 12,
+	bottom: 40,
+	fontSize: 11,
+	color: "#94a3b8",
+	pointerEvents: "none",
+});
+
+// Quiet note for library footprints that could not be loaded (drawn as outlines).
+function FootprintMissNote({ count }) {
+	if (!count) return null;
+	return (
+		<div style={FOOTPRINT_NOTE_STYLE} role="status">
+			{count} footprint{count === 1 ? "" : "s"} not in the installed footprint
+			library; drawn as outlines
+		</div>
+	);
+}
+
+// Keyboard shortcuts work as soon as a board is shown, without a click first.
+function useFocusOnShow(containerRef, visible, hasBoard) {
+	useEffect(() => {
+		if (visible && hasBoard)
+			containerRef.current?.focus({ preventScroll: true });
+	}, [containerRef, visible, hasBoard]);
 }
 
 function useCanvasLayers(board) {
@@ -1810,6 +1895,7 @@ function buildShortcuts(ctx) {
 		selectedPartId: ctx.sel.selectedPartId,
 		toggleLayer: ctx.layers.toggleLayer,
 		toggleRoute: ctx.route.toggleRoute,
+		cancelRoute: ctx.route.cancelRoute,
 		toggleRouteMode: ctx.route.toggleRouteMode,
 		togglePosture: ctx.route.togglePostureMode,
 		cycleWidthPreset: ctx.route.cycleWidthPreset,
@@ -1835,11 +1921,16 @@ function buildSceneData(ctx) {
 		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
 		onPointerDown: ctx.onPointerDown,
 		fpLookup: ctx.fpLookup,
+		isRouting: ctx.isRouting,
 	};
 }
 
-function MarkersOverlay({ markers }) {
-	const glyphs = useMemo(() => markerGlyphs(markers), [markers]);
+// Markers keep one screen size at any zoom, like KiCad's.
+function MarkersOverlay({ markers, zoom }) {
+	const glyphs = useMemo(
+		() => markerGlyphs(markers, { zoom }),
+		[markers, zoom],
+	);
 	if (glyphs.length === 0) return null;
 	return (
 		<g
@@ -1855,7 +1946,7 @@ function MarkersOverlay({ markers }) {
 					r={g.r}
 					fill={g.color}
 					stroke="#ffffff"
-					strokeWidth={0.3}
+					strokeWidth={g.strokeWidth}
 				>
 					{g.title ? <title>{g.title}</title> : null}
 				</circle>
@@ -1963,6 +2054,7 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 				onSelectPart={sceneData.onSelectPart}
 				onStartDrag={drag.onStartDrag}
 				fpLookup={sceneData.fpLookup}
+				isRouting={sceneData.isRouting}
 			/>
 		</g>
 	));
@@ -2147,6 +2239,7 @@ function PcbSvgContent({
 	route,
 	markers,
 	outlineDrawing,
+	zoom,
 }) {
 	return (
 		<>
@@ -2164,7 +2257,7 @@ function PcbSvgContent({
 				activeLayer={layerState.active}
 				widthMm={route.widthMm}
 			/>
-			<MarkersOverlay markers={markers} />
+			<MarkersOverlay markers={markers} zoom={zoom} />
 			<OutlinePreview
 				drag={outlineDrawing.drag}
 				activeTool={outlineDrawing.activeTool}
@@ -2218,6 +2311,7 @@ function PcbSvgScene({
 					route={route}
 					markers={markers}
 					outlineDrawing={outlineDrawing}
+					zoom={view.zoom}
 				/>
 			</g>
 		</svg>
@@ -2238,6 +2332,10 @@ function useCanvasView(board, ir, svgRef) {
 	return { view, setView, pan, fitHome };
 }
 
+function netNameMap(nets) {
+	return Object.fromEntries((nets ?? []).map((n) => [n.id, n.name]));
+}
+
 function usePcbCanvasState({
 	editor,
 	board,
@@ -2250,16 +2348,13 @@ function usePcbCanvasState({
 	const ir = editor?.state?.ir;
 	const { view, pan, fitHome } = useCanvasView(board, ir, svgRef);
 	const layers = useCanvasLayers(board);
-	const { fpLookup, padPositions, padRadius } = usePadGeometry(
-		ir?.parts,
-		board,
-		fetchFootprint,
-		visible,
-	);
+	const { fpLookup, padPositions, padRadius, missingFootprints } =
+		usePadGeometry(ir?.parts, board, fetchFootprint, visible);
 	const pads = useMemo(
 		() => boardCopperPads(ir?.parts, fpLookup, ir?.nets),
 		[ir, fpLookup],
 	);
+	const netNames = useMemo(() => netNameMap(ir?.nets), [ir]);
 	const history = useBoardHistory(board, onBoardChange);
 	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
 	const drag = usePartDrag(editor, svgRef, view);
@@ -2272,6 +2367,7 @@ function usePcbCanvasState({
 		ir,
 		padPositions,
 		pads,
+		netNames,
 		view,
 	});
 	const outlineDrawing = useOutlineDrawing({
@@ -2306,6 +2402,8 @@ function usePcbCanvasState({
 		outlineDrawing,
 	});
 	const sceneData = buildSceneData({
+		editor,
+		isRouting: route.isRouting,
 		board,
 		ir,
 		rnLines,
@@ -2323,6 +2421,7 @@ function usePcbCanvasState({
 		pan,
 		shortcuts,
 		outlineDrawing,
+		missingFootprints,
 	};
 }
 
@@ -2344,9 +2443,12 @@ export default function PcbCanvas({
 		fetchFootprint,
 		visible,
 	});
+	const containerRef = useRef(null);
+	useFocusOnShow(containerRef, visible, Boolean(board));
 
 	return (
 		<div
+			ref={containerRef}
 			style={CONTAINER_STYLE}
 			role="application"
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: Keyboard navigation for canvas shortcuts
@@ -2384,6 +2486,7 @@ export default function PcbCanvas({
 				onToggleVisible={s.layers.onToggleVisible}
 				onSetActive={s.layers.onSetActive}
 			/>
+			<FootprintMissNote count={s.missingFootprints} />
 			<PcbStatusBar
 				isRouting={s.route.isRouting}
 				widthPreset={s.route.widthPreset}

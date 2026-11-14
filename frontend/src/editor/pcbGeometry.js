@@ -442,3 +442,31 @@ export function constrain45(from, to) {
 		[x1, y1],
 	];
 }
+
+function isZeroLeg(a, b) {
+	return a[0] === b[0] && a[1] === b[1];
+}
+
+/** Drawable legs of a route in progress: zero-length legs dropped, index-qualified keys. */
+export function routePreviewLegs(points) {
+	if (!Array.isArray(points)) return [];
+	const legs = [];
+	for (let i = 1; i < points.length; i++) {
+		const [p1, p2] = [points[i - 1], points[i]];
+		if (!isZeroLeg(p1, p2)) legs.push({ key: `route_${i}`, p1, p2 });
+	}
+	return legs;
+}
+
+function partFootprintRef(part) {
+	return part.footprint ?? part.props?.footprint;
+}
+
+/** Library footprint ids of placed parts whose fetch came back empty (cached null). */
+export function missingFootprintIds(parts, embedded, cache) {
+	const ids = (parts ?? [])
+		.filter((p) => p.placement && !embedded?.[p.id])
+		.map(partFootprintRef)
+		.filter((id) => id && cache?.[id] === null);
+	return [...new Set(ids)];
+}

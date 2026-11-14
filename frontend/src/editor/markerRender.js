@@ -1,4 +1,8 @@
 const DEFAULT_RADIUS = 1.2;
+const DEFAULT_STROKE = 0.3;
+// Screen pixels when options.zoom is given: markers keep one size at any zoom.
+const SCREEN_RADIUS_PX = 5;
+const SCREEN_STROKE_PX = 1.5;
 
 const SEVERITY_COLORS = Object.freeze({
 	error: "red",
@@ -59,14 +63,21 @@ function extractCoords(marker) {
 	return coordsFromObject(marker);
 }
 
-function resolveRadius(options) {
+function screenZoom(options) {
+	const zoom = options?.zoom;
+	return Number.isFinite(zoom) && zoom > 0 ? zoom : null;
+}
+
+function resolveSize(options) {
 	if (typeof options === "number" && Number.isFinite(options)) {
-		return options;
+		return { r: options, strokeWidth: DEFAULT_STROKE };
 	}
 	if (options && Number.isFinite(options.radius)) {
-		return options.radius;
+		return { r: options.radius, strokeWidth: DEFAULT_STROKE };
 	}
-	return DEFAULT_RADIUS;
+	const zoom = screenZoom(options);
+	if (!zoom) return { r: DEFAULT_RADIUS, strokeWidth: DEFAULT_STROKE };
+	return { r: SCREEN_RADIUS_PX / zoom, strokeWidth: SCREEN_STROKE_PX / zoom };
 }
 
 function resolveTitle(marker) {
@@ -97,7 +108,7 @@ export function markerGlyphs(markers, options) {
 	if (!Array.isArray(markers)) {
 		return [];
 	}
-	const r = resolveRadius(options);
+	const size = resolveSize(options);
 	const seen = new Set();
 	const glyphs = [];
 
@@ -112,7 +123,7 @@ export function markerGlyphs(markers, options) {
 			key,
 			x: coords.x,
 			y: coords.y,
-			r,
+			...size,
 			color: resolveColor(m?.severity),
 			title: resolveTitle(m),
 		});

@@ -423,12 +423,17 @@ function worstObstacle(seg, ctx) {
 	return worst;
 }
 
+// The net's display name (ctx.netNames: id -> name) for collision text.
+function netLabel(netId, ctx) {
+	return ctx.netNames?.[netId] || netId;
+}
+
 function obstacleHit(seg, ctx) {
 	const worst = worstObstacle(seg, ctx);
 	if (!worst) return null;
 	const net = worst.o.netId || "other net";
 	const gapMm = Math.round(Math.max(0, worst.gap) * 1000) / 1000;
-	const label = `${net} ${worst.o.kind}`;
+	const label = `${netLabel(net, ctx)} ${worst.o.kind}`;
 	return {
 		otherIndex: worst.idx,
 		otherKind: worst.o.kind,
@@ -443,7 +448,7 @@ function trackHit(seg, ctx) {
 	const res = segmentClearance(seg, index, widthMm, clearanceMm);
 	if (res.ok || !res.worst) return null;
 	const net = index.segments[res.worst.otherIndex]?.netId || "other net";
-	return { ...res.worst, otherNetId: net, label: net };
+	return { ...res.worst, otherNetId: net, label: netLabel(net, ctx) };
 }
 
 function closerHit(a, b) {
@@ -499,6 +504,6 @@ export function proposeRoute(options = {}) {
 
 	const points = [ptCoords(start), ...constrainAngle(start, cursor, mode)];
 	const indexes = routeIndexes({ board, pads, layer, netId, clearanceMm });
-	const ctx = { ...indexes, widthMm, clearanceMm };
+	const ctx = { ...indexes, widthMm, clearanceMm, netNames: options.netNames };
 	return { points, collisions: checkProposedCollisions(points, ctx) };
 }
