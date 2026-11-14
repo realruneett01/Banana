@@ -42,7 +42,10 @@ describe("loadErcSettings", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "erc-settings-"));
 		t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 		const root = path.join(dir, "board.kicad_sch");
-		fs.writeFileSync(path.join(dir, "board.kicad_pro"), pro({ pin_to_pin: "ignore" }));
+		fs.writeFileSync(
+			path.join(dir, "board.kicad_pro"),
+			pro({ pin_to_pin: "ignore" }),
+		);
 		assert.deepEqual(loadErcSettings(root).ruleSeverities, {
 			pin_to_pin: "ignore",
 		});
@@ -94,6 +97,19 @@ describe("runPinTypeErc with project rule severities", () => {
 		]);
 	});
 
+	// kicad-cli 10: jetson-agx-thor sets pin_to_pin "error" yet reports 9
+	// pin_to_pin warnings; tiny_tapeout sets "warning" yet reports 2 errors.
+	// The pin map sets a pair's severity; the rule can only be ignored.
+	test("pin_to_pin error / warning keep the pin-map severity", () => {
+		const { parts, nets } = fixture();
+		const warn = { ruleSeverities: { pin_to_pin: "warning" } };
+		assert.ok(
+			messages(runPinTypeErc(parts, nets, { settings: warn })).includes(
+				"error net OUT: pin type conflict: output vs output",
+			),
+		);
+	});
+
 	test("runErc applies the same settings", () => {
 		const { parts, nets } = fixture();
 		const settings = { ruleSeverities: { pin_to_pin: "ignore" } };
@@ -108,7 +124,12 @@ const ROYALBLUE =
 
 describe("royalblue54L_feather project settings", () => {
 	const skip = !fs.existsSync(ROYALBLUE) && "KiCad 10 demos not installed";
-	test("its .kicad_pro ignores pin_to_pin (kicad-cli reports none)", { skip }, () => {
-		assert.equal(loadErcSettings(ROYALBLUE).ruleSeverities.pin_to_pin, "ignore");
+	test("its .kicad_pro ignores pin_to_pin (kicad-cli reports none)", {
+		skip,
+	}, () => {
+		assert.equal(
+			loadErcSettings(ROYALBLUE).ruleSeverities.pin_to_pin,
+			"ignore",
+		);
 	});
 });

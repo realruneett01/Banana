@@ -84,12 +84,17 @@ describe("runErc pin-type checks", () => {
 		assert.match(found[0].message, /U1\.1/);
 	});
 
-	test("same-named outputs of one part are one pin", () => {
+	// kicad-cli flags parallel SW pads in the vme-wren project run.
+	test("same-named outputs of one part still conflict", () => {
 		const u1 = part("U1", { 1: "output", 2: "output" });
 		u1.pinNames = { 1: "SW", 2: "SW" };
 		const ir = irWith(u1, part("L1", { 1: "passive" }));
 		ir.nets[0].pins[1] = { partId: u1.id, pin: "2" };
-		assert.deepEqual(pinTypeIssues(runErc(ir, { commit: COMMIT })), []);
+		const found = pinTypeIssues(runErc(ir, { commit: COMMIT }));
+		assert.deepEqual(
+			found.map((i) => i.message),
+			["net SIG: pin type conflict: output vs output (U1.1, U1.2)"],
+		);
 	});
 
 	test("net ercPins join the checks; a PWR_FLAG power_out drives power_in", () => {

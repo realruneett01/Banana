@@ -63,17 +63,10 @@ const REPORT_TIERS = [
 const reportRank = (p) => REPORT_TIERS.findIndex((t) => t.includes(p.type));
 const SEVERITY_RANK = { error: 0, warning: 1 };
 
-// Same-named outputs of one part (parallel SW pads) act as one pin.
-function isParallelOutput(p, q) {
-	const bothOutputs = p.type === "output" && q.type === "output";
-	return bothOutputs && p.ref === q.ref && Boolean(p.name) && p.name === q.name;
-}
-
+// Same-named outputs of one part (parallel SW pads) are separate pins: the
+// vme-wren project run flags them (kicad-cli 10).
 function reportOrder(pins) {
-	const merged = pins.filter(
-		(p, i) => !pins.slice(0, i).some((q) => isParallelOutput(q, p)),
-	);
-	return merged.sort((a, b) => reportRank(a) - reportRank(b));
+	return [...pins].sort((a, b) => reportRank(a) - reportRank(b));
 }
 
 // The pin's one violation, against its first conflicting partner (kicad-cli

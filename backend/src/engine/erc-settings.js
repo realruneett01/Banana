@@ -25,8 +25,15 @@ export function loadErcSettings(rootSchPath) {
 	return parseErcSettings(fs.readFileSync(proPath, "utf8"));
 }
 
+// Rules whose severity comes from the pin map: the project can only ignore
+// them (kicad-cli 10 keeps pin_to_pin warnings under "error", and errors
+// under "warning").
+const PIN_MAP_RULES = new Set(["pin_to_pin"]);
+
 // A rule's severity under the settings: the project's override, else the
 // rule's default. "ignore" means the issue is dropped.
 export function ruleSeverity(settings, rule, severity) {
-	return settings?.ruleSeverities?.[rule] ?? severity;
+	const override = settings?.ruleSeverities?.[rule];
+	if (PIN_MAP_RULES.has(rule) && override !== "ignore") return severity;
+	return override ?? severity;
 }
