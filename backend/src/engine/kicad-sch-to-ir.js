@@ -487,10 +487,27 @@ function extractInstanceStyle(symNode) {
 	return Number.isFinite(val) ? val : 1;
 }
 
-function parseSymbolData(symNode) {
+// KiCad 7+ keeps each sheet instance's reference and unit on the symbol:
+// (instances (project "name" (path "/<root uuid>/<sheet uuid>..." ...))).
+function findInstance(symNode, sheetPath) {
+	const projects = extractChildNode(symNode, "instances")?.slice(1) ?? [];
+	const paths = projects.flatMap((p) => (Array.isArray(p) ? p.slice(1) : []));
+	return paths.find((p) => matchHead(p, "path") && nodeSym(p[1]) === sheetPath);
+}
+
+// Without a sheet path or a matching instance: the Reference property.
+function instanceRefUnit(symNode, props, sheetPath) {
+	const instance = sheetPath && findInstance(symNode, sheetPath);
+	const ref = props.get("Reference") || "";
+	if (!instance) return { ref, unit: extractInstanceUnit(symNode) };
+	const instanceRef = extractChildText(instance, "reference");
+	return { ref: instanceRef || ref, unit: extractInstanceUnit(instance) };
+}
+
+function parseSymbolData(symNode, sheetPath) {
 	const libId = extractLibId(symNode);
 	const props = extractProperties(symNode);
-	const ref = props.get("Reference") || "";
+	const { ref, unit } = instanceRefUnit(symNode, props, sheetPath);
 	return {
 		virtual: shouldSkipSymbol(libId, ref),
 		libId,
@@ -499,7 +516,7 @@ function parseSymbolData(symNode) {
 		props,
 		at: extractSymbolPlacement(symNode),
 		mirror: extractMirror(symNode),
-		unit: extractInstanceUnit(symNode),
+		unit,
 		style: extractInstanceStyle(symNode),
 	};
 }
@@ -663,7 +680,7 @@ function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
 }
 
 function processSingleSymbol(child, libSymbolsMap, ctx, symState) {
-	const parsed = parseSymbolData(child);
+	const parsed = parseSymbolData(child, ctx.sheetPath);
 	if (parsed.virtual) {
 		connectPowerSymbol(parsed, libSymbolsMap, ctx);
 		return null;
@@ -706,7 +723,35 @@ function groupComponents(ctx) {
 	const noConnectRoots = new Set(
 		[...ctx.noConnectPoints].map((k) => ctx.uf.find(k)),
 	);
-	return { compPins, compLabels, compErcPins, compLinks, noConnectRoots };
+	const compSites = new Map();
+	const compFlags = new Map();
+	appendGroupedItems(pointSites(ctx), compSites, ctx.uf);
+	appendGroupedItems(noConnectFlags(ctx), compFlags, ctx.uf);
+	const comps = { compPins, compLabels, compErcPins, compLinks };
+	return { ...comps, noConnectRoots, compSites, compFlags };
+}
+
+// Pin sites: one per part per point, as KiCad counts stacked pins once.
+function pointSites(ctx) {
+	const sites = new Map();
+	for (const [key, pins] of ctx.pointPins) {
+		sites.set(key, [...new Set(pins.map((p) => p.partId))]);
+	}
+	return sites;
+}
+
+const flagPin = (p) => (p.partId ? { partId: p.partId, pin: p.pin } : p);
+
+// The pins sitting exactly on each no-connect flag, one list per flag; a
+// flag on a bare wire has none.
+function noConnectFlags(ctx) {
+	const flags = new Map();
+	for (const key of ctx.noConnectPoints) {
+		const at = ctx.pointPins.get(key) ?? [];
+		const pins = [...at, ...(ctx.pointErcPins.get(key) ?? [])];
+		if (pins.length > 0) pushAt(flags, key, pins.map(flagPin));
+	}
+	return flags;
 }
 
 function dedupePins(pins) {
@@ -763,6 +808,15 @@ function isLoneGroup(group, labels) {
 	return pinCount <= 1 && labels.length === 0 && group.links.length === 0;
 }
 
+// For no_connect_connected: the group's pin sites (power-port pins count
+// one each) and, per no-connect flag, the pins under it.
+function noConnectFields(root, groups) {
+	const sites = groups.compSites.get(root)?.length ?? 0;
+	const ercSites = groups.compErcPins.get(root)?.length ?? 0;
+	const noConnects = groups.compFlags.get(root) ?? [];
+	return { pinSites: sites + ercSites, noConnects };
+}
+
 function buildErcGroup(root, groups) {
 	const pins = dedupePins(groups.compPins.get(root) ?? []);
 	const labels = [...(groups.compLabels.get(root) ?? [])];
@@ -773,6 +827,7 @@ function buildErcGroup(root, groups) {
 		ercPins: groups.compErcPins.get(root) ?? [],
 		links: groups.compLinks.get(root) ?? [],
 		...(groups.noConnectRoots.has(root) && { noConnect: true }),
+		...noConnectFields(root, groups),
 	};
 	return isLoneGroup(group, labels) ? null : group;
 }
@@ -893,16 +948,27 @@ export function kicadSchToIr(text, { name = "imported", idFn = newId } = {}) {
 // For whole-project ERC: parts, connected groups with their off-sheet links
 // (global names, hierarchical labels, sheet pins) and the sub-sheets used.
 // `aliases` adds bus aliases defined on other sheets of the project; the
-// result's `aliases` holds those plus this sheet's own.
-export function kicadSchToErcGraph(text, { idFn = newId, aliases } = {}) {
+// result's `aliases` holds those plus this sheet's own. `sheetPath` is the
+// instance's KiCad path "/<root uuid>/<sheet uuid>..." (default: this
+// sheet as root), which picks each symbol's reference and unit.
+export function kicadSchToErcGraph(text, options = {}) {
+	const { idFn = newId, aliases, sheetPath } = options;
 	try {
 		const parsed = parseSchAst(text);
 		if (!parsed.ok) return parsed;
 		const ctx = createParseContext(aliases);
+		ctx.sheetPath = sheetPath ?? `/${extractChildText(parsed.ast, "uuid")}`;
 		const { parts, groups } = assembleCircuit(parsed.ast, ctx, idFn);
 		const ercGroups = buildErcGroups(groups);
-		const { sheets } = ctx;
-		return { ok: true, parts, groups: ercGroups, sheets, aliases: ctx.aliases };
+		const { sheets, sheetPath: path } = ctx;
+		return {
+			ok: true,
+			parts,
+			groups: ercGroups,
+			sheets,
+			aliases: ctx.aliases,
+			path,
+		};
 	} catch (err) {
 		// Broad catch: one malformed sheet must not abort a project walk
 		return { ok: false, errors: [err?.message || String(err)] };

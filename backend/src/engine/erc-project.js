@@ -32,7 +32,7 @@ function childInstances(parent, sheets, warnings) {
 		else
 			out.push({
 				file,
-				path: `${parent.path}${sheet.uuid}/`,
+				path: `${parent.path}/${sheet.uuid}`,
 				chain: [...parent.chain, file],
 			});
 	}
@@ -41,7 +41,8 @@ function childInstances(parent, sheets, warnings) {
 
 function importSheet(inst, readSheet, warnings, aliases) {
 	try {
-		const graph = kicadSchToErcGraph(readSheet(inst.file), { aliases });
+		const options = { aliases, sheetPath: inst.path };
+		const graph = kicadSchToErcGraph(readSheet(inst.file), options);
 		if (graph.ok) return graph;
 		warnings.push(`bad sheet ${inst.file}: ${graph.errors.join("; ")}`);
 	} catch (err) {
@@ -51,16 +52,19 @@ function importSheet(inst, readSheet, warnings, aliases) {
 }
 
 // Sheet instances, breadth first: a sheet file used N times gives N
-// instances, each imported on its own so its parts stay distinct.
+// instances, each imported on its own so its parts stay distinct. An
+// instance's path is KiCad's "/<root uuid>/<sheet uuid>...", which picks
+// the per-instance references; the root's comes from its own uuid.
 function walkSheets(rootFile, readSheet, warnings, aliases) {
 	const instances = [];
-	const queue = [{ file: rootFile, path: "/", chain: [rootFile] }];
+	const queue = [{ file: rootFile, chain: [rootFile] }];
 	while (queue.length > 0 && instances.length < MAX_SHEETS) {
 		const inst = queue.shift();
 		const graph = importSheet(inst, readSheet, warnings, aliases);
 		if (!graph) continue;
-		instances.push({ ...inst, graph });
-		queue.push(...childInstances(inst, graph.sheets, warnings));
+		const done = { ...inst, path: graph.path, graph };
+		instances.push(done);
+		queue.push(...childInstances(done, graph.sheets, warnings));
 	}
 	if (queue.length > 0) warnings.push(`sheet limit ${MAX_SHEETS} reached`);
 	return instances;
@@ -85,7 +89,7 @@ function walkProject(rootFile, readSheet) {
 function linkKey(inst, link) {
 	if (link.kind === "global") return `global:${link.name}`;
 	const owner =
-		link.kind === "sheetPin" ? `${inst.path}${link.sheet}/` : inst.path;
+		link.kind === "sheetPin" ? `${inst.path}/${link.sheet}` : inst.path;
 	return `hier:${owner}:${link.name}`;
 }
 
@@ -104,6 +108,8 @@ function mergeGroups(groups) {
 		ercPins: groups.flatMap((g) => g.ercPins),
 		// kicad-cli skips not-driven checks on a net with a no-connect flag.
 		...(groups.some((g) => g.noConnect) && { driven: true }),
+		pinSites: groups.reduce((sum, g) => sum + g.pinSites, 0),
+		noConnectPins: groups.flatMap((g) => g.noConnects),
 	};
 }
 
