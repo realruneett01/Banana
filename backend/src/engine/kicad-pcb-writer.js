@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { validateCircuitIR } from "./circuit-ir.js";
 import { flipLayerString, orientFootprint } from "./kicad-pcb-edit.js";
+import { edgeCutsOutline, isEdgeCutsNode } from "./kicad-pcb-to-ir.js";
 import { serialize, sym } from "./sexpr.js";
 
 function deterministicUuid(id) {
@@ -49,21 +51,28 @@ const DEFAULT_LAYERS = [
 ];
 
 // Inner copper In<n>.Cu is 2n+2 and User.<n> is 37+2n; others are listed.
-function layerEntry(name) {
+function layerId(name) {
 	const inner = /^In(\d+)\.Cu$/.exec(name);
-	if (inner) return [2 * Number(inner[1]) + 2, name, sym("signal")];
+	if (inner) return 2 * Number(inner[1]) + 2;
 	const user = /^User\.(\d+)$/.exec(name);
-	if (user) return [37 + 2 * Number(user[1]), name, sym("user")];
-	const known = LAYER_IDS[name];
-	if (!known) return null;
+	if (user) return 37 + 2 * Number(user[1]);
+	return LAYER_IDS[name]?.[0];
+}
+
+// An imported board names its layers itself; else KiCad's default names.
+function layerEntry(name, layerNames) {
+	const id = layerId(name);
+	if (id === undefined) return null;
 	const type = name.endsWith(".Cu") ? "signal" : "user";
-	return [known[0], name, sym(type), ...known.slice(1)];
+	const userName = layerNames ? layerNames[name] : LAYER_IDS[name]?.[1];
+	return [id, name, sym(type), ...(userName ? [userName] : [])];
 }
 
 // An imported board's own layer list, else the default two-layer set.
-function createLayersNode(layers) {
+function createLayersNode(layers, layerNames) {
 	const names = layers?.length ? layers : DEFAULT_LAYERS;
-	return [sym("layers"), ...names.map(layerEntry).filter(Boolean)];
+	const entries = names.map((name) => layerEntry(name, layerNames));
+	return [sym("layers"), ...entries.filter(Boolean)];
 }
 
 function buildPinNetMap(nets) {
@@ -118,6 +127,8 @@ function buildPadNode(pad, netInfo) {
 	if (netInfo) {
 		node.push([sym("net"), netInfo.number, netInfo.name]);
 	}
+	// Imported pad settings, front-side; copied as the footprint is turned.
+	node.push(...structuredClone(pad.extra ?? []));
 	return node;
 }
 
@@ -163,11 +174,17 @@ const COMPACT_WRITERS = {
 		pointNode("center", g.center),
 		pointNode("end", [g.center[0] + g.radius, g.center[1]]),
 	],
-	poly: (g) => [
-		sym("fp_poly"),
-		[sym("pts"), ...g.pts.map((p) => pointNode("xy", p))],
-	],
+	poly: (g) =>
+		g.rect
+			? [
+					sym("fp_rect"),
+					pointNode("start", g.pts[0]),
+					pointNode("end", g.pts[2]),
+				]
+			: [sym("fp_poly"), [sym("pts"), ...g.pts.map((p) => pointNode("xy", p))]],
 };
+
+const fillNodes = (g) => (g.fill ? [[sym("fill"), sym("yes")]] : []);
 
 const RAW_GRAPHIC_HEADS = new Set([
 	"fp_line",
@@ -195,7 +212,7 @@ function buildGraphicNode(g) {
 		[sym("width"), g.width],
 		[sym("type"), sym("solid")],
 	];
-	return [...write(g), stroke, [sym("layer"), g.layer]];
+	return [...write(g), stroke, ...fillNodes(g), [sym("layer"), g.layer]];
 }
 
 function defGraphics(def, side) {
@@ -230,9 +247,21 @@ function footprintItems(part, def, pinNetMap) {
 		: [];
 	return [
 		...attr,
+		...(def.extras ?? []).map(copyRawGraphic),
 		...(Array.isArray(def) ? [] : defGraphics(def, part.placement.side)),
 		...buildPadNodes(part, def, pinNetMap),
 	];
+}
+
+// The imported Value text (front-side) showing the part's current value.
+function valueProperty(part, def) {
+	if (!def?.valueText) {
+		const at = [sym("at"), 0, 3, 0];
+		return [sym("property"), "Value", part.value, at, [sym("layer"), "F.Fab"]];
+	}
+	const node = structuredClone(def.valueText);
+	node[2] = part.value;
+	return node;
 }
 
 // The imported reference text, taken to the front like a back part's pads
@@ -250,7 +279,9 @@ function referenceProperty(part, def) {
 	if (!label)
 		return [...head, [sym("at"), 0, -3, 0], [sym("layer"), "F.SilkS"]];
 	const front = frontLabel(label, def.embedded && part.placement.side === "B");
-	const node = [...head, [sym("at"), ...front.at], [sym("layer"), front.layer]];
+	const node = [...head, [sym("at"), ...front.at]];
+	if (label.unlocked) node.push([sym("unlocked"), sym("yes")]);
+	node.push([sym("layer"), front.layer]);
 	if (label.hide) node.push([sym("hide"), sym("yes")]);
 	node.push(labelEffects(label, front.mirror));
 	return node;
@@ -258,7 +289,8 @@ function referenceProperty(part, def) {
 
 function labelEffects(label, mirror) {
 	const effects = [sym("effects"), labelFont(label)];
-	if (mirror) effects.push([sym("justify"), sym("mirror")]);
+	const justify = [...(label.justify ?? []), ...(mirror ? ["mirror"] : [])];
+	if (justify.length > 0) effects.push([sym("justify"), ...justify.map(sym)]);
 	return effects;
 }
 
@@ -278,13 +310,7 @@ function buildFootprintNode(part, def, items) {
 		[sym("uuid"), deterministicUuid(part.id)],
 		[sym("at"), x, y, 0],
 		referenceProperty(part, def),
-		[
-			sym("property"),
-			"Value",
-			part.value,
-			[sym("at"), 0, 3, 0],
-			[sym("layer"), "F.Fab"],
-		],
+		valueProperty(part, def),
 		...items,
 	];
 	orientFootprint(node, rot, side);
@@ -338,6 +364,20 @@ function buildOutlineNodes(outline, boardW, boardH) {
 	]);
 }
 
+// Imported board drawings are written as they were. Its Edge.Cuts ones only
+// while the outline is still the one they draw; an edited outline replaces
+// them.
+function buildDrawingNodes({ drawings = [], outline = null }, boardW, boardH) {
+	const edges = drawings.filter(isEdgeCutsNode);
+	const keepEdges =
+		edges.length > 0 && isDeepStrictEqual(edgeCutsOutline(edges), outline);
+	if (keepEdges) return drawings;
+	return [
+		...buildOutlineNodes(outline, boardW, boardH),
+		...drawings.filter((d) => !isEdgeCutsNode(d)),
+	];
+}
+
 const uuidNodes = (item) => (item.uuid ? [[sym("uuid"), item.uuid]] : []);
 
 // Tracks, vias and zones carry the IR net id; the board names it by number.
@@ -371,21 +411,34 @@ function buildViaNode(via, netIndex) {
 
 const ptsNode = (pts) => [sym("pts"), ...pts.map((p) => pointNode("xy", p))];
 
-// The board keeps one polygon per zone (its fill when it has one): it is
-// written as both outline and fill, so plots need no refill. The zone's own
-// clearance is not kept, so 0 leaves it to the board's design rules.
+const zoneLayerNode = (zone) =>
+	zone.layers ? [sym("layers"), ...zone.layers] : [sym("layer"), zone.layer];
+
+// An imported zone keeps its settings and outline; KiCad refills it (as
+// kicad-cli does with --refill-zones / --check-zones). A zone drawn in the
+// editor has no settings: its polygon is written as outline and fill, so
+// plots need no refill, and clearance 0 leaves it to the design rules.
+function zoneBody(zone) {
+	const outline = [sym("polygon"), ptsNode(zone.polygon)];
+	if (zone.settings) return [...zone.settings, outline];
+	return [
+		[sym("hatch"), sym("edge"), 0.5],
+		[sym("connect_pads"), [sym("clearance"), 0]],
+		[sym("filled_areas_thickness"), sym("no")],
+		[sym("fill"), sym("yes")],
+		outline,
+		[sym("filled_polygon"), [sym("layer"), zone.layer], ptsNode(zone.polygon)],
+	];
+}
+
 function buildZoneNode(zone, netIndex, netNames) {
 	return [
 		sym("zone"),
 		netNode(zone, netIndex),
 		[sym("net_name"), netNames.get(zone.netId) ?? ""],
-		[sym("layer"), zone.layer],
-		[sym("hatch"), sym("edge"), 0.5],
-		[sym("connect_pads"), [sym("clearance"), 0]],
-		[sym("filled_areas_thickness"), sym("no")],
-		[sym("fill"), sym("yes")],
-		[sym("polygon"), ptsNode(zone.polygon)],
-		[sym("filled_polygon"), [sym("layer"), zone.layer], ptsNode(zone.polygon)],
+		zoneLayerNode(zone),
+		...uuidNodes(zone),
+		...zoneBody(zone),
 	];
 }
 
@@ -413,7 +466,10 @@ function buildRoutingNodes(
 	];
 }
 
-function buildPcbTree({ thicknessMm, layers }, nets, items) {
+const DEFAULT_SETUP = [sym("setup"), [sym("pad_to_mask_clearance"), 0]];
+
+function buildPcbTree(head, nets, items) {
+	const { thicknessMm, layers, layerNames, setup = DEFAULT_SETUP } = head;
 	return [
 		sym("kicad_pcb"),
 		[sym("version"), 20241229],
@@ -425,30 +481,32 @@ function buildPcbTree({ thicknessMm, layers }, nets, items) {
 			[sym("legacy_teardrops"), sym("no")],
 		],
 		[sym("paper"), "A4"],
-		createLayersNode(layers),
-		[sym("setup"), [sym("pad_to_mask_clearance"), 0]],
+		createLayersNode(layers, layerNames),
+		setup,
 		...nets,
 		...items,
 	];
 }
 
-// `options` may be an imported board ({ footprints, outline, tracks, vias,
-// zones }): its routing and outline are written back.
+// `options` may be an imported board ({ footprints, outline, drawings,
+// tracks, vias, zones, layers, layerNames, setup, thicknessMm }): it is
+// written back.
 export function irToKicadPcb(ir, options = {}) {
 	const validation = validateCircuitIR(ir);
 	if (!validation.ok) {
 		throw new Error(`Invalid Circuit IR: ${validation.errors.join("; ")}`);
 	}
-	const { boardW = 100, boardH = 100, thicknessMm = 1.6, layers } = options;
-	const { footprints = {}, outline = null } = options;
+	const { boardW = 100, boardH = 100, footprints = {} } = options;
+	const { thicknessMm = 1.6, layers, layerNames, setup } = options;
 	const warnings = [];
 	const pinNetMap = buildPinNetMap(ir.nets);
 	const items = [
 		...buildAllFootprints(ir.parts, footprints, pinNetMap, warnings),
-		...buildOutlineNodes(outline, boardW, boardH),
+		...buildDrawingNodes(options, boardW, boardH),
 		...buildRoutingNodes(ir, options, warnings),
 	];
 	const nets = buildNetDeclarations(ir.nets);
-	const tree = buildPcbTree({ thicknessMm, layers }, nets, items);
+	const head = { thicknessMm, layers, layerNames, setup };
+	const tree = buildPcbTree(head, nets, items);
 	return { text: serialize(tree), warnings };
 }

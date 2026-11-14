@@ -40,7 +40,13 @@ function roundTrip(text) {
 	return irToKicadPcb(ir, board).text;
 }
 
-const GRAPHIC_HEADS = new Set(["fp_line", "fp_arc", "fp_circle", "fp_poly"]);
+const GRAPHIC_HEADS = new Set([
+	"fp_line",
+	"fp_arc",
+	"fp_circle",
+	"fp_rect",
+	"fp_poly",
+]);
 
 describe("embedded footprint import keeps attributes, drills and courtyard", () => {
 	const { ir, board } = importBoard(BOARD);
@@ -221,6 +227,143 @@ describe("irToKicadPcb writes board routing and outline back", () => {
 	});
 });
 
+const EDGE = `(stroke (width 0.1) (type solid)) (layer "Edge.Cuts")`;
+const DRAWN = `(kicad_pcb (version 20241229) (generator test)
+  (layers (0 "F.Cu" signal "Top") (2 "B.Cu" signal) (5 "F.SilkS" user "F.Silkscreen")
+    (7 "B.SilkS" user "B.Silkscreen") (19 "Cmts.User" user "Notes") (25 "Edge.Cuts" user)
+    (33 "B.Fab" user) (35 "F.Fab" user))
+  (net 0 "") (net 1 "GND")
+  (footprint "Lib:U" (layer "B.Cu") (at 10 20 30)
+    (property "Reference" "U1" (at 0 -2 30) (unlocked yes) (layer "B.SilkS")
+      (effects (font (size 1 1) (thickness 0.15)) (justify right mirror)))
+    (property "Value" "LM" (at 1 3 120) (layer "B.SilkS")
+      (effects (font (size 0.8 0.7) (thickness 0.1)) (justify left mirror)))
+    (solder_mask_margin 0.05)
+    (fp_text user "\${REFERENCE}" (at 0 0.5 30) (layer "B.Fab")
+      (effects (font (size 0.5 0.5) (thickness 0.08)) (justify mirror)))
+    (fp_line (start 0 0) (end 1 0.5) (stroke (width 0.1) (type solid)) (layer "Cmts.User"))
+    (fp_line (start 0 0) (end 2 2) (stroke (width 0.1) (type solid)) (layer "User.9"))
+    (fp_poly (pts (xy 0 0) (xy 1 0) (xy 1 1)) (stroke (width 0) (type solid)) (fill yes) (layer "B.SilkS"))
+    (pad "1" smd roundrect (at 1 -0.5 30) (size 1 0.6) (layers "B.Cu" "B.Mask" "B.Paste")
+      (roundrect_rratio 0.25) (net 1 "GND") (pinfunction "GND") (pintype "power_in")))
+  (gr_line (start 0 0) (end 40 0) ${EDGE})
+  (gr_arc (start 40 0) (mid 45 15) (end 40 30) ${EDGE})
+  (gr_line (start 40 30) (end 0 30) ${EDGE})
+  (gr_line (start 0 30) (end 0 0) ${EDGE})
+  (gr_text "Hi" (at 5 5 0) (layer "F.SilkS") (effects (font (size 1 1) (thickness 0.15))))
+  (arc (start 5 5) (mid 7 4) (end 9 5) (width 0.25) (layer "F.Cu") (net 1) (uuid "a1"))
+  (zone (net 1) (net_name "GND") (layers "F.Cu" "B.Cu") (uuid "z1") (hatch edge 0.5)
+    (connect_pads (clearance 0.3)) (min_thickness 0.25) (filled_areas_thickness no)
+    (fill yes (thermal_gap 0.5) (thermal_bridge_width 0.5))
+    (polygon (pts (xy 1 1) (xy 39 1) (xy 39 29) (xy 1 29)))
+    (filled_polygon (layer "F.Cu") (pts (xy 2 2) (xy 38 2) (xy 38 28)))
+    (filled_polygon (layer "B.Cu") (pts (xy 2 2) (xy 38 2) (xy 38 28)))))`;
+
+const topNodes = (text, head) => parse(text).filter((n) => isHead(n, head));
+
+describe("board drawings, arc tracks, zones and footprint texts round trip", () => {
+	const { ir, board, warnings } = importBoard(DRAWN);
+	const written = roundTrip(DRAWN);
+	const original = footprintNode(DRAWN);
+	const fp = footprintNode(written);
+	const fpChild = (node, head, key) =>
+		node.find((n) => isHead(n, head) && (key === undefined || n[1] === key));
+
+	test("arc tracks are imported with their mid point and written as arcs", () => {
+		assert.deepEqual(board.tracks[0].mid, [7, 4]);
+		assert.deepEqual(topNodes(written, "arc"), topNodes(DRAWN, "arc"));
+	});
+
+	test("board drawings (Edge.Cuts arc, text) are written back unchanged", () => {
+		for (const head of ["gr_line", "gr_arc", "gr_text"]) {
+			assert.deepEqual(topNodes(written, head), topNodes(DRAWN, head), head);
+		}
+	});
+
+	test("an edited outline replaces the imported Edge.Cuts drawings", () => {
+		const outline = [
+			[0, 0],
+			[50, 0],
+			[50, 40],
+		];
+		const text = irToKicadPcb(ir, { ...board, outline }).text;
+		assert.equal(topNodes(text, "gr_arc").length, 0);
+		assert.equal(topNodes(text, "gr_line").length, 3);
+		assert.deepEqual(topNodes(text, "gr_text"), topNodes(DRAWN, "gr_text"));
+	});
+
+	test("zones keep both layers, their settings and outline; KiCad refills them", () => {
+		const [zone] = topNodes(written, "zone");
+		const [before] = topNodes(DRAWN, "zone");
+		for (const head of ["layers", "uuid", "connect_pads", "fill", "polygon"]) {
+			assert.deepEqual(childOf(zone, head), childOf(before, head), head);
+		}
+		assert.equal(childOf(zone, "filled_polygon"), undefined);
+		assert.deepEqual(board.zones[0].polygon, [
+			[1, 1],
+			[39, 1],
+			[39, 29],
+			[1, 29],
+		]);
+	});
+
+	test("reference and value texts keep place, layer, font and justification", () => {
+		for (const key of ["Reference", "Value"]) {
+			assert.deepEqual(
+				fpChild(fp, "property", key),
+				fpChild(original, "property", key),
+				key,
+			);
+		}
+	});
+
+	test("user texts, other-layer shapes, settings and pad pin functions are kept", () => {
+		for (const head of ["fp_text", "solder_mask_margin"]) {
+			assert.deepEqual(fpChild(fp, head), fpChild(original, head), head);
+		}
+		const cmts = (n) =>
+			n.filter(
+				(c) => isHead(c, "fp_line") && childOf(c, "layer")[1] === "Cmts.User",
+			);
+		assert.deepEqual(cmts(fp), cmts(original));
+		// KiCad reads pad settings in any order.
+		const padItems = (n) => fpChild(n, "pad").map((c) => JSON.stringify(c));
+		assert.deepEqual(padItems(fp).sort(), padItems(original).sort());
+	});
+
+	// Numbered user layers can hold huge overlays (287k strokes on the jetson
+	// demo's User.9): they would blow the board JSON past the request limit.
+	test("footprint shapes on numbered User layers are left out, with a warning", () => {
+		const onUser9 = (n) => childOf(n, "layer")?.[1] === "User.9";
+		assert.equal(fp.filter((c) => Array.isArray(c) && onUser9(c)).length, 0);
+		assert.ok(
+			warnings.some((w) => /1 footprint shape.*User/.test(w)),
+			warnings,
+		);
+	});
+
+	test("filled footprint polygons stay filled", () => {
+		assert.deepEqual(childOf(fpChild(fp, "fp_poly"), "fill"), [
+			{ sym: "fill" },
+			{ sym: "yes" },
+		]);
+	});
+
+	test("layer user names are written back", () => {
+		const layers = childOf(parse(written), "layers");
+		const named = layers.filter((l) => Array.isArray(l) && l.length > 3);
+		assert.deepEqual(
+			named.map((l) => [l[1], l[3]]),
+			[
+				["F.Cu", "Top"],
+				["F.SilkS", "F.Silkscreen"],
+				["B.SilkS", "B.Silkscreen"],
+				["Cmts.User", "Notes"],
+			],
+		);
+	});
+});
+
 // --- kicad-cli oracle -------------------------------------------------------
 
 const KICAD = "C:/Program Files/KiCad/10.0";
@@ -233,18 +376,15 @@ const ORACLE_BOARDS = [
 	"multichannel/multichannel_mixer-unrouted",
 ];
 
-// Known gaps: these need data the importer's board model does not keep, so
-// the writer cannot put it back. They run and report, but do not fail.
-const ZONE_GAP =
-	"a zone on two layers is imported without a layer, and only the first filled polygon of a zone is kept";
-const DRC_GAPS = {
-	"stickhub/StickHub":
-		"arc tracks are not imported, the gr_arc outline is approximated and zone thermal settings are not kept",
-	"multichannel/multichannel_mixer": ZONE_GAP,
-	"multichannel/multichannel_mixer-unrouted": ZONE_GAP,
+// Known gap: it runs and reports, but does not fail. The board model keeps
+// tracks and vias in two lists, so vias are written after the tracks instead
+// of between them; KiCad's zone refill then puts one extra (collinear) point
+// in a B.Cu fill outline. The original file with its vias moved after its
+// tracks plots the same extra draw.
+const DRAW_GAPS = {
+	"multichannel/multichannel_mixer":
+		"vias are written after the tracks, not interleaved: the B.Cu zone refill gains one collinear vertex",
 };
-const DRAW_GAP =
-	"footprint text (Value, fp_text, pad pin functions) and board drawings (gr_text, gr_poly, ...) are not in the board model";
 
 function cli(args) {
 	try {
@@ -274,7 +414,7 @@ function readDrillTools(dir, pcb) {
 
 function readDrcCounts(dir, pcb) {
 	const out = path.join(dir, "drc.json");
-	cli(["pcb", "drc", "--format", "json", "-o", out, pcb]);
+	cli(["pcb", "drc", "--refill-zones", "--format", "json", "-o", out, pcb]);
 	const drc = JSON.parse(fs.readFileSync(out, "utf8"));
 	const counts = { unconnected_items: drc.unconnected_items.length };
 	for (const v of drc.violations) counts[v.type] = (counts[v.type] ?? 0) + 1;
@@ -282,7 +422,8 @@ function readDrcCounts(dir, pcb) {
 }
 
 // The project file (when the demo has one) sits next to the board so both
-// use its design rules.
+// use its design rules. Imported zones keep no fill (KiCad computes it), so
+// both boards are refilled before DRC and plotting.
 function kicadReports(text, project) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rtfid-"));
 	const pcb = path.join(dir, "board.kicad_pcb");
@@ -302,7 +443,7 @@ function kicadReports(text, project) {
 // board's own layer names): draws (D01), flashes (D03) and file size.
 function readGerbers(dir, pcb) {
 	const out = path.join(dir, "gerbers");
-	cli(["pcb", "export", "gerbers", "-o", `${out}/`, pcb]);
+	cli(["pcb", "export", "gerbers", "--check-zones", "-o", `${out}/`, pcb]);
 	const layers = {};
 	for (const file of fs.readdirSync(out).sort()) {
 		const body = fs.readFileSync(path.join(out, file), "utf8");
@@ -334,7 +475,7 @@ for (const name of ORACLE_BOARDS) {
 			assert.deepEqual(after.drill, before.drill);
 		});
 
-		test("DRC violation counts by type match", { todo: DRC_GAPS[name] }, () => {
+		test("DRC violation counts by type match", () => {
 			assert.deepEqual(after.drc, before.drc);
 		});
 
@@ -346,7 +487,7 @@ for (const name of ORACLE_BOARDS) {
 		});
 
 		test("gerber draws match and sizes are within 1%", {
-			todo: DRAW_GAP,
+			todo: DRAW_GAPS[name],
 		}, () => {
 			assert.deepEqual(
 				gerberField(after, "draws"),

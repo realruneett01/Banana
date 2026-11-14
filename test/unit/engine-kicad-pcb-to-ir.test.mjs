@@ -198,6 +198,7 @@ function assertCopperGeometry(res, gndNetId, vccNetId) {
 						[50, 50],
 						[0, 50],
 					],
+					settings: [],
 				},
 			],
 		},

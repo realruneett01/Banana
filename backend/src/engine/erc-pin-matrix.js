@@ -14,45 +14,54 @@ export const PIN_TYPES = [
 	"no_connect",
 ];
 
-// Base rules; the matrix stores both orders so lookups are symmetric.
-const RULES = [
-	["output", "output", "error"],
-	["output", "power_out", "error"],
-	["power_out", "power_out", "error"],
-	["output", "open_collector", "error"],
-	["output", "open_emitter", "error"],
-	["tri_state", "output", "warning"],
-];
+// kicad-cli's default pin-conflict matrix, as recorded in
+// test/unit/fixtures/erc-pin-matrix-kicad.json, as each type's conflicting
+// partners. The map stores both orders; unlisted pairs are "ok".
+const ERROR_PARTNERS = {
+	output: ["output", "power_out", ...OPEN_DRAIN_TYPES],
+	power_out: ["power_out", "tri_state", ...OPEN_DRAIN_TYPES],
+};
+const WARNING_PARTNERS = {
+	tri_state: ["output", "power_in", ...OPEN_DRAIN_TYPES],
+	bidirectional: ["power_out", "open_emitter"],
+	unspecified: PIN_TYPES.filter((t) => t !== "free" && t !== "no_connect"),
+};
 
-const MATRIX = new Map(
-	RULES.flatMap(([a, b, s]) => [
-		[`${a}|${b}`, s],
-		[`${b}|${a}`, s],
-	]),
-);
+const pairEntries = (partners, severity) =>
+	Object.entries(partners).flatMap(([a, list]) =>
+		list.flatMap((b) => [
+			[`${a}|${b}`, severity],
+			[`${b}|${a}`, severity],
+		]),
+	);
+
+const MATRIX = new Map([
+	...pairEntries(ERROR_PARTNERS, "error"),
+	...pairEntries(WARNING_PARTNERS, "warning"),
+]);
 
 export function pinPairSeverity(a, b) {
 	if (a === "no_connect" || b === "no_connect") {
 		return a === b ? "ok" : "error";
 	}
-	if (a === "unspecified" || b === "unspecified") return "warning";
 	return MATRIX.get(`${a}|${b}`) ?? "ok";
 }
 
-const isUnspecified = (p) => p.type === "unspecified";
-
-// Unspecified pins warn against anything. Like kicad-cli, each one joins the
-// net's cluster by a single warning (a star spanning tree): one per
-// unspecified pin, or k-1 when every pin on the net is unspecified.
-function unspecifiedIssues(pins) {
-	const anchor = pins.find((p) => !isUnspecified(p)) ?? pins[0];
-	const joining = pins.filter((p) => isUnspecified(p) && p !== anchor);
-	return joining.map((p) => ({
-		severity: "warning",
-		message: `pin type conflict: unspecified vs ${anchor.type}`,
-		pins: [p, anchor],
-	}));
-}
+// Observed in kicad-cli: each pin reports at most one pin_to_pin violation,
+// against a conflicting pin of the same or a later tier (same types keep net
+// order), so a pin conflicting only with earlier pins reports nothing.
+// Types within one tier never conflict with each other.
+const REPORT_TIERS = [
+	["no_connect"],
+	["unspecified"],
+	OPEN_DRAIN_TYPES,
+	["tri_state"],
+	["bidirectional", "input", "passive", "free", "power_in"],
+	["output"],
+	["power_out"],
+];
+const reportRank = (p) => REPORT_TIERS.findIndex((t) => t.includes(p.type));
+const SEVERITY_RANK = { error: 0, warning: 1 };
 
 // Same-named outputs of one part (parallel SW pads) act as one pin.
 function isParallelOutput(p, q) {
@@ -60,43 +69,31 @@ function isParallelOutput(p, q) {
 	return bothOutputs && p.ref === q.ref && Boolean(p.name) && p.name === q.name;
 }
 
-// Edge order: parallel pads merge first, then errors win over warnings.
-const EDGE_RANK = { parallel: 0, error: 1, warning: 2 };
-
-function conflictEdges(typed) {
-	const edges = [];
-	typed.forEach((p, i) => {
-		typed.slice(i + 1).forEach((q, k) => {
-			const severity = pinPairSeverity(p.type, q.type);
-			const kind = isParallelOutput(p, q) ? "parallel" : severity;
-			if (kind !== "ok") edges.push({ i, j: i + 1 + k, kind });
-		});
-	});
-	return edges.sort((a, b) => EDGE_RANK[a.kind] - EDGE_RANK[b.kind]);
+function reportOrder(pins) {
+	const merged = pins.filter(
+		(p, i) => !pins.slice(0, i).some((q) => isParallelOutput(q, p)),
+	);
+	return merged.sort((a, b) => reportRank(a) - reportRank(b));
 }
 
-function rootOf(parent, i) {
-	let r = i;
-	while (parent[r] !== r) r = parent[r];
-	return r;
+// The pin's one violation, against its first conflicting partner (kicad-cli
+// takes the nearest one, which need not be the most severe).
+function pinIssue(p, later) {
+	const partners = later
+		.map((q) => ({ q, severity: pinPairSeverity(p.type, q.type) }))
+		.filter((c) => c.severity !== "ok");
+	if (partners.length === 0) return null;
+	const { q, severity } = partners[0];
+	const message = `pin type conflict: ${p.type} vs ${q.type}`;
+	return { severity, message, pins: [p, q] };
 }
 
-// kicad-cli reports n-1 violations per cluster of conflicting pins, not
-// every pair, so keep only the edges of a spanning forest (union-find).
 function pairIssues(pins) {
-	const typed = pins.filter((p) => !isUnspecified(p));
-	const parent = typed.map((_, i) => i);
-	const issues = [];
-	for (const { i, j, kind } of conflictEdges(typed)) {
-		const [a, b] = [rootOf(parent, i), rootOf(parent, j)];
-		if (a === b) continue;
-		parent[b] = a;
-		if (kind === "parallel") continue;
-		const [p, q] = [typed[i], typed[j]];
-		const message = `pin type conflict: ${p.type} vs ${q.type}`;
-		issues.push({ severity: kind, message, pins: [p, q] });
-	}
-	return issues;
+	const ordered = reportOrder(pins);
+	return ordered
+		.map((p, i) => pinIssue(p, ordered.slice(i + 1)))
+		.filter(Boolean)
+		.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
 }
 
 function driveIssues(pins) {
@@ -118,5 +115,5 @@ function driveIssues(pins) {
 // off-sheet link), so the not-driven checks cannot fire.
 export function checkNet(pins, { driven = false } = {}) {
 	const drive = driven ? [] : driveIssues(pins);
-	return [...pairIssues(pins), ...unspecifiedIssues(pins), ...drive];
+	return [...pairIssues(pins), ...drive];
 }

@@ -3,12 +3,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
+import { runErc } from "../../backend/src/engine/erc.js";
 import {
 	MAX_DEPTH,
 	MAX_SHEETS,
 	runProjectErc,
 	runProjectErcFromTexts,
 } from "../../backend/src/engine/erc-project.js";
+import { kicadSchToIr } from "../../backend/src/engine/kicad-sch-to-ir.js";
 
 // LOAD has one power_in pin, SRC one power_out pin, IN one input pin, all at
 // (-5 0) from the symbol, so a symbol at "50 50" puts its pin at 45,50.
@@ -151,6 +153,32 @@ describe("runProjectErcFromTexts: KiCad drive semantics across sheets", () => {
 		const res = run({ "root.kicad_sch": root, "child.kicad_sch": child });
 		assert.deepEqual(notDriven(res), []);
 	});
+
+	// kicad-cli skips power_pin_not_driven and pin_not_driven on a net that
+	// carries a no-connect flag (vme-wren P12V, M12V_VME, P5V_STDBY_VME).
+	test("a no-connect flag on a net skips its not-driven checks", () => {
+		const nc = "(no_connect (at 45 50))";
+		const root = sch(
+			`${sheet("s1", "child.kicad_sch")} ${vcc("#PWR02", "45 50")} ${nc}`,
+		);
+		const res = run({ "root.kicad_sch": root, "child.kicad_sch": loadOnVcc });
+		assert.deepEqual(notDriven(res), []);
+	});
+});
+
+describe("runErc (one sheet): no-connect flag", () => {
+	const nc = "(no_connect (at 45 50))";
+	for (const lib of ["Dev:LOAD", "Dev:IN"]) {
+		test(`${lib} pins under a no-connect flag are not a not-driven error`, () => {
+			const res = kicadSchToIr(sch(`${twoPins(lib)} ${nc}`));
+			const before = runErc(kicadSchToIr(sch(twoPins(lib))).ir);
+			assert.equal(before.filter((i) => /driven/.test(i.message)).length, 1);
+			assert.deepEqual(
+				runErc(res.ir).filter((i) => /driven/.test(i.message)),
+				[],
+			);
+		});
+	}
 });
 
 describe("project sheet loading guards", () => {
