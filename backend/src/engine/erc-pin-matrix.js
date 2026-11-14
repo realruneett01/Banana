@@ -41,12 +41,17 @@ export function pinPairSeverity(a, b) {
 
 const isUnspecified = (p) => p.type === "unspecified";
 
-// Unspecified pins warn against anything; report them once per net.
+// Unspecified pins warn against anything. Like kicad-cli, each one joins the
+// net's cluster by a single warning (a star spanning tree): one per
+// unspecified pin, or k-1 when every pin on the net is unspecified.
 function unspecifiedIssues(pins) {
-	const unspecified = pins.filter(isUnspecified);
-	if (unspecified.length === 0 || pins.length < 2) return [];
-	const message = "pins with unspecified type";
-	return [{ severity: "warning", message, pins: unspecified }];
+	const anchor = pins.find((p) => !isUnspecified(p)) ?? pins[0];
+	const joining = pins.filter((p) => isUnspecified(p) && p !== anchor);
+	return joining.map((p) => ({
+		severity: "warning",
+		message: `pin type conflict: unspecified vs ${anchor.type}`,
+		pins: [p, anchor],
+	}));
 }
 
 // Same-named outputs of one part (parallel SW pads) act as one pin.

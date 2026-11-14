@@ -182,14 +182,49 @@ describe("checkNet empty / no conflict", () => {
 });
 
 describe("checkNet unspecified pins", () => {
-	test("one warning per net listing every unspecified pin", () => {
+	// kicad-cli (KiCad 10 demos) warns once per unspecified pin, against a
+	// typed partner; was one summary warning per net.
+	test("2 unspecified + input + output -> one warning each", () => {
 		const pins = netOf(["unspecified", "unspecified", "input", "output"]);
-		const found = checkNet(pins).filter((i) => i.message.includes("unspec"));
+		const found = conflictsOf(checkNet(pins));
+		assert.deepEqual(
+			found.map((i) => [i.severity, i.pins.map((p) => p.ref)]),
+			[
+				["warning", ["U1", "U3"]],
+				["warning", ["U2", "U3"]],
+			],
+		);
+	});
+
+	// Typed pins that do not conflict with each other add no warning.
+	test("unspecified + input + input -> 1 warning", () => {
+		const found = checkNet(netOf(["unspecified", "input", "input"]));
+		assert.deepEqual(
+			found.map((i) => [i.severity, i.pins.map((p) => p.ref)]),
+			[["warning", ["U1", "U2"]]],
+		);
+	});
+
+	test("3 unspecified pins only -> k-1 = 2 warnings", () => {
+		const found = checkNet(
+			netOf(["unspecified", "unspecified", "unspecified"]),
+		);
+		assert.equal(conflictsOf(found).length, 2);
+	});
+
+	test("unspecified + power_in port -> 1 warning", () => {
+		const port = { ref: "#PWR01", pin: "1", type: "power_in" };
+		const pins = [pin("U1", "unspecified"), port];
+		const found = conflictsOf(checkNet(pins, { driven: true }));
 		assert.equal(found.length, 1);
 		assert.equal(found[0].severity, "warning");
+	});
+
+	test("error edges are taken before warnings in one cluster", () => {
+		const found = checkNet(netOf(["unspecified", "output", "output"]));
 		assert.deepEqual(
-			found[0].pins.map((p) => p.ref),
-			["U1", "U2"],
+			found.map((i) => i.severity),
+			["error", "warning"],
 		);
 	});
 
