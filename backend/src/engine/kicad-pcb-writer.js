@@ -8,23 +8,62 @@ function deterministicUuid(id) {
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-function createLayersNode() {
-	return [
-		sym("layers"),
-		[0, "F.Cu", sym("signal")],
-		[2, "B.Cu", sym("signal")],
-		[9, "F.SilkS", sym("user"), "F.Silkscreen"],
-		[11, "B.SilkS", sym("user"), "B.Silkscreen"],
-		[1, "F.Mask", sym("user")],
-		[3, "B.Mask", sym("user")],
-		[13, "F.Paste", sym("user")],
-		[15, "B.Paste", sym("user")],
-		[25, "Edge.Cuts", sym("user")],
-		[31, "F.CrtYd", sym("user"), "F.Courtyard"],
-		[29, "B.CrtYd", sym("user"), "B.Courtyard"],
-		[35, "F.Fab", sym("user")],
-		[33, "B.Fab", sym("user")],
-	];
+// KiCad layer ids (KiCad 9 file numbering) and display names, by canonical name.
+const LAYER_IDS = {
+	"F.Cu": [0],
+	"B.Cu": [2],
+	"F.Mask": [1],
+	"B.Mask": [3],
+	"F.SilkS": [5, "F.Silkscreen"],
+	"B.SilkS": [7, "B.Silkscreen"],
+	"F.Adhes": [9, "F.Adhesive"],
+	"B.Adhes": [11, "B.Adhesive"],
+	"F.Paste": [13],
+	"B.Paste": [15],
+	"Dwgs.User": [17, "User.Drawings"],
+	"Cmts.User": [19, "User.Comments"],
+	"Eco1.User": [21, "User.Eco1"],
+	"Eco2.User": [23, "User.Eco2"],
+	"Edge.Cuts": [25],
+	Margin: [27],
+	"B.CrtYd": [29, "B.Courtyard"],
+	"F.CrtYd": [31, "F.Courtyard"],
+	"B.Fab": [33],
+	"F.Fab": [35],
+};
+
+const DEFAULT_LAYERS = [
+	"F.Cu",
+	"B.Cu",
+	"F.SilkS",
+	"B.SilkS",
+	"F.Mask",
+	"B.Mask",
+	"F.Paste",
+	"B.Paste",
+	"Edge.Cuts",
+	"F.CrtYd",
+	"B.CrtYd",
+	"F.Fab",
+	"B.Fab",
+];
+
+// Inner copper In<n>.Cu is 2n+2 and User.<n> is 37+2n; others are listed.
+function layerEntry(name) {
+	const inner = /^In(\d+)\.Cu$/.exec(name);
+	if (inner) return [2 * Number(inner[1]) + 2, name, sym("signal")];
+	const user = /^User\.(\d+)$/.exec(name);
+	if (user) return [37 + 2 * Number(user[1]), name, sym("user")];
+	const known = LAYER_IDS[name];
+	if (!known) return null;
+	const type = name.endsWith(".Cu") ? "signal" : "user";
+	return [known[0], name, sym(type), ...known.slice(1)];
+}
+
+// An imported board's own layer list, else the default two-layer set.
+function createLayersNode(layers) {
+	const names = layers?.length ? layers : DEFAULT_LAYERS;
+	return [sym("layers"), ...names.map(layerEntry).filter(Boolean)];
 }
 
 function buildPinNetMap(nets) {
@@ -279,7 +318,102 @@ function buildOutlineNode(boardW, boardH) {
 	];
 }
 
-function buildPcbTree(thicknessMm, nets, footprints, outline) {
+const EDGE_STROKE = [
+	sym("stroke"),
+	[sym("width"), 0.1],
+	[sym("type"), sym("solid")],
+];
+
+// An imported outline (a closed point list) is drawn back as Edge.Cuts lines.
+function buildOutlineNodes(outline, boardW, boardH) {
+	if (!Array.isArray(outline) || outline.length < 3) {
+		return [buildOutlineNode(boardW, boardH)];
+	}
+	return outline.map((p, i) => [
+		sym("gr_line"),
+		pointNode("start", p),
+		pointNode("end", outline[(i + 1) % outline.length]),
+		EDGE_STROKE,
+		[sym("layer"), "Edge.Cuts"],
+	]);
+}
+
+const uuidNodes = (item) => (item.uuid ? [[sym("uuid"), item.uuid]] : []);
+
+// Tracks, vias and zones carry the IR net id; the board names it by number.
+const netNode = (item, netIndex) => [sym("net"), netIndex.get(item.netId) ?? 0];
+
+function buildTrackNode(track, netIndex) {
+	const mid = track.mid ? [pointNode("mid", track.mid)] : [];
+	return [
+		sym(track.mid ? "arc" : "segment"),
+		pointNode("start", track.start),
+		...mid,
+		pointNode("end", track.end),
+		[sym("width"), track.widthMm],
+		[sym("layer"), track.layer],
+		netNode(track, netIndex),
+		...uuidNodes(track),
+	];
+}
+
+function buildViaNode(via, netIndex) {
+	return [
+		sym("via"),
+		pointNode("at", via.at),
+		[sym("size"), via.sizeMm],
+		[sym("drill"), via.drillMm],
+		[sym("layers"), ...(via.layers ?? ["F.Cu", "B.Cu"])],
+		netNode(via, netIndex),
+		...uuidNodes(via),
+	];
+}
+
+const ptsNode = (pts) => [sym("pts"), ...pts.map((p) => pointNode("xy", p))];
+
+// The board keeps one polygon per zone (its fill when it has one): it is
+// written as both outline and fill, so plots need no refill. The zone's own
+// clearance is not kept, so 0 leaves it to the board's design rules.
+function buildZoneNode(zone, netIndex, netNames) {
+	return [
+		sym("zone"),
+		netNode(zone, netIndex),
+		[sym("net_name"), netNames.get(zone.netId) ?? ""],
+		[sym("layer"), zone.layer],
+		[sym("hatch"), sym("edge"), 0.5],
+		[sym("connect_pads"), [sym("clearance"), 0]],
+		[sym("filled_areas_thickness"), sym("no")],
+		[sym("fill"), sym("yes")],
+		[sym("polygon"), ptsNode(zone.polygon)],
+		[sym("filled_polygon"), [sym("layer"), zone.layer], ptsNode(zone.polygon)],
+	];
+}
+
+function writableZones(zones, warnings) {
+	return zones.filter((zone) => {
+		const ok = Boolean(zone.layer) && zone.polygon?.length >= 3;
+		if (!ok) warnings.push("skipped a zone without a single layer or polygon");
+		return ok;
+	});
+}
+
+function buildRoutingNodes(
+	ir,
+	{ tracks = [], vias = [], zones = [] },
+	warnings,
+) {
+	const netIndex = new Map(ir.nets.map((net, i) => [net.id, i + 1]));
+	const netNames = new Map(ir.nets.map((net) => [net.id, net.name]));
+	return [
+		...tracks.map((t) => buildTrackNode(t, netIndex)),
+		...vias.map((v) => buildViaNode(v, netIndex)),
+		...writableZones(zones, warnings).map((z) =>
+			buildZoneNode(z, netIndex, netNames),
+		),
+	];
+}
+
+function buildPcbTree({ thicknessMm, layers }, nets, items) {
 	return [
 		sym("kicad_pcb"),
 		[sym("version"), 20241229],
@@ -291,35 +425,30 @@ function buildPcbTree(thicknessMm, nets, footprints, outline) {
 			[sym("legacy_teardrops"), sym("no")],
 		],
 		[sym("paper"), "A4"],
-		createLayersNode(),
+		createLayersNode(layers),
 		[sym("setup"), [sym("pad_to_mask_clearance"), 0]],
 		...nets,
-		...footprints,
-		outline,
+		...items,
 	];
 }
 
-export function irToKicadPcb(
-	ir,
-	{ boardW = 100, boardH = 100, footprints = {}, thicknessMm = 1.6 } = {},
-) {
+// `options` may be an imported board ({ footprints, outline, tracks, vias,
+// zones }): its routing and outline are written back.
+export function irToKicadPcb(ir, options = {}) {
 	const validation = validateCircuitIR(ir);
 	if (!validation.ok) {
 		throw new Error(`Invalid Circuit IR: ${validation.errors.join("; ")}`);
 	}
+	const { boardW = 100, boardH = 100, thicknessMm = 1.6, layers } = options;
+	const { footprints = {}, outline = null } = options;
 	const warnings = [];
 	const pinNetMap = buildPinNetMap(ir.nets);
-	const netNodes = buildNetDeclarations(ir.nets);
-	const footprintNodes = buildAllFootprints(
-		ir.parts,
-		footprints,
-		pinNetMap,
-		warnings,
-	);
-	const outlineNode = buildOutlineNode(boardW, boardH);
-	const tree = buildPcbTree(thicknessMm, netNodes, footprintNodes, outlineNode);
-	return {
-		text: serialize(tree),
-		warnings,
-	};
+	const items = [
+		...buildAllFootprints(ir.parts, footprints, pinNetMap, warnings),
+		...buildOutlineNodes(outline, boardW, boardH),
+		...buildRoutingNodes(ir, options, warnings),
+	];
+	const nets = buildNetDeclarations(ir.nets);
+	const tree = buildPcbTree({ thicknessMm, layers }, nets, items);
+	return { text: serialize(tree), warnings };
 }
