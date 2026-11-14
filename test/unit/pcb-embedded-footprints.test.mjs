@@ -262,6 +262,7 @@ describe("compact embedded graphics (synthetic)", () => {
 					[1, 1],
 					[-1, 1],
 				],
+				rect: true,
 				...style("F.Fab", 0.1),
 			},
 			{ type: "circle", center: [0, 0], radius: 5, ...style("B.SilkS", 0.1) },

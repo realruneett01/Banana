@@ -1,7 +1,8 @@
 import { validateCircuitIR } from "./circuit-ir.js";
 import { newId } from "./ids.js";
 import { collectFootprintPads as collectPadGeometry } from "./kicad-library.js";
-import { parse } from "./sexpr.js";
+import { orientFootprint } from "./kicad-pcb-edit.js";
+import { parse, sym } from "./sexpr.js";
 
 // KiCad's internal unit is 1 nm: keep every digit a board file can hold.
 function roundCoord(val) {
@@ -32,6 +33,13 @@ function extractLayerName(node) {
 	const lNode = extractChildNode(node, "layer");
 	if (!lNode || lNode.length < 2) return "";
 	return nodeSym(lNode[1]);
+}
+
+// Layer user names, as in (0 "F.Cu" signal "Top").
+function extractLayerNames(ast) {
+	const layersNode = extractChildNode(ast, "layers") ?? [];
+	const named = layersNode.filter((c) => Array.isArray(c) && c.length > 3);
+	return Object.fromEntries(named.map((c) => [nodeSym(c[1]), nodeSym(c[3])]));
 }
 
 function extractLayers(ast) {
@@ -185,7 +193,8 @@ function strokeWidth(node) {
 	return width ? roundMilli(width[1]) : 0.12;
 }
 
-// A rect becomes a polygon so it stays correct under any footprint rotation.
+// A rect becomes a polygon so it stays correct under any footprint rotation;
+// `rect` lets the writer put it back as an fp_rect.
 function rectToPoly(node) {
 	const [x1, y1] = childPt(node, "start");
 	const [x2, y2] = childPt(node, "end");
@@ -195,7 +204,7 @@ function rectToPoly(node) {
 		[x2, y2],
 		[x1, y2],
 	];
-	return { type: "poly", pts };
+	return { type: "poly", pts, rect: true };
 }
 
 function circleShape(node) {
@@ -243,7 +252,13 @@ function compactGraphic(node) {
 	const layer = extractLayerName(node);
 	if (!shape || !GRAPHIC_LAYERS.has(layer)) return null;
 	const g = shape(node);
-	return g && { ...g, layer, width: strokeWidth(node) };
+	return g && { ...g, layer, width: strokeWidth(node), ...fillFlag(node) };
+}
+
+// (fill yes) / (fill solid): the shape is drawn filled.
+function fillFlag(node) {
+	const fill = nodeSym(extractChildNode(node, "fill")?.[1]);
+	return fill && fill !== "no" && fill !== "none" ? { fill: true } : {};
 }
 
 function compactGraphics(fpNode) {
@@ -286,11 +301,16 @@ function hiddenFlag(textNode) {
 	return hidden ? { hide: true } : {};
 }
 
-// Back-side text is normally drawn mirrored; a file may say otherwise.
-function mirrorFlag(textNode) {
+// Back-side text is normally drawn mirrored; a file may say otherwise. The
+// rest of (justify ...) (left, right, top, bottom) is kept as written.
+function justifyFlags(textNode) {
 	const effects = extractChildNode(textNode, "effects");
-	const justify = extractChildNode(effects, "justify") ?? [];
-	return justify.some((n) => nodeSym(n) === "mirror") ? { mirror: true } : {};
+	const tokens = (extractChildNode(effects, "justify") ?? []).slice(1);
+	const justify = tokens.map(nodeSym).filter((t) => t !== "mirror");
+	return {
+		...(tokens.length > justify.length ? { mirror: true } : {}),
+		...(justify.length > 0 ? { justify } : {}),
+	};
 }
 
 // Reference text position: footprint-local, angle relative to the footprint
@@ -307,7 +327,109 @@ function referenceLabel(fpNode, fpRot) {
 		size: fontHeight(text),
 		...fontThickness(text),
 		...hiddenFlag(text),
-		...mirrorFlag(text),
+		...justifyFlags(text),
+		...unlockedFlag(text),
+	};
+}
+
+// (unlocked yes): the text does not turn with its footprint to stay upright.
+function unlockedFlag(textNode) {
+	const unlocked = extractChildNode(textNode, "unlocked");
+	return unlocked && nodeSym(unlocked[1]) !== "no" ? { unlocked: true } : {};
+}
+
+function isValueText(node) {
+	const head = node[0]?.sym;
+	const kind = nodeSym(node[1]);
+	if (head === "property") return kind === "Value";
+	return head === "fp_text" && kind.toLowerCase() === "value";
+}
+
+// Footprint settings the board model keeps as written.
+const FP_SETTING_HEADS = new Set([
+	"solder_mask_margin",
+	"solder_paste_margin",
+	"solder_paste_margin_ratio",
+	"solder_paste_ratio",
+	"clearance",
+	"zone_connect",
+	"thermal_width",
+	"thermal_gap",
+	"zone",
+	"net_tie_pad_groups",
+	"private_layers",
+	"duplicate_pad_numbers_are_jumpers",
+	"jumper_pad_groups",
+]);
+
+// Numbered user layers can hold overlays of hundreds of thousands of
+// strokes (the jetson demo has 287k on User.9), too big for the board JSON:
+// footprint shapes on them are left out, with a warning.
+function isUserLayerShape(node) {
+	const head = node[0]?.sym ?? "";
+	return head.startsWith("fp_") && /^User\.\d+$/.test(extractLayerName(node));
+}
+
+// User texts, shapes the compact graphics do not hold, and settings.
+function isExtraNode(node) {
+	const head = node[0]?.sym ?? "";
+	if (FP_SETTING_HEADS.has(head)) return true;
+	if (!head.startsWith("fp_") || isReferenceText(node)) return false;
+	if (isValueText(node) || isUserLayerShape(node)) return false;
+	return !compactGraphic(node);
+}
+
+// The writer gives copies new uuids; keeping these would only add size.
+function withoutUuid(node) {
+	return node.filter((c) => !(Array.isArray(c) && c[0]?.sym === "uuid"));
+}
+
+// Copies of footprint children taken to the front at 0 degrees, the frame
+// the writer builds a footprint in before turning it to its placement.
+function frontItems(fpNode, nodes) {
+	const layer = extractChildNode(fpNode, "layer") ?? [sym("layer"), "F.Cu"];
+	const at = [sym("at"), 0, 0, extractAt(fpNode).rot];
+	const tmp = [sym("footprint"), structuredClone(layer), at];
+	tmp.push(...structuredClone(nodes));
+	orientFootprint(tmp, 0, "F");
+	return tmp.slice(3).map(withoutUuid);
+}
+
+const PAD_MODEL_HEADS = new Set([
+	"at",
+	"size",
+	"drill",
+	"layers",
+	"net",
+	"uuid",
+]);
+
+// Pad settings (shape ratios, pin function and type, ...) kept as written.
+function withPadExtra(pad, frontPadNode) {
+	const extra = frontPadNode
+		.slice(1)
+		.filter((c) => Array.isArray(c) && !PAD_MODEL_HEADS.has(c[0]?.sym));
+	return extra.length > 0 ? { ...pad, extra } : pad;
+}
+
+function isPadNode(node) {
+	return node[0]?.sym === "pad";
+}
+
+// The Value text and the extras, front-side like a library footprint.
+function rawFootprintItems(fpNode, fpRot) {
+	const children = fpNode.filter((c) => Array.isArray(c));
+	const front = (keep) => frontItems(fpNode, children.filter(keep));
+	const [valueText] = front(isValueText);
+	const extras = front(isExtraNode);
+	const frontPads = front(isPadNode);
+	const pads = collectPadGeometry(fpNode).map((pad, i) =>
+		withPadExtra(toLocalPad(pad, fpRot), frontPads[i]),
+	);
+	return {
+		...(valueText ? { valueText } : {}),
+		...(extras.length > 0 ? { extras } : {}),
+		pads,
 	};
 }
 
@@ -319,12 +441,13 @@ function footprintAttr(fpNode) {
 
 // Pads exactly as placed on the board (already flipped for B side), plus
 // compact silk/fab/courtyard outlines, the attributes and the reference text
-// position.
+// position. The Value text, other texts and shapes and the settings are
+// kept as written, front-side (see rawFootprintItems).
 function embeddedFootprint(fpNode, fpRot) {
 	const fp = {
 		embedded: true,
 		...footprintAttr(fpNode),
-		pads: collectPadGeometry(fpNode).map((pad) => toLocalPad(pad, fpRot)),
+		...rawFootprintItems(fpNode, fpRot),
 		graphics: compactGraphics(fpNode),
 	};
 	const refLabel = referenceLabel(fpNode, fpRot);
@@ -403,6 +526,12 @@ function uuidOf(node) {
 	return uuid ? { uuid } : {};
 }
 
+// An (arc ...) track passes through its mid point.
+function midOf(node) {
+	const mid = extractChildNode(node, "mid");
+	return mid ? { mid: [roundCoord(mid[1]), roundCoord(mid[2])] } : {};
+}
+
 function parseTrack(node, netNumberToId) {
 	const startNode = extractChildNode(node, "start");
 	const endNode = extractChildNode(node, "end");
@@ -413,6 +542,7 @@ function parseTrack(node, netNumberToId) {
 		netId: netNumberToId.get(netNum) ?? "",
 		layer: extractLayerName(node),
 		start: [roundCoord(startNode?.[1] || 0), roundCoord(startNode?.[2] || 0)],
+		...midOf(node),
 		end: [roundCoord(endNode?.[1] || 0), roundCoord(endNode?.[2] || 0)],
 		widthMm: roundCoord(widthNode?.[1] || 0),
 	};
@@ -447,15 +577,39 @@ function extractPolygonPts(polyNode) {
 	return pts;
 }
 
+// A zone on several layers lists them all; `layer` is the first.
+function zoneLayers(node) {
+	const layers = extractChildNode(node, "layers");
+	if (!layers) return { layer: extractLayerName(node) };
+	const names = layers.slice(1).map(nodeSym);
+	return { layer: names[0] ?? "", layers: names };
+}
+
+const ZONE_MODEL_HEADS = new Set([
+	"net",
+	"net_name",
+	"layer",
+	"layers",
+	"uuid",
+	"polygon",
+	"filled_polygon",
+	"fill_segments",
+]);
+
+// The outline and settings (clearances, thermals, keepout, ...) as written.
+// Fills are left out: KiCad computes them from these, and they are most of a
+// board's size.
 function parseZone(node, netNumberToId) {
 	const netNum = netKeyOf(extractChildNode(node, "net"));
-	const polyNode =
-		extractChildNode(node, "filled_polygon") ||
-		extractChildNode(node, "polygon");
+	const settings = node
+		.slice(1)
+		.filter((c) => Array.isArray(c) && !ZONE_MODEL_HEADS.has(c[0]?.sym));
 	return {
+		...uuidOf(node),
 		netId: netNumberToId.get(netNum) ?? "",
-		layer: extractLayerName(node),
-		polygon: extractPolygonPts(polyNode),
+		...zoneLayers(node),
+		polygon: extractPolygonPts(extractChildNode(node, "polygon")),
+		settings,
 	};
 }
 
@@ -597,7 +751,7 @@ function chainSegmentsToPolygon(segs) {
 	return poly.length >= 3 ? poly : null;
 }
 
-function isEdgeCutsNode(child) {
+export function isEdgeCutsNode(child) {
 	return Array.isArray(child) && extractLayerName(child) === "Edge.Cuts";
 }
 
@@ -619,10 +773,11 @@ function processEdgeCutsNode(child, rects, segs) {
 	}
 }
 
-function extractEdgeCutsOutline(ast) {
+// The board outline as one closed point list, from the board drawings.
+export function edgeCutsOutline(drawings) {
 	const rects = [];
 	const segs = [];
-	for (const child of ast.slice(1)) {
+	for (const child of drawings) {
 		if (isEdgeCutsNode(child)) {
 			processEdgeCutsNode(child, rects, segs);
 		}
@@ -656,9 +811,11 @@ function createPcbContext() {
 		rawSegments: [],
 		rawVias: [],
 		rawZones: [],
+		drawings: [],
 		footprints: {},
 		warnings: [],
 		usedRefs: new Set(),
+		userLayerShapes: 0,
 	};
 }
 
@@ -684,22 +841,39 @@ function uniqueRef(ref, usedRefs, warnings) {
 	return finalRef;
 }
 
+function addFootprint(fpNode, ctx, idFn) {
+	const part = parseFootprintPart(fpNode, idFn);
+	part.ref = uniqueRef(part.ref, ctx.usedRefs, ctx.warnings);
+	ctx.parts.push(part);
+	collectFootprintPads(fpNode, part.id, ctx.padConnections);
+	ctx.footprints[part.id] = embeddedFootprint(fpNode, part.placement.rot);
+	ctx.userLayerShapes += fpNode.filter(
+		(c) => Array.isArray(c) && isUserLayerShape(c),
+	).length;
+}
+
+const ELEMENT_LISTS = {
+	segment: "rawSegments",
+	arc: "rawSegments",
+	via: "rawVias",
+	zone: "rawZones",
+	dimension: "drawings",
+	target: "drawings",
+};
+
+// Board drawings (gr_line, gr_text, gr_poly, ...) are kept as written.
+function elementList(head) {
+	return head.startsWith("gr_") ? "drawings" : ELEMENT_LISTS[head];
+}
+
 function collectPcbElements(ast, ctx, idFn) {
 	for (const child of ast.slice(1)) {
 		if (!Array.isArray(child)) continue;
-		const head = child[0]?.sym;
+		const head = child[0]?.sym ?? "";
 		if (head === "footprint" || head === "module") {
-			const part = parseFootprintPart(child, idFn);
-			part.ref = uniqueRef(part.ref, ctx.usedRefs, ctx.warnings);
-			ctx.parts.push(part);
-			collectFootprintPads(child, part.id, ctx.padConnections);
-			ctx.footprints[part.id] = embeddedFootprint(child, part.placement.rot);
-		} else if (head === "segment") {
-			ctx.rawSegments.push(child);
-		} else if (head === "via") {
-			ctx.rawVias.push(child);
-		} else if (head === "zone") {
-			ctx.rawZones.push(child);
+			addFootprint(child, ctx, idFn);
+		} else {
+			ctx[elementList(head)]?.push(child);
 		}
 	}
 }
@@ -775,10 +949,25 @@ function populateNetMap(ast, ctx) {
 	return netInfoMap;
 }
 
+// The board's own setup (stackup, mask and paste rules, plot options) and
+// thickness, as written.
+function boardSetup(ast) {
+	const setup = extractChildNode(ast, "setup");
+	const general = extractChildNode(ast, "general");
+	const thickness = extractChildNode(general, "thickness");
+	return {
+		...(setup ? { setup } : {}),
+		...(thickness ? { thicknessMm: roundCoord(thickness[1]) } : {}),
+	};
+}
+
 function buildBoardGeometry(ast, ctx, netNumberToId) {
 	return {
-		outline: extractEdgeCutsOutline(ast),
+		...boardSetup(ast),
+		outline: edgeCutsOutline(ctx.drawings),
 		layers: extractLayers(ast),
+		layerNames: extractLayerNames(ast),
+		drawings: ctx.drawings,
 		tracks: ctx.rawSegments.map((s) => parseTrack(s, netNumberToId)),
 		vias: ctx.rawVias.map((v) => parseVia(v, netNumberToId)),
 		zones: ctx.rawZones.map((z) => parseZone(z, netNumberToId)),
@@ -793,6 +982,12 @@ function convertPcbToIr(text, { name, idFn }) {
 	const ctx = createPcbContext();
 	ctx.warnings.push(...parsed.warnings);
 	collectPcbElements(ast, ctx, idFn);
+	if (ctx.userLayerShapes > 0) {
+		const n = ctx.userLayerShapes;
+		ctx.warnings.push(
+			`left out ${n} footprint shape(s) on numbered User layers`,
+		);
+	}
 	const netInfoMap = populateNetMap(ast, ctx);
 	const { irNets, netNumberToId } = buildIrNets(netInfoMap, idFn);
 	const irName = resolveIrName(name, extractTitle(ast));
