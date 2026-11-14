@@ -14,6 +14,7 @@ import {
 	boardPadRadii,
 	footprintIdsToFetch,
 	footprintToPrimitives,
+	padOutline,
 	placementFor,
 	refLabelPlacement,
 	transformPrimitives,
@@ -706,10 +707,71 @@ function isPadVisible(pad, isBack, layerState) {
 	return isVisible(layerState, layer);
 }
 
-function calcPadCornerRadius(shape, w, h) {
-	if (shape === "roundrect") return Math.min(w, h) * 0.25;
-	if (shape === "oval") return Math.min(w, h) / 2;
-	return 0;
+const PAD_FLIP = { x: " scale(-1 1)", y: " scale(1 -1)" };
+
+// SVG transform from a pad's own frame (padOutline's) to the board.
+function padFrame(pad) {
+	const [cx, cy] = pad.center;
+	const flip = PAD_FLIP[pad.mirror] ?? "";
+	return `translate(${cx} ${cy}) rotate(${pad.rot || 0})${flip}`;
+}
+
+// A polygon grown by r: round-joined stroke 2r wide, as the copper is.
+function PadPolygon({ pts, r = 0, color, fill = color, transform }) {
+	return (
+		<polygon
+			points={pts.map((p) => `${p[0]},${p[1]}`).join(" ")}
+			transform={transform}
+			fill={fill}
+			stroke={color}
+			strokeWidth={2 * r}
+			strokeLinejoin="round"
+		/>
+	);
+}
+
+function PadPrimitive({ p, color }) {
+	const fill = p.fill ? color : "none";
+	const r = p.width / 2;
+	if (p.type === "line")
+		return <GraphicLine g={p} color={color} width={p.width} />;
+	if (p.type === "arc")
+		return <GraphicArc g={p} color={color} width={p.width} />;
+	if (p.type === "circle") {
+		const [cx, cy] = p.center;
+		return (
+			<circle
+				cx={cx}
+				cy={cy}
+				r={p.radius}
+				fill={fill}
+				stroke={color}
+				strokeWidth={p.width}
+			/>
+		);
+	}
+	const [s, e] = [p.start, p.end];
+	const pts = p.pts ?? [s, [e[0], s[1]], e, [s[0], e[1]]];
+	return <PadPolygon pts={pts} r={r} color={color} fill={fill} />;
+}
+
+// A custom pad: its anchor and every primitive, in the pad's frame.
+function CustomPadShape({ pad, color }) {
+	const [w, h] = pad.size;
+	const anchor =
+		pad.anchor === "circle" ? (
+			<circle r={w / 2} fill={color} />
+		) : (
+			<rect x={-w / 2} y={-h / 2} width={w} height={h} fill={color} />
+		);
+	return (
+		<g transform={padFrame(pad)}>
+			{anchor}
+			{(pad.primitives ?? []).map((p) => (
+				<PadPrimitive key={getGraphicKey(p)} p={p} color={color} />
+			))}
+		</g>
+	);
 }
 
 function PadShapeElement({ pad, color, rot }) {
@@ -718,7 +780,14 @@ function PadShapeElement({ pad, color, rot }) {
 	if (pad.shape === "circle") {
 		return <circle cx={cx} cy={cy} r={w / 2} fill={color} />;
 	}
-	const rx = calcPadCornerRadius(pad.shape, w, h);
+	if (pad.shape === "custom") return <CustomPadShape pad={pad} color={color} />;
+	const { pts, r: rx } = padOutline(pad);
+	if (pts.length > 4 || pad.shape === "trapezoid") {
+		return (
+			<PadPolygon pts={pts} r={rx} color={color} transform={padFrame(pad)} />
+		);
+	}
+
 	return (
 		<rect
 			x={cx - w / 2}

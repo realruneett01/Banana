@@ -1,7 +1,12 @@
 import {
 	calcArcCenter,
+	distPointToSegment,
 	footprintToPrimitives,
+	padLocalPoint,
+	padOutline,
 	placementFor,
+	pointInPolygon,
+	polygonEdges,
 	transformPrimitives,
 } from "./footprintRender.js";
 import { arcSegmentDistance, isArcTrack } from "./pcbGeometry.js";
@@ -74,21 +79,6 @@ export function constrainAngle(from, to, mode = "45") {
 		return constrain90Internal(x0, y0, x1, y1);
 	}
 	return constrain45Internal(x0, y0, x1, y1);
-}
-
-function clamp(val, min, max) {
-	return Math.max(min, Math.min(max, val));
-}
-
-function distPointToSegment(px, py, s, e) {
-	const dx = e[0] - s[0];
-	const dy = e[1] - s[1];
-	const lenSq = dx * dx + dy * dy;
-	if (lenSq === 0) {
-		return Math.hypot(px - s[0], py - s[1]);
-	}
-	const t = clamp(((px - s[0]) * dx + (py - s[1]) * dy) / lenSq, 0, 1);
-	return Math.hypot(px - (s[0] + t * dx), py - (s[1] + t * dy));
 }
 
 function crossProduct2D(p1, p2, p3) {
@@ -305,50 +295,20 @@ function collectCandidateTracks(board, layer, netId) {
 	return candidates;
 }
 
-// Corner radius of a pad's copper; roundrect matches the canvas (rx = min(w, h) * 0.25).
-const PAD_CORNER = {
-	circle: (hw, hh) => Math.max(hw, hh),
-	oval: (hw, hh) => Math.min(hw, hh),
-	roundrect: (hw, hh) => Math.min(hw, hh) * 0.5,
-};
-
-// Every pad shape is a box of half extents a x b grown by corner radius r.
-function padRoundedBox(pad) {
-	const hw = (Number(pad.size?.[0]) || 0) / 2;
-	const hh = (Number(pad.size?.[1]) || 0) / 2;
-	const r = PAD_CORNER[pad.shape]?.(hw, hh) ?? 0;
-	return { a: Math.max(0, hw - r), b: Math.max(0, hh - r), r };
-}
-
-// Point p in the pad's own frame (centre at origin, pad rotation undone).
-function toPadFrame(p, pad) {
-	const [cx, cy] = ptCoords(pad.center);
-	const rad = (-(Number(pad.rot) || 0) * Math.PI) / 180;
-	const [dx, dy] = [p[0] - cx, p[1] - cy];
-	const [cos, sin] = [Math.cos(rad), Math.sin(rad)];
-	return [dx * cos - dy * sin, dx * sin + dy * cos];
-}
-
-function insideBox(p, a, b) {
-	return Math.abs(p[0]) <= a && Math.abs(p[1]) <= b;
-}
-
-function boxSegmentDistance(s, e, a, b) {
-	if (insideBox(s, a, b) || insideBox(e, a, b)) return 0;
-	const corners = [
-		[-a, -b],
-		[a, -b],
-		[a, b],
-		[-a, b],
-	];
-	const edges = corners.map((c, i) => [c, corners[(i + 1) % 4]]);
+function polygonSegmentDistance(pts, s, e) {
+	if (pointInPolygon(s, pts) || pointInPolygon(e, pts)) return 0;
+	const edges = polygonEdges(pts);
 	return Math.min(...edges.map(([c, d]) => segmentDistance(s, e, c, d)));
 }
 
-/** Distance from centreline s-e to the copper of a world pad {center, size, rot, shape}; 0 inside. */
+/** Distance from centreline s-e to the copper of a world pad (padOutline: shape, size, rratio, chamfer, ...); 0 inside. */
 export function padSegmentDistance(pad, s, e) {
-	const { a, b, r } = padRoundedBox(pad);
-	const dist = boxSegmentDistance(toPadFrame(s, pad), toPadFrame(e, pad), a, b);
+	const { pts, r } = padOutline(pad);
+	const dist = polygonSegmentDistance(
+		pts,
+		padLocalPoint(s, pad),
+		padLocalPoint(e, pad),
+	);
 	return Math.max(0, dist - r);
 }
 
