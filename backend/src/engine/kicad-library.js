@@ -256,6 +256,21 @@ function extractPadLayers(padNode) {
 	return layersNode.slice(1).map(nodeSym).filter(Boolean);
 }
 
+// (drill 0.8), (drill oval 0.8 1.2) and either with (offset x y); an SMD pad
+// may carry only the offset. Keys are set only when the file has them.
+function extractPadDrill(padNode) {
+	const drillNode = extractChildNode(padNode, "drill");
+	if (!drillNode) return {};
+	const sizes = drillNode.filter((n) => typeof n === "number");
+	const offset = extractChildNode(drillNode, "offset");
+	const drill = {};
+	if (sizes.length > 0) drill.drill = sizes[0];
+	if (nodeSym(drillNode[1]) === "oval")
+		drill.drillHeight = sizes[1] ?? sizes[0];
+	if (offset) drill.drillOffset = [Number(offset[1]), Number(offset[2])];
+	return drill;
+}
+
 function parsePadNode(padNode) {
 	return {
 		number: nodeSym(padNode[1]),
@@ -263,6 +278,7 @@ function parsePadNode(padNode) {
 		shape: nodeSym(padNode[3]),
 		at: extractAt(padNode),
 		size: extractPadSize(padNode),
+		...extractPadDrill(padNode),
 		layers: extractPadLayers(padNode),
 	};
 }

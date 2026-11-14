@@ -153,7 +153,14 @@ describe("ratsnest connectivity", () => {
 });
 
 const GRAPHIC_TYPES = new Set(["line", "arc", "circle", "poly"]);
-const GRAPHIC_LAYERS = new Set(["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"]);
+const GRAPHIC_LAYERS = new Set([
+	"F.SilkS",
+	"B.SilkS",
+	"F.Fab",
+	"B.Fab",
+	"F.CrtYd",
+	"B.CrtYd",
+]);
 // express.json() default body limit ("100kb").
 const EXPRESS_DEFAULT_LIMIT = 100 * 1024;
 
@@ -212,7 +219,9 @@ describe("compact embedded graphics (ecc83-pp)", { skip: skipEcc83 }, () => {
 		assert.deepEqual(board.footprints[p5.id].refLabel, {
 			at: [4.505, -1.28],
 			rot: 0,
+			layer: "F.SilkS",
 			size: 1,
+			thickness: 0.15,
 		});
 		const r1 = ir.parts.find((p) => p.ref === "R1");
 		// Board text angle 90 is absolute; the footprint sits at -90.
@@ -240,7 +249,7 @@ describe("compact embedded graphics (synthetic)", () => {
 		return res.board.footprints[res.ir.parts[0].id];
 	}
 
-	test("keeps silk and fab shapes only, rounded to 0.001 mm", () => {
+	test("keeps silk, fab and courtyard shapes only, rounded to 0.001 mm", () => {
 		const fp = importSynthetic();
 		const style = (layer, width) => ({ layer, width });
 		assert.deepEqual(fp.graphics, [
@@ -272,6 +281,7 @@ describe("compact embedded graphics (synthetic)", () => {
 				],
 				...style("F.SilkS", 0.1),
 			},
+			{ type: "line", start: [0, 0], end: [5, 5], ...style("F.CrtYd", 0.05) },
 		]);
 	});
 
@@ -292,7 +302,12 @@ describe("compact embedded graphics (synthetic)", () => {
 
 	test("reference label is footprint-local with a relative angle", () => {
 		const fp = importSynthetic();
-		assert.deepEqual(fp.refLabel, { at: [1.235, -2], rot: 0, size: 1.5 });
+		assert.deepEqual(fp.refLabel, {
+			at: [1.235, -2],
+			rot: 0,
+			layer: "F.SilkS",
+			size: 1.5,
+		});
 	});
 
 	test("label placement rotates with the footprint and stays readable", () => {

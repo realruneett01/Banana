@@ -3,8 +3,9 @@ import { newId } from "./ids.js";
 import { collectFootprintPads as collectPadGeometry } from "./kicad-library.js";
 import { parse } from "./sexpr.js";
 
+// KiCad's internal unit is 1 nm: keep every digit a board file can hold.
 function roundCoord(val) {
-	const r = Math.round(Number(val) * 10000) / 10000;
+	const r = Math.round(Number(val) * 1e6) / 1e6;
 	return Object.is(r, -0) ? 0 : r;
 }
 
@@ -156,7 +157,14 @@ function toLocalPad(pad, fpRot) {
 	return { ...pad, at: [x, y, relAngle(rot, fpRot)] };
 }
 
-const GRAPHIC_LAYERS = new Set(["F.SilkS", "B.SilkS", "F.Fab", "B.Fab"]);
+const GRAPHIC_LAYERS = new Set([
+	"F.SilkS",
+	"B.SilkS",
+	"F.Fab",
+	"B.Fab",
+	"F.CrtYd",
+	"B.CrtYd",
+]);
 
 function roundMilli(val) {
 	const r = Math.round(Number(val) * 1000) / 1000;
@@ -228,7 +236,7 @@ const GRAPHIC_SHAPES = new Map([
 	["fp_poly", polyShape],
 ]);
 
-// Footprint-local silk/fab outlines in the editor's primitive shape. Text
+// Footprint-local silk/fab/courtyard outlines in the editor's primitive shape. Text
 // strokes stay out to keep the board JSON small.
 function compactGraphic(node) {
 	const shape = GRAPHIC_SHAPES.get(node[0]?.sym);
@@ -252,10 +260,37 @@ function isReferenceText(node) {
 	return head === "fp_text" && kind.toLowerCase() === "reference";
 }
 
-function fontHeight(textNode) {
+function fontChild(textNode, head) {
 	const effects = extractChildNode(textNode, "effects");
-	const size = extractChildNode(extractChildNode(effects, "font"), "size");
+	return extractChildNode(extractChildNode(effects, "font"), head);
+}
+
+function fontHeight(textNode) {
+	const size = fontChild(textNode, "size");
 	return size ? roundMilli(size[1]) : 1;
+}
+
+// Stroke thickness, only when the file gives one.
+function fontThickness(textNode) {
+	const thickness = fontChild(textNode, "thickness");
+	return thickness ? { thickness: roundMilli(thickness[1]) } : {};
+}
+
+// KiCad 8+ writes (hide yes); older files a bare `hide` in the text or its
+// effects.
+function hiddenFlag(textNode) {
+	const hide = extractChildNode(textNode, "hide");
+	const effects = extractChildNode(textNode, "effects") ?? [];
+	const bare = [...textNode, ...effects].some((n) => nodeSym(n) === "hide");
+	const hidden = hide ? nodeSym(hide[1]) !== "no" : bare;
+	return hidden ? { hide: true } : {};
+}
+
+// Back-side text is normally drawn mirrored; a file may say otherwise.
+function mirrorFlag(textNode) {
+	const effects = extractChildNode(textNode, "effects");
+	const justify = extractChildNode(effects, "justify") ?? [];
+	return justify.some((n) => nodeSym(n) === "mirror") ? { mirror: true } : {};
 }
 
 // Reference text position: footprint-local, angle relative to the footprint
@@ -268,15 +303,27 @@ function referenceLabel(fpNode, fpRot) {
 	return {
 		at: milliPt(at),
 		rot: relAngle(rot, fpRot),
+		layer: extractLayerName(text),
 		size: fontHeight(text),
+		...fontThickness(text),
+		...hiddenFlag(text),
+		...mirrorFlag(text),
 	};
 }
 
+// (attr smd exclude_from_pos_files ...) flags, kept as written.
+function footprintAttr(fpNode) {
+	const attr = extractChildNode(fpNode, "attr");
+	return attr ? { attr: attr.slice(1).map(nodeSym) } : {};
+}
+
 // Pads exactly as placed on the board (already flipped for B side), plus
-// compact silk/fab outlines and the reference text position.
+// compact silk/fab/courtyard outlines, the attributes and the reference text
+// position.
 function embeddedFootprint(fpNode, fpRot) {
 	const fp = {
 		embedded: true,
+		...footprintAttr(fpNode),
 		pads: collectPadGeometry(fpNode).map((pad) => toLocalPad(pad, fpRot)),
 		graphics: compactGraphics(fpNode),
 	};
