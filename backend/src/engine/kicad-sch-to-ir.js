@@ -274,10 +274,14 @@ function processLabelNode(child, ctx) {
 	const text = nodeSym(child[1]);
 	const at = extractAt(child);
 	if (!at) return;
+	const kind = LINK_KINDS[child[0].sym];
+	if (isBusName(text)) {
+		const link = kind && { kind, name: text };
+		return recordBusName(at, { name: text, link }, ctx);
+	}
 	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 	recordPointLabel(key, text, ctx);
 	// Global and hierarchical labels reach other sheets, where a driver may be.
-	const kind = LINK_KINDS[child[0].sym];
 	if (!kind) return;
 	ctx.drivenPoints.add(key);
 	pushAt(ctx.pointLinks, key, { kind, name: text });
@@ -300,27 +304,126 @@ function processSheetPins(sheetNode, ctx) {
 	ctx.sheets.push({ uuid: sheet, file });
 	for (const pin of sheetNode.filter((c) => matchHead(c, "pin"))) {
 		const at = extractAt(pin);
-		if (!at) continue;
-		const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+		if (at)
+			recordSheetPin(
+				at,
+				{ kind: "sheetPin", sheet, name: nodeSym(pin[1]) },
+				ctx,
+			);
+	}
+}
+
+function recordSheetPin(at, link, ctx) {
+	if (isBusName(link.name)) {
+		return recordBusName(at, { name: link.name, link }, ctx);
+	}
+	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+	ctx.drivenPoints.add(key);
+	pushAt(ctx.pointLinks, key, link);
+}
+
+// Buses: NAME[a..b] vectors and {A B} / NAME{A B} groups, where a token may
+// name a bus_alias. "~{", "^{" and "_{" are overbar/super/subscript text.
+const VECTOR_RE = /^(.*)\[(\d+)\.\.(\d+)\]$/;
+const GROUP_RE = /^((?:[^{}]*[^{}~^_])?)\{([^{}]*)\}$/;
+
+function isBusName(name) {
+	return VECTOR_RE.test(name) || GROUP_RE.test(name);
+}
+
+// Vector members are keyed by position, as KiCad joins IO[8..15] to a
+// sheet pin IO[0..7]: IO8 with IO0.
+function vectorMembers([, prefix, from, to]) {
+	const [a, b] = [Number(from), Number(to)];
+	const step = a <= b ? 1 : -1;
+	const out = [];
+	for (let i = a; i !== b + step; i += step) {
+		out.push({ key: `#${out.length}`, net: `${prefix}${i}` });
+	}
+	return out;
+}
+
+function memberNames(token) {
+	const vector = VECTOR_RE.exec(token);
+	return vector ? vectorMembers(vector).map((m) => m.net) : [token];
+}
+
+// Group members are keyed by their name inside the group; a named group
+// NAME{...} prefixes its nets with "NAME.".
+function groupMembers([, prefix, body], aliases) {
+	const tokens = body.split(/[\s,]+/).filter(Boolean);
+	const names = tokens
+		.flatMap((t) => aliases.get(t) ?? [t])
+		.flatMap(memberNames);
+	const net = (name) => (prefix ? `${prefix}.${name}` : name);
+	return names.map((name) => ({ key: name, net: net(name) }));
+}
+
+function busMembers(name, aliases) {
+	const vector = VECTOR_RE.exec(name);
+	if (vector) return vectorMembers(vector);
+	return groupMembers(GROUP_RE.exec(name), aliases);
+}
+
+function recordBusName(at, entry, ctx) {
+	const key = connectPointToSegments(at.x, at.y, ctx.busSegments, ctx.busUf);
+	pushAt(ctx.busNames, key, entry);
+}
+
+function processBusAlias(child, ctx) {
+	const members = extractChildNode(child, "members") ?? [];
+	ctx.aliases.set(nodeSym(child[1]), members.slice(1).map(nodeSym));
+}
+
+// Each member of a bus is a net point. A naming entry gives it its name, so
+// it joins wires labelled with that name. A member of a sheet-crossing bus
+// name also gets that crossing, renamed to the member.
+function expandBusEntry(root, entry, named, ctx) {
+	for (const member of busMembers(entry.name, ctx.aliases)) {
+		const key = `bus:${root}:${member.key}`;
+		if (named) recordPointLabel(key, member.net, ctx);
+		if (!entry.link) continue;
 		ctx.drivenPoints.add(key);
-		const name = nodeSym(pin[1]);
-		pushAt(ctx.pointLinks, key, { kind: "sheetPin", sheet, name });
+		pushAt(ctx.pointLinks, key, { ...entry.link, name: member.net });
+	}
+}
+
+const isBusLabel = (entry) => entry.link?.kind !== "sheetPin";
+
+// A sheet pin names a bus's members only when no label on that bus does:
+// IO[8..15] on a bus into sheet pin IO[0..7] has members IO8..IO15 here.
+function expandBuses(ctx) {
+	const byRoot = new Map();
+	for (const [point, entries] of ctx.busNames) {
+		for (const entry of entries) pushAt(byRoot, ctx.busUf.find(point), entry);
+	}
+	for (const [root, entries] of byRoot) {
+		const labelled = entries.some(isBusLabel);
+		for (const entry of entries) {
+			expandBusEntry(root, entry, !labelled || isBusLabel(entry), ctx);
+		}
 	}
 }
 
 function handleUnsupportedHead(head, ctx) {
-	if (head === "bus" || head === "sheet") {
+	if (head === "sheet") {
 		ctx.warnings.push(`unsupported element: ${head}`);
 	}
 }
 
+const NODE_HANDLERS = new Map([
+	["wire", (child, ctx) => addWireSegments(child, ctx.segments, ctx.uf)],
+	["bus", (child, ctx) => addWireSegments(child, ctx.busSegments, ctx.busUf)],
+	["bus_alias", processBusAlias],
+	["junction", processJunctionNode],
+	["sheet", processSheetPins],
+]);
+
 function processAstNode(child, ctx) {
 	if (!Array.isArray(child)) return;
 	const head = child[0]?.sym;
-	if (head === "wire") return addWireSegments(child, ctx.segments, ctx.uf);
-	if (head === "junction") return processJunctionNode(child, ctx);
 	if (LABEL_HEADS.has(head)) return processLabelNode(child, ctx);
-	if (head === "sheet") processSheetPins(child, ctx);
+	NODE_HANDLERS.get(head)?.(child, ctx);
 	handleUnsupportedHead(head, ctx);
 }
 
@@ -677,10 +780,14 @@ function extractTitle(ast) {
 	return titleNode ? nodeSym(titleNode[1]) : null;
 }
 
-function createParseContext() {
+function createParseContext(aliases = new Map()) {
 	return {
 		uf: new UnionFind(),
 		segments: [],
+		busUf: new UnionFind(),
+		busSegments: [],
+		busNames: new Map(),
+		aliases: new Map(aliases),
 		pointPins: new Map(),
 		pointLabels: new Map(),
 		labelFirstPoint: new Map(),
@@ -724,6 +831,7 @@ function populateContextElements(ast, ctx) {
 	for (const child of ast.slice(1)) {
 		processAstNode(child, ctx);
 	}
+	expandBuses(ctx);
 }
 
 function assembleCircuit(ast, ctx, idFn) {
@@ -769,14 +877,17 @@ export function kicadSchToIr(text, { name = "imported", idFn = newId } = {}) {
 
 // For whole-project ERC: parts, connected groups with their off-sheet links
 // (global names, hierarchical labels, sheet pins) and the sub-sheets used.
-export function kicadSchToErcGraph(text, { idFn = newId } = {}) {
+// `aliases` adds bus aliases defined on other sheets of the project; the
+// result's `aliases` holds those plus this sheet's own.
+export function kicadSchToErcGraph(text, { idFn = newId, aliases } = {}) {
 	try {
 		const parsed = parseSchAst(text);
 		if (!parsed.ok) return parsed;
-		const ctx = createParseContext();
+		const ctx = createParseContext(aliases);
 		const { parts, groups } = assembleCircuit(parsed.ast, ctx, idFn);
 		const ercGroups = buildErcGroups(groups);
-		return { ok: true, parts, groups: ercGroups, sheets: ctx.sheets };
+		const { sheets } = ctx;
+		return { ok: true, parts, groups: ercGroups, sheets, aliases: ctx.aliases };
 	} catch (err) {
 		// Broad catch: one malformed sheet must not abort a project walk
 		return { ok: false, errors: [err?.message || String(err)] };
