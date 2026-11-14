@@ -1,3 +1,6 @@
+import { calcArcCenter } from "./footprintRender.js";
+import { arcSegmentDistance, isArcTrack } from "./pcbGeometry.js";
+
 export const WIDTH_PRESETS = Object.freeze([
 	Object.freeze({
 		label: "Signal 0.25 mm",
@@ -110,9 +113,20 @@ function segmentDistance(s1, e1, s2, e2) {
 	return Math.min(d1, d2, d3, d4);
 }
 
-function getSegmentBox(seg, expandMm = 0) {
+// x and y spans a track can reach; an arc may bulge anywhere on its circle.
+function segmentSpan(seg) {
 	const s = ptCoords(seg.start ?? seg[0]);
 	const e = ptCoords(seg.end ?? seg[1]);
+	if (!isArcTrack(seg)) return [s, e];
+	const { center, radius } = calcArcCenter(s, seg.mid, e);
+	return [
+		[center[0] - radius, center[1] - radius],
+		[center[0] + radius, center[1] + radius],
+	];
+}
+
+function getSegmentBox(seg, expandMm = 0) {
+	const [s, e] = segmentSpan(seg);
 	const w = (Number(seg.widthMm) || 0.25) / 2 + expandMm;
 	return {
 		xMin: Math.min(s[0], e[0]) - w,
@@ -120,6 +134,17 @@ function getSegmentBox(seg, expandMm = 0) {
 		yMin: Math.min(s[1], e[1]) - w,
 		yMax: Math.max(s[1], e[1]) + w,
 	};
+}
+
+// Centreline distance from segment s1-e1 to track o (true arc for arc tracks).
+function distanceToTrack(o, s1, e1) {
+	if (isArcTrack(o)) return arcSegmentDistance(o, s1, e1);
+	return segmentDistance(
+		s1,
+		e1,
+		ptCoords(o.start ?? o[0]),
+		ptCoords(o.end ?? o[1]),
+	);
 }
 
 function insertSegmentToCells(cells, index, box, size) {
@@ -205,10 +230,8 @@ function evaluateWorstClearance(evalCtx) {
 
 	for (const idx of candidates) {
 		const o = segList[idx];
-		const s2 = ptCoords(o.start ?? o[0]);
-		const e2 = ptCoords(o.end ?? o[1]);
 		const w2 = Number(o.widthMm) || 0.25;
-		const dist = segmentDistance(s1, e1, s2, e2);
+		const dist = distanceToTrack(o, s1, e1);
 		const gap = dist - (w1 + w2) / 2;
 		if (
 			gap < clearanceMm - 1e-9 &&

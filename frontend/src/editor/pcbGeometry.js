@@ -117,6 +117,7 @@ export function trackLength(track) {
 	if (Array.isArray(track.points) && track.points.length >= 2) {
 		return polylineLength(track.points);
 	}
+	if (isArcTrack(track)) return arcLength(track);
 	if (track.start && track.end) {
 		return pointDistance(track.start, track.end);
 	}
@@ -257,18 +258,21 @@ function pointInPart(x, y, part) {
 	return Math.abs(lx) <= rect.w / 2 && Math.abs(ly) <= rect.h / 2;
 }
 
-function distToSegment(px, py, start, end) {
+// Point of segment start-end nearest to (px, py).
+function projectOnSegment(px, py, start, end) {
 	const [sx, sy] = start;
 	const [ex, ey] = end;
 	const segX = ex - sx;
 	const segY = ey - sy;
 	const sqLen = segX ** 2 + segY ** 2;
-	if (!sqLen) return Math.hypot(px - sx, py - sy);
+	if (!sqLen) return [sx, sy];
 	const dot = (px - sx) * segX + (py - sy) * segY;
 	const frac = Math.max(0, Math.min(1, dot / sqLen));
-	const projX = sx + frac * segX;
-	const projY = sy + frac * segY;
-	return Math.hypot(px - projX, py - projY);
+	return [sx + frac * segX, sy + frac * segY];
+}
+
+function distToSegment(px, py, start, end) {
+	return pointDistance([px, py], projectOnSegment(px, py, start, end));
 }
 
 function checkPartHit(p, x, y) {
@@ -282,7 +286,7 @@ function checkViaHit(v, x, y) {
 }
 
 // A KiCad (arc ...) track bends through `mid`; a collinear mid is a straight line.
-function isArcTrack(t) {
+export function isArcTrack(t) {
 	if (!Array.isArray(t?.mid)) return false;
 	const [sx, sy] = ptCoords(t.start);
 	const [ex, ey] = ptCoords(t.end);
@@ -319,15 +323,62 @@ function inArcSweep(c, t, p) {
 }
 
 function distToArc(p, t) {
-	const { center, radius } = calcArcCenter(
-		ptCoords(t.start),
-		t.mid,
-		ptCoords(t.end),
-	);
+	const { center, radius } = arcCircle(t);
 	if (!inArcSweep(center, t, p)) {
 		return Math.min(pointDistance(p, t.start), pointDistance(p, t.end));
 	}
 	return Math.abs(pointDistance(p, center) - radius);
+}
+
+function arcCircle(t) {
+	return calcArcCenter(ptCoords(t.start), t.mid, ptCoords(t.end));
+}
+
+// Arc length through `mid`: the sweep is the side of start->end that holds mid.
+function arcLength(t) {
+	const { center, radius } = arcCircle(t);
+	const a0 = angleFrom(center, t.start);
+	const span = turnFrom(a0, angleFrom(center, t.end));
+	const viaMid = turnFrom(a0, angleFrom(center, t.mid)) < span;
+	return radius * (viaMid ? span : TURN - span);
+}
+
+// Points where segment s-e crosses the circle (c, r).
+function circleHits(s, e, c, r) {
+	const [dx, dy] = [e[0] - s[0], e[1] - s[1]];
+	const [fx, fy] = [s[0] - c[0], s[1] - c[1]];
+	const a = dx * dx + dy * dy;
+	const b = 2 * (fx * dx + fy * dy);
+	const disc = b * b - 4 * a * (fx * fx + fy * fy - r * r);
+	if (!a || disc < 0) return [];
+	const root = Math.sqrt(disc);
+	return [(-b - root) / (2 * a), (-b + root) / (2 * a)]
+		.filter((u) => u >= 0 && u <= 1)
+		.map((u) => [s[0] + u * dx, s[1] + u * dy]);
+}
+
+/** Shortest distance between segment s-e and arc track t (0 where they cross). */
+export function arcSegmentDistance(t, s, e) {
+	const { center, radius } = arcCircle(t);
+	const onArc = (p) => inArcSweep(center, t, p);
+	if (circleHits(s, e, center, radius).some(onArc)) return 0;
+	const foot = projectOnSegment(center[0], center[1], s, e);
+	const radial = onArc(foot)
+		? Math.abs(pointDistance(foot, center) - radius)
+		: Number.POSITIVE_INFINITY;
+	const [as, ae] = [ptCoords(t.start), ptCoords(t.end)];
+	return Math.min(
+		radial,
+		distToArc(s, t),
+		distToArc(e, t),
+		distToSegment(as[0], as[1], s, e),
+		distToSegment(ae[0], ae[1], s, e),
+	);
+}
+
+/** Stable React key: uuid when present, else index (arcs can share endpoints). */
+export function trackKey(t, index) {
+	return t?.uuid ? `track_${t.uuid}` : `track_${index}`;
 }
 
 function distToTrack(t, x, y) {
