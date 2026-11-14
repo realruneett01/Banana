@@ -477,10 +477,27 @@ function extractInstanceStyle(symNode) {
 	return Number.isFinite(val) ? val : 1;
 }
 
-function parseSymbolData(symNode) {
+// KiCad 7+ keeps each sheet instance's reference and unit on the symbol:
+// (instances (project "name" (path "/<root uuid>/<sheet uuid>..." ...))).
+function findInstance(symNode, sheetPath) {
+	const projects = extractChildNode(symNode, "instances")?.slice(1) ?? [];
+	const paths = projects.flatMap((p) => (Array.isArray(p) ? p.slice(1) : []));
+	return paths.find((p) => matchHead(p, "path") && nodeSym(p[1]) === sheetPath);
+}
+
+// Without a sheet path or a matching instance: the Reference property.
+function instanceRefUnit(symNode, props, sheetPath) {
+	const instance = sheetPath && findInstance(symNode, sheetPath);
+	const ref = props.get("Reference") || "";
+	if (!instance) return { ref, unit: extractInstanceUnit(symNode) };
+	const instanceRef = extractChildText(instance, "reference");
+	return { ref: instanceRef || ref, unit: extractInstanceUnit(instance) };
+}
+
+function parseSymbolData(symNode, sheetPath) {
 	const libId = extractLibId(symNode);
 	const props = extractProperties(symNode);
-	const ref = props.get("Reference") || "";
+	const { ref, unit } = instanceRefUnit(symNode, props, sheetPath);
 	return {
 		virtual: shouldSkipSymbol(libId, ref),
 		libId,
@@ -489,7 +506,7 @@ function parseSymbolData(symNode) {
 		props,
 		at: extractSymbolPlacement(symNode),
 		mirror: extractMirror(symNode),
-		unit: extractInstanceUnit(symNode),
+		unit,
 		style: extractInstanceStyle(symNode),
 	};
 }
@@ -653,7 +670,7 @@ function connectPowerSymbol(parsed, libSymbolsMap, ctx) {
 }
 
 function processSingleSymbol(child, libSymbolsMap, ctx, symState) {
-	const parsed = parseSymbolData(child);
+	const parsed = parseSymbolData(child, ctx.sheetPath);
 	if (parsed.virtual) {
 		connectPowerSymbol(parsed, libSymbolsMap, ctx);
 		return null;
@@ -878,16 +895,27 @@ export function kicadSchToIr(text, { name = "imported", idFn = newId } = {}) {
 // For whole-project ERC: parts, connected groups with their off-sheet links
 // (global names, hierarchical labels, sheet pins) and the sub-sheets used.
 // `aliases` adds bus aliases defined on other sheets of the project; the
-// result's `aliases` holds those plus this sheet's own.
-export function kicadSchToErcGraph(text, { idFn = newId, aliases } = {}) {
+// result's `aliases` holds those plus this sheet's own. `sheetPath` is the
+// instance's KiCad path "/<root uuid>/<sheet uuid>..." (default: this
+// sheet as root), which picks each symbol's reference and unit.
+export function kicadSchToErcGraph(text, options = {}) {
+	const { idFn = newId, aliases, sheetPath } = options;
 	try {
 		const parsed = parseSchAst(text);
 		if (!parsed.ok) return parsed;
 		const ctx = createParseContext(aliases);
+		ctx.sheetPath = sheetPath ?? `/${extractChildText(parsed.ast, "uuid")}`;
 		const { parts, groups } = assembleCircuit(parsed.ast, ctx, idFn);
 		const ercGroups = buildErcGroups(groups);
-		const { sheets } = ctx;
-		return { ok: true, parts, groups: ercGroups, sheets, aliases: ctx.aliases };
+		const { sheets, sheetPath: path } = ctx;
+		return {
+			ok: true,
+			parts,
+			groups: ercGroups,
+			sheets,
+			aliases: ctx.aliases,
+			path,
+		};
 	} catch (err) {
 		// Broad catch: one malformed sheet must not abort a project walk
 		return { ok: false, errors: [err?.message || String(err)] };

@@ -123,6 +123,25 @@ describe("runProjectErcFromTexts: KiCad drive semantics across sheets", () => {
 		assert.equal(notDriven(res).length, 1, "only the s2 instance is undriven");
 	});
 
+	test("each instance of a reused sheet gets its own references", () => {
+		const inst = (s, ref) => `(path "/r/${s}" (reference "${ref}") (unit 1))`;
+		const part = (ref, a, b) =>
+			sym("Dev:IN", ref, "50 50").replace(
+				/\)$/,
+				` (instances (project "p" ${inst("s1", a)} ${inst("s2", b)})))`,
+			);
+		const child = sch(`${part("U1", "U11", "U21")} ${part("U2", "U12", "U22")}
+			(hierarchical_label "SIG" (shape input) (at 45 50 0))`);
+		const root = `(uuid "r")
+			${sheet("s1", "child.kicad_sch", [{ name: "SIG", at: "45 50" }])}
+			${sheet("s2", "child.kicad_sch", [{ name: "SIG", at: "80 80" }])}`;
+		const res = run({ "root.kicad_sch": sch(root), "child.kicad_sch": child });
+		assert.deepEqual(notDriven(res).sort(), [
+			"net SIG: net has only inputs (not driven) (U11.1, U12.1)",
+			"net SIG: net has only inputs (not driven) (U21.1, U22.1)",
+		]);
+	});
+
 	test("a lone pin, even labelled, is not a not-driven error", () => {
 		const child = sch(`${sym("Dev:IN", "U1", "50 50")}
 			(hierarchical_label "SIG" (shape input) (at 45 50 0))`);
