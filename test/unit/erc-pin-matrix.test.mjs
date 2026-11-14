@@ -176,6 +176,13 @@ const DRIVE_CASES = {
 		[["input", "input"], true],
 		[["input"], true],
 		[["input", "output"], false],
+		// kicad-cli 10 (openair-max): unspecified pins do not drive an input;
+		// passive and bidirectional pins do.
+		[["input", "unspecified"], true],
+		[["input", "unspecified", "unspecified"], true],
+		[["input", "passive"], false],
+		[["input", "bidirectional"], false],
+		[["unspecified", "unspecified"], false],
 	],
 	"power_in not driven": [
 		[["power_in"], true],
@@ -231,12 +238,15 @@ describe("checkNet unspecified pins", () => {
 	});
 
 	// Typed pins that do not conflict with each other add no warning.
+	// The net is also undriven (openair-max USB_D-: kicad-cli pin_not_driven).
 	test("unspecified + input + input -> 1 warning", () => {
 		const found = checkNet(netOf(["unspecified", "input", "input"]));
 		assert.deepEqual(
-			found.map((i) => [i.severity, i.pins.map((p) => p.ref)]),
+			conflictsOf(found).map((i) => [i.severity, i.pins.map((p) => p.ref)]),
 			[["warning", ["U1", "U2"]]],
 		);
+		const undriven = found.filter((i) => /only inputs/.test(i.message));
+		assert.equal(undriven.length, 1);
 	});
 
 	test("3 unspecified pins only -> k-1 = 2 warnings", () => {

@@ -85,7 +85,7 @@ function pinIssue(p, later) {
 	if (partners.length === 0) return null;
 	const { q, severity } = partners[0];
 	const message = `pin type conflict: ${p.type} vs ${q.type}`;
-	return { severity, message, pins: [p, q] };
+	return { rule: "pin_to_pin", severity, message, pins: [p, q] };
 }
 
 function pairIssues(pins) {
@@ -96,17 +96,23 @@ function pairIssues(pins) {
 		.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
 }
 
+const UNDRIVING_TYPES = new Set(["input", "unspecified"]);
+
 function driveIssues(pins) {
 	const issues = [];
-	if (pins.length >= 1 && pins.every((p) => p.type === "input")) {
+	// kicad-cli: an unspecified pin does not drive an input (passive does).
+	const hasInput = pins.some((p) => p.type === "input");
+	if (hasInput && pins.every((p) => UNDRIVING_TYPES.has(p.type))) {
 		const message = "net has only inputs (not driven)";
-		issues.push({ severity: "error", message, pins: [...pins] });
+		const rule = "pin_not_driven";
+		issues.push({ rule, severity: "error", message, pins: [...pins] });
 	}
 	// Like KiCad, only a power_out pin drives power_in (not output or bidi).
 	const powerIn = pins.filter((p) => p.type === "power_in");
 	if (powerIn.length > 0 && !pins.some((p) => p.type === "power_out")) {
 		const message = "power_in not driven";
-		issues.push({ severity: "error", message, pins: powerIn });
+		const rule = "power_pin_not_driven";
+		issues.push({ rule, severity: "error", message, pins: powerIn });
 	}
 	return issues;
 }

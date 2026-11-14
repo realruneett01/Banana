@@ -1,4 +1,5 @@
 import { checkNet } from "./erc-pin-matrix.js";
+import { ruleSeverity } from "./erc-settings.js";
 import { newId } from "./ids.js";
 
 const POWER_RAIL_REGEX = /^(VCC|VDD|3V3|5V|\+?\d+V\d*|VBUS|VIN)$/i;
@@ -225,12 +226,23 @@ function createPinTypeIssue(net, result, commit) {
 	};
 }
 
-function collectPinTypeIssues(nets, partsById, commit) {
+// A net's checkNet results under the project's rule severities (settings
+// from erc-settings.js); an ignored rule drops its result.
+function netResults(net, typed, settings) {
+	return checkNet(typed, { driven: net.driven === true })
+		.map((r) => ({
+			...r,
+			severity: ruleSeverity(settings, r.rule, r.severity),
+		}))
+		.filter((r) => r.severity !== "ignore");
+}
+
+function collectPinTypeIssues(nets, partsById, { commit, settings }) {
 	const issues = [];
 	for (const net of nets) {
 		const typed = typedNetPins(net, partsById);
 		if (typed.length === 0) continue;
-		for (const result of checkNet(typed, { driven: net.driven === true })) {
+		for (const result of netResults(net, typed, settings)) {
 			issues.push(createPinTypeIssue(net, result, commit));
 		}
 	}
@@ -254,13 +266,15 @@ function compareIssues(a, b) {
 
 // Pin-type and drive checks only, for nets merged across a sheet hierarchy
 // (erc-project.js). A net is driven only by its own pins, never by a flag;
-// `driven` there only marks a net with a no-connect flag.
-export function runPinTypeErc(parts, nets, { commit = "" } = {}) {
+// `driven` there only marks a net with a no-connect flag. `settings`: the
+// project's rule severities (loadErcSettings in erc-settings.js).
+export function runPinTypeErc(parts, nets, { commit = "", settings } = {}) {
 	const partsById = new Map(parts.map((p) => [p.id, p]));
-	return collectPinTypeIssues(nets, partsById, commit).sort(compareIssues);
+	const options = { commit, settings };
+	return collectPinTypeIssues(nets, partsById, options).sort(compareIssues);
 }
 
-export function runErc(ir, { commit = "" } = {}) {
+export function runErc(ir, { commit = "", settings } = {}) {
 	const parts = Array.isArray(ir?.parts) ? ir.parts : [];
 	const nets = Array.isArray(ir?.nets) ? ir.nets : [];
 	const constraints = Array.isArray(ir?.constraints) ? ir.constraints : [];
@@ -274,7 +288,7 @@ export function runErc(ir, { commit = "" } = {}) {
 	collectNetIssues(nets, railTargets, commit, issues);
 	collectPartIssues(parts, connectedPartIds, commit, issues);
 	issues.push(...collectPinShorts(pinMap, partsById, commit));
-	issues.push(...collectPinTypeIssues(nets, partsById, commit));
+	issues.push(...collectPinTypeIssues(nets, partsById, { commit, settings }));
 
 	return issues.sort(compareIssues);
 }

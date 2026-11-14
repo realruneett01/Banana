@@ -274,6 +274,7 @@ const DEMO_CASES = [
 	["multichannel/multichannel_mixer", 5, 3, 0],
 	["royalblue54L_feather/RoyalBlue54L-Feather", 5, 5, 0],
 	["video/video", 8, 0, 0],
+	["openair-max/One-Air-Max", 3, 7, 41],
 ];
 
 describe("runProjectErc on KiCad 10 demos matches kicad-cli", () => {
