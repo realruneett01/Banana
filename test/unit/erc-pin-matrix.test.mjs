@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { describe, test } from "node:test";
 import {
 	checkNet,
 	PIN_TYPES,
 	pinPairSeverity,
 } from "../../backend/src/engine/erc-pin-matrix.js";
+import { KICAD_CLI, runKicadMatrix } from "./fixtures/erc-pin-matrix-kicad.mjs";
 
 // --- helpers ---
 
@@ -84,6 +86,38 @@ describe("pinPairSeverity", () => {
 			});
 		}
 	}
+});
+
+// --- parity with kicad-cli's default pin-conflict matrix ---
+
+// Recorded by fixtures/erc-pin-matrix-kicad.mjs from `kicad-cli sch erc`.
+// KiCad reports a no_connect pin on a net as no_connect_connected, never as
+// pin_to_pin, so its pairs are "ok" in the table and checked separately here.
+const KICAD_TABLE = JSON.parse(
+	fs.readFileSync(
+		new URL("./fixtures/erc-pin-matrix-kicad.json", import.meta.url),
+	),
+);
+const hasNoConnect = (key) => key.split("|").includes("no_connect");
+
+describe("pinPairSeverity matches kicad-cli", () => {
+	for (const [key, expected] of Object.entries(KICAD_TABLE)) {
+		if (hasNoConnect(key)) continue;
+		test(`${key} -> ${expected}`, () => {
+			assert.equal(pinPairSeverity(...key.split("|")), expected);
+		});
+	}
+
+	test("no_connect pairs are never pin_to_pin in kicad-cli", () => {
+		const nc = Object.entries(KICAD_TABLE).filter(([k]) => hasNoConnect(k));
+		assert.equal(nc.length, 12);
+		assert.ok(nc.every(([, s]) => s === "ok"));
+	});
+
+	const skip = fs.existsSync(KICAD_CLI) ? false : `missing ${KICAD_CLI}`;
+	test("recorded table equals a fresh kicad-cli run", { skip }, () => {
+		assert.deepEqual(runKicadMatrix(), KICAD_TABLE);
+	});
 });
 
 // --- checkNet conflict counts ---
@@ -182,15 +216,15 @@ describe("checkNet empty / no conflict", () => {
 });
 
 describe("checkNet unspecified pins", () => {
-	// kicad-cli (KiCad 10 demos) warns once per unspecified pin, against a
-	// typed partner; was one summary warning per net.
+	// kicad-cli warns once per unspecified pin, against the next conflicting
+	// pin: U1~U2 then U2~U3 (probed on a 4-pin net with kicad-cli 10).
 	test("2 unspecified + input + output -> one warning each", () => {
 		const pins = netOf(["unspecified", "unspecified", "input", "output"]);
 		const found = conflictsOf(checkNet(pins));
 		assert.deepEqual(
 			found.map((i) => [i.severity, i.pins.map((p) => p.ref)]),
 			[
-				["warning", ["U1", "U3"]],
+				["warning", ["U1", "U2"]],
 				["warning", ["U2", "U3"]],
 			],
 		);
@@ -226,6 +260,11 @@ describe("checkNet unspecified pins", () => {
 			found.map((i) => i.severity),
 			["error", "warning"],
 		);
+	});
+
+	// kicad-cli: unspecified vs free is "ok" in the default matrix.
+	test("unspecified + free -> no warning", () => {
+		assert.deepEqual(checkNet(netOf(["unspecified", "free"])), []);
 	});
 
 	test("lone unspecified pin -> no warning", () => {

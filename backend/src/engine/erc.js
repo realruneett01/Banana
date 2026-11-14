@@ -253,7 +253,8 @@ function compareIssues(a, b) {
 }
 
 // Pin-type and drive checks only, for nets merged across a sheet hierarchy
-// (erc-project.js). A net is driven only by its own pins, never by a flag.
+// (erc-project.js). A net is driven only by its own pins, never by a flag;
+// `driven` there only marks a net with a no-connect flag.
 export function runPinTypeErc(parts, nets, { commit = "" } = {}) {
 	const partsById = new Map(parts.map((p) => [p.id, p]));
 	return collectPinTypeIssues(nets, partsById, commit).sort(compareIssues);

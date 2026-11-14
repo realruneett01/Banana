@@ -88,6 +88,8 @@ function mergeGroups(groups) {
 		name: names.sort()[0] ?? "unnamed",
 		pins: groups.flatMap((g) => g.pins),
 		ercPins: groups.flatMap((g) => g.ercPins),
+		// kicad-cli skips not-driven checks on a net with a no-connect flag.
+		...(groups.some((g) => g.noConnect) && { driven: true }),
 	};
 }
 
