@@ -72,7 +72,7 @@ function findFootprintNode(ast, ref) {
 	return idx !== -1 ? ast[idx] : null;
 }
 
-function flipLayerString(str) {
+export function flipLayerString(str) {
 	if (typeof str !== "string") return str;
 	if (str.startsWith("F.")) return `B.${str.slice(2)}`;
 	if (str.startsWith("B.")) return `F.${str.slice(2)}`;
@@ -236,19 +236,43 @@ function applyFootprintSideB(fpNode) {
 		fpNode.push([sym("layer"), "B.Cu"]);
 	}
 	for (let i = 1; i < fpNode.length; i++) {
-		const child = fpNode[i];
-		if (!Array.isArray(child)) continue;
-		const head = child[0]?.sym;
-		if (["at", "uuid", "layer"].includes(head)) continue;
-		flipNodeLayers(child);
-		mirrorNodeCoordinates(child);
-		// The flip negates a pad's angle; text is turned to read from below.
-		if (head === "pad") turnItem(child, (a) => -a);
-		if (TEXT_HEADS.includes(head)) turnItem(child, (a) => 180 - a);
+		if (Array.isArray(fpNode[i])) flipFootprintItem(fpNode[i]);
+	}
+}
+
+function flipFootprintItem(child) {
+	const head = child[0]?.sym;
+	if (["at", "uuid", "layer"].includes(head)) return;
+	flipNodeLayers(child);
+	mirrorNodeCoordinates(child);
+	// The flip negates a pad's angle; text is turned to read from below
+	// and drawn mirrored.
+	if (head === "pad") turnItem(child, (a) => -a);
+	if (TEXT_HEADS.includes(head)) {
+		turnItem(child, (a) => 180 - a);
+		toggleTextMirror(child);
 	}
 }
 
 const TEXT_HEADS = ["property", "fp_text"];
+
+function childOrNew(node, tag) {
+	const found = findChildByTag(node, tag);
+	if (found) return found;
+	const child = [sym(tag)];
+	node.push(child);
+	return child;
+}
+
+// KiCad marks text on the back with (effects (justify ... mirror)).
+function toggleTextMirror(textNode) {
+	const effects = childOrNew(textNode, "effects");
+	const justify = childOrNew(effects, "justify");
+	const i = justify.findIndex((t, k) => k > 0 && nodeSym(t) === "mirror");
+	if (i > 0) justify.splice(i, 1);
+	else justify.push(sym("mirror"));
+	if (justify.length === 1) effects.splice(effects.indexOf(justify), 1);
+}
 
 function turnItem(item, fn) {
 	const at = findChildByTag(item, "at");

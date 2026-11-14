@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateCircuitIR } from "./circuit-ir.js";
-import { orientFootprint } from "./kicad-pcb-edit.js";
+import { flipLayerString, orientFootprint } from "./kicad-pcb-edit.js";
 import { serialize, sym } from "./sexpr.js";
 
 function deterministicUuid(id) {
@@ -72,15 +72,29 @@ function buildPadNode(pad, netInfo) {
 	return node;
 }
 
+// An embedded (imported) pad is already flipped for a back part; take it
+// back to the front, where the footprint is built before it is flipped.
+function frontPad(pad) {
+	const [x, y, a = 0] = pad.at;
+	const at = [x, -y || 0, -a || 0];
+	return { ...pad, at, layers: pad.layers.map(flipLayerString) };
+}
+
+function defPads(def, side) {
+	const pads = Array.isArray(def) ? def : (def.pads ?? []);
+	return def.embedded && side === "B" ? pads.map(frontPad) : pads;
+}
+
+// A board import keys its embedded footprints by part id, a library by id.
 function resolvePartPads(part, footprints, pinNetMap, warnings) {
-	const def = footprints?.[part.footprint];
+	const def = footprints?.[part.id] ?? footprints?.[part.footprint];
 	if (!def) {
 		warnings.push(
 			`no footprint definition for ${part.ref} (${part.footprint})`,
 		);
 		return [];
 	}
-	const rawPads = Array.isArray(def) ? def : (def.pads ?? []);
+	const rawPads = defPads(def, part.placement.side);
 	const padNodes = [];
 	for (let i = 0; i < rawPads.length; i++) {
 		const pad = rawPads[i];
