@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { KICAD_CLI_PATH } from "../config.js";
 
@@ -193,6 +194,29 @@ async function exportDrillInternal(ctx, pcbPath, outDir) {
 	return outDir;
 }
 
+// kicad-cli saves the refilled board over its input (--save-board needs
+// --refill-zones), so the text goes through a private temp copy.
+async function refillBoardTextInternal(ctx, text) {
+	const dir = await fs.promises.mkdtemp(
+		path.join(os.tmpdir(), "banana-refill-"),
+	);
+	const pcbPath = path.join(dir, "board.kicad_pcb");
+	try {
+		await fs.promises.writeFile(pcbPath, text, "utf8");
+		const args = ["pcb", "drc", "--refill-zones", "--save-board"];
+		args.push("--format", "json", "--output", path.join(dir, "drc.json"));
+		await executeCommand(
+			ctx.exec,
+			ctx.cliPath,
+			[...args, pcbPath],
+			ctx.execOptions,
+		);
+		return await fs.promises.readFile(pcbPath, "utf8");
+	} finally {
+		await fs.promises.rm(dir, { recursive: true, force: true });
+	}
+}
+
 async function versionInternal(ctx) {
 	const res = await executeCommand(
 		ctx.exec,
@@ -223,6 +247,7 @@ export function createKicadCli({
 		exportNetlist: (schPath, outPath, format = "kicadsexpr") =>
 			exportNetlistInternal(ctx, schPath, outPath, format),
 		exportDrill: (pcbPath, outDir) => exportDrillInternal(ctx, pcbPath, outDir),
+		refillBoardText: (text) => refillBoardTextInternal(ctx, text),
 		version: () => versionInternal(ctx),
 	};
 }

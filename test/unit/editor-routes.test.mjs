@@ -332,8 +332,15 @@ function assertExportTracksAndWarnings(res, expectedTracks) {
 	assert.deepEqual(res.json.tracks, expectedTracks);
 	const warnings = res.json.warnings;
 	assert.ok(Array.isArray(warnings));
-	const expectedWarning = "tracks not yet written by pcb writer";
-	assert.ok(warnings.includes(expectedWarning));
+	// The board's tracks are now written into the exported .kicad_pcb.
+	assert.equal(
+		warnings.includes("tracks not yet written by pcb writer"),
+		false,
+	);
+	const pcb = Object.entries(res.json.files).find(([n]) =>
+		n.endsWith(".kicad_pcb"),
+	)[1];
+	assert.equal(pcb.match(/\(segment\b/g)?.length, expectedTracks.length);
 	for (const w of warnings) {
 		assert.strictEqual(w.toLowerCase().includes("todo"), false);
 	}

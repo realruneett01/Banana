@@ -18,7 +18,10 @@ import { createRateLimiter, skipWhenLocal } from "../rate-limit.js";
 const MAX_TRACKS = 20000;
 const MAX_NAME_LENGTH = 64;
 const DEFAULT_NAME = "circuit";
-const TRACK_WARNING = "tracks not yet written by pcb writer";
+const ZONES_UNFILLED_WARNING =
+	"zones not filled; open in KiCad and press B to refill";
+const REFILL_FAILED_WARNING = `zone refill failed (kicad-cli error or timeout); ${ZONES_UNFILLED_WARNING}`;
+const REFILL_TIMEOUT_MS = 60000;
 const PATCH_TOOL_ERRORS = [
 	"path must",
 	"path resolves outside",
@@ -86,6 +89,7 @@ function handleCheck(req, res) {
 function buildExportFiles(ir, body, baseName) {
 	const schRes = irToKicadSch(ir, { title: body.title });
 	const pcbRes = irToKicadPcb(ir, {
+		...(isPlainObject(body.board) ? body.board : {}),
 		boardW: body.boardW ?? body.board?.width,
 		boardH: body.boardH ?? body.board?.height,
 		footprints: body.board?.footprints ?? {},
@@ -104,12 +108,46 @@ function formatExportResponse(ir, body) {
 	const response = { files, warnings };
 	if (body.board?.tracks) {
 		response.tracks = body.board.tracks;
-		response.warnings.push(TRACK_WARNING);
 	}
 	return response;
 }
 
-function handleExport(req, res) {
+// kicad-cli.js resolves the binary at import time and throws when KiCad is
+// absent (web deploys), so it is loaded lazily.
+async function loadRefillCli() {
+	const { createKicadCli } = await import("../engine/kicad-cli.js");
+	return createKicadCli({ timeoutMs: REFILL_TIMEOUT_MS });
+}
+
+function createCliGetter(loadKicadCli) {
+	let cliPromise = null;
+	return () => {
+		cliPromise ??= loadKicadCli().catch(() => null);
+		return cliPromise;
+	};
+}
+
+// The writer keeps an imported zone's settings and outline but not its fill,
+// so kicad-cli refills it; without kicad-cli the user refills in KiCad.
+const needsZoneRefill = (board) =>
+	Array.isArray(board?.zones) && board.zones.some((z) => z?.settings);
+
+async function refillExportedZones(response, pcbName, getCli) {
+	const cli = await getCli();
+	if (!cli) {
+		response.warnings.push(ZONES_UNFILLED_WARNING);
+		return;
+	}
+	try {
+		response.files[pcbName] = await cli.refillBoardText(
+			response.files[pcbName],
+		);
+	} catch (_err) {
+		response.warnings.push(REFILL_FAILED_WARNING);
+	}
+}
+
+async function handleExport(req, res, getCli) {
 	const err = validatePayload(req.body);
 	if (err) {
 		const { status, ...payload } = err;
@@ -117,6 +155,10 @@ function handleExport(req, res) {
 	}
 	try {
 		const response = formatExportResponse(req.body.ir, req.body);
+		if (needsZoneRefill(req.body.board)) {
+			const pcbName = `${sanitizeName(req.body.ir?.name)}.kicad_pcb`;
+			await refillExportedZones(response, pcbName, getCli);
+		}
 		return res.status(200).json(response);
 	} catch (_err) {
 		// Broad catch to guarantee route never leaks stack traces
@@ -437,6 +479,7 @@ export function createEditorRouter(options = {}) {
 	const { limiter, patchDeps, isLocalAllowed } = options;
 	const router = express.Router();
 	const routeLimiter = limiter ?? passThrough;
+	const getCli = createCliGetter(options.loadKicadCli ?? loadRefillCli);
 	router.post(
 		["/editor/check", "/api/editor/check"],
 		routeLimiter,
@@ -445,7 +488,7 @@ export function createEditorRouter(options = {}) {
 	router.post(
 		["/editor/export", "/api/editor/export"],
 		routeLimiter,
-		handleExport,
+		(req, res) => handleExport(req, res, getCli),
 	);
 	registerDownloadRoutes(router, routeLimiter);
 	router.post(

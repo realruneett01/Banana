@@ -366,3 +366,64 @@ describe("non-zero exit rejection", () => {
 		});
 	}
 });
+
+describe("refillBoardText", () => {
+	const FILLED = "(kicad_pcb (zone (filled_polygon)))";
+
+	function refillExec(error = null) {
+		return createFakeExec({
+			error,
+			onCall: ({ args }) => {
+				if (!error) fs.writeFileSync(args.at(-1), FILLED, "utf8");
+			},
+		});
+	}
+
+	test("runs drc --refill-zones --save-board on a temp copy and returns it", async () => {
+		const { fake, calls } = refillExec();
+		const runner = createKicadCli({ exec: fake, timeoutMs: 1234 });
+		const text = await runner.refillBoardText("(kicad_pcb)");
+		assert.equal(text, FILLED);
+		const { file, args, options } = calls[0];
+		assert.equal(file, KICAD_CLI_PATH);
+		const pcb = args.at(-1);
+		const dir = path.dirname(pcb);
+		assert.ok(dir.startsWith(path.join(os.tmpdir(), "banana-refill-")));
+		assert.deepEqual(args, [
+			"pcb",
+			"drc",
+			"--refill-zones",
+			"--save-board",
+			"--format",
+			"json",
+			"--output",
+			path.join(dir, "drc.json"),
+			pcb,
+		]);
+		assert.equal(options.timeout, 1234);
+		assert.equal(options.shell, undefined);
+		assert.equal(fs.existsSync(dir), false);
+	});
+
+	test("writes the given text before running kicad-cli", async () => {
+		let seen = null;
+		const { fake } = createFakeExec({
+			onCall: ({ args }) => {
+				seen = fs.readFileSync(args.at(-1), "utf8");
+			},
+		});
+		await createKicadCli({ exec: fake }).refillBoardText("(kicad_pcb x)");
+		assert.equal(seen, "(kicad_pcb x)");
+	});
+
+	test("rejects and removes the temp dir when kicad-cli fails or times out", async () => {
+		const timeout = Object.assign(new Error("timed out"), { killed: true });
+		const { fake, calls } = refillExec(timeout);
+		const runner = createKicadCli({ exec: fake });
+		await assert.rejects(
+			() => runner.refillBoardText("(kicad_pcb)"),
+			/timed out/,
+		);
+		assert.equal(fs.existsSync(path.dirname(calls[0].args.at(-1))), false);
+	});
+});

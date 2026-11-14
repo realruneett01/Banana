@@ -802,6 +802,14 @@ function useDownloadActions({ api, ir }) {
 	};
 }
 
+// The export route warns when imported zones could not be refilled.
+function showZoneWarning(warnings) {
+	const zoneWarning = (warnings ?? []).find((w) =>
+		w.includes("zones not filled"),
+	);
+	if (zoneWarning) message.warning(zoneWarning, 8);
+}
+
 function useExportAction({ api, ir, board }) {
 	const [exporting, setExporting] = useState(false);
 	const exportKiCad = useCallback(async () => {
@@ -811,6 +819,7 @@ function useExportAction({ api, ir, board }) {
 			const res = await api.editorExport({ ir, board, title: ir?.name });
 			if (res?.ok && res.data?.files) {
 				downloadFiles(res.data.files);
+				showZoneWarning(res.data.warnings);
 			}
 		} finally {
 			setExporting(false);
