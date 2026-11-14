@@ -273,6 +273,7 @@ const DEMO_CASES = [
 	["cm5_minima/CM5_MINIMA_3", 8, 0, 0],
 	["multichannel/multichannel_mixer", 5, 3, 0],
 	["royalblue54L_feather/RoyalBlue54L-Feather", 5, 5, 0],
+	["video/video", 8, 0, 0],
 ];
 
 describe("runProjectErc on KiCad 10 demos matches kicad-cli", () => {
@@ -287,4 +288,40 @@ describe("runProjectErc on KiCad 10 demos matches kicad-cli", () => {
 			assert.equal(count(/only inputs/), inputs);
 		});
 	}
+});
+
+// Child: two input pins at 45,50 on a wire labelled `member`, and a
+// hierarchical label `bus` carrying it. Root: the sheet pin `bus` on a bus.
+function busProject(bus, member, rootBody) {
+	const child = `${twoPins("Dev:IN")} (label "${member}" (at 45 50 0))
+		(hierarchical_label "${bus}" (shape input) (at 10 10 0))`;
+	return run({
+		"root.kicad_sch":
+			sch(`${sheet("s1", "child.kicad_sch", [{ name: bus, at: "20" }])}
+			(bus (pts (xy 20 0) (xy 90 0))) ${rootBody}`),
+		"child.kicad_sch": sch(child),
+	});
+}
+
+const onlyInputs = (res) =>
+	notDriven(res).filter((m) => /only inputs/.test(m)).length;
+
+describe("runProjectErcFromTexts: bus members across sheets", () => {
+	test("a vector bus member is driven through a sheet pin and bus label", () => {
+		const driver = `${sym("Dev:SRC", "U9", "50 50")} (label "DATA1" (at 45 50 0))
+			(label "DATA[0..1]" (at 60 0 0))`;
+		assert.equal(onlyInputs(busProject("D[0..1]", "D1", driver)), 0);
+	});
+
+	test("a driver on another bus index does not drive the member", () => {
+		const driver = `${sym("Dev:SRC", "U9", "50 50")} (label "DATA0" (at 45 50 0))
+			(label "DATA[0..1]" (at 60 0 0))`;
+		assert.equal(onlyInputs(busProject("D[0..1]", "D1", driver)), 1);
+	});
+
+	test("an alias defined on another sheet expands a group bus", () => {
+		const driver = `(bus_alias "I2C" (members "I2C.SDA" "I2C.SCL"))
+			${sym("Dev:SRC", "U9", "50 50")} (label "I2C.SDA" (at 45 50 0))`;
+		assert.equal(onlyInputs(busProject("{I2C}", "I2C.SDA", driver)), 0);
+	});
 });

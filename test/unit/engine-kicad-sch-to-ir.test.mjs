@@ -250,12 +250,12 @@ describe("kicadSchToIr net connectivity and naming", () => {
 		assert.equal(net.name, "Net-(R1-Pad2)");
 	});
 
-	test("records warning on unsupported buses and sheets without failing", () => {
+	test("records warning on unsupported sheets, not on buses, without failing", () => {
 		const res = importSch(BUS_AND_SHEET_SCH);
 		assert.equal(res.ok, true);
 		assert.equal(
 			res.warnings.some((w) => w.includes("bus")),
-			true,
+			false,
 		);
 		assert.ok(res.warnings.some((w) => w.includes("sheet")));
 	});
@@ -509,5 +509,79 @@ describe("kicadSchToIr KiCad symbol coordinate conventions", () => {
 			`(label "TOP" (at 50 47.46 0))`,
 		);
 		assert.deepEqual(labelledPins(sch), { TOP: "1" });
+	});
+});
+
+// R1 at 50,50 and R2 at 100,50: pin 1 of each sits 5 mm to the left.
+const busSch = (body) => `(kicad_sch
+	(version 20250114)
+	${RESISTOR_LIB_SYMBOL_SEXPR}
+	(symbol (lib_id "Device:R") (at 50 50 0) (property "Reference" "R1") (property "Value" "1k") (property "Footprint" "R_0603"))
+	(symbol (lib_id "Device:R") (at 100 50 0) (property "Reference" "R2") (property "Value" "1k") (property "Footprint" "R_0603"))
+	(bus (pts (xy 10 10) (xy 90 10)))
+	${body}
+)`;
+
+// "R1.1+R2.1" when both pin 1s are on one net, else each pin 1 alone.
+function pinOnes(sch) {
+	const res = importSch(sch);
+	assert.equal(res.ok, true, JSON.stringify(res.errors));
+	const refs = new Map(res.ir.parts.map((p) => [p.id, p.ref]));
+	return res.ir.nets
+		.map((n) => n.pins.filter((p) => p.pin === "1"))
+		.filter((pins) => pins.length > 0)
+		.map((pins) => pins.map((p) => `${refs.get(p.partId)}.1`).join("+"));
+}
+
+describe("kicadSchToIr buses", () => {
+	test("two vector names on one bus join members by position", () => {
+		const sch =
+			busSch(`(label "D[8..9]" (at 20 10 0)) (label "Q[0..1]" (at 80 10 0))
+			(label "D9" (at 45 50 0)) (label "Q1" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch), ["R1.1+R2.1"]);
+	});
+
+	test("different indices on one bus stay apart", () => {
+		const sch =
+			busSch(`(label "D[0..1]" (at 20 10 0)) (label "Q[0..1]" (at 80 10 0))
+			(label "D0" (at 45 50 0)) (label "Q1" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch).sort(), ["R1.1", "R2.1"]);
+	});
+
+	test("bus names on unconnected buses do not join members", () => {
+		const sch =
+			busSch(`(label "D[0..1]" (at 20 10 0)) (label "Q[0..1]" (at 80 20 0))
+			(label "D1" (at 45 50 0)) (label "Q1" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch).sort(), ["R1.1", "R2.1"]);
+	});
+
+	test("named groups from an alias join members by member name", () => {
+		const sch = busSch(`(bus_alias "SFP" (members "TX" "RX"))
+			(label "A{SFP}" (at 20 10 0)) (label "B{SFP}" (at 80 10 0))
+			(label "A.TX" (at 45 50 0)) (label "B.TX" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch), ["R1.1+R2.1"]);
+	});
+
+	test("an alias member that is a vector expands to its bits", () => {
+		const sch = busSch(`(bus_alias "M" (members "A[0..3]" "CLK"))
+			(label "P{M}" (at 20 10 0)) (label "Q{M}" (at 80 10 0))
+			(label "P.A2" (at 45 50 0)) (label "Q.A2" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch), ["R1.1+R2.1"]);
+	});
+
+	test("same-named sheet pins on two buses do not join their members", () => {
+		const sch = busSch(`(bus (pts (xy 10 20) (xy 90 20)))
+			(label "D[0..1]" (at 20 10 0)) (label "Q[0..1]" (at 20 20 0))
+			(sheet (at 90 0) (size 10 30) (uuid "s1") (property "Sheetfile" "x.kicad_sch")
+				(pin "X[0..1]" input (at 90 10 0)) (pin "X[0..1]" input (at 90 20 0)))
+			(label "D0" (at 45 50 0)) (label "Q0" (at 95 50 0))`);
+		assert.deepEqual(pinOnes(sch).sort(), ["R1.1", "R2.1"]);
+	});
+
+	test("overbar text like ~{OE} is a plain net name, not a bus", () => {
+		const sch = busSch(
+			`(label "~{OE}" (at 45 50 0)) (label "~{OE}" (at 95 50 0))`,
+		);
+		assert.deepEqual(pinOnes(sch), ["R1.1+R2.1"]);
 	});
 });

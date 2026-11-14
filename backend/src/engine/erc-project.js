@@ -39,9 +39,9 @@ function childInstances(parent, sheets, warnings) {
 	return out;
 }
 
-function importSheet(inst, readSheet, warnings) {
+function importSheet(inst, readSheet, warnings, aliases) {
 	try {
-		const graph = kicadSchToErcGraph(readSheet(inst.file));
+		const graph = kicadSchToErcGraph(readSheet(inst.file), { aliases });
 		if (graph.ok) return graph;
 		warnings.push(`bad sheet ${inst.file}: ${graph.errors.join("; ")}`);
 	} catch (err) {
@@ -52,18 +52,32 @@ function importSheet(inst, readSheet, warnings) {
 
 // Sheet instances, breadth first: a sheet file used N times gives N
 // instances, each imported on its own so its parts stay distinct.
-function walkSheets(rootFile, readSheet, warnings) {
+function walkSheets(rootFile, readSheet, warnings, aliases) {
 	const instances = [];
 	const queue = [{ file: rootFile, path: "/", chain: [rootFile] }];
 	while (queue.length > 0 && instances.length < MAX_SHEETS) {
 		const inst = queue.shift();
-		const graph = importSheet(inst, readSheet, warnings);
+		const graph = importSheet(inst, readSheet, warnings, aliases);
 		if (!graph) continue;
 		instances.push({ ...inst, graph });
 		queue.push(...childInstances(inst, graph.sheets, warnings));
 	}
 	if (queue.length > 0) warnings.push(`sheet limit ${MAX_SHEETS} reached`);
 	return instances;
+}
+
+// A bus alias defined on any sheet applies on every sheet, so a project
+// with aliases is imported a second time with all of them.
+function walkProject(rootFile, readSheet) {
+	const first = { warnings: [] };
+	first.instances = walkSheets(rootFile, readSheet, first.warnings);
+	const aliases = new Map(
+		first.instances.flatMap((inst) => [...inst.graph.aliases]),
+	);
+	if (aliases.size === 0) return first;
+	const warnings = [];
+	const instances = walkSheets(rootFile, readSheet, warnings, aliases);
+	return { instances, warnings };
 }
 
 // Groups sharing a key are one net: global names project-wide, a
@@ -111,8 +125,7 @@ function mergeNets(instances) {
 }
 
 function runWithReader(rootFile, readSheet, commit) {
-	const warnings = [];
-	const instances = walkSheets(rootFile, readSheet, warnings);
+	const { instances, warnings } = walkProject(rootFile, readSheet);
 	if (instances.length === 0) return { ok: false, errors: warnings };
 	const parts = instances.flatMap((inst) => inst.graph.parts);
 	const issues = runPinTypeErc(parts, mergeNets(instances), { commit });
