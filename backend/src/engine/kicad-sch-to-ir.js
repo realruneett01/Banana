@@ -297,6 +297,15 @@ function processJunctionNode(child, ctx) {
 	if (at) connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
 }
 
+// kicad-cli skips the not-driven checks on a net carrying a no-connect flag.
+function processNoConnectNode(child, ctx) {
+	const at = extractAt(child);
+	if (!at) return;
+	const key = connectPointToSegments(at.x, at.y, ctx.segments, ctx.uf);
+	ctx.drivenPoints.add(key);
+	ctx.noConnectPoints.add(key);
+}
+
 // Sheet pins link this sheet's wires to a sub-sheet that may drive them.
 function processSheetPins(sheetNode, ctx) {
 	const sheet = extractChildText(sheetNode, "uuid");
@@ -416,6 +425,7 @@ const NODE_HANDLERS = new Map([
 	["bus", (child, ctx) => addWireSegments(child, ctx.busSegments, ctx.busUf)],
 	["bus_alias", processBusAlias],
 	["junction", processJunctionNode],
+	["no_connect", processNoConnectNode],
 	["sheet", processSheetPins],
 ]);
 
@@ -693,7 +703,10 @@ function groupComponents(ctx) {
 	appendGroupedItems(ctx.pointLabels, compLabels, ctx.uf);
 	appendGroupedItems(ctx.pointErcPins, compErcPins, ctx.uf);
 	appendGroupedItems(ctx.pointLinks, compLinks, ctx.uf);
-	return { compPins, compLabels, compErcPins, compLinks };
+	const noConnectRoots = new Set(
+		[...ctx.noConnectPoints].map((k) => ctx.uf.find(k)),
+	);
+	return { compPins, compLabels, compErcPins, compLinks, noConnectRoots };
 }
 
 function dedupePins(pins) {
@@ -759,6 +772,7 @@ function buildErcGroup(root, groups) {
 		pins: pins.map((p) => ({ partId: p.partId, pin: p.pin })),
 		ercPins: groups.compErcPins.get(root) ?? [],
 		links: groups.compLinks.get(root) ?? [],
+		...(groups.noConnectRoots.has(root) && { noConnect: true }),
 	};
 	return isLoneGroup(group, labels) ? null : group;
 }
@@ -792,6 +806,7 @@ function createParseContext(aliases = new Map()) {
 		pointLabels: new Map(),
 		labelFirstPoint: new Map(),
 		drivenPoints: new Set(),
+		noConnectPoints: new Set(),
 		pointErcPins: new Map(),
 		pointLinks: new Map(),
 		sheets: [],
