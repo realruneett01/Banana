@@ -1,4 +1,9 @@
-import { calcArcCenter } from "./footprintRender.js";
+import {
+	calcArcCenter,
+	footprintToPrimitives,
+	placementFor,
+	transformPrimitives,
+} from "./footprintRender.js";
 import { arcSegmentDistance, isArcTrack } from "./pcbGeometry.js";
 
 export const WIDTH_PRESETS = Object.freeze([
@@ -300,29 +305,185 @@ function collectCandidateTracks(board, layer, netId) {
 	return candidates;
 }
 
-function checkProposedCollisions(points, index, widthMm, clearanceMm) {
+// Corner radius of a pad's copper; roundrect matches the canvas (rx = min(w, h) * 0.25).
+const PAD_CORNER = {
+	circle: (hw, hh) => Math.max(hw, hh),
+	oval: (hw, hh) => Math.min(hw, hh),
+	roundrect: (hw, hh) => Math.min(hw, hh) * 0.5,
+};
+
+// Every pad shape is a box of half extents a x b grown by corner radius r.
+function padRoundedBox(pad) {
+	const hw = (Number(pad.size?.[0]) || 0) / 2;
+	const hh = (Number(pad.size?.[1]) || 0) / 2;
+	const r = PAD_CORNER[pad.shape]?.(hw, hh) ?? 0;
+	return { a: Math.max(0, hw - r), b: Math.max(0, hh - r), r };
+}
+
+// Point p in the pad's own frame (centre at origin, pad rotation undone).
+function toPadFrame(p, pad) {
+	const [cx, cy] = ptCoords(pad.center);
+	const rad = (-(Number(pad.rot) || 0) * Math.PI) / 180;
+	const [dx, dy] = [p[0] - cx, p[1] - cy];
+	const [cos, sin] = [Math.cos(rad), Math.sin(rad)];
+	return [dx * cos - dy * sin, dx * sin + dy * cos];
+}
+
+function insideBox(p, a, b) {
+	return Math.abs(p[0]) <= a && Math.abs(p[1]) <= b;
+}
+
+function boxSegmentDistance(s, e, a, b) {
+	if (insideBox(s, a, b) || insideBox(e, a, b)) return 0;
+	const corners = [
+		[-a, -b],
+		[a, -b],
+		[a, b],
+		[-a, b],
+	];
+	const edges = corners.map((c, i) => [c, corners[(i + 1) % 4]]);
+	return Math.min(...edges.map(([c, d]) => segmentDistance(s, e, c, d)));
+}
+
+/** Distance from centreline s-e to the copper of a world pad {center, size, rot, shape}; 0 inside. */
+export function padSegmentDistance(pad, s, e) {
+	const { a, b, r } = padRoundedBox(pad);
+	const dist = boxSegmentDistance(toPadFrame(s, pad), toPadFrame(e, pad), a, b);
+	return Math.max(0, dist - r);
+}
+
+function pinNetMap(nets) {
+	const map = new Map();
+	for (const net of nets ?? []) {
+		for (const pin of net.pins ?? []) {
+			map.set(`${pin.partId}:${pin.pin}`, net.id ?? net.name ?? "");
+		}
+	}
+	return map;
+}
+
+/** World pads of every placed part, transformed as the canvas draws them, tagged with partId and netId. */
+export function boardCopperPads(parts, lookupFp, nets) {
+	const netOf = pinNetMap(nets);
+	return (parts ?? []).flatMap((part) => {
+		const fp = lookupFp(part);
+		if (!fp || !part.placement) return [];
+		const placement = placementFor(fp, part.placement);
+		const { pads } = transformPrimitives(footprintToPrimitives(fp), placement);
+		return pads.map((pad) => ({
+			...pad,
+			partId: part.id,
+			netId: netOf.get(`${part.id}:${pad.number}`) ?? "",
+		}));
+	});
+}
+
+// A pad or via in the track grid index: a zero-length track as wide as its bounding circle.
+function obstacleItem(shape, kind) {
+	const c = ptCoords(shape.center);
+	const [w, h] = [Number(shape.size?.[0]) || 0, Number(shape.size?.[1]) || 0];
+	return { ...shape, kind, start: c, end: c, widthMm: Math.hypot(w, h) };
+}
+
+function viaShape(via) {
+	const size = Number(via.sizeMm) || 0.6;
+	const center = ptCoords(via.at);
+	return { center, size: [size, size], shape: "circle", netId: via.netId };
+}
+
+function padOnLayer(pad, layer) {
+	const layers = pad.layers ?? [];
+	return layers.some((l) => l === layer || l === "*.Cu" || l === "F&B.Cu");
+}
+
+function isForeignNet(netId, otherNetId) {
+	return !(netId && otherNetId && netId === otherNetId);
+}
+
+function collectObstacles(board, pads, layer, netId) {
+	const vias = (Array.isArray(board?.vias) ? board.vias : []).map((v) =>
+		obstacleItem(viaShape(v), "via"),
+	);
+	const onLayer = (Array.isArray(pads) ? pads : [])
+		.filter((p) => padOnLayer(p, layer))
+		.map((p) => obstacleItem(p, "pad"));
+	return [...onLayer, ...vias].filter((o) => isForeignNet(netId, o.netId));
+}
+
+function worstObstacle(seg, ctx) {
+	const { obstacles, widthMm, clearanceMm } = ctx;
+	const box = getSegmentBox(seg, clearanceMm + 0.5);
+	let worst = null;
+	for (const idx of obstacles.query(box)) {
+		const o = obstacles.segments[idx];
+		const gap = padSegmentDistance(o, seg.start, seg.end) - widthMm / 2;
+		const closer = !worst || isCloserGap(gap, worst.gap, idx, worst.idx);
+		if (gap < clearanceMm - 1e-9 && closer) worst = { gap, idx, o };
+	}
+	return worst;
+}
+
+function obstacleHit(seg, ctx) {
+	const worst = worstObstacle(seg, ctx);
+	if (!worst) return null;
+	const net = worst.o.netId || "other net";
+	const gapMm = Math.round(Math.max(0, worst.gap) * 1000) / 1000;
+	const label = `${net} ${worst.o.kind}`;
+	return {
+		otherIndex: worst.idx,
+		otherKind: worst.o.kind,
+		otherNetId: net,
+		gapMm,
+		label,
+	};
+}
+
+function trackHit(seg, ctx) {
+	const { index, widthMm, clearanceMm } = ctx;
+	const res = segmentClearance(seg, index, widthMm, clearanceMm);
+	if (res.ok || !res.worst) return null;
+	const net = index.segments[res.worst.otherIndex]?.netId || "other net";
+	return { ...res.worst, otherNetId: net, label: net };
+}
+
+function closerHit(a, b) {
+	if (!a || !b) return a ?? b;
+	return b.gapMm < a.gapMm ? b : a;
+}
+
+function checkProposedCollisions(points, ctx) {
+	const { widthMm, clearanceMm } = ctx;
 	const collisions = [];
 	for (let s = 0; s < points.length - 1; s++) {
 		const seg = { start: points[s], end: points[s + 1], widthMm };
-		const res = segmentClearance(seg, index, widthMm, clearanceMm);
-		if (!res.ok && res.worst) {
-			const otherTrack = index.segments[res.worst.otherIndex];
-			const otherNet = otherTrack?.netId || "other net";
-			collisions.push({
-				segmentIndex: s,
-				seg: [points[s], points[s + 1]],
-				otherIndex: res.worst.otherIndex,
-				otherNetId: otherNet,
-				gapMm: res.worst.gapMm,
-				clearanceMm,
-				at: points[s + 1],
-				message: `Too close to ${otherNet}: ${res.worst.gapMm} mm, needs ${clearanceMm} mm`,
-			});
-		}
+		const hit = closerHit(trackHit(seg, ctx), obstacleHit(seg, ctx));
+		if (!hit) continue;
+		const { label, ...other } = hit;
+		collisions.push({
+			segmentIndex: s,
+			seg: [points[s], points[s + 1]],
+			...other,
+			clearanceMm,
+			at: points[s + 1],
+			message: `Too close to ${label}: ${hit.gapMm} mm, needs ${clearanceMm} mm`,
+		});
 	}
 	return collisions;
 }
 
+// Grid indexes of the foreign-net tracks and of the pads and vias a new route must clear.
+function routeIndexes(options) {
+	const { board, pads, layer, netId, clearanceMm } = options;
+	const cellSize = Math.max(2.0, clearanceMm * 4);
+	const tracks = collectCandidateTracks(board, layer, netId);
+	const obstacles = collectObstacles(board, pads, layer, netId);
+	return {
+		index: buildSegmentIndex(tracks, cellSize),
+		obstacles: buildSegmentIndex(obstacles, cellSize),
+	};
+}
+
+/** Route points from start to cursor plus clearance collisions with foreign tracks, pads (options.pads) and vias. */
 export function proposeRoute(options = {}) {
 	const {
 		start = [0, 0],
@@ -331,23 +492,13 @@ export function proposeRoute(options = {}) {
 		widthMm = 0.25,
 		clearanceMm = 0.2,
 		board = null,
+		pads = [],
 		netId = "",
 		mode = "45",
 	} = options;
 
-	const cornerPoints = constrainAngle(start, cursor, mode);
-	const points = [ptCoords(start), ...cornerPoints];
-	const candidateTracks = collectCandidateTracks(board, layer, netId);
-	const index = buildSegmentIndex(
-		candidateTracks,
-		Math.max(2.0, clearanceMm * 4),
-	);
-	const collisions = checkProposedCollisions(
-		points,
-		index,
-		widthMm,
-		clearanceMm,
-	);
-
-	return { points, collisions };
+	const points = [ptCoords(start), ...constrainAngle(start, cursor, mode)];
+	const indexes = routeIndexes({ board, pads, layer, netId, clearanceMm });
+	const ctx = { ...indexes, widthMm, clearanceMm };
+	return { points, collisions: checkProposedCollisions(points, ctx) };
 }

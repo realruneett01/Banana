@@ -38,7 +38,7 @@ import {
 	trackKey,
 	trackPath,
 } from "./pcbGeometry.js";
-import { addVia, WIDTH_PRESETS } from "./routingModel.js";
+import { addVia, boardCopperPads, WIDTH_PRESETS } from "./routingModel.js";
 import { getLayerColor, PCB_THEME } from "./theme.js";
 import {
 	legPoints,
@@ -1267,6 +1267,7 @@ function checkCommitAllowed(routeCtx, target, isShiftHeld) {
 			widthMm,
 			clearanceMm: 0.2,
 			board,
+			pads: routeCtx.pads,
 			netId: currentNetId,
 			mode: routeMode,
 		},
@@ -1338,6 +1339,7 @@ function useRouteProposed({
 	currentNetId,
 	routeMode,
 	posture,
+	pads,
 }) {
 	return useMemo(() => {
 		if (!isRouting || points.length === 0 || !cursorPos) {
@@ -1351,6 +1353,7 @@ function useRouteProposed({
 				widthMm,
 				clearanceMm: 0.2,
 				board,
+				pads,
 				netId: currentNetId,
 				mode: routeMode,
 			},
@@ -1366,6 +1369,7 @@ function useRouteProposed({
 		currentNetId,
 		routeMode,
 		posture,
+		pads,
 	]);
 }
 
@@ -1378,6 +1382,7 @@ function useRouteClick({
 	widthMm,
 	routeMode,
 	posture,
+	pads,
 	svgRef,
 	view,
 }) {
@@ -1405,6 +1410,7 @@ function useRouteClick({
 				currentNetId,
 				routeMode,
 				posture,
+				pads,
 			};
 			if (!checkCommitAllowed(routeCtx, target, e.shiftKey)) return;
 			const legs = legPoints(points.at(-1), target, routeMode, posture);
@@ -1421,6 +1427,7 @@ function useRouteClick({
 			widthMm,
 			routeMode,
 			posture,
+			pads,
 			svgRef,
 			view,
 			setCurrentNetId,
@@ -1530,6 +1537,7 @@ function useRouteHandlers(session, routingProps) {
 		svgRef,
 		ir,
 		padPositions,
+		pads,
 		view,
 	} = routingProps;
 	const onCanvasClick = useRouteClick({
@@ -1541,6 +1549,7 @@ function useRouteHandlers(session, routingProps) {
 		widthMm,
 		routeMode,
 		posture,
+		pads,
 		svgRef,
 		view,
 	});
@@ -1586,6 +1595,7 @@ function useRoutingState(props) {
 		currentNetId: session.currentNetId,
 		routeMode,
 		posture,
+		pads: props.pads,
 	});
 
 	const handlers = useRouteHandlers(session, {
@@ -2246,6 +2256,10 @@ function usePcbCanvasState({
 		fetchFootprint,
 		visible,
 	);
+	const pads = useMemo(
+		() => boardCopperPads(ir?.parts, fpLookup, ir?.nets),
+		[ir, fpLookup],
+	);
 	const history = useBoardHistory(board, onBoardChange);
 	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
 	const drag = usePartDrag(editor, svgRef, view);
@@ -2257,6 +2271,7 @@ function usePcbCanvasState({
 		svgRef,
 		ir,
 		padPositions,
+		pads,
 		view,
 	});
 	const outlineDrawing = useOutlineDrawing({
