@@ -268,6 +268,24 @@ function rotateFootprintItems(fpNode, rot) {
 	}
 }
 
+function isOnBack(fpNode) {
+	return String(findChildByTag(fpNode, "layer")?.[1] ?? "").startsWith("B.");
+}
+
+/**
+ * Turn a footprint to `rot` on `side` ("F"/"B") as pcbnew's Flip() and
+ * SetOrientation() do: pad and text angles are taken back to the footprint's
+ * own frame, flipped top-bottom if the side changes (no side keeps it), then
+ * turned to `rot`.
+ */
+export function orientFootprint(fpNode, rot, side) {
+	const at = findChildByTag(fpNode, "at");
+	rotateFootprintItems(fpNode, -(Number(at?.[3]) || 0));
+	if (side && (side === "B") !== isOnBack(fpNode)) applyFootprintSideB(fpNode);
+	rotateFootprintItems(fpNode, rot);
+	if (at) at[3] = roundCoord(rot);
+}
+
 function updateFootprintAt(fpNode, x, y, rot) {
 	const atNode = findChildByTag(fpNode, "at");
 	const rx = roundCoord(x);
@@ -339,15 +357,12 @@ function parseFootprintSource(source) {
 
 function configureFootprintNode(fpNode, edit, newUuid) {
 	fpNode[1] = edit.libId;
-	updateFootprintAt(fpNode, edit.x, edit.y, edit.rot ?? 0);
-	const side = edit.side ?? "F";
-	const refLayer = side === "B" ? "B.SilkS" : "F.SilkS";
-	const valLayer = side === "B" ? "B.Fab" : "F.Fab";
-	updateOrAddProperty(fpNode, "Reference", edit.ref, refLayer);
-	updateOrAddProperty(fpNode, "Value", String(edit.value), valLayer);
+	updateFootprintAt(fpNode, edit.x, edit.y, 0);
+	// Library footprints are drawn on the front; orientFootprint flips them.
+	updateOrAddProperty(fpNode, "Reference", edit.ref, "F.SilkS");
+	updateOrAddProperty(fpNode, "Value", String(edit.value), "F.Fab");
 	updateFootprintUuids(fpNode, newUuid);
-	if (side === "B") applyFootprintSideB(fpNode);
-	rotateFootprintItems(fpNode, edit.rot ?? 0);
+	orientFootprint(fpNode, edit.rot ?? 0, edit.side ?? "F");
 }
 
 function handleAddFootprint(ast, edit, newUuid) {

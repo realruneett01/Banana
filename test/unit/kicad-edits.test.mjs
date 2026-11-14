@@ -100,6 +100,15 @@ const SUPPORTED_CASES = [
 		90,
 	),
 	{
+		name: "side flip produces a move edit carrying the new side",
+		before: singlePartIr({ placement: at(0, 0) }),
+		after: singlePartIr({ placement: at(0, 0, 0, "B") }),
+		canSaveInPlace: true,
+		sch: [],
+		pcb: [{ op: "move", ref: "R1", x: 0, y: 0, rot: 0, side: "B" }],
+		summary: "1 position will be saved",
+	},
+	{
 		name: "value plus move on one part produces edits in both sch and pcb",
 		before: singlePartIr({ value: "10k", placement: at(0, 0) }),
 		after: singlePartIr({ value: "20k", placement: at(10, 20, 90) }),
@@ -114,12 +123,6 @@ const SUPPORTED_CASES = [
 ];
 
 const UNSUPPORTED_CASES = [
-	unsupp(
-		"side flip unsupported",
-		singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0) }),
-		singlePartIr({ id: "d1", ref: "D1", placement: at(0, 0, 0, "B") }),
-		"D1 moved to the other side of the board",
-	),
 	unsupp(
 		"added part without library symbol unsupported",
 		irWithParts(),

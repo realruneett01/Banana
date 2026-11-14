@@ -1,4 +1,8 @@
-import { applyPcbEdits, isBoardCoord } from "./kicad-pcb-edit.js";
+import {
+	applyPcbEdits,
+	isBoardCoord,
+	orientFootprint,
+} from "./kicad-pcb-edit.js";
 import { applySchEdits } from "./kicad-sch-edit.js";
 import { parse, serialize } from "./sexpr.js";
 
@@ -34,10 +38,10 @@ function isValidMove(edit) {
 	if (!isBoardCoord(edit.x) || !isBoardCoord(edit.y)) {
 		return false;
 	}
-	if (edit.rot !== undefined) {
-		return Number.isFinite(edit.rot);
+	if (edit.side !== undefined && !["F", "B"].includes(edit.side)) {
+		return false;
 	}
-	return true;
+	return edit.rot === undefined || Number.isFinite(edit.rot);
 }
 
 function validateOpPayload(edit) {
@@ -49,7 +53,7 @@ function validateOpPayload(edit) {
 	}
 	if (edit.op === "move") {
 		if (!isValidMove(edit)) {
-			return "Invalid coordinates: x and y must be within ±10000 mm, rot must be finite";
+			return "Invalid coordinates: x and y must be within ±10000 mm, rot must be finite, side F or B";
 		}
 		return null;
 	}
@@ -157,7 +161,11 @@ function applyMove(items, edit) {
 	}
 	atNode[1] = edit.x;
 	atNode[2] = edit.y;
-	if (edit.rot !== undefined) {
+	if (isTargetItem(items[0], "pcb")) {
+		// Footprint pad and text angles are absolute: they turn and flip too.
+		const rot = edit.rot ?? (Number(atNode[3]) || 0);
+		orientFootprint(items[0], rot, edit.side);
+	} else if (edit.rot !== undefined) {
 		atNode[3] = edit.rot;
 	}
 	return { ok: true };

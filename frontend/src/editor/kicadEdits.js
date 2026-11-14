@@ -109,21 +109,14 @@ function removePart(part, ctx) {
 function processPlacementChange(change, ref, pcbEdits, unsupported) {
 	const before = change.before || {};
 	const after = change.after || {};
-	if (before.side !== after.side) {
-		unsupported.push(`${ref} moved to the other side of the board`);
-		return;
-	}
 	if (!isValidPlacement(after)) {
 		unsupported.push(`${ref} has non-finite coordinates`);
 		return;
 	}
-	pcbEdits.push({
-		op: "move",
-		ref,
-		x: after.x,
-		y: after.y,
-		rot: after.rot ?? 0,
-	});
+	const move = { op: "move", ref, x: after.x, y: after.y, rot: after.rot ?? 0 };
+	// The in-place patcher flips the footprint as pcbnew does.
+	if (before.side !== after.side) move.side = after.side === "B" ? "B" : "F";
+	pcbEdits.push(move);
 }
 
 function mapValue(part, change, ctx) {

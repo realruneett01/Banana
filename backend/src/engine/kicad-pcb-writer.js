@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateCircuitIR } from "./circuit-ir.js";
+import { orientFootprint } from "./kicad-pcb-edit.js";
 import { serialize, sym } from "./sexpr.js";
 
 function deterministicUuid(id) {
@@ -57,7 +58,8 @@ function buildPadNode(pad, netInfo) {
 		String(pad.number),
 		sym(pad.type),
 		sym(pad.shape),
-		[sym("at"), pad.at[0], pad.at[1]],
+		// Footprint-relative; orientFootprint makes it absolute as boards store it.
+		[sym("at"), pad.at[0], pad.at[1], pad.at[2] ?? 0],
 		[sym("size"), pad.size[0], pad.size[1]],
 	];
 	if (pad.drill !== undefined && pad.drill !== null) {
@@ -88,14 +90,15 @@ function resolvePartPads(part, footprints, pinNetMap, warnings) {
 	return padNodes;
 }
 
+// Built on the front at 0 degrees, then flipped and turned as pcbnew does.
 function buildFootprintNode(part, pads) {
-	const sideLayer = part.placement.side === "B" ? "B.Cu" : "F.Cu";
-	return [
+	const { x, y, rot, side } = part.placement;
+	const node = [
 		sym("footprint"),
 		part.footprint,
-		[sym("layer"), sideLayer],
+		[sym("layer"), "F.Cu"],
 		[sym("uuid"), deterministicUuid(part.id)],
-		[sym("at"), part.placement.x, part.placement.y, part.placement.rot],
+		[sym("at"), x, y, 0],
 		[
 			sym("property"),
 			"Reference",
@@ -112,6 +115,8 @@ function buildFootprintNode(part, pads) {
 		],
 		...pads,
 	];
+	orientFootprint(node, rot, side);
+	return node;
 }
 
 function buildAllFootprints(parts, footprints, pinNetMap, warnings) {
