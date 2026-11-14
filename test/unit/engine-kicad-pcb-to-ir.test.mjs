@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import { validateCircuitIR } from "../../backend/src/engine/circuit-ir.js";
 import { kicadPcbToIr } from "../../backend/src/engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../../backend/src/engine/kicad-pcb-writer.js";
+import { parse } from "../../backend/src/engine/sexpr.js";
 
 const F_CU_LAYERS = ["F.Cu", "F.Paste", "F.Mask"];
 
@@ -440,4 +441,50 @@ describe("kicadPcbToIr unique references and empty ref handling", () => {
 			assertUniqueRefCase(tc);
 		});
 	}
+});
+
+// KiCad 10's RoyalBlue54L demo writes "(curved_edges no)filter_ratio 0.9)".
+// KiCad reads the bare keyword as "(filter_ratio 0.9)" and re-saves it that way.
+function teardropPad(number) {
+	return `(pad "${number}" smd roundrect (at ${number} 0) (size 0.5 0.5) (layers "F.Cu") (net 1 "GND") (teardrops (max_width 2) (curved_edges no)filter_ratio 0.9) (enabled yes)) (uuid "u${number}"))`;
+}
+
+function teardropBoard(value = "100nF") {
+	return `(kicad_pcb (version 20241229) (net 0 "") (net 1 "GND") (footprint "C_0402" (at 10 20) (property "Reference" "C1") (property "Value" "${value}") ${teardropPad(1)} ${teardropPad(2)}))`;
+}
+
+describe("kicadPcbToIr recovers a list missing its '(' like KiCad does", () => {
+	test("the strict parser still rejects the defect", () => {
+		assert.throws(() => parse(teardropBoard()), /Unbalanced parenthesis/);
+	});
+
+	test("imports the board, keeps every pad and warns", () => {
+		const res = kicadPcbToIr(teardropBoard());
+		assert.equal(res.ok, true, JSON.stringify(res.errors));
+		assert.equal(res.ir.parts.length, 1);
+		const [fp] = Object.values(res.board.footprints);
+		assert.equal(fp.pads.length, 2);
+		assert.equal(res.ir.nets.find((n) => n.name === "GND")?.pins.length, 2);
+		assert.equal(res.warnings.length, 1);
+		assert.match(res.warnings[0], /2 lists missing '\('/);
+	});
+
+	test("leaves a ')' followed by a letter inside a string alone", () => {
+		const res = kicadPcbToIr(teardropBoard("a)b"));
+		assert.equal(res.ok, true, JSON.stringify(res.errors));
+		assert.equal(res.ir.parts[0].value, "a)b");
+	});
+
+	test("a clean board gets no recovery warning", () => {
+		const clean = teardropBoard().replaceAll(")filter", ") (filter");
+		const res = kicadPcbToIr(clean);
+		assert.equal(res.ok, true);
+		assert.deepEqual(res.warnings, []);
+	});
+
+	test("other unbalanced input keeps its original error", () => {
+		const res = kicadPcbToIr("(kicad_pcb (version 20241229)) )");
+		assert.equal(res.ok, false);
+		assert.match(res.errors[0], /unexpected '\)' at offset 31/);
+	});
 });

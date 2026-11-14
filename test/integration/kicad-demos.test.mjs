@@ -96,7 +96,15 @@ function evaluateDemoResult(ctx) {
 		};
 	}
 	verifyRoundTrip(isSch, res.ir, relFile);
-	verifyInPlaceEdit(isSch, text, res.ir.parts?.[0], relFile);
+	// The importer recovers KiCad's own "missing '('" defects; the in-place
+	// patch tools stay strict and must refuse such a file instead of guessing.
+	const recovered = res.warnings?.some((w) => w.includes("missing '('"));
+	if (recovered) {
+		const editRes = applyPcbEdits(text, buildPartEdit(isSch, res.ir.parts[0]));
+		assert.equal(editRes.ok, false, `${relFile}: strict edit accepted it`);
+	} else {
+		verifyInPlaceEdit(isSch, text, res.ir.parts?.[0], relFile);
+	}
 	return {
 		file: relFile,
 		"size KB": sizeKb,

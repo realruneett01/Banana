@@ -709,19 +709,56 @@ function resolveIrName(name, title) {
 	return title || name;
 }
 
+// KiCad reads a bare keyword right after ')' as the start of a new list:
+// "(curved_edges no)filter_ratio 0.9)" loads (and re-saves) as
+// "(filter_ratio 0.9)". Strings match first, so a ')' inside one is kept.
+const BARE_KEYWORD_AFTER_CLOSE = /"(?:[^"\\]|\\.)*"|\)(?=[A-Za-z_])/g;
+
+function restoreMissingOpens(text) {
+	let count = 0;
+	const repaired = text.replace(BARE_KEYWORD_AFTER_CLOSE, (match) => {
+		if (match !== ")") return match;
+		count++;
+		return ")(";
+	});
+	return { repaired, count };
+}
+
+// Strict parse first; only a board the strict parser rejects is retried with
+// the KiCad recovery, and the original error stands if the retry fails too.
+function parseOrNull(text) {
+	try {
+		return parse(text);
+	} catch {
+		return null;
+	}
+}
+
+function parseWithKicadRecovery(text) {
+	try {
+		return { ast: parse(text), warnings: [] };
+	} catch (err) {
+		const { repaired, count } = restoreMissingOpens(text);
+		const ast = count > 0 ? parseOrNull(repaired) : null;
+		if (ast === null) throw err;
+		const warning = `recovered ${count} lists missing '(' before a bare keyword, as KiCad does`;
+		return { ast, warnings: [warning] };
+	}
+}
+
 function parseAstOrError(text) {
 	if (typeof text !== "string") {
 		return { ok: false, errors: ["Input must be a string"] };
 	}
 	try {
-		const ast = parse(text);
+		const { ast, warnings } = parseWithKicadRecovery(text);
 		if (!Array.isArray(ast) || ast[0]?.sym !== "kicad_pcb") {
 			return {
 				ok: false,
 				errors: ["Invalid KiCad PCB: root must be kicad_pcb"],
 			};
 		}
-		return { ok: true, ast };
+		return { ok: true, ast, warnings };
 	} catch (err) {
 		// Broad catch to guarantee sexpr parse errors are captured
 		return { ok: false, errors: [err?.message || String(err)] };
@@ -754,6 +791,7 @@ function convertPcbToIr(text, { name, idFn }) {
 	if (!parsed.ok) return parsed;
 	const { ast } = parsed;
 	const ctx = createPcbContext();
+	ctx.warnings.push(...parsed.warnings);
 	collectPcbElements(ast, ctx, idFn);
 	const netInfoMap = populateNetMap(ast, ctx);
 	const { irNets, netNumberToId } = buildIrNets(netInfoMap, idFn);
