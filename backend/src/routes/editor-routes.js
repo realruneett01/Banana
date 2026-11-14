@@ -2,6 +2,7 @@ import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
 import {
+	IMPORT_BUSY_ERROR,
 	IMPORT_TOO_LARGE_ERROR,
 	runImportInWorker,
 	WEB_IMPORT_LIMITS,
@@ -330,8 +331,54 @@ function importBodyParser(req, res, next) {
 	});
 }
 
+const BUSY_RETRY_AFTER_S = "5";
+
+// Counters live on app.locals so each app instance has its own slots.
+function acquireImportSlot(locals, maxConcurrent) {
+	const active = locals.importActive ?? 0;
+	if (active >= maxConcurrent) return false;
+	locals.importActive = active + 1;
+	return true;
+}
+
+// Terminates the worker when the client goes away before the reply is sent.
+async function runAbortableImport(req, res, kind, limits) {
+	const controller = new AbortController();
+	const onClose = () => {
+		if (!res.writableFinished) controller.abort();
+	};
+	res.once("close", onClose);
+	try {
+		return await runImportInWorker(kind, req.body, {
+			...limits,
+			signal: controller.signal,
+		});
+	} finally {
+		res.off("close", onClose);
+	}
+}
+
 async function convertInWorker(req, res, kind) {
-	const outcome = await runImportInWorker(kind, req.body, importLimits(req));
+	const limits = importLimits(req);
+	const { locals } = req.app;
+	if (!acquireImportSlot(locals, limits.maxConcurrent ?? 1)) {
+		res.set("Retry-After", BUSY_RETRY_AFTER_S);
+		return res.status(503).json({ error: IMPORT_BUSY_ERROR });
+	}
+	let outcome;
+	try {
+		outcome = await runAbortableImport(req, res, kind, limits);
+	} finally {
+		locals.importActive -= 1;
+	}
+	return sendImportOutcome(res, outcome, locals);
+}
+
+function sendImportOutcome(res, outcome, locals) {
+	if (outcome.reason === "aborted") {
+		locals.importAborted = (locals.importAborted ?? 0) + 1;
+		return undefined;
+	}
 	if (!outcome.ok) {
 		const { status, error } = WORKER_FAILURES[outcome.reason];
 		return res.status(status).json({ error });

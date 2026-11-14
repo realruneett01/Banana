@@ -17,19 +17,25 @@ export const IMPORT_TIMEOUT_MS_DESKTOP = 120000;
 export const IMPORT_BODY_LIMIT_WEB = "20mb";
 export const IMPORT_HEAP_MB_WEB = 256;
 export const IMPORT_TIMEOUT_MS_WEB = 30000;
+// Two web workers at once could exhaust the 512 MB instance.
+export const IMPORT_MAX_CONCURRENT_DESKTOP = 2;
+export const IMPORT_MAX_CONCURRENT_WEB = 1;
 
 export const DESKTOP_IMPORT_LIMITS = Object.freeze({
 	bodyLimit: IMPORT_BODY_LIMIT_DESKTOP,
 	heapMb: IMPORT_HEAP_MB_DESKTOP,
 	timeoutMs: IMPORT_TIMEOUT_MS_DESKTOP,
+	maxConcurrent: IMPORT_MAX_CONCURRENT_DESKTOP,
 });
 export const WEB_IMPORT_LIMITS = Object.freeze({
 	bodyLimit: IMPORT_BODY_LIMIT_WEB,
 	heapMb: IMPORT_HEAP_MB_WEB,
 	timeoutMs: IMPORT_TIMEOUT_MS_WEB,
+	maxConcurrent: IMPORT_MAX_CONCURRENT_WEB,
 });
 
 export const IMPORT_TOO_LARGE_ERROR = "design too large to import";
+export const IMPORT_BUSY_ERROR = "import busy, retry shortly";
 
 const CONVERTERS = {
 	sch: (text) => ({
@@ -42,21 +48,27 @@ const CONVERTERS = {
 /**
  * Converts KiCad text in a worker thread with a capped heap and a deadline.
  * Resolves { ok: true, result } or { ok: false, reason, exitCode? } where
- * reason is "too-large", "timeout" or "failed"; never rejects.
+ * reason is "too-large", "timeout", "aborted" (signal fired) or "failed";
+ * never rejects.
  */
-export function runImportInWorker(kind, text, { heapMb, timeoutMs }) {
+export function runImportInWorker(kind, text, { heapMb, timeoutMs, signal }) {
 	return new Promise((resolve) => {
 		const worker = new Worker(new URL(import.meta.url), {
 			workerData: { importKind: kind, text },
 			resourceLimits: { maxOldGenerationSizeMb: heapMb },
 		});
-		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
+		let stopReason = "failed";
+		const stop = (reason) => {
+			stopReason = reason;
 			worker.terminate();
-		}, timeoutMs);
+		};
+		const timer = setTimeout(() => stop("timeout"), timeoutMs);
+		const onAbort = () => stop("aborted");
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
 		const finish = (outcome) => {
 			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
 			resolve(outcome);
 		};
 		worker.once("message", (result) => finish({ ok: true, result }));
@@ -64,7 +76,7 @@ export function runImportInWorker(kind, text, { heapMb, timeoutMs }) {
 			finish({ ok: false, reason: failureReason(err) }),
 		);
 		worker.once("exit", (exitCode) =>
-			finish({ ok: false, reason: timedOut ? "timeout" : "failed", exitCode }),
+			finish({ ok: false, reason: stopReason, exitCode }),
 		);
 	});
 }
