@@ -24,7 +24,8 @@ import {
 	Tooltip,
 	Typography,
 } from "antd";
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { guardFormWrites, nextFormConnection } from "../formConnection.js";
 import { useGithubSync } from "./useGithubSync.js";
 
 const { Text, Title } = Typography;
@@ -982,7 +983,14 @@ const getFormInitialValues = (props) => ({
 });
 
 function GithubDiffForm({ controlsProps, formState, handleSubmit }) {
-	const { form, compareMode, setCompareMode, syncState } = formState;
+	const { form, compareMode, setCompareMode, syncState, onFormMountChange } =
+		formState;
+
+	// Tells the guard its form instance is now connected (see formConnection.js)
+	useEffect(() => {
+		onFormMountChange(true);
+		return () => onFormMountChange(false);
+	}, [onFormMountChange]);
 
 	return (
 		<Form
@@ -1015,10 +1023,25 @@ function GithubDiffForm({ controlsProps, formState, handleSubmit }) {
 
 function useGithubFormState(props) {
 	const [form] = Form.useForm();
+	const connectionRef = useRef(nextFormConnection(null, false));
+	const guardedForm = useMemo(
+		() => guardFormWrites(form, () => connectionRef.current),
+		[form],
+	);
+	const onFormMountChange = useCallback(
+		(mounted) => {
+			connectionRef.current = nextFormConnection(
+				connectionRef.current,
+				mounted,
+			);
+			if (mounted) guardedForm.flush();
+		},
+		[guardedForm],
+	);
 	const [compareMode, setCompareMode] = useState("pulls");
 	const [manualRepoMode, setManualRepoMode] = useState(false);
 	const [manualRepoInput, setManualRepoInput] = useState("");
-	const syncState = useGithubSync({ ...props, compareMode, form });
+	const syncState = useGithubSync({ ...props, compareMode, form: guardedForm });
 
 	const handleManualRepoSubmit = () => {
 		const parsed = parseManualRepoString(manualRepoInput);
@@ -1038,6 +1061,7 @@ function useGithubFormState(props) {
 		setManualRepoInput,
 		syncState,
 		handleManualRepoSubmit,
+		onFormMountChange,
 	};
 }
 
