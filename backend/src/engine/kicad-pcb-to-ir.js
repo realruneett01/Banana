@@ -961,15 +961,32 @@ function boardSetup(ast) {
 	};
 }
 
+const ROUTING_HEADS = new Set(["segment", "arc", "via"]);
+
+// Each track, arc and via keeps its place among them in the file, so the
+// writer can interleave them as written (KiCad's zone refill depends on it).
+function routingOrder(ast) {
+	const order = new Map();
+	for (const node of ast) {
+		if (ROUTING_HEADS.has(node?.[0]?.sym)) order.set(node, order.size);
+	}
+	return order;
+}
+
 function buildBoardGeometry(ast, ctx, netNumberToId) {
+	const order = routingOrder(ast);
+	const withOrder = (node, parse) => ({
+		...parse(node, netNumberToId),
+		order: order.get(node),
+	});
 	return {
 		...boardSetup(ast),
 		outline: edgeCutsOutline(ctx.drawings),
 		layers: extractLayers(ast),
 		layerNames: extractLayerNames(ast),
 		drawings: ctx.drawings,
-		tracks: ctx.rawSegments.map((s) => parseTrack(s, netNumberToId)),
-		vias: ctx.rawVias.map((v) => parseVia(v, netNumberToId)),
+		tracks: ctx.rawSegments.map((s) => withOrder(s, parseTrack)),
+		vias: ctx.rawVias.map((v) => withOrder(v, parseVia)),
 		zones: ctx.rawZones.map((z) => parseZone(z, netNumberToId)),
 		footprints: ctx.footprints,
 	};

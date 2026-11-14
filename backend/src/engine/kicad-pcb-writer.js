@@ -450,6 +450,19 @@ function writableZones(zones, warnings) {
 	});
 }
 
+// Imported items go back in their file order (KiCad's zone refill depends
+// on it); items made in the editor have no order and follow, tracks first.
+const orderOf = ([item]) => item.order ?? Number.MAX_SAFE_INTEGER;
+
+function buildTrackAndViaNodes(tracks, vias, netIndex) {
+	const items = [
+		...tracks.map((t) => [t, buildTrackNode]),
+		...vias.map((v) => [v, buildViaNode]),
+	];
+	items.sort((a, b) => orderOf(a) - orderOf(b));
+	return items.map(([item, build]) => build(item, netIndex));
+}
+
 function buildRoutingNodes(
 	ir,
 	{ tracks = [], vias = [], zones = [] },
@@ -458,8 +471,7 @@ function buildRoutingNodes(
 	const netIndex = new Map(ir.nets.map((net, i) => [net.id, i + 1]));
 	const netNames = new Map(ir.nets.map((net) => [net.id, net.name]));
 	return [
-		...tracks.map((t) => buildTrackNode(t, netIndex)),
-		...vias.map((v) => buildViaNode(v, netIndex)),
+		...buildTrackAndViaNodes(tracks, vias, netIndex),
 		...writableZones(zones, warnings).map((z) =>
 			buildZoneNode(z, netIndex, netNames),
 		),

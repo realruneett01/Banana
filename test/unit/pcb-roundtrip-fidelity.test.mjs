@@ -227,6 +227,55 @@ describe("irToKicadPcb writes board routing and outline back", () => {
 	});
 });
 
+const INTERLEAVED = `(kicad_pcb (version 20241229) (generator test)
+  (net 0 "") (net 1 "SIG")
+  (segment (start 1 1) (end 2 1) (width 0.2) (layer "F.Cu") (net 1) (uuid "s1"))
+  (via (at 2 1) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1) (uuid "v1"))
+  (arc (start 2 1) (mid 3 0.5) (end 4 1) (width 0.2) (layer "B.Cu") (net 1) (uuid "a1"))
+  (via (at 4 1) (size 0.6) (drill 0.3) (layers "F.Cu" "B.Cu") (net 1) (uuid "v2"))
+  (segment (start 4 1) (end 5 1) (width 0.2) (layer "F.Cu") (net 1) (uuid "s2")))`;
+
+const ROUTING_HEADS = new Set(["segment", "arc", "via"]);
+const routingUuids = (text) =>
+	parse(text)
+		.filter((n) => Array.isArray(n) && ROUTING_HEADS.has(nodeSym(n[0])))
+		.map((n) => childOf(n, "uuid")[1]);
+
+describe("tracks, arcs and vias keep their file order", () => {
+	const { ir, board } = importBoard(INTERLEAVED);
+
+	test("a round trip writes them in the original interleaved order", () => {
+		assert.deepEqual(routingUuids(roundTrip(INTERLEAVED)), [
+			"s1",
+			"v1",
+			"a1",
+			"v2",
+			"s2",
+		]);
+	});
+
+	test("items added in the editor go after the imported ones", () => {
+		const track = { ...board.tracks[0], uuid: "s9" };
+		delete track.order;
+		const via = { ...board.vias[0], uuid: "v9" };
+		delete via.order;
+		const edited = {
+			...board,
+			tracks: [track, ...board.tracks],
+			vias: [via, ...board.vias],
+		};
+		assert.deepEqual(routingUuids(irToKicadPcb(ir, edited).text), [
+			"s1",
+			"v1",
+			"a1",
+			"v2",
+			"s2",
+			"s9",
+			"v9",
+		]);
+	});
+});
+
 const EDGE = `(stroke (width 0.1) (type solid)) (layer "Edge.Cuts")`;
 const DRAWN = `(kicad_pcb (version 20241229) (generator test)
   (layers (0 "F.Cu" signal "Top") (2 "B.Cu" signal) (5 "F.SilkS" user "F.Silkscreen")
@@ -376,16 +425,6 @@ const ORACLE_BOARDS = [
 	"multichannel/multichannel_mixer-unrouted",
 ];
 
-// Known gap: it runs and reports, but does not fail. The board model keeps
-// tracks and vias in two lists, so vias are written after the tracks instead
-// of between them; KiCad's zone refill then puts one extra (collinear) point
-// in a B.Cu fill outline. The original file with its vias moved after its
-// tracks plots the same extra draw.
-const DRAW_GAPS = {
-	"multichannel/multichannel_mixer":
-		"vias are written after the tracks, not interleaved: the B.Cu zone refill gains one collinear vertex",
-};
-
 function cli(args) {
 	try {
 		execFileSync(CLI, args, { stdio: "pipe" });
@@ -486,9 +525,10 @@ for (const name of ORACLE_BOARDS) {
 			);
 		});
 
-		test("gerber draws match and sizes are within 1%", {
-			todo: DRAW_GAPS[name],
-		}, () => {
+		// Tracks and vias are written in their file order: KiCad's zone refill
+		// depends on it (vias after all tracks add a collinear B.Cu fill point
+		// on multichannel_mixer).
+		test("gerber draws match and sizes are within 1%", () => {
 			assert.deepEqual(
 				gerberField(after, "draws"),
 				gerberField(before, "draws"),

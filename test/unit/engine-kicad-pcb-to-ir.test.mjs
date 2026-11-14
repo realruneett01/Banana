@@ -178,6 +178,7 @@ function assertCopperGeometry(res, gndNetId, vccNetId) {
 					start: [10, 20],
 					end: [30, 40],
 					widthMm: 0.25,
+					order: 0,
 				},
 			],
 			vias: [
@@ -186,6 +187,7 @@ function assertCopperGeometry(res, gndNetId, vccNetId) {
 					at: [30, 40],
 					drillMm: 0.4,
 					sizeMm: 0.8,
+					order: 1,
 				},
 			],
 			zones: [
