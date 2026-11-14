@@ -1,11 +1,13 @@
 import express from "express";
 import { validateCircuitIR } from "../engine/circuit-ir.js";
 import { runLiveChecks } from "../engine/drc-lite.js";
+import {
+	IMPORT_TOO_LARGE_ERROR,
+	runImportInWorker,
+	WEB_IMPORT_LIMITS,
+} from "../engine/import-worker.js";
 import { irToBomCsv, irToKicadNetlist } from "../engine/ir-exports.js";
-import { embeddedLibSymbols } from "../engine/kicad-library.js";
-import { kicadPcbToIr } from "../engine/kicad-pcb-to-ir.js";
 import { irToKicadPcb } from "../engine/kicad-pcb-writer.js";
-import { kicadSchToIr } from "../engine/kicad-sch-to-ir.js";
 import { irToKicadSch } from "../engine/kicad-sch-writer.js";
 import { KICAD_REJECT_ERROR } from "../engine/kicad-validate.js";
 import { createRegistry } from "../engine/tool-registry.js";
@@ -287,15 +289,10 @@ const IMPORT_CONFIG = {
 	sch: {
 		header: "(kicad_sch",
 		error: "File is not a KiCad schematic",
-		convert: (text) => ({
-			...kicadSchToIr(text),
-			symbols: embeddedLibSymbols(text),
-		}),
 	},
 	pcb: {
 		header: "(kicad_pcb",
 		error: "File is not a KiCad board",
-		convert: (text) => kicadPcbToIr(text),
 	},
 };
 
@@ -305,7 +302,54 @@ function resolveImportConfig(kind) {
 		: null;
 }
 
-function handleImport(req, res) {
+const WORKER_FAILURES = {
+	"too-large": { status: 413, error: IMPORT_TOO_LARGE_ERROR },
+	timeout: { status: 422, error: "import timed out" },
+	failed: { status: 500, error: "Editor import failed" },
+};
+
+function importLimits(req) {
+	return req.app?.locals?.importLimits ?? WEB_IMPORT_LIMITS;
+}
+
+const textParsers = new Map();
+
+function importBodyParser(req, res, next) {
+	const { bodyLimit } = importLimits(req);
+	if (!textParsers.has(bodyLimit)) {
+		textParsers.set(
+			bodyLimit,
+			express.text({ type: "text/plain", limit: bodyLimit }),
+		);
+	}
+	return textParsers.get(bodyLimit)(req, res, (err) => {
+		if (err?.type === "entity.too.large") {
+			return res.status(413).json({ error: IMPORT_TOO_LARGE_ERROR });
+		}
+		return next(err);
+	});
+}
+
+async function convertInWorker(req, res, kind) {
+	const outcome = await runImportInWorker(kind, req.body, importLimits(req));
+	if (!outcome.ok) {
+		const { status, error } = WORKER_FAILURES[outcome.reason];
+		return res.status(status).json({ error });
+	}
+	const result = outcome.result;
+	if (!result.ok) {
+		const errors = (result.errors || []).slice(0, 5);
+		return res.status(422).json({ error: "Could not import file", errors });
+	}
+	return res.status(200).json({
+		ir: result.ir,
+		board: result.board ?? null,
+		warnings: result.warnings ?? [],
+		symbols: result.symbols ?? {},
+	});
+}
+
+async function handleImport(req, res) {
 	try {
 		const config = resolveImportConfig(req.query?.kind);
 		if (!config) {
@@ -320,17 +364,7 @@ function handleImport(req, res) {
 		) {
 			return res.status(400).json({ error: config.error });
 		}
-		const result = config.convert(text);
-		if (!result.ok) {
-			const errors = (result.errors || []).slice(0, 5);
-			return res.status(422).json({ error: "Could not import file", errors });
-		}
-		return res.status(200).json({
-			ir: result.ir,
-			board: result.board ?? null,
-			warnings: result.warnings ?? [],
-			symbols: result.symbols ?? {},
-		});
+		return await convertInWorker(req, res, req.query.kind);
 	} catch (_err) {
 		// Broad catch to guarantee route never leaks stack traces
 		return res.status(500).json({ error: "Editor import failed" });
@@ -375,7 +409,7 @@ export function createEditorRouter(options = {}) {
 	router.post(
 		["/editor/import", "/api/editor/import"],
 		routeLimiter,
-		express.text({ type: "text/plain", limit: "20mb" }),
+		importBodyParser,
 		handleImport,
 	);
 	return router;

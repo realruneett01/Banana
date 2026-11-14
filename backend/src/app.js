@@ -4,6 +4,10 @@ import path from "node:path";
 import cors from "cors";
 import express from "express";
 import { config } from "./config.js";
+import {
+	DESKTOP_IMPORT_LIMITS,
+	WEB_IMPORT_LIMITS,
+} from "./engine/import-worker.js";
 import { createMcpHttpRouter } from "./mcp/http.js";
 import agentRouter from "./routes/agent-routes.js";
 import circuitRouter from "./routes/circuit-routes.js";
@@ -152,6 +156,9 @@ export function createApp(options = {}) {
 	const allowLocal = isDesktop || process.env.BANANA_ALLOW_LOCAL_REPOS === "1";
 	config.allowLocalRepos = allowLocal;
 	app.locals.allowLocalRepos = allowLocal;
+	app.locals.importLimits =
+		options.importLimits ??
+		(isDesktop ? DESKTOP_IMPORT_LIMITS : WEB_IMPORT_LIMITS);
 
 	// Host validation if specified (Phase 2 hardening)
 	setupHostValidation(app, options);
