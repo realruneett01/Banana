@@ -8,6 +8,7 @@ import {
 	roundedRectOutline,
 } from "./boardOutline.js";
 import { get as getEditorStatus } from "./editorStatus.js";
+import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
 import {
 	arcToSvgPath,
 	boardPadPositions,
@@ -29,6 +30,7 @@ import {
 	toggleVisible,
 } from "./layers.js";
 import { markerGlyphs } from "./markerRender.js";
+import { buildPlacedPart } from "./partPlacement.js";
 import {
 	addTrack,
 	deleteTrack,
@@ -381,12 +383,22 @@ function cancelRouting(ctx) {
 	return true;
 }
 
-// Escape: first an outline drag in progress, else leave the route tool.
+// Escape: first outline, then armed footprint, else leave the route tool.
 function handleEscape(e, key, ctx) {
 	if (key !== "escape") return false;
-	const handled = Boolean(ctx.cancelOutline?.()) || cancelRouting(ctx);
-	if (handled) e.preventDefault();
-	return handled;
+	if (ctx.cancelOutline?.()) {
+		e.preventDefault();
+		return true;
+	}
+	if (ctx.disarmFootprint?.()) {
+		e.preventDefault();
+		return true;
+	}
+	if (cancelRouting(ctx)) {
+		e.preventDefault();
+		return true;
+	}
+	return false;
 }
 
 function handleShortcuts(e, ctx) {
@@ -599,6 +611,49 @@ function PartShape({ rect, isSelected }) {
 				rx={0.2}
 			/>
 			<PartRefLabel rect={rect} />
+		</g>
+	);
+}
+
+function resolveGhostStyle(side) {
+	const isFront = side !== "B";
+	const stroke = getLayerColor(PCB_THEME, isFront ? "F.SilkS" : "B.SilkS");
+	const fill = isFront
+		? "rgba(56, 189, 248, 0.25)"
+		: "rgba(167, 139, 250, 0.25)";
+	return { stroke, fill };
+}
+
+function FootprintGhost({ item, cursor, activeLayer }) {
+	if (!item || !cursor) return null;
+	const side = activeLayer === "B.Cu" ? "B" : "F";
+	const rect = footprintRect({
+		...item,
+		placement: { x: cursor.x, y: cursor.y, rot: 0, side },
+	});
+	const refText = item.ref || item.prefix || rect?.ref || "U";
+	const ghostRect = {
+		x: cursor.x,
+		y: cursor.y,
+		w: rect?.w ?? 5,
+		h: rect?.h ?? 5,
+		ref: refText,
+	};
+	const { stroke, fill } = resolveGhostStyle(side);
+	return (
+		<g className="pcb-footprint-ghost" style={{ pointerEvents: "none" }}>
+			<rect
+				x={ghostRect.x - ghostRect.w / 2}
+				y={ghostRect.y - ghostRect.h / 2}
+				width={ghostRect.w}
+				height={ghostRect.h}
+				fill={fill}
+				stroke={stroke}
+				strokeWidth={0.3}
+				strokeDasharray="2,2"
+				rx={0.2}
+			/>
+			<PartRefLabel rect={ghostRect} />
 		</g>
 	);
 }
@@ -1947,14 +2002,22 @@ function useCanvasPan(setView) {
 	return { onPanStart, onPanMove, onPanEnd };
 }
 
-function usePointerDownHandler({ route, sel, ir, board, svgRef, view }) {
+function usePointerDownHandler({
+	route,
+	sel,
+	ir,
+	board,
+	svgRef,
+	view,
+	isArmed,
+}) {
 	return useCallback(
 		(e) => {
-			if (route.isRouting) return;
+			if (route.isRouting || isArmed) return;
 			const [x, y] = screenToBoardCoords(e, svgRef.current, view);
 			sel.onSelectHit(hitTest(ir, board, [x, y]));
 		},
-		[route.isRouting, ir, board, sel, svgRef, view],
+		[route.isRouting, isArmed, ir, board, sel, svgRef, view],
 	);
 }
 
@@ -1977,6 +2040,7 @@ function buildShortcuts(ctx) {
 		stepCopper: ctx.layers.onStepCopper,
 		fitHome: ctx.fitHome,
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
+		disarmFootprint: ctx.armedPlacement?.disarm,
 	};
 }
 
@@ -1990,7 +2054,7 @@ function buildSceneData(ctx) {
 		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
 		onPointerDown: ctx.onPointerDown,
 		fpLookup: ctx.fpLookup,
-		isRouting: ctx.isRouting,
+		isRouting: ctx.isRouting || Boolean(ctx.armedPlacement?.armed),
 	};
 }
 
@@ -2264,6 +2328,133 @@ function useOutlineDrawing({ board, pushBoard, svgRef, view }) {
 	};
 }
 
+function isLeftClick(e) {
+	return e.button === undefined || e.button === 0;
+}
+
+function calcSnappedBoardPoint(e, svgEl, view) {
+	const raw = screenToBoardCoords(e, svgEl, view);
+	const grid = getEditorStatus()?.grid || 0.25;
+	const [x, y] = snapToGrid(raw, grid);
+	return { x, y };
+}
+
+function placeArmedPart({ item, editor, activeLayer, at }) {
+	const side = activeLayer === "B.Cu" ? "B" : "F";
+	const parts = editor?.state?.ir?.parts ?? [];
+	const part = buildPlacedPart(item, parts, { x: at.x, y: at.y, side });
+	editor?.dispatch({ type: "addPart", part });
+}
+
+function useArmedFootprint({ editor, activeLayer, svgRef, view }) {
+	const [armed, setArmed] = useState(null);
+	const [cursor, setCursor] = useState(null);
+	const disarm = useCallback(() => {
+		if (!armed) return false;
+		setArmed(null);
+		setCursor(null);
+		return true;
+	}, [armed]);
+	const onPointerMove = useCallback(
+		(e) => {
+			if (armed) setCursor(calcSnappedBoardPoint(e, svgRef.current, view));
+		},
+		[armed, svgRef, view],
+	);
+	const onCanvasClick = useCallback(
+		(e) => {
+			if (!armed || !isLeftClick(e)) return false;
+			const at = calcSnappedBoardPoint(e, svgRef.current, view);
+			placeArmedPart({ item: armed, editor, activeLayer, at });
+			return true;
+		},
+		[armed, activeLayer, editor, svgRef, view],
+	);
+	return { armed, setArmed, cursor, disarm, onPointerMove, onCanvasClick };
+}
+
+function createToolBusHandlers({ route, layers, armedPlacement }) {
+	return {
+		select: () => {
+			if (route.isRouting) route.cancelRoute();
+			armedPlacement.disarm();
+		},
+		routeTrack: () => {
+			armedPlacement.disarm();
+			if (!route.isRouting) route.toggleRoute();
+		},
+		addVia: () => {
+			if (route.isRouting) route.placeViaAndSwitchLayer();
+			else layers.toggleLayer();
+		},
+		setLayer: (item) => {
+			if (typeof item?.layer === "string") {
+				layers.onSetActive(item.layer);
+			}
+		},
+		placeFootprint: (item) => {
+			if (route.isRouting) route.cancelRoute();
+			if (item) armedPlacement.setArmed(item);
+		},
+	};
+}
+
+function reportActiveTool(isRouting, armedFootprint) {
+	if (isRouting) {
+		emitActiveTool({ tab: "pcb", tool: "routeTrack", item: null });
+		return;
+	}
+	if (armedFootprint) {
+		emitActiveTool({
+			tab: "pcb",
+			tool: "placeFootprint",
+			item: armedFootprint,
+		});
+		return;
+	}
+	emitActiveTool({ tab: "pcb", tool: "select", item: null });
+}
+
+function useToolBus({ route, layers, armedPlacement }) {
+	const handlersRef = useRef({});
+	handlersRef.current = createToolBusHandlers({
+		route,
+		layers,
+		armedPlacement,
+	});
+
+	useEffect(() => {
+		reportActiveTool(route.isRouting, armedPlacement.armed);
+	}, [route.isRouting, armedPlacement.armed]);
+
+	useEffect(() => {
+		return onEditorTool((payload) => {
+			const handler = handlersRef.current[payload?.tool];
+			handler?.(payload?.item);
+		}, "pcb");
+	}, []);
+}
+
+function useSceneClick(routeClick, armedPlacement) {
+	return useCallback(
+		(e) => {
+			if (armedPlacement?.onCanvasClick(e)) return;
+			routeClick(e);
+		},
+		[routeClick, armedPlacement],
+	);
+}
+
+function useScenePointer(ptrMove, armedPlacement) {
+	return useCallback(
+		(e) => {
+			ptrMove(e);
+			armedPlacement?.onPointerMove(e);
+		},
+		[ptrMove, armedPlacement],
+	);
+}
+
 function useSvgPointerHandlers({
 	pan,
 	drag,
@@ -2309,6 +2500,7 @@ function PcbSvgContent({
 	markers,
 	outlineDrawing,
 	zoom,
+	armedPlacement,
 }) {
 	return (
 		<>
@@ -2332,6 +2524,11 @@ function PcbSvgContent({
 				activeTool={outlineDrawing.activeTool}
 				radius={outlineDrawing.radius}
 			/>
+			<FootprintGhost
+				item={armedPlacement?.armed}
+				cursor={armedPlacement?.cursor}
+				activeLayer={layerState.active}
+			/>
 		</>
 	);
 }
@@ -2346,6 +2543,7 @@ function PcbSvgScene({
 	pan,
 	markers,
 	outlineDrawing,
+	armedPlacement,
 }) {
 	const order = useMemo(() => drawOrder(layerState), [layerState]);
 	const showVias =
@@ -2357,16 +2555,18 @@ function PcbSvgScene({
 		sceneData,
 		outlineDrawing,
 	});
+	const onClick = useSceneClick(route.onCanvasClick, armedPlacement);
+	const onPointerMove = useScenePointer(ptr.onPointerMove, armedPlacement);
 	const transform = `translate(${view.pan.x},${view.pan.y}) scale(${view.zoom})`;
 	return (
 		/* biome-ignore lint/a11y/useKeyWithClickEvents: Keyboard handled on parent region */
 		<svg
 			ref={svgRef}
 			style={SVG_STYLE}
-			onClick={route.onCanvasClick}
+			onClick={onClick}
 			onDoubleClick={route.onCanvasDoubleClick}
 			onPointerDown={ptr.onPointerDown}
-			onPointerMove={ptr.onPointerMove}
+			onPointerMove={onPointerMove}
 			onPointerUp={ptr.onPointerUp}
 		>
 			<title>PCB Canvas</title>
@@ -2381,6 +2581,7 @@ function PcbSvgScene({
 					markers={markers}
 					outlineDrawing={outlineDrawing}
 					zoom={view.zoom}
+					armedPlacement={armedPlacement}
 				/>
 			</g>
 		</svg>
@@ -2445,6 +2646,17 @@ function usePcbCanvasState({
 		svgRef,
 		view,
 	});
+	const armedPlacement = useArmedFootprint({
+		editor,
+		activeLayer: layers.layerState.active,
+		svgRef,
+		view,
+	});
+	useToolBus({
+		route,
+		layers,
+		armedPlacement,
+	});
 	const rnLines = useMemo(
 		() =>
 			ratsnest(ir, padPositions, board?.tracks, {
@@ -2460,6 +2672,7 @@ function usePcbCanvasState({
 		board,
 		svgRef,
 		view,
+		isArmed: Boolean(armedPlacement.armed),
 	});
 	const shortcuts = buildShortcuts({
 		editor,
@@ -2469,6 +2682,7 @@ function usePcbCanvasState({
 		history,
 		fitHome,
 		outlineDrawing,
+		armedPlacement,
 	});
 	const sceneData = buildSceneData({
 		editor,
@@ -2479,6 +2693,7 @@ function usePcbCanvasState({
 		sel,
 		onPointerDown,
 		fpLookup,
+		armedPlacement,
 	});
 	return {
 		svgRef,
@@ -2491,6 +2706,7 @@ function usePcbCanvasState({
 		shortcuts,
 		outlineDrawing,
 		missingFootprints,
+		armedPlacement,
 	};
 }
 
@@ -2549,6 +2765,7 @@ export default function PcbCanvas({
 				pan={s.pan}
 				markers={markers}
 				outlineDrawing={s.outlineDrawing}
+				armedPlacement={s.armedPlacement}
 			/>
 			<LayerListOverlay
 				layerState={s.layers.layerState}
