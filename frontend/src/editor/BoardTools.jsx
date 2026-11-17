@@ -13,11 +13,13 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
 import { outlineToPolygon, polygonBBox } from "./boardOutline.js";
 import { createStore } from "./editorStatus.js";
+import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
 import { removeOrphans, syncBoardFromIr } from "./syncModel.js";
 import { addZone, rectZonePoints, validateZone } from "./zoneModel.js";
 
@@ -523,10 +525,71 @@ function OutlineToolGroup({ disabled, toolState }) {
 	);
 }
 
+function handleToolEvent(tool, onPour) {
+	if (tool === "outlineRect") {
+		setOutlineTool({ activeTool: "rect" });
+		return;
+	}
+	if (tool === "outlineRounded") {
+		setOutlineTool({ activeTool: "rounded_rect" });
+		return;
+	}
+	if (tool === "addZone") {
+		onPour?.();
+		return;
+	}
+	if (tool === "select") {
+		setOutlineTool({ activeTool: null });
+	}
+}
+
+function emitActiveToolChange(prev, current) {
+	if (current === prev) return;
+	if (current === "rect") {
+		emitActiveTool({ tab: "pcb", tool: "outlineRect" });
+		return;
+	}
+	if (current === "rounded_rect") {
+		emitActiveTool({ tab: "pcb", tool: "outlineRounded" });
+		return;
+	}
+	if (current === null && prev !== null) {
+		emitActiveTool({ tab: "pcb", tool: "select" });
+	}
+}
+
+export function useBoardToolBus({ disabled, onPour, pour, activeTool } = {}) {
+	const handlePour = onPour ?? pour?.onOpen ?? pour;
+	const storeTool = useOutlineTool();
+	const currentTool =
+		activeTool !== undefined ? activeTool : storeTool.activeTool;
+	const prevToolRef = useRef(null);
+
+	useEffect(() => {
+		const prev = prevToolRef.current;
+		prevToolRef.current = currentTool;
+		emitActiveToolChange(prev, currentTool);
+	}, [currentTool]);
+
+	useEffect(() => {
+		const handler = ({ tool }) => {
+			if (disabled) return;
+			handleToolEvent(tool, handlePour);
+		};
+		return onEditorTool(handler, "pcb");
+	}, [disabled, handlePour]);
+}
+
 export default function BoardTools({ ir, board, onChange, disabled }) {
 	const sync = useBoardSync({ ir, board, onChange });
 	const pour = useCopperPour({ board, ir, onChange });
 	const toolState = useOutlineTool();
+
+	useBoardToolBus({
+		disabled,
+		onPour: pour.onOpen,
+		activeTool: toolState.activeTool,
+	});
 
 	useEffect(() => {
 		if (disabled && toolState.activeTool) {
