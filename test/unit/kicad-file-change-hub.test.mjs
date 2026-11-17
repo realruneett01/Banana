@@ -28,6 +28,27 @@ function startedHub() {
 	return { src, hub };
 }
 
+function setupMountScenario(initialFile = null, projectRoot = "C:/proj") {
+	const { src, hub } = startedHub();
+	if (initialFile) {
+		src.fire({ projectRoot, filePath: initialFile });
+	}
+	const refreshed = [];
+	const onWorktreeDiff = (v) => refreshed.push(v);
+	const remembered = hub.latestFor(projectRoot);
+	if (shouldRefreshOnMount(remembered)) {
+		onWorktreeDiff(buildWorktreeDiffValues(projectRoot, "HEAD", remembered));
+	}
+	return { src, hub, refreshed, onWorktreeDiff, remembered };
+}
+
+function assertRefreshed(refreshed, expectedPaths) {
+	assert.equal(refreshed.length, expectedPaths.length);
+	for (const [i, path] of expectedPaths.entries()) {
+		assert.equal(refreshed[i].relativeFilePath, path);
+	}
+}
+
 describe("createFileChangeHub", () => {
 	test("subscribes to the source once even when started twice", () => {
 		const { src, hub } = startedHub();
@@ -39,18 +60,24 @@ describe("createFileChangeHub", () => {
 		const { src, hub } = startedHub();
 		const a = [];
 		const b = [];
-		hub.subscribe((p) => a.push(p.filePath));
-		hub.subscribe((p) => b.push(p.filePath));
+		for (const list of [a, b]) {
+			hub.subscribe((p) => list.push(p.filePath));
+		}
 		src.fire({ projectRoot: "C:/r", filePath: "x.kicad_pcb" });
-		assert.deepEqual(a, ["x.kicad_pcb"]);
-		assert.deepEqual(b, ["x.kicad_pcb"]);
+		for (const list of [a, b]) {
+			assert.deepEqual(list, ["x.kicad_pcb"]);
+		}
 	});
 
 	test("remembers changes made while no reader is mounted", () => {
 		const { src, hub } = startedHub();
 		src.fire({ projectRoot: "C:\\Repo\\", filePath: "a.kicad_sch" });
-		assert.equal(hub.latestFor("c:/repo"), "a.kicad_sch");
-		assert.equal(hub.latestFor("C:/other"), null);
+		for (const [path, expected] of [
+			["c:/repo", "a.kicad_sch"],
+			["C:/other", null],
+		]) {
+			assert.equal(hub.latestFor(path), expected);
+		}
 		hub.clear("C:/REPO");
 		assert.equal(hub.latestFor("c:/repo"), null);
 	});
@@ -107,60 +134,23 @@ describe("shouldRefreshOnMount", () => {
 
 describe("mount-refresh integration", () => {
 	test("restored file triggers one refresh request", () => {
-		const { src, hub } = startedHub();
-		src.fire({ projectRoot: "C:/proj", filePath: "board.kicad_pcb" });
-
-		const refreshed = [];
-		const onWorktreeDiff = (v) => refreshed.push(v);
-
-		// simulate what useKicadSaves does on mount when a remembered file exists
-		const remembered = hub.latestFor("C:/proj");
-		if (shouldRefreshOnMount(remembered)) {
-			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
-		}
-
-		assert.equal(refreshed.length, 1);
-		assert.equal(refreshed[0].relativeFilePath, "board.kicad_pcb");
+		const { refreshed } = setupMountScenario("board.kicad_pcb");
+		assertRefreshed(refreshed, ["board.kicad_pcb"]);
 	});
 
 	test("no remembered file -> no refresh on mount", () => {
-		const { hub } = startedHub();
-		const refreshed = [];
-		const onWorktreeDiff = (v) => refreshed.push(v);
-
-		const remembered = hub.latestFor("C:/proj");
-		if (shouldRefreshOnMount(remembered)) {
-			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
-		}
-
-		assert.equal(refreshed.length, 0);
+		const { refreshed } = setupMountScenario();
+		assertRefreshed(refreshed, []);
 	});
 
 	test("live event after restore triggers exactly one more refresh", () => {
-		const { src, hub } = startedHub();
-		src.fire({ projectRoot: "C:/proj", filePath: "board.kicad_pcb" });
-
-		const refreshed = [];
-		const onWorktreeDiff = (v) => refreshed.push(v);
-		let mountDone = false;
-
-		// mount: restore diff
-		const remembered = hub.latestFor("C:/proj");
-		if (shouldRefreshOnMount(remembered)) {
-			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", remembered));
-		}
-		mountDone = true;
-		assert.equal(refreshed.length, 1);
+		const { refreshed, onWorktreeDiff } = setupMountScenario("board.kicad_pcb");
+		assertRefreshed(refreshed, ["board.kicad_pcb"]);
 
 		// simulate live event arriving after mount
-		const liveFile = "board.kicad_pcb";
-		if (!mountDone || liveFile !== remembered) {
-			// this branch would be a duplicate guard; not taken here
-			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", liveFile));
-		} else {
-			// mount already covered this file; live event still fires one more
-			onWorktreeDiff(buildWorktreeDiffValues("C:/proj", "HEAD", liveFile));
-		}
-		assert.equal(refreshed.length, 2);
+		onWorktreeDiff(
+			buildWorktreeDiffValues("C:/proj", "HEAD", "board.kicad_pcb"),
+		);
+		assertRefreshed(refreshed, ["board.kicad_pcb", "board.kicad_pcb"]);
 	});
 });
