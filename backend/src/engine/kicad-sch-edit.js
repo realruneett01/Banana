@@ -290,20 +290,56 @@ function findItemsInsertIndex(root) {
 	return sheetInstIdx !== -1 ? sheetInstIdx : root.length;
 }
 
-function handleAddLabel(root, edit, ctx) {
-	if (typeof edit.net !== "string" || edit.net.length === 0) {
-		throw new Error("addLabel requires non-empty net string");
+const LABEL_KINDS = {
+	local: "label",
+	global: "global_label",
+	hierarchical: "hierarchical_label",
+};
+
+const DELETABLE_ITEM_HEADS = new Set([
+	"label",
+	"global_label",
+	"hierarchical_label",
+	"no_connect",
+	"junction",
+	"text",
+	"polyline",
+	"bus",
+]);
+
+function buildLabelNode(edit, ctx) {
+	const kind = edit.kind ?? "local";
+	const head = LABEL_KINDS[kind];
+	if (!head) {
+		throw new Error(`Invalid label kind: ${kind}`);
 	}
 	const x = checkFiniteCoord(edit.x, "x");
 	const y = checkFiniteCoord(edit.y, "y");
 	const rot = edit.rot !== undefined ? checkFiniteCoord(edit.rot, "rot") : 0;
-	const labelNode = [
-		sym("label"),
-		edit.net,
-		[sym("at"), x, y, rot],
-		[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
-		[sym("uuid"), ctx.newUuid()],
+	const atNode = [sym("at"), x, y, rot];
+	const effectsNode = [
+		sym("effects"),
+		[sym("font"), [sym("size"), 1.27, 1.27]],
 	];
+	const uuidNode = [sym("uuid"), ctx.newUuid()];
+	if (kind !== "local") {
+		return [
+			sym(head),
+			edit.net,
+			[sym("shape"), sym("input")],
+			atNode,
+			effectsNode,
+			uuidNode,
+		];
+	}
+	return [sym(head), edit.net, atNode, effectsNode, uuidNode];
+}
+
+function handleAddLabel(root, edit, ctx) {
+	if (typeof edit.net !== "string" || edit.net.length === 0) {
+		throw new Error("addLabel requires non-empty net string");
+	}
+	const labelNode = buildLabelNode(edit, ctx);
 	root.splice(findItemsInsertIndex(root), 0, labelNode);
 }
 
@@ -318,21 +354,110 @@ function handleAddNoConnect(root, edit, ctx) {
 	root.splice(findItemsInsertIndex(root), 0, noConnNode);
 }
 
-function dispatchEdit(root, edit, ctx) {
-	switch (edit?.op) {
-		case "addSymbol":
-			return handleAddSymbol(root, edit, ctx);
-		case "deleteSymbol":
-			return handleDeleteSymbol(root, edit);
-		case "setField":
-			return handleSetField(root, edit);
-		case "addLabel":
-			return handleAddLabel(root, edit, ctx);
-		case "addNoConnect":
-			return handleAddNoConnect(root, edit, ctx);
-		default:
-			throw new Error(`Unknown or missing op: ${edit?.op}`);
+function handleAddJunction(root, edit, ctx) {
+	const x = checkFiniteCoord(edit.x, "x");
+	const y = checkFiniteCoord(edit.y, "y");
+	const junctionNode = [
+		sym("junction"),
+		[sym("at"), x, y],
+		[sym("diameter"), 0],
+		[sym("color"), 0, 0, 0, 0],
+		[sym("uuid"), ctx.newUuid()],
+	];
+	root.splice(findItemsInsertIndex(root), 0, junctionNode);
+}
+
+function handleAddText(root, edit, ctx) {
+	if (typeof edit.text !== "string" || edit.text.length === 0) {
+		throw new Error("addText requires non-empty text string");
 	}
+	const x = checkFiniteCoord(edit.x, "x");
+	const y = checkFiniteCoord(edit.y, "y");
+	const rot = edit.rot !== undefined ? checkFiniteCoord(edit.rot, "rot") : 0;
+	const textNode = [
+		sym("text"),
+		edit.text,
+		[sym("at"), x, y, rot],
+		[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
+		[sym("uuid"), ctx.newUuid()],
+	];
+	root.splice(findItemsInsertIndex(root), 0, textNode);
+}
+
+function buildPtsNode(edit) {
+	const x1 = checkFiniteCoord(edit.x1, "x1");
+	const y1 = checkFiniteCoord(edit.y1, "y1");
+	const x2 = checkFiniteCoord(edit.x2, "x2");
+	const y2 = checkFiniteCoord(edit.y2, "y2");
+	return [sym("pts"), [sym("xy"), x1, y1], [sym("xy"), x2, y2]];
+}
+
+function handleAddSegment(root, head, edit, ctx) {
+	const segNode = [
+		sym(head),
+		buildPtsNode(edit),
+		[sym("stroke"), [sym("width"), 0], [sym("type"), sym("default")]],
+		[sym("uuid"), ctx.newUuid()],
+	];
+	root.splice(findItemsInsertIndex(root), 0, segNode);
+}
+
+function handleAddLine(root, edit, ctx) {
+	return handleAddSegment(root, "polyline", edit, ctx);
+}
+
+function handleAddBus(root, edit, ctx) {
+	return handleAddSegment(root, "bus", edit, ctx);
+}
+
+function itemMatchesUuid(node, uuid) {
+	if (!Array.isArray(node) || !DELETABLE_ITEM_HEADS.has(nodeName(node))) {
+		return false;
+	}
+	for (const child of node) {
+		if (nodeName(child) === "uuid" && child[1]) {
+			const id = typeof child[1] === "string" ? child[1] : child[1].sym;
+			return id === uuid;
+		}
+	}
+	return false;
+}
+
+function handleDeleteItem(root, edit) {
+	if (typeof edit?.uuid !== "string" || edit.uuid.length === 0) {
+		throw new Error("deleteItem requires non-empty uuid string");
+	}
+	let removed = 0;
+	for (let i = root.length - 1; i >= 0; i--) {
+		if (itemMatchesUuid(root[i], edit.uuid)) {
+			root.splice(i, 1);
+			removed++;
+		}
+	}
+	if (removed === 0) {
+		throw new Error(`Item not found: ${edit.uuid}`);
+	}
+}
+
+const EDIT_HANDLERS = {
+	addSymbol: handleAddSymbol,
+	deleteSymbol: handleDeleteSymbol,
+	setField: handleSetField,
+	addLabel: handleAddLabel,
+	addNoConnect: handleAddNoConnect,
+	addJunction: handleAddJunction,
+	addText: handleAddText,
+	addLine: handleAddLine,
+	addBus: handleAddBus,
+	deleteItem: handleDeleteItem,
+};
+
+function dispatchEdit(root, edit, ctx) {
+	const handler = EDIT_HANDLERS[edit?.op];
+	if (!handler) {
+		throw new Error(`Unknown or missing op: ${edit?.op}`);
+	}
+	return handler(root, edit, ctx);
 }
 
 function createEditContext(root, options) {
