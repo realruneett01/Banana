@@ -5,73 +5,31 @@ import { editsFromIrChange } from "../../frontend/src/editor/kicadEdits.js";
 const emptyIr = { parts: [], nets: [] };
 const board = (graphics = []) => ({ graphics });
 
-const lineGraphic = {
-	id: "g1",
-	kind: "line",
-	layer: "F.SilkS",
+const makeGraphic = (id, kind, layer, props = {}) => ({
+	id,
+	kind,
+	layer,
 	x: 0,
 	y: 0,
-	x2: 10,
-	y2: 0,
 	width: 0.15,
-};
+	...props,
+});
 
-const rectGraphic = {
-	id: "g2",
-	uuid: "u-rect-1",
-	kind: "rect",
-	layer: "Edge.Cuts",
-	x: 0,
-	y: 0,
-	x2: 20,
-	y2: 15,
-	width: 0.1,
-};
-
-const circleGraphic = {
-	id: "g3",
-	kind: "circle",
-	layer: "B.SilkS",
-	x: 10,
-	y: 10,
-	x2: 15,
-	y2: 10,
-	width: 0.15,
-};
-
-const arcGraphic = {
-	id: "g4",
-	kind: "arc",
-	layer: "Dwgs.User",
-	x: 0,
-	y: 0,
-	xm: 5,
-	ym: 2,
-	x2: 10,
-	y2: 0,
-	width: 0.15,
-};
-
-const textGraphic = {
-	id: "g5",
-	kind: "text",
-	layer: "F.SilkS",
-	x: 5,
-	y: 5,
-	text: "Banana v2",
-	width: 0.15,
-};
-
-const dimensionGraphic = {
-	id: "g6",
-	kind: "dimension",
-	layer: "F.Cu",
-	x: 0,
-	y: 0,
-	x2: 25,
-	y2: 0,
-	width: 0.15,
-};
+const [
+	lineGraphic,
+	rectGraphic,
+	circleGraphic,
+	arcGraphic,
+	textGraphic,
+	dimensionGraphic,
+] = [
+	["g1", "line", "F.SilkS", { x2: 10, y2: 0 }],
+	["g2", "rect", "Edge.Cuts", { uuid: "u-rect-1", x2: 20, y2: 15, width: 0.1 }],
+	["g3", "circle", "B.SilkS", { x: 10, y: 10, x2: 15, y2: 10 }],
+	["g4", "arc", "Dwgs.User", { xm: 5, ym: 2, x2: 10, y2: 0 }],
+	["g5", "text", "F.SilkS", { x: 5, y: 5, text: "Banana v2" }],
+	["g6", "dimension", "F.Cu", { x2: 25, y2: 0 }],
+].map(([id, kind, layer, props]) => makeGraphic(id, kind, layer, props));
 
 const segTrack = {
 	layer: "F.Cu",
@@ -80,76 +38,61 @@ const segTrack = {
 	widthMm: 0.3,
 };
 
+const boardDiff = (beforeGraphics = [], afterGraphics = []) => ({
+	before: board(beforeGraphics),
+	after: board(afterGraphics),
+});
+
+const addOp = (graphic) => ({ op: "addGraphic", graphic });
+const delOp = (uuid) => ({ op: "deleteGraphic", uuid });
+
+const multiGraphics = [
+	circleGraphic,
+	arcGraphic,
+	textGraphic,
+	dimensionGraphic,
+];
+
 const TEST_CASES = [
-	{
-		name: "added graphic produces addGraphic op in pcb edits",
-		boards: { before: board([]), after: board([lineGraphic]) },
-		expectedPcb: [{ op: "addGraphic", graphic: lineGraphic }],
-		expectedCanSave: true,
-	},
-	{
-		name: "deleted graphic with uuid produces deleteGraphic op in pcb edits",
-		boards: { before: board([rectGraphic]), after: board([]) },
-		expectedPcb: [{ op: "deleteGraphic", uuid: "u-rect-1" }],
-		expectedCanSave: true,
-	},
-	{
-		name: "deleted graphic without uuid produces no deleteGraphic op",
-		boards: { before: board([lineGraphic]), after: board([]) },
-		expectedPcb: [],
-		expectedCanSave: false,
-	},
-	{
-		name: "unchanged graphic produces no extra edits",
-		boards: { before: board([rectGraphic]), after: board([rectGraphic]) },
-		expectedPcb: [],
-		expectedCanSave: false,
-	},
-	{
-		name: "modified graphic with uuid produces deleteGraphic then addGraphic",
-		boards: {
-			before: board([rectGraphic]),
-			after: board([{ ...rectGraphic, x2: 30 }]),
-		},
-		expectedPcb: [
-			{ op: "deleteGraphic", uuid: "u-rect-1" },
-			{ op: "addGraphic", graphic: { ...rectGraphic, x2: 30 } },
-		],
-		expectedCanSave: true,
-	},
-	{
-		name: "empty boards produce no extra edits",
-		boards: { before: board([]), after: board([]) },
-		expectedPcb: [],
-		expectedCanSave: false,
-	},
-	{
-		name: "undefined boards produce no extra edits",
-		boards: undefined,
-		expectedPcb: [],
-		expectedCanSave: false,
-	},
-	{
-		name: "added circle, arc, text, and dimension produce addGraphic ops",
-		boards: {
-			before: board([]),
-			after: board([circleGraphic, arcGraphic, textGraphic, dimensionGraphic]),
-		},
-		expectedPcb: [
-			{ op: "addGraphic", graphic: circleGraphic },
-			{ op: "addGraphic", graphic: arcGraphic },
-			{ op: "addGraphic", graphic: textGraphic },
-			{ op: "addGraphic", graphic: dimensionGraphic },
-		],
-		expectedCanSave: true,
-	},
-	{
-		name: "combines track edits and graphic edits in pcb edits",
-		boards: {
+	[
+		"added graphic produces addGraphic op in pcb edits",
+		boardDiff([], [lineGraphic]),
+		[addOp(lineGraphic)],
+	],
+	[
+		"deleted graphic with uuid produces deleteGraphic op in pcb edits",
+		boardDiff([rectGraphic], []),
+		[delOp("u-rect-1")],
+	],
+	[
+		"deleted graphic without uuid produces no deleteGraphic op",
+		boardDiff([lineGraphic], []),
+		[],
+	],
+	[
+		"unchanged graphic produces no extra edits",
+		boardDiff([rectGraphic], [rectGraphic]),
+		[],
+	],
+	[
+		"modified graphic with uuid produces deleteGraphic then addGraphic",
+		boardDiff([rectGraphic], [{ ...rectGraphic, x2: 30 }]),
+		[delOp("u-rect-1"), addOp({ ...rectGraphic, x2: 30 })],
+	],
+	["empty boards produce no extra edits", boardDiff([], []), []],
+	["undefined boards produce no extra edits", undefined, []],
+	[
+		"added circle, arc, text, and dimension produce addGraphic ops",
+		boardDiff([], multiGraphics),
+		multiGraphics.map(addOp),
+	],
+	[
+		"combines track edits and graphic edits in pcb edits",
+		{
 			before: { tracks: [], graphics: [] },
 			after: { tracks: [segTrack], graphics: [lineGraphic] },
 		},
-		expectedPcb: [
+		[
 			{
 				op: "addTrack",
 				layer: "F.Cu",
@@ -160,11 +103,15 @@ const TEST_CASES = [
 				],
 				net: 0,
 			},
-			{ op: "addGraphic", graphic: lineGraphic },
+			addOp(lineGraphic),
 		],
-		expectedCanSave: true,
-	},
-];
+	],
+].map(([name, boards, expectedPcb]) => ({
+	name,
+	boards,
+	expectedPcb,
+	expectedCanSave: expectedPcb.length > 0,
+}));
 
 function runBoardGraphicsCase(tc) {
 	test(tc.name, () => {
