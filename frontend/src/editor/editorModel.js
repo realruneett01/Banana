@@ -23,6 +23,10 @@ function withNets(doc, nets) {
 	return withIr(doc, { ...doc.ir, nets });
 }
 
+function withAnnotations(doc, annotations) {
+	return withIr(doc, { ...doc.ir, annotations });
+}
+
 function findNetWithPin(nets, partId, pin) {
 	return nets.find((n) =>
 		n.pins.some((p) => p.partId === partId && p.pin === pin),
@@ -277,6 +281,92 @@ function handleRenameNet(doc, command) {
 	return withNets(doc, newNets);
 }
 
+function findAnnotation(ir, id) {
+	return (ir?.annotations ?? []).find((a) => a.id === id);
+}
+
+function autoAnnotationId(annotations) {
+	let max = 0;
+	for (const a of annotations ?? []) {
+		const m = typeof a?.id === "string" ? /^ann-(\d+)$/.exec(a.id) : null;
+		if (m) {
+			const n = Number.parseInt(m[1], 10);
+			if (n > max) max = n;
+		}
+	}
+	return `ann-${max + 1}`;
+}
+
+function handleAddAnnotation(doc, command) {
+	if (command._annotations) {
+		return withAnnotations(doc, command._annotations);
+	}
+	const annotation = command.annotation;
+	if (!annotation || typeof annotation !== "object") {
+		return { ...doc, error: "addAnnotation: missing annotation object" };
+	}
+	const id = annotation.id || autoAnnotationId(doc.ir.annotations);
+	if (findAnnotation(doc.ir, id)) {
+		return { ...doc, error: `addAnnotation: duplicate annotation id ${id}` };
+	}
+	const newAnnotation = { ...annotation, id };
+	const annotations = [...(doc.ir.annotations ?? []), newAnnotation];
+	return withAnnotations(doc, annotations);
+}
+
+function restorePrevAnnotations(doc, prev) {
+	const ir = { ...doc.ir };
+	if (prev === undefined) {
+		delete ir.annotations;
+	} else {
+		ir.annotations = prev;
+	}
+	return withIr(doc, ir);
+}
+
+function handleDeleteAnnotation(doc, command) {
+	if ("_prevAnnotations" in command) {
+		return restorePrevAnnotations(doc, command._prevAnnotations);
+	}
+	if (!command.id || !findAnnotation(doc.ir, command.id)) {
+		return doc;
+	}
+	const annotations = (doc.ir.annotations ?? []).filter(
+		(a) => a.id !== command.id,
+	);
+	const selection = doc.selection.filter((id) => id !== command.id);
+	return {
+		ir: { ...doc.ir, annotations },
+		selection,
+		history: doc.history,
+	};
+}
+
+function moveAnnotationItem(ann, dx, dy) {
+	const next = { ...ann, x: ann.x + dx, y: ann.y + dy };
+	if (typeof ann.x2 === "number") {
+		next.x2 = ann.x2 + dx;
+	}
+	if (typeof ann.y2 === "number") {
+		next.y2 = ann.y2 + dy;
+	}
+	return next;
+}
+
+function handleMoveAnnotation(doc, command) {
+	const ann = findAnnotation(doc.ir, command.id);
+	if (!ann) return doc;
+	const { dx, dy } = command;
+	if (typeof dx !== "number" || typeof dy !== "number") {
+		return { ...doc, error: "moveAnnotation: dx and dy must be numbers" };
+	}
+	const next = moveAnnotationItem(ann, dx, dy);
+	const annotations = (doc.ir.annotations ?? []).map((a) =>
+		a.id === command.id ? next : a,
+	);
+	return withAnnotations(doc, annotations);
+}
+
 function handleSelect(doc, command) {
 	const { ids } = command;
 	if (!Array.isArray(ids)) {
@@ -311,6 +401,9 @@ const HANDLERS = {
 	connect: handleConnect,
 	disconnect: handleDisconnect,
 	renameNet: handleRenameNet,
+	addAnnotation: handleAddAnnotation,
+	deleteAnnotation: handleDeleteAnnotation,
+	moveAnnotation: handleMoveAnnotation,
 	select: handleSelect,
 	batch: handleBatch,
 };
@@ -436,6 +529,38 @@ function invertRenameNet(doc, command) {
 	};
 }
 
+function invertAddAnnotation(doc, command) {
+	return {
+		type: "deleteAnnotation",
+		id: command.annotation.id,
+		_prevAnnotations: doc.ir.annotations,
+	};
+}
+
+function invertDeleteAnnotation(doc, command) {
+	const annotation = findAnnotation(doc.ir, command.id);
+	if (!annotation) return null;
+	return {
+		type: "addAnnotation",
+		annotation,
+		_annotations: doc.ir.annotations,
+	};
+}
+
+function invertMoveAnnotation(doc, command) {
+	const ann = findAnnotation(doc.ir, command.id);
+	if (!ann) return null;
+	if (typeof command.dx !== "number" || typeof command.dy !== "number") {
+		return null;
+	}
+	return {
+		type: "moveAnnotation",
+		id: command.id,
+		dx: -command.dx,
+		dy: -command.dy,
+	};
+}
+
 function invertBatch(doc, command) {
 	let current = doc;
 	const inverted = [];
@@ -457,6 +582,9 @@ const INVERTERS = {
 	connect: invertConnect,
 	disconnect: invertDisconnect,
 	renameNet: invertRenameNet,
+	addAnnotation: invertAddAnnotation,
+	deleteAnnotation: invertDeleteAnnotation,
+	moveAnnotation: invertMoveAnnotation,
 	batch: invertBatch,
 };
 
@@ -489,6 +617,10 @@ function prepareCommand(doc, command, idFn) {
 	if (command.type === "addPart" && !command.part?.id) {
 		return { ...command, part: { ...command.part, id: idFn("part") } };
 	}
+	if (command.type === "addAnnotation" && !command.annotation?.id) {
+		const id = autoAnnotationId(doc.ir?.annotations);
+		return { ...command, annotation: { ...command.annotation, id } };
+	}
 	if (command.type === "batch" && Array.isArray(command.commands)) {
 		return prepareBatch(doc, command, idFn);
 	}
@@ -508,6 +640,9 @@ function dispatchStep(doc, command, idFn) {
 	const next = applyCommand(doc, prepared, { idFn });
 	if (next.error) {
 		return { ...doc, error: next.error };
+	}
+	if (next === doc) {
+		return doc;
 	}
 	const entry = { ...prepared, _inverse: inverse };
 	const past = [...doc.history.past, entry].slice(-200);
