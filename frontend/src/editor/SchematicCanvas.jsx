@@ -8,7 +8,7 @@ import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
 import { buildPlacedPart } from "./partPlacement.js";
-import { isPanPointer, pointerDownTarget } from "./pointerIntent.js";
+import { pointerDownTarget } from "./pointerIntent.js";
 import SchAnnotationLayer, {
 	hitTestAnnotation,
 } from "./SchAnnotationLayer.jsx";
@@ -26,13 +26,12 @@ import {
 	transformPrimitives,
 } from "./symbolRender.js";
 import { getSchematicColor, SCHEMATIC_THEME } from "./theme.js";
+import { useCanvasNav } from "./useCanvasNav.js";
 import {
 	bboxOfPoints,
-	fitToBounds,
 	screenToWorld,
 	snapPoint,
 	worldToScreen,
-	zoomAt,
 } from "./viewport.js";
 
 const CANVAS_CONTAINER_STYLE = Object.freeze({
@@ -92,25 +91,6 @@ function useSchematicEditor(editor, onChange) {
 	);
 
 	return { doc, dispatchCmd, handleUndo, handleRedo };
-}
-
-function useWheelZoom(svgRef, vp) {
-	const { pan, zoom, setPan, setZoom } = vp;
-	useEffect(() => {
-		const el = svgRef.current;
-		if (!el) return;
-		const handleWheel = (e) => {
-			e.preventDefault();
-			const rect = el.getBoundingClientRect();
-			const screenPt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-			const factor = e.deltaY < 0 ? 1.15 : 0.87;
-			const next = zoomAt({ pan, zoom }, screenPt, factor);
-			setPan(next.pan);
-			setZoom(next.zoom);
-		};
-		el.addEventListener("wheel", handleWheel, { passive: false });
-		return () => el.removeEventListener("wheel", handleWheel);
-	}, [svgRef, pan, zoom, setPan, setZoom]);
 }
 
 function clientToWorld(clientX, clientY, svgEl, vp) {
@@ -806,29 +786,13 @@ function handleDeleteKey(ctx) {
 	}
 }
 
-function handleHomeKey(ctx) {
-	const parts = ctx.doc.ir?.parts ?? [];
+function getSchematicBounds(doc) {
+	const parts = doc?.ir?.parts ?? [];
 	const points = parts.map((p) => ({
 		x: p.placement?.x ?? 0,
 		y: p.placement?.y ?? 0,
 	}));
-	const bounds = bboxOfPoints(points);
-	const rect = ctx.svgRef?.current?.getBoundingClientRect();
-	const size = {
-		width: rect?.width || 800,
-		height: rect?.height || 600,
-	};
-	const next = fitToBounds(bounds, size);
-	ctx.vp.setPan(next.pan);
-	ctx.vp.setZoom(next.zoom);
-}
-
-function zoomAtCenter(ctx, factor) {
-	const rect = ctx.svgRef?.current?.getBoundingClientRect();
-	const center = { x: (rect?.width || 800) / 2, y: (rect?.height || 600) / 2 };
-	const next = zoomAt(ctx.vp, center, factor);
-	ctx.vp.setPan(next.pan);
-	ctx.vp.setZoom(next.zoom);
+	return bboxOfPoints(points);
 }
 
 // M / G: the first selected part follows the cursor; the next click drops it.
@@ -898,9 +862,6 @@ const ACTION_KEY_HANDLERS = {
 	delete: handleDeleteKey,
 	undo: (ctx) => ctx.handleUndo(),
 	redo: (ctx) => ctx.handleRedo(),
-	zoomFit: handleHomeKey,
-	zoomIn: (ctx) => zoomAtCenter(ctx, 1.15),
-	zoomOut: (ctx) => zoomAtCenter(ctx, 0.87),
 };
 
 function handleKeyDown(e, ctx) {
@@ -1155,7 +1116,7 @@ function updateNetHighlight(hit, doc, hitCtx) {
 function onPointerDownEvent(e, ctx) {
 	const { svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx } = ctx;
 	if (!svgRef.current) return;
-	if (isPanPointer(e.button, isSpaceDown)) {
+	if (e.button === 0 && isSpaceDown) {
 		startPanDrag(e, vp, panDragRef);
 		return;
 	}
@@ -1444,12 +1405,29 @@ function useToolBus({
 	return { armedPart, setArmedPart };
 }
 
-function useCanvasViewport(svgRef) {
-	const [pan, setPan] = useState({ x: 200, y: 150 });
-	const [zoom, setZoom] = useState(4);
-	const vp = useMemo(() => ({ pan, zoom, setPan, setZoom }), [pan, zoom]);
-	useWheelZoom(svgRef, vp);
-	return vp;
+function useCanvasViewport() {
+	const [view, setView] = useState({ pan: { x: 200, y: 150 }, zoom: 4 });
+	const setPan = useCallback(
+		(pan) =>
+			setView((prev) => ({
+				...prev,
+				pan: typeof pan === "function" ? pan(prev.pan) : pan,
+			})),
+		[],
+	);
+	const setZoom = useCallback(
+		(zoom) =>
+			setView((prev) => ({
+				...prev,
+				zoom: typeof zoom === "function" ? zoom(prev.zoom) : zoom,
+			})),
+		[],
+	);
+	const vp = useMemo(
+		() => ({ pan: view.pan, zoom: view.zoom, setPan, setZoom }),
+		[view.pan, view.zoom, setPan, setZoom],
+	);
+	return { view, setView, vp };
 }
 
 function useWireSession() {
@@ -1566,7 +1544,7 @@ function useSchematicCanvasState({
 	const svgRef = useRef(null);
 	const [isSpaceDown, setIsSpaceDown] = useState(false);
 	const [highlightNet, setHighlightNet] = useState(null);
-	const vp = useCanvasViewport(svgRef);
+	const { view, setView, vp } = useCanvasViewport();
 	const wire = useWireSession();
 	const annotationSession = useAnnotationSession();
 	const busInit = { ...wire, containerRef, annotationSession };
@@ -1576,6 +1554,7 @@ function useSchematicCanvasState({
 		onChange,
 		fetchSymbol,
 	);
+	const getBounds = useCallback(() => getSchematicBounds(ed.doc), [ed.doc]);
 	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
 	const editorState = useMemo(
 		() => ({
@@ -1589,7 +1568,7 @@ function useSchematicCanvasState({
 		[ed.doc, ed.dispatchCmd, symbolCache, armedPart, annotationSession],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
-	const view = {
+	const viewCtx = {
 		vp,
 		svgRef,
 		allPinPos,
@@ -1597,10 +1576,13 @@ function useSchematicCanvasState({
 		setHighlightNet,
 		annotationSession,
 	};
-	const keyCtx = useKeyContext(ed, wire, ptr, view);
+	const keyCtx = useKeyContext(ed, wire, ptr, viewCtx);
 	return {
 		svgRef,
 		vp,
+		view,
+		setView,
+		getBounds,
 		wire,
 		armedPart,
 		annotationSession,
@@ -1969,6 +1951,8 @@ export default function SchematicCanvas({
 		fetchSymbol,
 		containerRef,
 	});
+	const { view, setView, getBounds } = s;
+	useCanvasNav(containerRef, { view, setView, getBounds });
 	useCursorReport(onCursorMove, s.ptr.cursorWorld, s.vp.zoom);
 	useCanvasAutoFocus(containerRef, "schematic");
 	const bg = getSchematicColor(theme, "background");
