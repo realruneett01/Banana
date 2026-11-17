@@ -1,3 +1,4 @@
+import { Input, Modal } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { boxSelect, normalizeBox } from "./boxSelect.js";
 import { applyCommand } from "./editorModel.js";
@@ -8,6 +9,9 @@ import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
 import { buildPlacedPart } from "./partPlacement.js";
 import { isPanPointer, pointerDownTarget } from "./pointerIntent.js";
+import SchAnnotationLayer, {
+	hitTestAnnotation,
+} from "./SchAnnotationLayer.jsx";
 import {
 	hitTest,
 	partBox,
@@ -164,9 +168,11 @@ function testWireHitWithMap(nets, allPinPos, pt, wireTol = 1.27) {
 }
 
 function schematicHitTest(doc, allPinPos, pt, zoom) {
+	const wireTol = wireHitTolerance(zoom);
+	const annHit = hitTestAnnotation(doc.ir?.annotations, pt, wireTol);
+	if (annHit) return { kind: "annotation", id: annHit };
 	const pinHit = testPinHitWithMap(allPinPos, pt);
 	if (pinHit) return pinHit;
-	const wireTol = wireHitTolerance(zoom);
 	const nets = doc.ir?.nets ?? [];
 	const wireHit = testWireHitWithMap(nets, allPinPos, pt, wireTol);
 	if (wireHit) return wireHit;
@@ -687,6 +693,26 @@ function ArmedGhostMarker({ armedPart, cursorWorld, symbolCache, theme }) {
 	);
 }
 
+function RubberbandAnnotationLine({ lineStart, cursorWorld, tool, theme }) {
+	if (!lineStart || !cursorWorld) return null;
+	const end = snapToGrid(cursorWorld);
+	const isBus = tool === "placeBus";
+	const busColor = getSchematicColor(theme, "bus") || "#000084";
+	const stroke = isBus ? busColor : getSchematicColor(theme, "selection");
+	return (
+		<line
+			x1={lineStart.x}
+			y1={lineStart.y}
+			x2={end.x}
+			y2={end.y}
+			stroke={stroke}
+			strokeWidth={isBus ? 0.8 : 0.3}
+			strokeDasharray={isBus ? undefined : "1.27,1.27"}
+			pointerEvents="none"
+		/>
+	);
+}
+
 function SchematicGhostLayer({ s, theme }) {
 	return (
 		<>
@@ -694,6 +720,12 @@ function SchematicGhostLayer({ s, theme }) {
 				wireStart={s.wire.wireStart}
 				allPinPos={s.allPinPos}
 				cursorWorld={s.ptr.cursorWorld}
+				theme={theme}
+			/>
+			<RubberbandAnnotationLine
+				lineStart={s.annotationSession?.lineStart}
+				cursorWorld={s.ptr.cursorWorld}
+				tool={s.annotationSession?.annotationTool}
 				theme={theme}
 			/>
 			<ArmedGhostMarker
@@ -710,6 +742,8 @@ function resetToolMode(target) {
 	target.setWireMode?.(false);
 	target.setWireStart?.(null);
 	target.setArmedPart?.(null);
+	target.setAnnotationTool?.(null);
+	target.setLineStart?.(null);
 }
 
 function handleWireModeKey(ctx) {
@@ -717,7 +751,16 @@ function handleWireModeKey(ctx) {
 	ctx.setWireMode(true);
 }
 
+function handleAnnotationToolKey(ctx, tool) {
+	resetToolMode(ctx);
+	ctx.setAnnotationTool?.(tool);
+}
+
 function handleEscapeKey(ctx) {
+	if (ctx.lineStart) {
+		ctx.setLineStart(null);
+		return;
+	}
 	resetToolMode(ctx);
 	ctx.setDragState(null);
 	ctx.setDragPos(null);
@@ -754,7 +797,13 @@ function handleMirrorXKey(ctx) {
 }
 
 function handleDeleteKey(ctx) {
-	forEachSelected(ctx, (id) => ({ type: "deletePart", partId: id }));
+	for (const id of ctx.doc.selection) {
+		if (ctx.doc.ir?.annotations?.some((a) => a.id === id)) {
+			ctx.dispatchCmd({ type: "deleteAnnotation", id });
+		} else {
+			ctx.dispatchCmd({ type: "deletePart", partId: id });
+		}
+	}
 }
 
 function handleHomeKey(ctx) {
@@ -784,8 +833,23 @@ function zoomAtCenter(ctx, factor) {
 
 // M / G: the first selected part follows the cursor; the next click drops it.
 function handleMoveKey(ctx) {
-	const part = ctx.doc.ir?.parts?.find((p) => p.id === ctx.doc.selection[0]);
-	if (!part || !ctx.cursorWorld) return;
+	const selId = ctx.doc.selection[0];
+	if (!selId || !ctx.cursorWorld) return;
+	const ann = ctx.doc.ir?.annotations?.find((a) => a.id === selId);
+	if (ann) {
+		ctx.setDragState({
+			annId: ann.id,
+			startX: ann.x,
+			startY: ann.y,
+			mouseStartX: ctx.cursorWorld.x,
+			mouseStartY: ctx.cursorWorld.y,
+			moved: false,
+			keyboard: true,
+		});
+		return;
+	}
+	const part = ctx.doc.ir?.parts?.find((p) => p.id === selId);
+	if (!part) return;
 	ctx.setDragState({
 		partId: part.id,
 		startX: part.placement?.x ?? 0,
@@ -806,13 +870,24 @@ function handleEditKey(ctx) {
 		ctx.cursorWorld,
 		ctx.vp.zoom,
 	);
-	if (hit?.kind === "part" || hit?.kind === "wire") {
+	if (
+		hit?.kind === "part" ||
+		hit?.kind === "wire" ||
+		hit?.kind === "annotation"
+	) {
 		ctx.dispatchCmd({ type: "select", ids: [hit.id] });
 	}
 }
 
 const ACTION_KEY_HANDLERS = {
 	placeWire: handleWireModeKey,
+	placeBus: (ctx) => handleAnnotationToolKey(ctx, "placeBus"),
+	placeNoConnect: (ctx) => handleAnnotationToolKey(ctx, "placeNoConnect"),
+	placeJunction: (ctx) => handleAnnotationToolKey(ctx, "placeJunction"),
+	placeLabel: (ctx) => handleAnnotationToolKey(ctx, "placeLabel"),
+	placeGlobalLabel: (ctx) => handleAnnotationToolKey(ctx, "placeGlobalLabel"),
+	placeHierLabel: (ctx) => handleAnnotationToolKey(ctx, "placeHierLabel"),
+	placeText: (ctx) => handleAnnotationToolKey(ctx, "placeText"),
 	cancel: handleEscapeKey,
 	rotate: handleRotateKey,
 	mirrorX: handleMirrorXKey,
@@ -862,28 +937,120 @@ function handleArmedClick(hit, hitCtx) {
 	}
 }
 
+const ANNOTATION_TOOLS = new Set([
+	"placeNoConnect",
+	"placeJunction",
+	"placeLabel",
+	"placeGlobalLabel",
+	"placeHierLabel",
+	"placeText",
+	"placeLine",
+	"placeBus",
+]);
+
+function isAnnotationTool(tool) {
+	return ANNOTATION_TOOLS.has(tool);
+}
+
+const TEXT_TOOL_KIND = {
+	placeLabel: "label",
+	placeGlobalLabel: "globalLabel",
+	placeHierLabel: "hierLabel",
+	placeText: "text",
+};
+
+const MODAL_TITLES = {
+	label: "Place Net Label",
+	globalLabel: "Place Global Label",
+	hierLabel: "Place Hierarchical Label",
+	text: "Place Text",
+};
+
+function handleLineAnnotationClick(tool, hitCtx, snapped) {
+	const { lineStart, setLineStart, dispatchCmd } = hitCtx;
+	if (!lineStart) {
+		setLineStart(snapped);
+		return;
+	}
+	const kind = tool === "placeLine" ? "line" : "bus";
+	dispatchCmd({
+		type: "addAnnotation",
+		annotation: {
+			kind,
+			x: lineStart.x,
+			y: lineStart.y,
+			x2: snapped.x,
+			y2: snapped.y,
+		},
+	});
+	setLineStart(null);
+}
+
+function handleAnnotationClick(tool, hitCtx, worldPt) {
+	const snapped = snapToGrid(worldPt);
+	if (tool === "placeNoConnect" || tool === "placeJunction") {
+		const kind = tool === "placeNoConnect" ? "noConnect" : "junction";
+		hitCtx.dispatchCmd({
+			type: "addAnnotation",
+			annotation: { kind, x: snapped.x, y: snapped.y },
+		});
+		return;
+	}
+	if (tool === "placeLine" || tool === "placeBus") {
+		handleLineAnnotationClick(tool, hitCtx, snapped);
+		return;
+	}
+	const textKind = TEXT_TOOL_KIND[tool];
+	if (textKind) {
+		hitCtx.setTextModal({ kind: textKind, x: snapped.x, y: snapped.y });
+	}
+}
+
+function handleAnnotationSelect(hit, doc, worldPt, hitCtx) {
+	hitCtx.dispatchCmd({ type: "select", ids: [hit.id] });
+	const ann = doc.ir?.annotations?.find((a) => a.id === hit.id);
+	hitCtx.setDragState({
+		annId: hit.id,
+		startX: ann?.x ?? 0,
+		startY: ann?.y ?? 0,
+		mouseStartX: worldPt.x,
+		mouseStartY: worldPt.y,
+		moved: false,
+	});
+}
+
+function handlePartSelect(hit, doc, worldPt, hitCtx) {
+	hitCtx.dispatchCmd({ type: "select", ids: [hit.id] });
+	const part = doc.ir.parts?.find((p) => p.id === hit.id);
+	hitCtx.setDragState({
+		partId: hit.id,
+		startX: part?.placement?.x ?? 0,
+		startY: part?.placement?.y ?? 0,
+		mouseStartX: worldPt.x,
+		mouseStartY: worldPt.y,
+		moved: false,
+	});
+}
+
 function handlePointerDownHit(hit, hitCtx) {
-	const { wireMode, wireState, dispatchCmd, setDragState, doc, worldPt } =
-		hitCtx;
+	const { wireMode, wireState, dispatchCmd, doc, worldPt } = hitCtx;
+	if (wireMode) {
+		const pinHit = testPinHitWithMap(wireState.allPinPos, worldPt);
+		if (pinHit) {
+			handlePinConnect(pinHit, wireState, dispatchCmd);
+			return;
+		}
+		resetToolMode(wireState);
+	}
+	if (hit?.kind === "annotation") {
+		handleAnnotationSelect(hit, doc, worldPt, hitCtx);
+		return;
+	}
 	const target = pointerDownTarget(hit?.kind, wireMode);
 	if (target === "connect") {
 		handlePinConnect(hit, wireState, dispatchCmd);
-		return;
-	}
-	if (wireMode) {
-		resetToolMode(wireState);
-	}
-	if (target === "part") {
-		dispatchCmd({ type: "select", ids: [hit.id] });
-		const part = doc.ir.parts?.find((p) => p.id === hit.id);
-		setDragState({
-			partId: hit.id,
-			startX: part?.placement?.x ?? 0,
-			startY: part?.placement?.y ?? 0,
-			mouseStartX: worldPt.x,
-			mouseStartY: worldPt.y,
-			moved: false,
-		});
+	} else if (target === "part") {
+		handlePartSelect(hit, doc, worldPt, hitCtx);
 	} else if (target === "wire") {
 		dispatchCmd({ type: "select", ids: [hit.id] });
 	} else {
@@ -930,7 +1097,14 @@ function updatePartDrag(dragState, worldPt, setDragPos) {
 		x: dragState.startX + dx,
 		y: dragState.startY + dy,
 	});
-	setDragPos({ partId: dragState.partId, x: pos.x, y: pos.y });
+	setDragPos({
+		partId: dragState.partId,
+		annId: dragState.annId,
+		x: pos.x,
+		y: pos.y,
+		dx: pos.x - dragState.startX,
+		dy: pos.y - dragState.startY,
+	});
 }
 
 function startPanDrag(e, vp, panDragRef) {
@@ -952,7 +1126,17 @@ function updatePanDrag(e, vp, panDrag) {
 }
 
 function commitPartDrag(dragState, dragPos, dispatchCmd) {
-	if (dragState?.moved && dragPos) {
+	if (!dragState?.moved || !dragPos) return;
+	if (dragState.annId) {
+		const dx = dragPos.x - dragState.startX;
+		const dy = dragPos.y - dragState.startY;
+		dispatchCmd({
+			type: "moveAnnotation",
+			id: dragState.annId,
+			dx,
+			dy,
+		});
+	} else if (dragState.partId) {
 		dispatchCmd({
 			type: "movePart",
 			partId: dragState.partId,
@@ -963,7 +1147,7 @@ function commitPartDrag(dragState, dragPos, dispatchCmd) {
 }
 
 function updateNetHighlight(hit, doc, hitCtx) {
-	if (hitCtx.wireMode || hitCtx.armedPart) return;
+	if (hitCtx.wireMode || hitCtx.armedPart || hitCtx.annotationTool) return;
 	const next = nextHighlight(hit, doc.ir);
 	if (next !== undefined) hitCtx.setHighlightNet?.(next);
 }
@@ -983,6 +1167,10 @@ function onPointerDownEvent(e, ctx) {
 		handleArmedClick(hit, { ...hitCtx, doc, worldPt });
 		return;
 	}
+	if (hitCtx.annotationTool) {
+		handleAnnotationClick(hitCtx.annotationTool, hitCtx, worldPt);
+		return;
+	}
 	const el = e.currentTarget;
 	const capturePointer = () => el?.setPointerCapture?.(e.pointerId);
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt, capturePointer });
@@ -990,7 +1178,8 @@ function onPointerDownEvent(e, ctx) {
 
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
 	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
-	const { doc, dispatchCmd, armedPart, setHighlightNet } = editorState;
+	const { doc, dispatchCmd, armedPart, setHighlightNet, annotationSession } =
+		editorState;
 	const { panDragRef, setDragState, setBoxDrag, keyboardMove } = dragInit;
 	const hitCtx = useMemo(
 		() => ({
@@ -1001,6 +1190,10 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 			setBoxDrag,
 			armedPart,
 			setHighlightNet,
+			annotationTool: annotationSession?.annotationTool,
+			lineStart: annotationSession?.lineStart,
+			setLineStart: annotationSession?.setLineStart,
+			setTextModal: annotationSession?.setTextModal,
 		}),
 		[
 			wireMode,
@@ -1010,6 +1203,10 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 			setBoxDrag,
 			armedPart,
 			setHighlightNet,
+			annotationSession?.annotationTool,
+			annotationSession?.lineStart,
+			annotationSession?.setLineStart,
+			annotationSession?.setTextModal,
 		],
 	);
 
@@ -1155,10 +1352,12 @@ function handleBusTool(payload, setters) {
 		setters.setWireMode(true);
 	} else if (isPlaceTool(tool) && item) {
 		setters.setArmedPart({ tool, item });
+	} else if (isAnnotationTool(tool)) {
+		setters.setAnnotationTool(tool);
 	}
 }
 
-function reportActiveTool(wireMode, armedPart) {
+function reportActiveTool(wireMode, armedPart, annotationTool) {
 	if (wireMode) {
 		emitActiveTool({ tab: "schematic", tool: "placeWire", item: null });
 	} else if (armedPart) {
@@ -1166,6 +1365,12 @@ function reportActiveTool(wireMode, armedPart) {
 			tab: "schematic",
 			tool: armedPart.tool,
 			item: armedPart.item,
+		});
+	} else if (annotationTool) {
+		emitActiveTool({
+			tab: "schematic",
+			tool: annotationTool,
+			item: null,
 		});
 	} else {
 		emitActiveTool({ tab: "schematic", tool: "select", item: null });
@@ -1188,20 +1393,53 @@ function useCanvasAutoFocus(containerRef, _tab) {
 	}, [containerRef]);
 }
 
-function useToolBus({ wireMode, setWireMode, setWireStart, containerRef }) {
+function useAnnotationSession() {
+	const [annotationTool, setAnnotationTool] = useState(null);
+	const [lineStart, setLineStart] = useState(null);
+	const [textModal, setTextModal] = useState(null);
+	return {
+		annotationTool,
+		setAnnotationTool,
+		lineStart,
+		setLineStart,
+		textModal,
+		setTextModal,
+	};
+}
+
+function useToolBus({
+	wireMode,
+	setWireMode,
+	setWireStart,
+	containerRef,
+	annotationSession,
+}) {
 	const [armedPart, setArmedPart] = useState(null);
+	const { annotationTool, setAnnotationTool, setLineStart } = annotationSession;
 
 	useEffect(() => {
-		const setters = { setWireMode, setWireStart, setArmedPart };
+		const setters = {
+			setWireMode,
+			setWireStart,
+			setArmedPart,
+			setAnnotationTool,
+			setLineStart,
+		};
 		return onEditorTool((p) => {
 			focusCanvas(containerRef);
 			handleBusTool(p, setters);
 		}, "schematic");
-	}, [setWireMode, setWireStart, containerRef]);
+	}, [
+		setWireMode,
+		setWireStart,
+		containerRef,
+		setAnnotationTool,
+		setLineStart,
+	]);
 
 	useEffect(() => {
-		reportActiveTool(wireMode, armedPart);
-	}, [wireMode, armedPart]);
+		reportActiveTool(wireMode, armedPart, annotationTool);
+	}, [wireMode, armedPart, annotationTool]);
 
 	return { armedPart, setArmedPart };
 }
@@ -1256,7 +1494,14 @@ function useWireState(wire, vp, isSpaceDown, allPinPos) {
 }
 
 function useKeyContext(ed, wire, ptr, view) {
-	const { vp, svgRef, allPinPos, setArmedPart, setHighlightNet } = view;
+	const {
+		vp,
+		svgRef,
+		allPinPos,
+		setArmedPart,
+		setHighlightNet,
+		annotationSession,
+	} = view;
 	return useMemo(
 		() => ({
 			doc: ed.doc,
@@ -1273,6 +1518,10 @@ function useKeyContext(ed, wire, ptr, view) {
 			svgRef,
 			setArmedPart,
 			setHighlightNet,
+			annotationTool: annotationSession?.annotationTool,
+			setAnnotationTool: annotationSession?.setAnnotationTool,
+			lineStart: annotationSession?.lineStart,
+			setLineStart: annotationSession?.setLineStart,
 		}),
 		[
 			ed.doc,
@@ -1289,6 +1538,10 @@ function useKeyContext(ed, wire, ptr, view) {
 			svgRef,
 			setArmedPart,
 			setHighlightNet,
+			annotationSession?.annotationTool,
+			annotationSession?.setAnnotationTool,
+			annotationSession?.lineStart,
+			annotationSession?.setLineStart,
 		],
 	);
 }
@@ -1315,9 +1568,14 @@ function useSchematicCanvasState({
 	const [highlightNet, setHighlightNet] = useState(null);
 	const vp = useCanvasViewport(svgRef);
 	const wire = useWireSession();
-	const { armedPart, setArmedPart } = useToolBus({ ...wire, containerRef });
-	const model = useEditorModel(editor, onChange, fetchSymbol);
-	const { ed, symbolCache, allPinPos } = model;
+	const annotationSession = useAnnotationSession();
+	const busInit = { ...wire, containerRef, annotationSession };
+	const { armedPart, setArmedPart } = useToolBus(busInit);
+	const { ed, symbolCache, allPinPos } = useEditorModel(
+		editor,
+		onChange,
+		fetchSymbol,
+	);
 	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
 	const editorState = useMemo(
 		() => ({
@@ -1326,17 +1584,26 @@ function useSchematicCanvasState({
 			symbolCache,
 			armedPart,
 			setHighlightNet,
+			annotationSession,
 		}),
-		[ed.doc, ed.dispatchCmd, symbolCache, armedPart],
+		[ed.doc, ed.dispatchCmd, symbolCache, armedPart, annotationSession],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
-	const view = { vp, svgRef, allPinPos, setArmedPart, setHighlightNet };
+	const view = {
+		vp,
+		svgRef,
+		allPinPos,
+		setArmedPart,
+		setHighlightNet,
+		annotationSession,
+	};
 	const keyCtx = useKeyContext(ed, wire, ptr, view);
 	return {
 		svgRef,
 		vp,
 		wire,
 		armedPart,
+		annotationSession,
 		doc: ed.doc,
 		symbolCache,
 		allPinPos,
@@ -1609,11 +1876,75 @@ function SchematicSvgScene({ s, problems, theme, highlightNet }) {
 				symbolCache={s.symbolCache}
 				theme={theme}
 			/>
+			<SchAnnotationLayer
+				annotations={s.doc.ir?.annotations}
+				selection={s.doc.selection}
+				dragPos={s.wire.dragPos}
+				theme={theme}
+			/>
 			<SchematicGhostLayer s={s} theme={theme} />
 			<SchematicJunctionsLayer doc={s.doc} theme={theme} />
 			<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
 		</g>
 	);
+}
+
+function AnnotationTextModal({ textModal, onOk, onCancel }) {
+	const [value, setValue] = useState("");
+	const [activeModal, setActiveModal] = useState(null);
+
+	if (textModal && textModal !== activeModal) {
+		setValue("");
+		setActiveModal(textModal);
+	}
+
+	const handleOk = () => {
+		const trimmed = value.trim();
+		if (trimmed) onOk(trimmed);
+	};
+
+	const kind = textModal?.kind;
+	const title = kind ? (MODAL_TITLES[kind] ?? "Annotation") : "";
+
+	return (
+		<Modal
+			open={Boolean(textModal)}
+			title={title}
+			okText="OK"
+			onOk={handleOk}
+			onCancel={onCancel}
+			destroyOnClose
+		>
+			<Input
+				autoFocus
+				placeholder="Enter text..."
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+				onPressEnter={handleOk}
+			/>
+		</Modal>
+	);
+}
+
+function handleTextModalOk(text, ctx) {
+	if (ctx.modalData && text) {
+		ctx.dispatchCmd({
+			type: "addAnnotation",
+			annotation: {
+				kind: ctx.modalData.kind,
+				x: ctx.modalData.x,
+				y: ctx.modalData.y,
+				text,
+			},
+		});
+	}
+	ctx.setTextModal(null);
+	focusCanvas(ctx.containerRef);
+}
+
+function handleTextModalCancel(ctx) {
+	ctx.setTextModal(null);
+	focusCanvas(ctx.containerRef);
 }
 
 // Feeds the editor status bar: cursor in world mm plus the current zoom.
@@ -1641,6 +1972,19 @@ export default function SchematicCanvas({
 	useCursorReport(onCursorMove, s.ptr.cursorWorld, s.vp.zoom);
 	useCanvasAutoFocus(containerRef, "schematic");
 	const bg = getSchematicColor(theme, "background");
+	const textModalCtx = useMemo(
+		() => ({
+			modalData: s.annotationSession.textModal,
+			dispatchCmd: s.keyCtx.dispatchCmd,
+			setTextModal: s.annotationSession.setTextModal,
+			containerRef,
+		}),
+		[
+			s.annotationSession.textModal,
+			s.keyCtx.dispatchCmd,
+			s.annotationSession.setTextModal,
+		],
+	);
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
 		<div
@@ -1683,6 +2027,11 @@ export default function SchematicCanvas({
 					theme={theme}
 				/>
 			</svg>
+			<AnnotationTextModal
+				textModal={s.annotationSession.textModal}
+				onOk={(text) => handleTextModalOk(text, textModalCtx)}
+				onCancel={() => handleTextModalCancel(textModalCtx)}
+			/>
 		</div>
 	);
 }
