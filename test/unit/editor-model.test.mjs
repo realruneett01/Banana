@@ -78,6 +78,10 @@ function buildBaseIr() {
 	};
 }
 
+function createDoc(ir = buildBaseIr()) {
+	return { ir, selection: [], history: { past: [], future: [] } };
+}
+
 let counter = 0;
 function mockIdFn(kind) {
 	counter += 1;
@@ -114,43 +118,67 @@ function makeBatchCommands(field, value) {
 	return [move(10, 20), rotate(90), setField(field, value)];
 }
 
-function assertModifiedState(editor, baseIr) {
+function verifyState(editor, baseIr, { isBase, canUndo, canRedo }) {
+	if (isBase) {
+		const actual = { ir: editor.state.ir, canUndo: editor.canUndo };
+		const expected = { ir: baseIr, canUndo };
+		if (canRedo !== undefined) {
+			actual.canRedo = editor.canRedo;
+			expected.canRedo = canRedo;
+		}
+		assert.deepEqual(actual, expected);
+		return;
+	}
 	assert.notDeepEqual(editor.state.ir, baseIr);
-	assert.equal(editor.canUndo, true);
+	assert.ok(editor.canUndo === canUndo);
 }
 
-function assertUndoneState(editor, baseIr) {
+const ROUND_TRIP_SEQUENCE = [
+	{ mutate: null, isBase: false, canUndo: true },
+	{ mutate: (ed) => ed.undo(), isBase: true, canUndo: false, canRedo: true },
+	{ mutate: (ed) => ed.redo(), isBase: false, canUndo: true },
+	{ mutate: (ed) => ed.undo(), isBase: true, canUndo: false, canRedo: true },
+];
+
+function verifyUndoRedoSequence(editor, baseIr) {
+	for (const step of ROUND_TRIP_SEQUENCE) {
+		if (step.mutate) step.mutate(editor);
+		verifyState(editor, baseIr, step);
+	}
+}
+
+function verifyEditorUndoRedo(command) {
+	const { baseIr, editor } = setupAndDispatch(command);
+	verifyUndoRedoSequence(editor, baseIr);
+}
+
+function verifyPureInversion(command) {
+	const doc0 = createDoc();
+	const inv = invertCommand(doc0, command);
+	const doc1 = applyCommand(doc0, command, { idFn: mockIdFn });
+	const restored = applyCommand(doc1, inv, { idFn: mockIdFn });
+	assert.deepEqual(
+		{ error: doc1.error, ir: restored.ir },
+		{ error: undefined, ir: doc0.ir },
+	);
+}
+
+function revertAndCheckBase(editor, baseIr) {
 	editor.undo();
 	assert.deepEqual(editor.state.ir, baseIr);
 }
 
-function assertNoUndoState(editor, baseIr) {
-	assert.equal(editor.canUndo, false);
-	assert.deepEqual(editor.state.ir, baseIr);
+function verifyUnchangedDoc(editor, baseIr) {
+	assert.deepEqual(
+		{ ir: editor.state.ir, canUndo: editor.canUndo },
+		{ ir: baseIr, canUndo: false },
+	);
 }
 
-function assertUndoRedoCycle(editor, baseIr) {
-	assertModifiedState(editor, baseIr);
-	assertUndoneState(editor, baseIr);
-	assert.equal(editor.canUndo, false);
-	assert.equal(editor.canRedo, true);
-	editor.redo();
-	assertModifiedState(editor, baseIr);
-	assertUndoneState(editor, baseIr);
-}
-
-function assertPureInvertCycle(baseIr, command) {
-	const doc0 = {
-		ir: baseIr,
-		selection: [],
-		history: { past: [], future: [] },
-	};
-	const inv = invertCommand(doc0, command);
-	const doc1 = applyCommand(doc0, command, { idFn: mockIdFn });
-	assert.equal(doc1.error, undefined);
-
-	const docRestored = applyCommand(doc1, inv, { idFn: mockIdFn });
-	assert.deepEqual(docRestored.ir, baseIr);
+function verifyInvalidDispatch(command) {
+	const { baseIr, editor } = setupAndDispatch(command);
+	assert.equal(typeof editor.state.error, "string");
+	verifyUnchangedDoc(editor, baseIr);
 }
 
 function assertHistoryLengths(editor, past, future) {
@@ -164,21 +192,6 @@ function assertNetCount(editor, expected) {
 	assert.equal(editor.state.ir.nets.length, expected);
 }
 
-function assertInvalidState(editor, baseIr) {
-	assert.equal(typeof editor.state.error, "string");
-	assertNoUndoState(editor, baseIr);
-}
-
-function assertEditorUndoRedoRoundTrip(command) {
-	const { baseIr, editor } = setupAndDispatch(command);
-	assertUndoRedoCycle(editor, baseIr);
-}
-
-function assertInvalidDispatch(command) {
-	const { baseIr, editor } = setupAndDispatch(command);
-	assertInvalidState(editor, baseIr);
-}
-
 function assertBatchCheck(editor, { past, canUndo, partValue } = {}) {
 	if (past !== undefined) assert.equal(editor.state.history.past.length, past);
 	if (canUndo !== undefined) assert.equal(editor.canUndo, canUndo);
@@ -186,9 +199,9 @@ function assertBatchCheck(editor, { past, canUndo, partValue } = {}) {
 		assert.equal(editor.state.ir.parts[0].value, partValue);
 }
 
-function assertBatchUndoFlow(editor, baseIr, expectedValue) {
+function verifyBatchUndoFlow(editor, baseIr, expectedValue) {
 	assertBatchCheck(editor, { past: 1, canUndo: true });
-	assertUndoneState(editor, baseIr);
+	revertAndCheckBase(editor, baseIr);
 	assertHistoryLengths(editor, 0, 1);
 	editor.redo();
 	assertBatchCheck(editor, { past: 1, partValue: expectedValue });
@@ -199,14 +212,14 @@ function assertNetInfo(net, id, pinCount) {
 	assert.equal(net.pins.length, pinCount);
 }
 
-function assertMergedNet(editor, baseIr) {
+function verifyMergedNet(editor, baseIr) {
 	assertNetCount(editor, 1);
 	assertNetInfo(editor.state.ir.nets[0], "net_vcc", 3);
-	assertUndoneState(editor, baseIr);
+	revertAndCheckBase(editor, baseIr);
 	assertNetCount(editor, 2);
 }
 
-function assertPinCleanup(editor, baseIr) {
+function verifyPinCleanup(editor, baseIr) {
 	assert.equal(editor.state.ir.parts.length, 2);
 	assertNetCount(editor, 2);
 	const vcc = editor.state.ir.nets.find((n) => n.id === "net_vcc");
@@ -214,7 +227,7 @@ function assertPinCleanup(editor, baseIr) {
 	assert.equal(vcc.pins[0].partId, "part_r1");
 	assert.equal(vcc.pins.length, 1);
 	assert.equal(gnd.pins.length, 0);
-	assertUndoneState(editor, baseIr);
+	revertAndCheckBase(editor, baseIr);
 }
 
 function assertPartId(editor, index, expectedId) {
@@ -272,15 +285,15 @@ function makeRoundTripCases() {
 const ROUND_TRIP_CASES = makeRoundTripCases();
 
 describe("round-trip editor undo and redo", () => {
-	for (const [name, command] of ROUND_TRIP_CASES) {
+	ROUND_TRIP_CASES.forEach(([name, command]) => {
 		test(`editor undo/redo round-trip: ${name}`, () => {
-			assertEditorUndoRedoRoundTrip(command);
+			verifyEditorUndoRedo(command);
 		});
 
 		test(`pure applyCommand / invertCommand round-trip: ${name}`, () => {
-			assertPureInvertCycle(buildBaseIr(), command);
+			verifyPureInversion(command);
 		});
-	}
+	});
 });
 
 describe("batch command", () => {
@@ -289,7 +302,7 @@ describe("batch command", () => {
 			type: "batch",
 			commands: makeBatchCommands("value", "NEW555"),
 		});
-		assertBatchUndoFlow(editor, baseIr, "NEW555");
+		verifyBatchUndoFlow(editor, baseIr, "NEW555");
 	});
 });
 
@@ -298,7 +311,7 @@ describe("connect and net merging", () => {
 		const { baseIr, editor } = setupAndDispatch(
 			connect("part_u1", "8", "part_u1", "1"),
 		);
-		assertMergedNet(editor, baseIr);
+		verifyMergedNet(editor, baseIr);
 	});
 });
 
@@ -308,7 +321,7 @@ describe("deletePart pin cleanup", () => {
 			type: "deletePart",
 			partId: "part_u1",
 		});
-		assertPinCleanup(editor, baseIr);
+		verifyPinCleanup(editor, baseIr);
 	});
 });
 
@@ -346,11 +359,11 @@ const INVALID_CASES = [
 ];
 
 describe("invalid commands", () => {
-	for (const [name, command] of INVALID_CASES) {
+	INVALID_CASES.forEach(([name, command]) => {
 		test(`invalid command returns error and no change: ${name}`, () => {
-			assertInvalidDispatch(command);
+			verifyInvalidDispatch(command);
 		});
-	}
+	});
 });
 
 describe("history cap", () => {
@@ -375,7 +388,7 @@ describe("selection and missing id handling", () => {
 			ids: ["part_u1", "net_vcc"],
 		});
 		assert.deepEqual(editor.selection, ["part_u1", "net_vcc"]);
-		assertNoUndoState(editor, baseIr);
+		verifyUnchangedDoc(editor, baseIr);
 	});
 
 	test("addPart assigns id using idFn when id is missing", () => {
@@ -386,7 +399,7 @@ describe("selection and missing id handling", () => {
 		const addedId = editor.state.ir.parts[3].id;
 		assertGeneratedMockId(addedId);
 
-		assertUndoneState(editor, baseIr);
+		revertAndCheckBase(editor, baseIr);
 
 		editor.redo();
 		assertPartId(editor, 3, addedId);
