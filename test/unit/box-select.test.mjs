@@ -5,7 +5,11 @@ import {
 	normalizeBox,
 } from "../../frontend/src/editor/boxSelect.js";
 
-// Helpers
+// Fixture builders & helpers
+const pt = (x, y) => ({ x, y });
+const origin = pt(0, 0);
+const corner = pt(10, 10);
+
 const item = (id, coords) => ({
 	id,
 	bbox: Array.isArray(coords)
@@ -17,6 +21,7 @@ const item = (id, coords) => ({
 			}
 		: coords,
 });
+const itemA = (coords) => item("A", coords);
 
 const runSelectCases = (cases, defaultStart, defaultEnd) => {
 	for (const [
@@ -37,12 +42,12 @@ describe("normalizeBox", () => {
 	const expected1256 = { minX: 1, minY: 2, maxX: 5, maxY: 6 };
 
 	for (const [label, start, end, expected] of [
-		["ltr order unchanged", { x: 1, y: 2 }, { x: 5, y: 6 }, expected1256],
-		["rtl swaps axes", { x: 5, y: 6 }, { x: 1, y: 2 }, expected1256],
+		["ltr order unchanged", pt(1, 2), pt(5, 6), expected1256],
+		["rtl swaps axes", pt(5, 6), pt(1, 2), expected1256],
 		[
 			"negative coordinates",
-			{ x: -10, y: -5 },
-			{ x: -3, y: -1 },
+			pt(-10, -5),
+			pt(-3, -1),
 			{ minX: -10, minY: -5, maxX: -3, maxY: -1 },
 		],
 	]) {
@@ -52,49 +57,46 @@ describe("normalizeBox", () => {
 	}
 });
 
-describe("boxSelect – zero-size box", () => {
-	const items = [item("A", [0, 0, 10, 10])];
+const zeroBoxItems = [itemA([0, 0, 10, 10])];
 
-	runSelectCases([
-		["zero width", items, [], { x: 2, y: 0 }, { x: 2, y: 5 }],
-		["zero height", items, [], { x: 0, y: 3 }, { x: 5, y: 3 }],
-		["single point", items, [], { x: 5, y: 5 }, { x: 5, y: 5 }],
-	]);
-});
-
-describe("boxSelect – left-to-right (fully inside)", () => {
-	runSelectCases(
+const BOX_SUITES = [
+	[
+		"boxSelect – zero-size box",
 		[
-			["fully inside", item("A", [2, 2, 8, 8]), ["A"]],
-			["exactly fills box", item("A", [0, 0, 10, 10]), ["A"]],
-			["partially outside", item("A", [-1, 2, 8, 8]), []],
-			["edge-touching still inside", item("A", [0, 0, 5, 5]), ["A"]],
-			["completely outside", item("A", [11, 11, 20, 20]), []],
+			["zero width", zeroBoxItems, [], pt(2, 0), pt(2, 5)],
+			["zero height", zeroBoxItems, [], pt(0, 3), pt(5, 3)],
+			["single point", zeroBoxItems, [], pt(5, 5), pt(5, 5)],
 		],
-		{ x: 0, y: 0 },
-		{ x: 10, y: 10 },
-	);
-});
-
-describe("boxSelect – right-to-left (touching / intersecting)", () => {
-	runSelectCases(
+	],
+	[
+		"boxSelect – left-to-right (fully inside)",
 		[
-			["fully inside", item("A", [2, 2, 8, 8]), ["A"]],
-			["partially overlaps", item("A", [-5, -5, 3, 3]), ["A"]],
-			["edge-touching minX", item("A", [-5, 2, 0, 8]), ["A"]],
-			["edge-touching maxX", item("A", [10, 2, 15, 8]), ["A"]],
-			["edge-touching minY", item("A", [2, -5, 8, 0]), ["A"]],
-			["edge-touching maxY", item("A", [2, 10, 8, 15]), ["A"]],
-			["completely outside", item("A", [11, 11, 20, 20]), []],
-			["corner-only touch", item("A", [10, 10, 15, 15]), ["A"]],
+			["fully inside", itemA([2, 2, 8, 8]), ["A"]],
+			["exactly fills box", itemA([0, 0, 10, 10]), ["A"]],
+			["partially outside", itemA([-1, 2, 8, 8]), []],
+			["edge-touching still inside", itemA([0, 0, 5, 5]), ["A"]],
+			["completely outside", itemA([11, 11, 20, 20]), []],
 		],
-		{ x: 10, y: 10 },
-		{ x: 0, y: 0 },
-	);
-});
-
-describe("boxSelect – ordering and multiple items", () => {
-	runSelectCases(
+		origin,
+		corner,
+	],
+	[
+		"boxSelect – right-to-left (touching / intersecting)",
+		[
+			["fully inside", itemA([2, 2, 8, 8]), ["A"]],
+			["partially overlaps", itemA([-5, -5, 3, 3]), ["A"]],
+			["edge-touching minX", itemA([-5, 2, 0, 8]), ["A"]],
+			["edge-touching maxX", itemA([10, 2, 15, 8]), ["A"]],
+			["edge-touching minY", itemA([2, -5, 8, 0]), ["A"]],
+			["edge-touching maxY", itemA([2, 10, 8, 15]), ["A"]],
+			["completely outside", itemA([11, 11, 20, 20]), []],
+			["corner-only touch", itemA([10, 10, 15, 15]), ["A"]],
+		],
+		corner,
+		origin,
+	],
+	[
+		"boxSelect – ordering and multiple items",
 		[
 			[
 				"returns ids in input order",
@@ -112,26 +114,32 @@ describe("boxSelect – ordering and multiple items", () => {
 			],
 			["empty items list", [], []],
 		],
-		{ x: 0, y: 0 },
-		{ x: 10, y: 10 },
-	);
-});
+		origin,
+		corner,
+	],
+	[
+		"boxSelect – negative coordinates",
+		[
+			[
+				"ltr fully inside negative region",
+				itemA([-8, -8, -2, -2]),
+				["A"],
+				pt(-10, -10),
+				pt(-1, -1),
+			],
+			[
+				"rtl intersects negative region",
+				itemA([-15, -15, -5, -5]),
+				["A"],
+				pt(-1, -1),
+				pt(-10, -10),
+			],
+		],
+	],
+];
 
-describe("boxSelect – negative coordinates", () => {
-	runSelectCases([
-		[
-			"ltr fully inside negative region",
-			item("A", [-8, -8, -2, -2]),
-			["A"],
-			{ x: -10, y: -10 },
-			{ x: -1, y: -1 },
-		],
-		[
-			"rtl intersects negative region",
-			item("A", [-15, -15, -5, -5]),
-			["A"],
-			{ x: -1, y: -1 },
-			{ x: -10, y: -10 },
-		],
-	]);
-});
+for (const [title, cases, defaultStart, defaultEnd] of BOX_SUITES) {
+	describe(title, () => {
+		runSelectCases(cases, defaultStart, defaultEnd);
+	});
+}
