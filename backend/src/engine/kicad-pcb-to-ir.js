@@ -1,59 +1,37 @@
 import { validateCircuitIR } from "./circuit-ir.js";
 import { newId } from "./ids.js";
 import { collectFootprintPads as collectPadGeometry } from "./kicad-library.js";
+import {
+	childPt,
+	edgeCutsOutline,
+	extractAt,
+	extractChildNode,
+	extractLayerName,
+	extractLayerNames,
+	extractLayers,
+	extractPolygonPts,
+	extractSide,
+	FP_SETTING_HEADS,
+	GRAPHIC_LAYERS,
+	isNetKey,
+	isReferenceText,
+	isValueText,
+	milliPt,
+	netKeyOf,
+	netNameOf,
+	nodeSym,
+	PAD_MODEL_HEADS,
+	relAngle,
+	roundCoord,
+	roundMilli,
+	uuidOf,
+	withoutUuid,
+	ZONE_MODEL_HEADS,
+} from "./kicad-pcb-common.js";
 import { orientFootprint } from "./kicad-pcb-edit.js";
 import { parse, sym } from "./sexpr.js";
 
-// KiCad's internal unit is 1 nm: keep every digit a board file can hold.
-function roundCoord(val) {
-	const r = Math.round(Number(val) * 1e6) / 1e6;
-	return Object.is(r, -0) ? 0 : r;
-}
-
-function nodeSym(node) {
-	if (node === null || node === undefined) return "";
-	return typeof node === "object" ? (node.sym ?? "") : String(node);
-}
-
-function extractChildNode(node, head) {
-	if (!Array.isArray(node)) return null;
-	return node.find((c) => Array.isArray(c) && c[0]?.sym === head) ?? null;
-}
-
-function extractAt(node) {
-	const atNode = extractChildNode(node, "at");
-	if (!atNode) return { x: 0, y: 0, rot: 0 };
-	const x = roundCoord(atNode[1]);
-	const y = roundCoord(atNode[2]);
-	const rot = atNode.length > 3 ? roundCoord(atNode[3]) : 0;
-	return { x, y, rot };
-}
-
-function extractLayerName(node) {
-	const lNode = extractChildNode(node, "layer");
-	if (!lNode || lNode.length < 2) return "";
-	return nodeSym(lNode[1]);
-}
-
-// Layer user names, as in (0 "F.Cu" signal "Top").
-function extractLayerNames(ast) {
-	const layersNode = extractChildNode(ast, "layers") ?? [];
-	const named = layersNode.filter((c) => Array.isArray(c) && c.length > 3);
-	return Object.fromEntries(named.map((c) => [nodeSym(c[1]), nodeSym(c[3])]));
-}
-
-function extractLayers(ast) {
-	const layersNode = extractChildNode(ast, "layers");
-	if (!Array.isArray(layersNode)) return [];
-	const layers = [];
-	for (const child of layersNode.slice(1)) {
-		if (Array.isArray(child) && child.length >= 2) {
-			const name = nodeSym(child[1]);
-			if (name) layers.push(name);
-		}
-	}
-	return layers;
-}
+export { edgeCutsOutline, isEdgeCutsNode } from "./kicad-pcb-common.js";
 
 function applyPropertyNode(child, props) {
 	if (child[0]?.sym === "property" && child.length >= 3) {
@@ -81,11 +59,6 @@ function extractFootprintProperties(node) {
 		}
 	}
 	return props;
-}
-
-function extractSide(node) {
-	const layer = extractLayerName(node);
-	return layer.startsWith("B") ? "B" : "F";
 }
 
 function parsePlacement(fpNode) {
@@ -121,23 +94,6 @@ function parseFootprintPart(fpNode, idFn) {
 	};
 }
 
-// KiCad 9 writes (net 3 "GND") against a net table; KiCad 10 writes
-// (net "GND") with no number, so the name itself keys the net.
-function netKeyOf(netNode) {
-	if (!Array.isArray(netNode) || netNode.length < 2) return 0;
-	return typeof netNode[1] === "number" ? netNode[1] : nodeSym(netNode[1]);
-}
-
-function isNetKey(key) {
-	return typeof key === "string" ? key !== "" : key > 0;
-}
-
-function netNameOf(netNode) {
-	const key = netKeyOf(netNode);
-	if (typeof key === "string") return key;
-	return netNode.length > 2 ? nodeSym(netNode[2]) : "";
-}
-
 function parsePad(padNode, partId, padConnections) {
 	const padNum = nodeSym(padNode[1]);
 	const netNode = extractChildNode(padNode, "net");
@@ -155,36 +111,10 @@ function collectFootprintPads(fpNode, partId, padConnections) {
 	}
 }
 
-function relAngle(rot, fpRot) {
-	return (((rot - fpRot) % 360) + 360) % 360;
-}
-
 // Board files store pad angles absolute; the editor wants them footprint-relative.
 function toLocalPad(pad, fpRot) {
 	const [x, y, rot] = pad.at;
 	return { ...pad, at: [x, y, relAngle(rot, fpRot)] };
-}
-
-const GRAPHIC_LAYERS = new Set([
-	"F.SilkS",
-	"B.SilkS",
-	"F.Fab",
-	"B.Fab",
-	"F.CrtYd",
-	"B.CrtYd",
-]);
-
-function roundMilli(val) {
-	const r = Math.round(Number(val) * 1000) / 1000;
-	return Object.is(r, -0) ? 0 : r;
-}
-
-function milliPt(node) {
-	return [roundMilli(node?.[1] ?? 0), roundMilli(node?.[2] ?? 0)];
-}
-
-function childPt(node, head) {
-	return milliPt(extractChildNode(node, head));
 }
 
 function strokeWidth(node) {
@@ -268,13 +198,6 @@ function compactGraphics(fpNode) {
 		.filter(Boolean);
 }
 
-function isReferenceText(node) {
-	const head = node[0]?.sym;
-	const kind = nodeSym(node[1]);
-	if (head === "property") return kind === "Reference";
-	return head === "fp_text" && kind.toLowerCase() === "reference";
-}
-
 function fontChild(textNode, head) {
 	const effects = extractChildNode(textNode, "effects");
 	return extractChildNode(extractChildNode(effects, "font"), head);
@@ -338,30 +261,6 @@ function unlockedFlag(textNode) {
 	return unlocked && nodeSym(unlocked[1]) !== "no" ? { unlocked: true } : {};
 }
 
-function isValueText(node) {
-	const head = node[0]?.sym;
-	const kind = nodeSym(node[1]);
-	if (head === "property") return kind === "Value";
-	return head === "fp_text" && kind.toLowerCase() === "value";
-}
-
-// Footprint settings the board model keeps as written.
-const FP_SETTING_HEADS = new Set([
-	"solder_mask_margin",
-	"solder_paste_margin",
-	"solder_paste_margin_ratio",
-	"solder_paste_ratio",
-	"clearance",
-	"zone_connect",
-	"thermal_width",
-	"thermal_gap",
-	"zone",
-	"net_tie_pad_groups",
-	"private_layers",
-	"duplicate_pad_numbers_are_jumpers",
-	"jumper_pad_groups",
-]);
-
 // Numbered user layers can hold overlays of hundreds of thousands of
 // strokes (the jetson demo has 287k on User.9), too big for the board JSON:
 // footprint shapes on them are left out, with a warning.
@@ -379,11 +278,6 @@ function isExtraNode(node) {
 	return !compactGraphic(node);
 }
 
-// The writer gives copies new uuids; keeping these would only add size.
-function withoutUuid(node) {
-	return node.filter((c) => !(Array.isArray(c) && c[0]?.sym === "uuid"));
-}
-
 // Copies of footprint children taken to the front at 0 degrees, the frame
 // the writer builds a footprint in before turning it to its placement.
 function frontItems(fpNode, nodes) {
@@ -394,15 +288,6 @@ function frontItems(fpNode, nodes) {
 	orientFootprint(tmp, 0, "F");
 	return tmp.slice(3).map(withoutUuid);
 }
-
-const PAD_MODEL_HEADS = new Set([
-	"at",
-	"size",
-	"drill",
-	"layers",
-	"net",
-	"uuid",
-]);
 
 // Pad settings (shape ratios, pin function and type, ...) kept as written.
 function withPadExtra(pad, frontPadNode) {
@@ -520,12 +405,6 @@ function buildIrNets(netInfoMap, idFn) {
 	return { irNets, netNumberToId };
 }
 
-// The uuid lets a saved edit delete exactly this track or via.
-function uuidOf(node) {
-	const uuid = nodeSym(extractChildNode(node, "uuid")?.[1]);
-	return uuid ? { uuid } : {};
-}
-
 // An (arc ...) track passes through its mid point.
 function midOf(node) {
 	const mid = extractChildNode(node, "mid");
@@ -562,21 +441,6 @@ function parseVia(node, netNumberToId) {
 	};
 }
 
-function extractPolygonPts(polyNode) {
-	if (!Array.isArray(polyNode)) return [];
-	const ptsNode =
-		extractChildNode(polyNode, "pts") ||
-		(polyNode[0]?.sym === "pts" ? polyNode : null);
-	if (!Array.isArray(ptsNode)) return [];
-	const pts = [];
-	for (const child of ptsNode.slice(1)) {
-		if (Array.isArray(child) && child[0]?.sym === "xy") {
-			pts.push([roundCoord(child[1]), roundCoord(child[2])]);
-		}
-	}
-	return pts;
-}
-
 // A zone on several layers lists them all; `layer` is the first.
 function zoneLayers(node) {
 	const layers = extractChildNode(node, "layers");
@@ -584,17 +448,6 @@ function zoneLayers(node) {
 	const names = layers.slice(1).map(nodeSym);
 	return { layer: names[0] ?? "", layers: names };
 }
-
-const ZONE_MODEL_HEADS = new Set([
-	"net",
-	"net_name",
-	"layer",
-	"layers",
-	"uuid",
-	"polygon",
-	"filled_polygon",
-	"fill_segments",
-]);
 
 // The outline and settings (clearances, thermals, keepout, ...) as written.
 // Fills are left out: KiCad computes them from these, and they are most of a
@@ -611,179 +464,6 @@ function parseZone(node, netNumberToId) {
 		polygon: extractPolygonPts(extractChildNode(node, "polygon")),
 		settings,
 	};
-}
-
-function parseGrRectOutline(rectNode) {
-	const startNode = extractChildNode(rectNode, "start");
-	const endNode = extractChildNode(rectNode, "end");
-	if (!startNode || !endNode) return null;
-	const x1 = roundCoord(startNode[1]);
-	const y1 = roundCoord(startNode[2]);
-	const x2 = roundCoord(endNode[1]);
-	const y2 = roundCoord(endNode[2]);
-	return [
-		[x1, y1],
-		[x2, y1],
-		[x2, y2],
-		[x1, y2],
-	];
-}
-
-function normAngle(a) {
-	let res = a % (2 * Math.PI);
-	if (res < 0) res += 2 * Math.PI;
-	return res;
-}
-
-function ptsToSegments(pts) {
-	const segs = [];
-	for (let i = 0; i < pts.length - 1; i++) {
-		segs.push({ start: pts[i], end: pts[i + 1] });
-	}
-	return segs;
-}
-
-function sampleArcCircle(c, p1, pm, p2) {
-	const r = Math.hypot(p1[0] - c[0], p1[1] - c[1]);
-	const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]);
-	const am = Math.atan2(pm[1] - c[1], pm[0] - c[0]);
-	const a2 = Math.atan2(p2[1] - c[1], p2[0] - c[0]);
-	const dm = normAngle(am - a1);
-	const d2 = normAngle(a2 - a1);
-	const sweep = dm < d2 ? d2 : -(2 * Math.PI - d2);
-	const pts = [p1];
-	for (let i = 1; i < 8; i++) {
-		const ang = a1 + (i / 8) * sweep;
-		pts.push([
-			roundCoord(c[0] + r * Math.cos(ang)),
-			roundCoord(c[1] + r * Math.sin(ang)),
-		]);
-	}
-	pts.push(p2);
-	return ptsToSegments(pts);
-}
-
-function approximateMidArc(p1, pm, p2) {
-	const d1mX = pm[0] - p1[0];
-	const d1mY = pm[1] - p1[1];
-	const dm2X = p2[0] - pm[0];
-	const dm2Y = p2[1] - pm[1];
-	const ma = [(p1[0] + pm[0]) / 2, (p1[1] + pm[1]) / 2];
-	const mb = [(pm[0] + p2[0]) / 2, (pm[1] + p2[1]) / 2];
-	const na = [-d1mY, d1mX];
-	const nb = [-dm2Y, dm2X];
-	const det = na[1] * nb[0] - na[0] * nb[1];
-	if (Math.abs(det) < 1e-10) return ptsToSegments([p1, p2]);
-	const s = ((mb[0] - ma[0]) * -nb[1] - (mb[1] - ma[1]) * -nb[0]) / det;
-	const c = [ma[0] + s * na[0], ma[1] + s * na[1]];
-	return sampleArcCircle(c, p1, pm, p2);
-}
-
-function approximateAngleArc(c, p1, angleDeg) {
-	const r = Math.hypot(p1[0] - c[0], p1[1] - c[1]);
-	const a1 = Math.atan2(p1[1] - c[1], p1[0] - c[0]);
-	const sweep = (angleDeg * Math.PI) / 180;
-	const pts = [p1];
-	for (let i = 1; i < 8; i++) {
-		const ang = a1 + (i / 8) * sweep;
-		pts.push([
-			roundCoord(c[0] + r * Math.cos(ang)),
-			roundCoord(c[1] + r * Math.sin(ang)),
-		]);
-	}
-	const aEnd = a1 + sweep;
-	pts.push([
-		roundCoord(c[0] + r * Math.cos(aEnd)),
-		roundCoord(c[1] + r * Math.sin(aEnd)),
-	]);
-	return ptsToSegments(pts);
-}
-
-function parseGrArcSegments(node) {
-	const startNode = extractChildNode(node, "start");
-	const midNode = extractChildNode(node, "mid");
-	const endNode = extractChildNode(node, "end");
-	const angleNode = extractChildNode(node, "angle");
-	if (midNode && endNode && startNode) {
-		const p1 = [roundCoord(startNode[1]), roundCoord(startNode[2])];
-		const pm = [roundCoord(midNode[1]), roundCoord(midNode[2])];
-		const p2 = [roundCoord(endNode[1]), roundCoord(endNode[2])];
-		return approximateMidArc(p1, pm, p2);
-	}
-	if (startNode && endNode && angleNode) {
-		const c = [roundCoord(startNode[1]), roundCoord(startNode[2])];
-		const p1 = [roundCoord(endNode[1]), roundCoord(endNode[2])];
-		return approximateAngleArc(c, p1, Number(angleNode[1]) || 0);
-	}
-	return [];
-}
-
-function isPointClose(p1, p2) {
-	return Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) <= 0.05;
-}
-
-function findNextSegment(curr, segs, used) {
-	for (let i = 0; i < segs.length; i++) {
-		if (used.has(i)) continue;
-		if (isPointClose(segs[i].start, curr)) {
-			return { seg: segs[i], index: i, reverse: false };
-		}
-		if (isPointClose(segs[i].end, curr)) {
-			return { seg: segs[i], index: i, reverse: true };
-		}
-	}
-	return null;
-}
-
-function chainSegmentsToPolygon(segs) {
-	if (segs.length === 0) return null;
-	const used = new Set([0]);
-	const poly = [segs[0].start];
-	let curr = segs[0].end;
-	poly.push(curr);
-	while (used.size < segs.length) {
-		const match = findNextSegment(curr, segs, used);
-		if (!match) break;
-		used.add(match.index);
-		curr = match.reverse ? match.seg.start : match.seg.end;
-		if (!isPointClose(curr, poly[0])) poly.push(curr);
-	}
-	return poly.length >= 3 ? poly : null;
-}
-
-export function isEdgeCutsNode(child) {
-	return Array.isArray(child) && extractLayerName(child) === "Edge.Cuts";
-}
-
-function processEdgeCutsNode(child, rects, segs) {
-	const head = child[0]?.sym;
-	if (head === "gr_rect") {
-		rects.push(child);
-	} else if (head === "gr_line") {
-		const s = extractChildNode(child, "start");
-		const e = extractChildNode(child, "end");
-		if (s && e) {
-			segs.push({
-				start: [roundCoord(s[1]), roundCoord(s[2])],
-				end: [roundCoord(e[1]), roundCoord(e[2])],
-			});
-		}
-	} else if (head === "gr_arc") {
-		segs.push(...parseGrArcSegments(child));
-	}
-}
-
-// The board outline as one closed point list, from the board drawings.
-export function edgeCutsOutline(drawings) {
-	const rects = [];
-	const segs = [];
-	for (const child of drawings) {
-		if (isEdgeCutsNode(child)) {
-			processEdgeCutsNode(child, rects, segs);
-		}
-	}
-	if (rects.length > 0) return parseGrRectOutline(rects[0]);
-	return chainSegmentsToPolygon(segs);
 }
 
 function extractTitle(ast) {
@@ -992,6 +672,15 @@ function buildBoardGeometry(ast, ctx, netNumberToId) {
 	};
 }
 
+function warnUserLayers(ctx) {
+	if (ctx.userLayerShapes > 0) {
+		const n = ctx.userLayerShapes;
+		ctx.warnings.push(
+			`left out ${n} footprint shape(s) on numbered User layers`,
+		);
+	}
+}
+
 function convertPcbToIr(text, { name, idFn }) {
 	const parsed = parseAstOrError(text);
 	if (!parsed.ok) return parsed;
@@ -999,18 +688,12 @@ function convertPcbToIr(text, { name, idFn }) {
 	const ctx = createPcbContext();
 	ctx.warnings.push(...parsed.warnings);
 	collectPcbElements(ast, ctx, idFn);
-	if (ctx.userLayerShapes > 0) {
-		const n = ctx.userLayerShapes;
-		ctx.warnings.push(
-			`left out ${n} footprint shape(s) on numbered User layers`,
-		);
-	}
+	warnUserLayers(ctx);
 	const netInfoMap = populateNetMap(ast, ctx);
 	const { irNets, netNumberToId } = buildIrNets(netInfoMap, idFn);
-	const irName = resolveIrName(name, extractTitle(ast));
 	const ir = {
 		schemaVersion: 1,
-		name: irName,
+		name: resolveIrName(name, extractTitle(ast)),
 		parts: ctx.parts,
 		nets: irNets,
 		constraints: [],

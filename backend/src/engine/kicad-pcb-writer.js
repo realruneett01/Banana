@@ -1,78 +1,27 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { validateCircuitIR } from "./circuit-ir.js";
-import { flipLayerString, orientFootprint } from "./kicad-pcb-edit.js";
-import { edgeCutsOutline, isEdgeCutsNode } from "./kicad-pcb-to-ir.js";
+import {
+	createLayersNode,
+	edgeCutsOutline,
+	frontGraphic,
+	frontLabel,
+	frontPad,
+	isEdgeCutsNode,
+	labelEffects,
+	netNode,
+	pointNode,
+	ptsNode,
+	RAW_GRAPHIC_HEADS,
+	uuidNodes,
+	withoutUuid,
+} from "./kicad-pcb-common.js";
+import { orientFootprint } from "./kicad-pcb-edit.js";
 import { serialize, sym } from "./sexpr.js";
 
 function deterministicUuid(id) {
 	const hex = createHash("sha1").update(String(id)).digest("hex");
 	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
-}
-
-// KiCad layer ids (KiCad 9 file numbering) and display names, by canonical name.
-const LAYER_IDS = {
-	"F.Cu": [0],
-	"B.Cu": [2],
-	"F.Mask": [1],
-	"B.Mask": [3],
-	"F.SilkS": [5, "F.Silkscreen"],
-	"B.SilkS": [7, "B.Silkscreen"],
-	"F.Adhes": [9, "F.Adhesive"],
-	"B.Adhes": [11, "B.Adhesive"],
-	"F.Paste": [13],
-	"B.Paste": [15],
-	"Dwgs.User": [17, "User.Drawings"],
-	"Cmts.User": [19, "User.Comments"],
-	"Eco1.User": [21, "User.Eco1"],
-	"Eco2.User": [23, "User.Eco2"],
-	"Edge.Cuts": [25],
-	Margin: [27],
-	"B.CrtYd": [29, "B.Courtyard"],
-	"F.CrtYd": [31, "F.Courtyard"],
-	"B.Fab": [33],
-	"F.Fab": [35],
-};
-
-const DEFAULT_LAYERS = [
-	"F.Cu",
-	"B.Cu",
-	"F.SilkS",
-	"B.SilkS",
-	"F.Mask",
-	"B.Mask",
-	"F.Paste",
-	"B.Paste",
-	"Edge.Cuts",
-	"F.CrtYd",
-	"B.CrtYd",
-	"F.Fab",
-	"B.Fab",
-];
-
-// Inner copper In<n>.Cu is 2n+2 and User.<n> is 37+2n; others are listed.
-function layerId(name) {
-	const inner = /^In(\d+)\.Cu$/.exec(name);
-	if (inner) return 2 * Number(inner[1]) + 2;
-	const user = /^User\.(\d+)$/.exec(name);
-	if (user) return 37 + 2 * Number(user[1]);
-	return LAYER_IDS[name]?.[0];
-}
-
-// An imported board names its layers itself; else KiCad's default names.
-function layerEntry(name, layerNames) {
-	const id = layerId(name);
-	if (id === undefined) return null;
-	const type = name.endsWith(".Cu") ? "signal" : "user";
-	const userName = layerNames ? layerNames[name] : LAYER_IDS[name]?.[1];
-	return [id, name, sym(type), ...(userName ? [userName] : [])];
-}
-
-// An imported board's own layer list, else the default two-layer set.
-function createLayersNode(layers, layerNames) {
-	const names = layers?.length ? layers : DEFAULT_LAYERS;
-	const entries = names.map((name) => layerEntry(name, layerNames));
-	return [sym("layers"), ...entries.filter(Boolean)];
 }
 
 function buildPinNetMap(nets) {
@@ -132,32 +81,10 @@ function buildPadNode(pad, netInfo) {
 	return node;
 }
 
-// An embedded (imported) pad is already flipped for a back part; take it
-// back to the front, where the footprint is built before it is flipped. The
-// drill offset is left as is: the flip does not touch it either.
-function frontPad(pad) {
-	const [x, y, a = 0] = pad.at;
-	const at = [x, -y || 0, -a || 0];
-	return { ...pad, at, layers: pad.layers.map(flipLayerString) };
-}
-
 function defPads(def, side) {
 	const pads = Array.isArray(def) ? def : (def.pads ?? []);
 	return def.embedded && side === "B" ? pads.map(frontPad) : pads;
 }
-
-const mirrorY = ([x, y]) => [x, -y || 0];
-const POINT_KEYS = ["start", "mid", "end", "center"];
-
-// Compact graphics of a back part are stored flipped, like its pads.
-function frontGraphic(g) {
-	const out = { ...g, layer: flipLayerString(g.layer) };
-	for (const key of POINT_KEYS.filter((k) => g[k])) out[key] = mirrorY(g[key]);
-	if (g.pts) out.pts = g.pts.map(mirrorY);
-	return out;
-}
-
-const pointNode = (head, [x, y]) => [sym(head), x, y];
 
 const COMPACT_WRITERS = {
 	line: (g) => [
@@ -186,18 +113,10 @@ const COMPACT_WRITERS = {
 
 const fillNodes = (g) => (g.fill ? [[sym("fill"), sym("yes")]] : []);
 
-const RAW_GRAPHIC_HEADS = new Set([
-	"fp_line",
-	"fp_arc",
-	"fp_circle",
-	"fp_rect",
-	"fp_poly",
-]);
-
 // A library shape is shared by every part using the footprint: copy it (as
 // orientFootprint changes the nodes it is given) without its uuid.
 function copyRawGraphic(node) {
-	return structuredClone(node).filter((c) => c?.[0]?.sym !== "uuid");
+	return withoutUuid(structuredClone(node));
 }
 
 // Compact (board import) graphics are rebuilt; raw library nodes are copied.
@@ -264,15 +183,6 @@ function valueProperty(part, def) {
 	return node;
 }
 
-// The imported reference text, taken to the front like a back part's pads
-// (the flip turns text to 180 - angle and toggles its mirror flag).
-function frontLabel({ at: [x, y], rot, layer, mirror = false }, flipped) {
-	const onLayer = layer || "F.SilkS";
-	if (!flipped) return { at: [x, y, rot], layer: onLayer, mirror };
-	const at = [x, -y || 0, (180 - rot) % 360];
-	return { at, layer: flipLayerString(onLayer), mirror: !mirror };
-}
-
 function referenceProperty(part, def) {
 	const label = def?.refLabel;
 	const head = [sym("property"), "Reference", part.ref];
@@ -285,19 +195,6 @@ function referenceProperty(part, def) {
 	if (label.hide) node.push([sym("hide"), sym("yes")]);
 	node.push(labelEffects(label, front.mirror));
 	return node;
-}
-
-function labelEffects(label, mirror) {
-	const effects = [sym("effects"), labelFont(label)];
-	const justify = [...(label.justify ?? []), ...(mirror ? ["mirror"] : [])];
-	if (justify.length > 0) effects.push([sym("justify"), ...justify.map(sym)]);
-	return effects;
-}
-
-function labelFont({ size, thickness }) {
-	const font = [sym("font"), [sym("size"), size, size]];
-	if (thickness !== undefined) font.push([sym("thickness"), thickness]);
-	return font;
 }
 
 // Built on the front at 0 degrees, then flipped and turned as pcbnew does.
@@ -378,11 +275,6 @@ function buildDrawingNodes({ drawings = [], outline = null }, boardW, boardH) {
 	];
 }
 
-const uuidNodes = (item) => (item.uuid ? [[sym("uuid"), item.uuid]] : []);
-
-// Tracks, vias and zones carry the IR net id; the board names it by number.
-const netNode = (item, netIndex) => [sym("net"), netIndex.get(item.netId) ?? 0];
-
 function buildTrackNode(track, netIndex) {
 	const mid = track.mid ? [pointNode("mid", track.mid)] : [];
 	return [
@@ -408,8 +300,6 @@ function buildViaNode(via, netIndex) {
 		...uuidNodes(via),
 	];
 }
-
-const ptsNode = (pts) => [sym("pts"), ...pts.map((p) => pointNode("xy", p))];
 
 const zoneLayerNode = (zone) =>
 	zone.layers ? [sym("layers"), ...zone.layers] : [sym("layer"), zone.layer];
