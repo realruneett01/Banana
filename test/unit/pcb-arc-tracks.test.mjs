@@ -38,11 +38,16 @@ describe("arc track path", () => {
 
 	test("arc track becomes one SVG arc through its mid point", () => {
 		const a = arcParams(trackPath(HALF));
-		assert.deepEqual(a.start, [1, 0]);
-		assert.deepEqual(a.end, [-1, 0]);
-		assert.equal(a.r, 1);
-		assert.equal(a.large, 0);
-		assert.equal(a.sweep, 1);
+		const expected = {
+			start: [1, 0],
+			end: [-1, 0],
+			r: 1,
+			large: 0,
+			sweep: 1,
+		};
+		for (const [prop, val] of Object.entries(expected)) {
+			assert.deepEqual(a[prop], val);
+		}
 	});
 
 	test("mirrored mid point flips the sweep", () => {
