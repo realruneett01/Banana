@@ -1,7 +1,6 @@
 import {
 	DeleteOutlined,
 	DownloadOutlined,
-	ForkOutlined,
 	PlusOutlined,
 	RedoOutlined,
 	RotateRightOutlined,
@@ -39,12 +38,14 @@ import {
 	setUnits,
 	subscribe,
 } from "./editorStatus.js";
+import { emitEditorTool } from "./editorToolBus.js";
 import { summarizeWarnings } from "./exportWarnings.js";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import SaveCommitDialog from "./SaveCommitDialog.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
+import ToolPalette from "./ToolPalette.jsx";
 import { useEditorDocument } from "./useEditorDocument.js";
 import { useLiveChecks } from "./useLiveChecks.js";
 import { formatCoord, GRID_PRESETS } from "./viewport.js";
@@ -379,29 +380,17 @@ function SaveCommitButton({ dirty, onOpen }) {
 	);
 }
 
-function ModeButtons({ activeTab, dirty, route, save, openCommit }) {
-	const items = [
-		{
-			title: "Route Track (X) - PCB tab",
-			icon: <ForkOutlined />,
-			disabled: activeTab !== "pcb",
-			onClick: route,
-			ariaLabel: "Route Track",
-		},
-		{
-			title: "Save (Ctrl+S)",
-			icon: <SaveOutlined />,
-			disabled: !dirty,
-			onClick: save,
-			ariaLabel: "Save",
-			type: "primary",
-		},
-	];
+function ModeButtons({ dirty, save, openCommit }) {
 	return (
 		<Space size={4}>
-			{items.map((it) => (
-				<ToolButton key={it.title} {...it} />
-			))}
+			<ToolButton
+				title="Save (Ctrl+S)"
+				icon={<SaveOutlined />}
+				disabled={!dirty}
+				onClick={save}
+				ariaLabel="Save"
+				type="primary"
+			/>
 			<SaveCommitButton dirty={dirty} onOpen={openCommit} />
 		</Space>
 	);
@@ -419,42 +408,45 @@ function AddPartButton({ onAddPart }) {
 	);
 }
 
-function ExportButton({ onExport, loading }) {
-	return (
-		<ToolButton
-			title="Export KiCad files"
-			icon={<DownloadOutlined />}
-			loading={loading}
-			onClick={onExport}
-			ariaLabel="Export KiCad files"
-			text="Export KiCad files"
-		/>
-	);
-}
+const EXPORT_BUTTON_CONFIGS = [
+	{
+		key: "kicad",
+		title: "Export KiCad files",
+		text: "Export KiCad files",
+		actionKey: "exportKiCad",
+		loadingKey: "exporting",
+	},
+	{
+		key: "bom",
+		title: "Export BOM",
+		text: "BOM",
+		actionKey: "exportBom",
+		loadingKey: "bomLoading",
+	},
+	{
+		key: "netlist",
+		title: "Export Netlist",
+		text: "Netlist",
+		actionKey: "exportNetlist",
+		loadingKey: "netlistLoading",
+	},
+];
 
-function BomButton({ onBom, loading }) {
+function ExportButtons({ state, actions }) {
 	return (
-		<ToolButton
-			title="Export BOM"
-			icon={<DownloadOutlined />}
-			loading={loading}
-			onClick={onBom}
-			ariaLabel="Export BOM"
-			text="BOM"
-		/>
-	);
-}
-
-function NetlistButton({ onNetlist, loading }) {
-	return (
-		<ToolButton
-			title="Export Netlist"
-			icon={<DownloadOutlined />}
-			loading={loading}
-			onClick={onNetlist}
-			ariaLabel="Export Netlist"
-			text="Netlist"
-		/>
+		<>
+			{EXPORT_BUTTON_CONFIGS.map((cfg) => (
+				<ToolButton
+					key={cfg.key}
+					title={cfg.title}
+					icon={<DownloadOutlined />}
+					loading={state[cfg.loadingKey]}
+					onClick={actions[cfg.actionKey]}
+					ariaLabel={cfg.title}
+					text={cfg.text}
+				/>
+			))}
+		</>
 	);
 }
 
@@ -580,9 +572,7 @@ function EditorToolbar({ state, actions }) {
 		>
 			<ActionGroup state={state} actions={actions} />
 			<ModeButtons
-				activeTab={state.activeTab}
 				dirty={state.dirty}
-				route={actions.route}
 				save={actions.save}
 				openCommit={actions.openCommit}
 			/>
@@ -593,12 +583,7 @@ function EditorToolbar({ state, actions }) {
 				onChange={actions.onBoardToolsChange}
 				disabled={state.activeTab !== "pcb"}
 			/>
-			<ExportButton onExport={actions.exportKiCad} loading={state.exporting} />
-			<BomButton onBom={actions.exportBom} loading={state.bomLoading} />
-			<NetlistButton
-				onNetlist={actions.exportNetlist}
-				loading={state.netlistLoading}
-			/>
+			<ExportButtons state={state} actions={actions} />
 		</div>
 	);
 }
@@ -880,30 +865,6 @@ function useAnnotateAction({ ir, dispatch }) {
 	);
 }
 
-function extractUsedRefNumbers(parts, regex) {
-	const numbers = new Set();
-	for (const p of parts ?? []) {
-		const match = p.ref?.match(regex);
-		if (match) numbers.add(Number(match[1]));
-	}
-	return numbers;
-}
-
-function findLowestAvailableIndex(usedSet) {
-	let num = 1;
-	while (usedSet.has(num)) num++;
-	return num;
-}
-
-function getNextRef(parts, rawPrefix) {
-	const sanitized = (rawPrefix || "U").replace(/[?#]+$/, "");
-	const prefix = sanitized || "U";
-	const regex = new RegExp(`^${prefix}(\\d+)$`, "i");
-	const usedNumbers = extractUsedRefNumbers(parts, regex);
-	const nextNum = findLowestAvailableIndex(usedNumbers);
-	return `${prefix}${nextNum}`;
-}
-
 async function fetchEntity(api, method, dataKey, id) {
 	if (typeof api?.[method] !== "function") return null;
 	const res = await api[method](id);
@@ -928,23 +889,28 @@ function useCanvasFetchers(api, symbols) {
 	return { fetchSymbol, fetchFootprint };
 }
 
-function usePlacePartCallback(doc, dispatch) {
+function toToolItem(libraryPayload) {
+	const symbol = libraryPayload?.symbol ?? "";
+	const footprint = libraryPayload?.footprint ?? "";
+	const ref = libraryPayload?.ref || libraryPayload?.prefix || "";
+	const value = libraryPayload?.value ?? "";
+	return {
+		id: symbol || footprint,
+		label: value || ref,
+		symbol,
+		footprint,
+		ref,
+		value,
+	};
+}
+
+function usePlacePartCallback(activeTab) {
 	return useCallback(
-		(item) => {
-			const prefix = item.ref || item.prefix || "U";
-			const nextRef = getNextRef(doc.ir?.parts, prefix);
-			dispatch({
-				type: "addPart",
-				part: {
-					ref: nextRef,
-					value: item.value || "",
-					symbol: item.symbol || "",
-					footprint: item.footprint || "",
-					placement: { x: 0, y: 0, rot: 0, side: "F" },
-				},
-			});
+		(payload) => {
+			const tool = activeTab === "pcb" ? "placeFootprint" : "placeSymbol";
+			emitEditorTool({ tab: activeTab, tool, item: toToolItem(payload) });
 		},
-		[doc.ir?.parts, dispatch],
+		[activeTab],
 	);
 }
 
@@ -969,11 +935,6 @@ function useFocusItem(focusItemId, onSelect) {
 		}
 		lastRef.current = focusItemId;
 	}, [focusItemId, onSelect]);
-}
-
-function triggerPcbRoute() {
-	const btn = document.querySelector('[aria-label="Toggle route track (X)"]');
-	if (btn) btn.click();
 }
 
 function CanvasTab({ visible, children }) {
@@ -1047,25 +1008,23 @@ function buildToolState(docState, activeTab, exports = {}) {
 	};
 }
 
-function EditorBody({
-	activeTab,
-	docState,
-	curBoard,
-	fetchers,
-	markers,
-	problems,
-}) {
+function EditorBody({ activeTab, ctrl, onOpenLibrary }) {
+	const openLib = onOpenLibrary ?? ctrl?.actions?.openLibrary;
 	return (
 		<div style={CONTENT_ROW_STYLE}>
+			<ToolPalette tab={activeTab} onOpenLibrary={openLib} />
 			<CanvasViewport
 				activeTab={activeTab}
-				docState={docState}
-				curBoard={curBoard}
-				fetchers={fetchers}
-				markers={markers}
-				problems={problems}
+				docState={ctrl.docState}
+				curBoard={ctrl.curBoard}
+				fetchers={ctrl.fetchers}
+				markers={ctrl.liveChecks.markers}
+				problems={ctrl.liveChecks.issues}
 			/>
-			<PropertiesPanel doc={docState.doc} dispatch={docState.dispatch} />
+			<PropertiesPanel
+				doc={ctrl.docState.doc}
+				dispatch={ctrl.docState.dispatch}
+			/>
 		</div>
 	);
 }
@@ -1080,7 +1039,7 @@ function useScreenActions(docState, onSave, extra) {
 		markSaved,
 	});
 	useSaveShortcut(editActions.save);
-	return { ...editActions, undo, redo, route: triggerPcbRoute, ...extra };
+	return { ...editActions, undo, redo, ...extra };
 }
 
 function useBoardToolsChange(docState) {
@@ -1097,12 +1056,20 @@ function useBoardToolsChange(docState) {
 	);
 }
 
-function useScreenController({ ir, board, onSave, api, openCommit, symbols }) {
+function useScreenController({
+	ir,
+	board,
+	onSave,
+	api,
+	openCommit,
+	symbols,
+	activeTab,
+}) {
 	const docState = useEditorDocument({ ir, board });
 	const lib = useLibraryState();
 	const fetchers = useCanvasFetchers(api, symbols);
 	const { doc, board: curBoard, dispatch } = docState;
-	const onPlace = usePlacePartCallback(doc, dispatch);
+	const onPlace = usePlacePartCallback(activeTab);
 	const onSelectIssue = useIssueSelector(dispatch);
 	const exports = useDesignExports({ api, ir: doc.ir, board: curBoard });
 	const annotate = useAnnotateAction({ ir: doc.ir, dispatch });
@@ -1162,11 +1129,8 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 			/>
 			<EditorBody
 				activeTab={activeTab}
-				docState={ctrl.docState}
-				curBoard={ctrl.curBoard}
-				fetchers={ctrl.fetchers}
-				markers={ctrl.liveChecks.markers}
-				problems={ctrl.liveChecks.issues}
+				ctrl={ctrl}
+				onOpenLibrary={ctrl.actions.openLibrary}
 			/>
 		</>
 	);
@@ -1239,6 +1203,7 @@ function useEditorScreen({
 		api,
 		openCommit: commit.openCommit,
 		symbols,
+		activeTab,
 	});
 	useFocusItem(focusItemId, ctrl.onSelectIssue);
 	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exports);
