@@ -12,6 +12,27 @@ const BUS_PAIRS = [
 	{ name: "activeTool", emit: emitActiveTool, on: onActiveTool },
 ];
 
+const DELIVERY_CASES = [
+	{
+		title: "delivers valid payload with default null item",
+		payload: { tab: "schematic", tool: "wire" },
+		expected: { tab: "schematic", tool: "wire", item: null },
+	},
+	{
+		title: "preserves provided item",
+		payload: {
+			tab: "pcb",
+			tool: "place",
+			item: { partId: "R1", value: "10k" },
+		},
+		expected: {
+			tab: "pcb",
+			tool: "place",
+			item: { partId: "R1", value: "10k" },
+		},
+	},
+];
+
 const INVALID_CASES = [
 	{ name: "undefined payload", payload: undefined },
 	{ name: "empty object payload", payload: {} },
@@ -27,80 +48,74 @@ const INVALID_CASES = [
 	{ name: "null tool", payload: { tab: "pcb", tool: null } },
 ];
 
-function testInvalidInput(emit, on, payload) {
-	let called = false;
-	const unsub = on(() => {
-		called = true;
-	});
-	emit(payload);
+function recordEvents(on, emitFn, filter) {
+	const received = [];
+	const unsub = on((detail) => received.push(detail), filter);
+	emitFn();
 	unsub();
-	assert.equal(called, false);
+	return received;
+}
+
+function assertDelivered(received, expected) {
+	assert.equal(received.length, 1);
+	assert.deepEqual(received[0], expected);
+}
+
+function assertFiltered(received, tab, tool) {
+	assert.equal(received.length, 1);
+	assert.equal(received[0].tab, tab);
+	assert.equal(received[0].tool, tool);
+}
+
+function verifyUnsubscribe(on, emit) {
+	let deliveryCount = 0;
+	const unsub = on(() => {
+		deliveryCount += 1;
+	});
+	emit({ tab: "schematic", tool: "select" });
+	assert.equal(deliveryCount, 1);
+
+	unsub();
+	emit({ tab: "schematic", tool: "select" });
+	assert.equal(deliveryCount, 1);
+}
+
+function testInvalidInput(emit, on, payload) {
+	const received = recordEvents(on, () => emit(payload));
+	assert.equal(received.length, 0);
 }
 
 describe("editorToolBus", () => {
 	for (const { name, emit, on } of BUS_PAIRS) {
-		it(`${name}: delivers valid payload with default null item`, () => {
-			const received = [];
-			const unsub = on((detail) => received.push(detail));
-			emit({ tab: "schematic", tool: "wire" });
-			unsub();
-
-			assert.equal(received.length, 1);
-			assert.deepEqual(received[0], {
-				tab: "schematic",
-				tool: "wire",
-				item: null,
+		for (const { title, payload, expected } of DELIVERY_CASES) {
+			it(`${name}: ${title}`, () => {
+				const received = recordEvents(on, () => emit(payload));
+				assertDelivered(received, expected);
 			});
-		});
-
-		it(`${name}: preserves provided item`, () => {
-			const received = [];
-			const unsub = on((detail) => received.push(detail));
-			const item = { partId: "R1", value: "10k" };
-			emit({ tab: "pcb", tool: "place", item });
-			unsub();
-
-			assert.equal(received.length, 1);
-			assert.deepEqual(received[0], {
-				tab: "pcb",
-				tool: "place",
-				item,
-			});
-		});
+		}
 
 		it(`${name}: filters by tab when specified`, () => {
-			const received = [];
-			const unsub = on((detail) => received.push(detail), "schematic");
-			emit({ tab: "pcb", tool: "route" });
-			emit({ tab: "schematic", tool: "select" });
-			unsub();
-
-			assert.equal(received.length, 1);
-			assert.equal(received[0].tab, "schematic");
-			assert.equal(received[0].tool, "select");
+			const received = recordEvents(
+				on,
+				() => {
+					emit({ tab: "pcb", tool: "route" });
+					emit({ tab: "schematic", tool: "select" });
+				},
+				"schematic",
+			);
+			assertFiltered(received, "schematic", "select");
 		});
 
 		it(`${name}: receives all tabs when tab filter is omitted`, () => {
-			const received = [];
-			const unsub = on((detail) => received.push(detail));
-			emit({ tab: "schematic", tool: "wire" });
-			emit({ tab: "pcb", tool: "route" });
-			unsub();
-
+			const received = recordEvents(on, () => {
+				emit({ tab: "schematic", tool: "wire" });
+				emit({ tab: "pcb", tool: "route" });
+			});
 			assert.equal(received.length, 2);
 		});
 
 		it(`${name}: stops delivery after unsubscribe`, () => {
-			let count = 0;
-			const unsub = on(() => {
-				count++;
-			});
-			emit({ tab: "schematic", tool: "select" });
-			assert.equal(count, 1);
-
-			unsub();
-			emit({ tab: "schematic", tool: "select" });
-			assert.equal(count, 1);
+			verifyUnsubscribe(on, emit);
 		});
 
 		for (const { name: caseName, payload } of INVALID_CASES) {
