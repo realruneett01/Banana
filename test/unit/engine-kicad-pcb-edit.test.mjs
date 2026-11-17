@@ -31,41 +31,75 @@ const MINIMAL_FP_SOURCE = `(footprint "Resistor_SMD:R_0603"
 	)
 )`;
 
-const BASE_PART = {
-	id: "part_11111111-1111-1111-1111-111111111111",
-	ref: "R0",
-	value: "10k",
-	symbol: "Device:R",
-	footprint: "Resistor_SMD:R_0805",
-	props: {},
-	placement: { x: 50, y: 50, rot: 0, side: "F" },
-};
+function makePad(number, atX) {
+	return {
+		number,
+		type: "smd",
+		shape: "roundrect",
+		at: [atX, 0],
+		size: [1, 1],
+		layers: ["F.Cu", "F.Mask"],
+	};
+}
 
-const BASE_PADS = [
-	["1", [-1, 0]],
-	["2", [1, 0]],
-].map(([number, at]) => ({
-	number,
-	type: "smd",
-	shape: "roundrect",
-	at,
-	size: [1, 1],
-	layers: ["F.Cu", "F.Mask"],
-}));
+function makeBaseBoard() {
+	const part = {
+		id: "part_11111111-1111-1111-1111-111111111111",
+		ref: "R0",
+		value: "10k",
+		symbol: "Device:R",
+		footprint: "Resistor_SMD:R_0805",
+		props: {},
+		placement: { x: 50, y: 50, rot: 0, side: "F" },
+	};
+	const footprints = {
+		"Resistor_SMD:R_0805": { pads: [makePad("1", -1), makePad("2", 1)] },
+	};
+	const ir = {
+		schemaVersion: 1,
+		name: "EditTestBoard",
+		parts: [part],
+		nets: [],
+		constraints: [],
+	};
+	return irToKicadPcb(ir, {
+		footprints,
+		boardW: 100,
+		boardH: 100,
+	}).text;
+}
 
-const FRONT_FP_EDITS = [
-	{
+function makeFpEdit(ref, value, x, y) {
+	return {
 		op: "addFootprint",
 		libId: "Resistor_SMD:R_0603",
 		source: MINIMAL_FP_SOURCE,
-		ref: "R1",
-		value: "10k",
-		x: 10,
-		y: 10,
+		ref,
+		value,
+		x,
+		y,
 		rot: 0,
 		side: "F",
-	},
-];
+	};
+}
+
+function makeTrackEdit(net, width, points) {
+	return { op: "addTrack", net, layer: "F.Cu", width, points };
+}
+
+function makeInvalidFpEdit(source, x) {
+	return {
+		op: "addFootprint",
+		libId: "R",
+		source,
+		ref: "R2",
+		value: "1k",
+		x,
+		y: 0,
+	};
+}
+
+const FRONT_FP_EDITS = [makeFpEdit("R1", "10k", 10, 10)];
 
 const BACK_FP_EDITS = [
 	{
@@ -79,23 +113,19 @@ const BACK_FP_EDITS = [
 	},
 ];
 
-const SET_PAD_NET_EDITS = [
-	{ op: "setPadNet", ref: "R0", pad: "1", net: "GND" },
-	{ op: "setPadNet", ref: "R0", pad: "2", net: "GND" },
-];
+const SET_PAD_NET_EDITS = ["1", "2"].map((pad) => ({
+	op: "setPadNet",
+	ref: "R0",
+	pad,
+	net: "GND",
+}));
 
 const TRACK_AND_VIA_EDITS = [
-	{
-		op: "addTrack",
-		net: "GND",
-		layer: "F.Cu",
-		width: 0.25,
-		points: [
-			{ x: 10, y: 10 },
-			{ x: 20, y: 10 },
-			{ x: 20, y: 20 },
-		],
-	},
+	makeTrackEdit("GND", 0.25, [
+		{ x: 10, y: 10 },
+		{ x: 20, y: 10 },
+		{ x: 20, y: 20 },
+	]),
 	{ op: "addVia", net: "GND", x: 20, y: 20, size: 0.6, drill: 0.3 },
 ];
 
@@ -118,137 +148,69 @@ const RENAME_AND_DELETE_EDITS = [
 const CHAINED_EDITS = [
 	...FRONT_FP_EDITS,
 	{ op: "setPadNet", ref: "R1", pad: "1", net: "VCC" },
-	{
-		op: "addTrack",
-		net: "VCC",
-		layer: "F.Cu",
-		width: 0.2,
-		points: [
-			{ x: 10, y: 10 },
-			{ x: 15, y: 10 },
-			{ x: 15, y: 15 },
-		],
-	},
+	makeTrackEdit("VCC", 0.2, [
+		{ x: 10, y: 10 },
+		{ x: 15, y: 10 },
+		{ x: 15, y: 15 },
+	]),
 	{ op: "addVia", net: "VCC", x: 15, y: 15 },
 ];
 
-// addTrack edit on F.Cu, net 1, for the error table.
-function trackEdit(width, points) {
-	return { op: "addTrack", layer: "F.Cu", width, points, net: 1 };
-}
+const nodeTag = (node) =>
+	Array.isArray(node) ? node[0]?.sym : (node?.sym ?? null);
+const getChild = (tree, tag) => tree?.find?.((n) => nodeTag(n) === tag) ?? null;
+const getChildren = (tree, tag) =>
+	Array.isArray(tree) ? tree.filter((n) => nodeTag(n) === tag) : [];
 
-const ERROR_TABLE = [
-	{ name: "unknown operation", edit: { op: "unknownOp" } },
-	{ name: "delete missing ref", edit: { op: "deleteFootprint", ref: "NO_FP" } },
-	{
-		name: "setPadNet missing pad",
-		edit: { op: "setPadNet", ref: "R0", pad: "99", net: "GND" },
-	},
-	{
-		name: "addTrack NaN width",
-		edit: trackEdit(Number.NaN, [
-			{ x: 0, y: 0 },
-			{ x: 1, y: 1 },
-		]),
-	},
-	{
-		name: "addTrack NaN coords",
-		edit: trackEdit(0.2, [
-			{ x: 0, y: 0 },
-			{ x: Number.NaN, y: 1 },
-		]),
-	},
-	{
-		name: "addTrack single point",
-		edit: trackEdit(0.2, [{ x: 0, y: 0 }]),
-	},
-	{
-		name: "addVia NaN coords",
-		edit: { op: "addVia", x: Number.NaN, y: 0, net: 1 },
-	},
-	{
-		name: "addVia negative size",
-		edit: { op: "addVia", x: 10, y: 10, size: -1, net: 1 },
-	},
-	{
-		name: "deleteTrack missing uuid",
-		edit: { op: "deleteTrack", uuid: "missing-uuid" },
-	},
-	{
-		name: "addFootprint NaN coords",
-		edit: {
-			op: "addFootprint",
-			libId: "R",
-			source: MINIMAL_FP_SOURCE,
-			ref: "R2",
-			value: "1k",
-			x: Number.NaN,
-			y: 0,
-		},
-	},
-	{
-		name: "addFootprint invalid source",
-		edit: {
-			op: "addFootprint",
-			libId: "R",
-			source: "not an sexpr",
-			ref: "R2",
-			value: "1k",
-			x: 0,
-			y: 0,
-		},
-	},
-];
-
-function makeBaseBoard() {
-	const ir = {
-		schemaVersion: 1,
-		name: "EditTestBoard",
-		parts: [BASE_PART],
-		nets: [],
-		constraints: [],
-	};
-	const footprints = { "Resistor_SMD:R_0805": { pads: BASE_PADS } };
-	const { text } = irToKicadPcb(ir, { footprints, boardW: 100, boardH: 100 });
-	return text;
-}
-
-function isMatchingRefProp(c, ref) {
-	if (!Array.isArray(c) || c[0]?.sym !== "property") return false;
-	return c[1] === "Reference" && c[2] === ref;
+function isMatchingRef(child, ref) {
+	if (nodeTag(child) !== "property") return false;
+	return child[1] === "Reference" && child[2] === ref;
 }
 
 function findFootprint(ast, ref) {
-	for (const node of ast) {
-		if (Array.isArray(node) && node[0]?.sym === "footprint") {
-			if (node.some((c) => isMatchingRefProp(c, ref))) return node;
-		}
-	}
-	return null;
+	return (
+		ast.find(
+			(node) =>
+				nodeTag(node) === "footprint" &&
+				node.some((child) => isMatchingRef(child, ref)),
+		) ?? null
+	);
 }
 
 function findPads(fpNode) {
-	return fpNode.filter((c) => Array.isArray(c) && c[0]?.sym === "pad");
+	return getChildren(fpNode, "pad");
 }
 
 function extractUuid(node) {
-	const entry = node.find((c) => Array.isArray(c) && c[0]?.sym === "uuid");
-	return entry ? entry[1] : null;
+	return getChild(node, "uuid")?.[1] ?? null;
 }
 
 function isSegmentWithUuid(node, uuid) {
-	if (!Array.isArray(node) || node[0]?.sym !== "segment") return false;
-	return extractUuid(node) === uuid;
+	return nodeTag(node) === "segment" && extractUuid(node) === uuid;
 }
 
 function isGndNet(node) {
-	if (!Array.isArray(node) || node[0]?.sym !== "net") return false;
-	return node[2] === "GND";
+	return nodeTag(node) === "net" && node[2] === "GND";
 }
 
 function executeEdits(baseText, edits, opts) {
 	const res = applyPcbEdits(baseText, edits, opts);
 	return { res, ast: res.ok ? parse(res.text) : null };
+}
+
+function verifyPadLayers(pad) {
+	const lNode = getChild(pad, "layers");
+	assert.ok(lNode.includes("B.Cu"), "Pad layers must contain B.Cu");
+	assert.ok(!lNode.includes("F.Cu"), "Pad layers must not contain F.Cu");
+}
+
+function verifyEditRejected(outcome, caseName) {
+	assert.equal(outcome.ok, false, `Expected error for ${caseName}`);
+	assert.equal(
+		Boolean(outcome.error),
+		true,
+		`Error message required for ${caseName}`,
+	);
 }
 
 describe("kicad-pcb-edit", () => {
@@ -266,8 +228,10 @@ describe("kicad-pcb-edit", () => {
 		assert.notEqual(extractUuid(fp), "orig-fp-uuid-0001");
 		const pads = findPads(fp);
 		assert.equal(pads.length, 2);
-		assert.notEqual(extractUuid(pads[0]), "orig-pad1-uuid-0004");
-		assert.notEqual(extractUuid(pads[1]), "orig-pad2-uuid-0005");
+		const origPadUuids = ["orig-pad1-uuid-0004", "orig-pad2-uuid-0005"];
+		pads.forEach((pad, i) => {
+			assert.notEqual(extractUuid(pad), origPadUuids[i]);
+		});
 	});
 
 	test("addFootprint on back flips layers and flips top-bottom like KiCad", () => {
@@ -275,19 +239,15 @@ describe("kicad-pcb-edit", () => {
 		assert.equal(res.ok, true);
 		const fp = findFootprint(ast, "R_BACK");
 		assert.ok(fp);
-		const layerNode = fp.find((c) => Array.isArray(c) && c[0]?.sym === "layer");
+		const layerNode = getChild(fp, "layer");
 		assert.equal(layerNode?.[1], "B.Cu");
 		const pads = findPads(fp);
-		for (const pad of pads) {
-			const lNode = pad.find((c) => Array.isArray(c) && c[0]?.sym === "layers");
-			assert.ok(lNode.includes("B.Cu"), "Pad layers must contain B.Cu");
-			assert.ok(!lNode.includes("F.Cu"), "Pad layers must not contain F.Cu");
-		}
-		const p1At = pads[0].find((c) => Array.isArray(c) && c[0]?.sym === "at");
+		pads.forEach(verifyPadLayers);
+		const p1At = getChild(pads[0], "at");
 		assert.equal(p1At?.[1], -0.8, "Pad 1 X coordinate must stay -0.8");
 		assert.equal(p1At?.[3], 90, "Pad 1 angle must carry the footprint's 90");
 		const ref = fp.find((c) => Array.isArray(c) && c[2] === "R_BACK");
-		const refAt = ref.find((c) => Array.isArray(c) && c[0]?.sym === "at");
+		const refAt = getChild(ref, "at");
 		assert.deepEqual(
 			refAt.slice(1),
 			[0, 1, 270],
@@ -306,49 +266,39 @@ describe("kicad-pcb-edit", () => {
 		);
 		const fp = findFootprint(ast, "R0");
 		const pads = findPads(fp);
-		const p1Net = pads[0].find((c) => Array.isArray(c) && c[0]?.sym === "net");
-		const p2Net = pads[1].find((c) => Array.isArray(c) && c[0]?.sym === "net");
-		assert.equal(p1Net?.[2], "GND");
-		assert.equal(p2Net?.[2], "GND");
-		assert.equal(p1Net?.[1], gndDecls[0][1]);
+		pads.forEach((pad) => {
+			assert.equal(getChild(pad, "net")?.[2], "GND");
+		});
+		assert.equal(getChild(pads[0], "net")?.[1], gndDecls[0][1]);
 	});
 
 	test("addTrack with 3 points generates 2 segments and addVia works", () => {
 		const { res, ast } = executeEdits(baseText, TRACK_AND_VIA_EDITS);
 		assert.equal(res.ok, true);
-		const segments = ast.filter(
-			(c) => Array.isArray(c) && c[0]?.sym === "segment",
-		);
+		const segments = getChildren(ast, "segment");
 		assert.equal(segments.length, 2, "3 points must yield 2 segments");
-		const vias = ast.filter((c) => Array.isArray(c) && c[0]?.sym === "via");
+		const vias = getChildren(ast, "via");
 		assert.equal(vias.length, 1, "1 via must be created");
-		const segNet = segments[0].find(
-			(c) => Array.isArray(c) && c[0]?.sym === "net",
-		);
-		const viaNet = vias[0].find((c) => Array.isArray(c) && c[0]?.sym === "net");
+		const segNet = getChild(segments[0], "net");
+		const viaNet = getChild(vias[0], "net");
 		assert.equal(segNet?.[1], viaNet?.[1], "Net numbers must match");
 	});
 
 	test("setFootprintField and deleteFootprint update and remove footprint", () => {
 		const { res, ast } = executeEdits(baseText, RENAME_AND_DELETE_EDITS);
 		assert.equal(res.ok, true);
-		assert.equal(findFootprint(ast, "R0"), null);
-		assert.equal(findFootprint(ast, "R_RENAMED"), null);
+		["R0", "R_RENAMED"].forEach((ref) => {
+			assert.equal(findFootprint(ast, ref), null);
+		});
 	});
 
 	test("deleteTrack removes segment by uuid", () => {
 		const trackUuid = "unique-track-uuid";
 		const trackEdits = [
-			{
-				op: "addTrack",
-				net: 1,
-				layer: "F.Cu",
-				width: 0.3,
-				points: [
-					{ x: 0, y: 0 },
-					{ x: 5, y: 5 },
-				],
-			},
+			makeTrackEdit(1, 0.3, [
+				{ x: 0, y: 0 },
+				{ x: 5, y: 5 },
+			]),
 		];
 		const trackRes = applyPcbEdits(baseText, trackEdits, {
 			newUuid: () => trackUuid,
@@ -370,14 +320,65 @@ describe("kicad-pcb-edit", () => {
 	test("chained edits preserve kicad_pcb root s-expression", () => {
 		const { res, ast } = executeEdits(baseText, CHAINED_EDITS);
 		assert.equal(res.ok, true);
-		assert.equal(ast[0]?.sym, "kicad_pcb");
+		assert.equal(nodeTag(ast), "kicad_pcb");
 	});
 
-	for (const row of ERROR_TABLE) {
-		test(`error handling: ${row.name}`, () => {
-			const res = applyPcbEdits(baseText, [row.edit]);
-			assert.equal(res.ok, false, `Expected error for ${row.name}`);
-			assert.ok(res.error, `Error message required for ${row.name}`);
+	function runErrorTest(name, edit) {
+		test(`error handling: ${name}`, () => {
+			const res = applyPcbEdits(baseText, [edit]);
+			verifyEditRejected(res, name);
 		});
 	}
+
+	runErrorTest("unknown operation", { op: "unknownOp" });
+	runErrorTest("delete missing ref", { op: "deleteFootprint", ref: "NO_FP" });
+	runErrorTest("setPadNet missing pad", {
+		op: "setPadNet",
+		ref: "R0",
+		pad: "99",
+		net: "GND",
+	});
+	runErrorTest(
+		"addTrack NaN width",
+		makeTrackEdit(1, Number.NaN, [
+			{ x: 0, y: 0 },
+			{ x: 1, y: 1 },
+		]),
+	);
+	runErrorTest(
+		"addTrack NaN coords",
+		makeTrackEdit(1, 0.2, [
+			{ x: 0, y: 0 },
+			{ x: Number.NaN, y: 1 },
+		]),
+	);
+	runErrorTest(
+		"addTrack single point",
+		makeTrackEdit(1, 0.2, [{ x: 0, y: 0 }]),
+	);
+	runErrorTest("addVia NaN coords", {
+		op: "addVia",
+		x: Number.NaN,
+		y: 0,
+		net: 1,
+	});
+	runErrorTest("addVia negative size", {
+		op: "addVia",
+		x: 10,
+		y: 10,
+		size: -1,
+		net: 1,
+	});
+	runErrorTest("deleteTrack missing uuid", {
+		op: "deleteTrack",
+		uuid: "missing-uuid",
+	});
+	runErrorTest(
+		"addFootprint NaN coords",
+		makeInvalidFpEdit(MINIMAL_FP_SOURCE, Number.NaN),
+	);
+	runErrorTest(
+		"addFootprint invalid source",
+		makeInvalidFpEdit("not an sexpr", 0),
+	);
 });
