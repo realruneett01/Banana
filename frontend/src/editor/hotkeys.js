@@ -1,67 +1,79 @@
-export const SCHEMATIC_HOTKEYS = Object.freeze({
-	placeSymbol: "a",
-	placePower: "p",
-	placeWire: "w",
-	placeBus: "b",
-	placeNoConnect: "q",
-	placeJunction: "j",
-	placeLabel: "l",
-	placeGlobalLabel: "ctrl+l",
-	placeHierLabel: "h",
-	placeText: "t",
-	move: "m",
-	drag: "g",
-	rotate: "r",
-	mirrorX: "x",
-	mirrorY: "y",
-	edit: "e",
-	editValue: "v",
-	editFootprint: "f",
-	duplicate: "ctrl+d",
-	copy: "ctrl+c",
-	paste: "ctrl+v",
-	cut: "ctrl+x",
-	selectAll: "ctrl+a",
-	delete: "delete",
-	undo: "ctrl+z",
-	redo: "ctrl+y",
-	zoomFit: "home",
-	zoomIn: "f1",
-	zoomOut: "f2",
-	cancel: "escape",
-	save: "ctrl+s",
-});
+function parseHotkeys(text) {
+	const entries = text
+		.trim()
+		.split("\n")
+		.map((line) => line.trim().split(/\s+/))
+		.filter(([action]) => Boolean(action));
+	return Object.freeze(Object.fromEntries(entries));
+}
 
-export const PCB_HOTKEYS = Object.freeze({
-	routeTrack: "x",
-	routeDiffPair: "6",
-	tuneLength: "7",
-	addVia: "v",
-	drag: "d",
-	selectConnected: "u",
-	flip: "f",
-	move: "m",
-	rotate: "r",
-	edit: "e",
-	duplicate: "ctrl+d",
-	copy: "ctrl+c",
-	paste: "ctrl+v",
-	selectAll: "ctrl+a",
-	delete: "delete",
-	undo: "ctrl+z",
-	redo: "ctrl+y",
-	layerTop: "pageup",
-	layerBottom: "pagedown",
-	layerNext: "+",
-	layerPrev: "-",
-	refillZones: "b",
-	unfillZones: "ctrl+b",
-	zoomFit: "home",
-	zoomIn: "f1",
-	zoomOut: "f2",
-	cancel: "escape",
-	save: "ctrl+s",
-});
+const SCHEMATIC_HOTKEYS_TEXT = `
+placeSymbol a
+placePower p
+placeWire w
+placeBus b
+placeNoConnect q
+placeJunction j
+placeLabel l
+placeGlobalLabel ctrl+l
+placeHierLabel h
+placeText t
+move m
+drag g
+rotate r
+mirrorX x
+mirrorY y
+edit e
+editValue v
+editFootprint f
+duplicate ctrl+d
+copy ctrl+c
+paste ctrl+v
+cut ctrl+x
+selectAll ctrl+a
+delete delete
+undo ctrl+z
+redo ctrl+y
+zoomFit home
+zoomIn f1
+zoomOut f2
+cancel escape
+save ctrl+s
+`;
+
+const PCB_HOTKEYS_TEXT = `
+routeTrack x
+routeDiffPair 6
+tuneLength 7
+addVia v
+drag d
+selectConnected u
+flip f
+move m
+rotate r
+edit e
+duplicate ctrl+d
+copy ctrl+c
+paste ctrl+v
+selectAll ctrl+a
+delete delete
+undo ctrl+z
+redo ctrl+y
+layerTop pageup
+layerBottom pagedown
+layerNext +
+layerPrev -
+refillZones b
+unfillZones ctrl+b
+zoomFit home
+zoomIn f1
+zoomOut f2
+cancel escape
+save ctrl+s
+`;
+
+export const SCHEMATIC_HOTKEYS = parseHotkeys(SCHEMATIC_HOTKEYS_TEXT);
+export const PCB_HOTKEYS = parseHotkeys(PCB_HOTKEYS_TEXT);
 
 const MODIFIER_KEYS = new Set(["control", "shift", "alt", "meta"]);
 const TYPING_TAGS = new Set(["INPUT", "TEXTAREA", "SELECT"]);
@@ -126,19 +138,20 @@ function buildReverseMap(bindings) {
 	return keyMap;
 }
 
+function resolveAction(keyMap, event) {
+	if (!event || isTypingTarget(event.target)) {
+		return null;
+	}
+	const spec = eventToKeySpec(event);
+	return spec ? (keyMap.get(spec) ?? null) : null;
+}
+
 export function createHotkeyDispatcher(bindings = {}, handlers = {}) {
 	const keyMap = buildReverseMap(bindings);
 
 	return function dispatch(event) {
-		if (!event || isTypingTarget(event.target)) {
-			return false;
-		}
-		const spec = eventToKeySpec(event);
-		if (!spec) {
-			return false;
-		}
-		const action = keyMap.get(spec);
-		const handler = handlers?.[action];
+		const action = resolveAction(keyMap, event);
+		const handler = action ? handlers?.[action] : undefined;
 		if (typeof handler !== "function") {
 			return false;
 		}
@@ -167,8 +180,5 @@ const SCHEMATIC_KEY_MAP = new Map([
 ]);
 
 export function resolveSchematicAction(event) {
-	if (!event || isTypingTarget(event.target)) {
-		return null;
-	}
-	return SCHEMATIC_KEY_MAP.get(eventToKeySpec(event)) ?? null;
+	return resolveAction(SCHEMATIC_KEY_MAP, event);
 }
