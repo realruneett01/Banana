@@ -221,36 +221,42 @@ function formatPartTitle(item) {
 	return `${id} (${val})`;
 }
 
-function renderBtn({
-	active,
-	children,
-	disabled,
-	icon,
-	label,
-	onClick,
-	style,
-	title,
-	tooltip,
-}) {
+function withBlur(onClick) {
+	if (!onClick) return undefined;
+	return (event) => {
+		onClick(event);
+		event?.currentTarget?.blur?.();
+	};
+}
+
+function renderBtn(p) {
 	const btn = (
 		<Button
+			key={p.key}
 			size="small"
-			icon={icon}
-			disabled={disabled}
-			type={active ? "primary" : "default"}
-			onClick={onClick}
-			aria-label={label}
-			title={title}
-			style={style}
+			icon={p.icon}
+			disabled={p.disabled}
+			type={p.active ? "primary" : "default"}
+			onClick={withBlur(p.onClick)}
+			aria-label={p.label}
+			title={p.title}
+			style={p.style}
 		>
-			{children ? <span style={S.ellipsis}>{children}</span> : null}
+			{p.children ? <span style={S.ellipsis}>{p.children}</span> : null}
 		</Button>
 	);
-	return tooltip ? <Tooltip title={tooltip}>{btn}</Tooltip> : btn;
+	return p.tooltip ? (
+		<Tooltip key={p.key} title={p.tooltip}>
+			{btn}
+		</Tooltip>
+	) : (
+		btn
+	);
 }
 
 function getSections(palette, { activeTool, activeItem }, actions) {
-	const partSec = (title, items, onClick) => ({
+	const partSec = (id, title, items, onClick) => ({
+		id,
 		title,
 		grid: S.pGrid,
 		items,
@@ -269,6 +275,7 @@ function getSections(palette, { activeTool, activeItem }, actions) {
 
 	return [
 		{
+			id: "tools",
 			title: "Tools",
 			grid: S.tGrid,
 			items: palette.tools,
@@ -284,9 +291,10 @@ function getSections(palette, { activeTool, activeItem }, actions) {
 					tooltip: formatTooltip(t),
 				}),
 		},
-		partSec("Quick parts", palette.parts, actions.onPart),
-		partSec("Power", palette.power, actions.onPower),
+		partSec("parts", "Quick parts", palette.parts, actions.onPart),
+		partSec("power", "Power", palette.power, actions.onPower),
 		{
+			id: "layers",
 			title: "Layer",
 			grid: S.pGrid,
 			items: palette.layers,
@@ -350,7 +358,7 @@ export default function ToolPalette({ tab, onOpenLibrary }) {
 			{sections
 				.filter((s) => s.items?.length)
 				.map((s) => (
-					<div key={s.title} style={S.sec}>
+					<div key={s.id} style={S.sec}>
 						<div style={S.hdr}>{s.title}</div>
 						<div style={s.grid}>{s.items.map(s.render)}</div>
 					</div>
