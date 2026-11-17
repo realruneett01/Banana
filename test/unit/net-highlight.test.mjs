@@ -5,6 +5,12 @@ import {
 	netsOfPart,
 } from "../../frontend/src/editor/netHighlight.js";
 
+const makeNet = (id, name, pins) => ({
+	id,
+	name,
+	pins: pins.map(([partId, pin]) => ({ partId, pin })),
+});
+
 const ir = {
 	parts: [
 		{ id: "p1", ref: "R1" },
@@ -12,109 +18,98 @@ const ir = {
 		{ id: "p3", ref: "C1" },
 	],
 	nets: [
-		{
-			id: "n1",
-			name: "VCC",
-			pins: [
-				{ partId: "p1", pin: "1" },
-				{ partId: "p2", pin: "A" },
-				{ partId: "p3", pin: "+" },
-			],
-		},
-		{
-			id: "n2",
-			name: "GND",
-			pins: [
-				{ partId: "p1", pin: "2" },
-				{ partId: "p3", pin: "-" },
-			],
-		},
+		makeNet("n1", "VCC", [
+			["p1", "1"],
+			["p2", "A"],
+			["p3", "+"],
+		]),
+		makeNet("n2", "GND", [
+			["p1", "2"],
+			["p3", "-"],
+		]),
 	],
 };
 
-describe("netItemsAt – hit by pin", () => {
-	const cases = [
-		{
-			label: "pin on 3-pin net returns all 3 pins and correct partIds",
-			hit: { partId: "p1", pin: "1" },
-			check(r) {
-				assert.equal(r.netId, "n1");
-				assert.equal(r.netName, "VCC");
-				assert.deepEqual(r.partIds, new Set(["p1", "p2", "p3"]));
-				assert.equal(r.pins.length, 3);
-			},
-		},
-		{
-			label: "another pin on same net returns same net",
-			hit: { partId: "p2", pin: "A" },
-			check(r) {
-				assert.equal(r.netId, "n1");
-			},
-		},
-		{
-			label: "pin on 2-pin net returns correct data",
-			hit: { partId: "p3", pin: "-" },
-			check(r) {
-				assert.equal(r.netId, "n2");
-				assert.deepEqual(r.partIds, new Set(["p1", "p3"]));
-				assert.equal(r.pins.length, 2);
-			},
-		},
-		{
-			label: "unconnected pin -> null",
-			hit: { partId: "p2", pin: "Z" },
-			check(r) {
-				assert.equal(r, null);
-			},
-		},
-		{
-			label: "unknown part -> null",
-			hit: { partId: "p99", pin: "1" },
-			check(r) {
-				assert.equal(r, null);
-			},
-		},
-	];
-
-	for (const { label, hit, check } of cases) {
-		it(label, () => check(netItemsAt(ir, hit)));
+function assertNetMatch(actual, expected) {
+	if (!expected) {
+		assert.equal(actual, null);
+		return;
 	}
+	assert.equal(actual.netId, expected.netId);
+	if (expected.netName !== undefined) {
+		assert.equal(actual.netName, expected.netName);
+	}
+	if (expected.partIds !== undefined) {
+		assert.deepEqual(actual.partIds, new Set(expected.partIds));
+	}
+	if (expected.pinsLength !== undefined) {
+		assert.equal(actual.pins.length, expected.pinsLength);
+	}
+}
+
+function runNetCases(cases) {
+	for (const [label, hit, expected, targetIr = ir] of cases) {
+		it(label, () => assertNetMatch(netItemsAt(targetIr, hit), expected));
+	}
+}
+
+describe("netItemsAt – hit by pin", () => {
+	runNetCases([
+		[
+			"pin on 3-pin net returns all 3 pins and correct partIds",
+			{ partId: "p1", pin: "1" },
+			{
+				netId: "n1",
+				netName: "VCC",
+				partIds: ["p1", "p2", "p3"],
+				pinsLength: 3,
+			},
+		],
+		[
+			"another pin on same net returns same net",
+			{ partId: "p2", pin: "A" },
+			{ netId: "n1" },
+		],
+		[
+			"pin on 2-pin net returns correct data",
+			{ partId: "p3", pin: "-" },
+			{ netId: "n2", partIds: ["p1", "p3"], pinsLength: 2 },
+		],
+		["unconnected pin -> null", { partId: "p2", pin: "Z" }, null],
+		["unknown part -> null", { partId: "p99", pin: "1" }, null],
+	]);
 });
 
 describe("netItemsAt – hit by netId", () => {
-	it("known netId returns net data", () => {
-		const r = netItemsAt(ir, { netId: "n2" });
-		assert.equal(r.netId, "n2");
-		assert.equal(r.netName, "GND");
-		assert.equal(r.pins.length, 2);
-	});
-
-	it("unknown netId -> null", () => {
-		assert.equal(netItemsAt(ir, { netId: "nX" }), null);
-	});
+	runNetCases([
+		[
+			"known netId returns net data",
+			{ netId: "n2" },
+			{ netId: "n2", netName: "GND", pinsLength: 2 },
+		],
+		["unknown netId -> null", { netId: "nX" }, null],
+	]);
 });
 
 describe("netItemsAt – edge cases", () => {
-	it("null ir -> null", () =>
-		assert.equal(netItemsAt(null, { netId: "n1" }), null));
-	it("null hit -> null", () => assert.equal(netItemsAt(ir, null), null));
+	runNetCases([
+		["null ir -> null", { netId: "n1" }, null, null],
+		["null hit -> null", null, null],
+	]);
 });
 
 describe("netsOfPart", () => {
-	it("part on 2 nets returns both ids", () => {
-		const ids = netsOfPart(ir, "p1");
-		assert.deepEqual(ids.sort(), ["n1", "n2"]);
-	});
+	const cases = [
+		["part on 2 nets returns both ids", ir, "p1", ["n1", "n2"], true],
+		["part on 1 net returns that id", ir, "p2", ["n1"], false],
+		["unknown part -> empty array", ir, "p99", [], false],
+		["null ir -> empty array", null, "p1", [], false],
+	];
 
-	it("part on 1 net returns that id", () => {
-		assert.deepEqual(netsOfPart(ir, "p2"), ["n1"]);
-	});
-
-	it("unknown part -> empty array", () => {
-		assert.deepEqual(netsOfPart(ir, "p99"), []);
-	});
-
-	it("null ir -> empty array", () => {
-		assert.deepEqual(netsOfPart(null, "p1"), []);
-	});
+	for (const [label, targetIr, partId, expected, sort] of cases) {
+		it(label, () => {
+			const res = netsOfPart(targetIr, partId);
+			assert.deepEqual(sort ? res.sort() : res, expected);
+		});
+	}
 });
