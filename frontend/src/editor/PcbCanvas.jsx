@@ -58,13 +58,12 @@ import {
 	proposePostureRoute,
 	togglePosture,
 } from "./trackPosture.js";
+import { useCanvasNav } from "./useCanvasNav.js";
 import {
 	bboxOfPoints,
 	fitToBounds,
-	panBy,
 	screenToWorld,
 	snapPoint,
-	zoomAt,
 } from "./viewport.js";
 
 const CONTAINER_STYLE = Object.freeze({
@@ -360,11 +359,6 @@ function handleLayerShortcuts(e, ctx) {
 	if (e.key === "-") {
 		e.preventDefault();
 		ctx.stepCopper(-1);
-		return true;
-	}
-	if (e.key === "Home") {
-		e.preventDefault();
-		ctx.fitHome();
 		return true;
 	}
 	return false;
@@ -2108,52 +2102,6 @@ function useCanvasLayers(board) {
 	};
 }
 
-function useWheelZoom(svgRef, setView) {
-	useEffect(() => {
-		const el = svgRef.current;
-		if (!el) return;
-		const handleWheel = (e) => {
-			e.preventDefault();
-			const rect = el.getBoundingClientRect();
-			const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top };
-			const factor = e.deltaY < 0 ? 1.15 : 0.87;
-			setView((v) => zoomAt(v, pt, factor));
-		};
-		el.addEventListener("wheel", handleWheel, { passive: false });
-		return () => el.removeEventListener("wheel", handleWheel);
-	}, [svgRef, setView]);
-}
-
-function useCanvasPan(setView) {
-	const panRef = useRef(null);
-	const onPanStart = useCallback((e) => {
-		if (e.button === 1) {
-			panRef.current = { x: e.clientX, y: e.clientY };
-			return true;
-		}
-		return false;
-	}, []);
-	const onPanMove = useCallback(
-		(e) => {
-			if (!panRef.current) return false;
-			const dx = e.clientX - panRef.current.x;
-			const dy = e.clientY - panRef.current.y;
-			panRef.current = { x: e.clientX, y: e.clientY };
-			setView((v) => panBy(v, dx, dy));
-			return true;
-		},
-		[setView],
-	);
-	const onPanEnd = useCallback(() => {
-		if (panRef.current) {
-			panRef.current = null;
-			return true;
-		}
-		return false;
-	}, []);
-	return { onPanStart, onPanMove, onPanEnd };
-}
-
 function usePointerDownHandler({
 	route,
 	sel,
@@ -2165,6 +2113,7 @@ function usePointerDownHandler({
 }) {
 	return useCallback(
 		(e) => {
+			if (e.button !== 0) return;
 			if (route.isRouting || isArmed) return;
 			const [x, y] = screenToBoardCoords(e, svgRef.current, view);
 			const graphicId = hitTestGraphic(board?.graphics, [x, y]);
@@ -2195,7 +2144,6 @@ function buildShortcuts(ctx) {
 		redoBoard: ctx.history.redoBoard,
 		jumpCopper: ctx.layers.onJumpCopper,
 		stepCopper: ctx.layers.onStepCopper,
-		fitHome: ctx.fitHome,
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
 		cancelGraphics: ctx.graphicsDrawing?.cancelGraphics,
 		disarmFootprint: ctx.armedPlacement?.disarm,
@@ -3036,7 +2984,6 @@ function useScenePointer(ptrMove, armedPlacement, graphicsDrawing) {
 }
 
 function useSvgPointerHandlers({
-	pan,
 	drag,
 	graphicDrag,
 	route,
@@ -3045,31 +2992,28 @@ function useSvgPointerHandlers({
 }) {
 	const onPointerDown = useCallback(
 		(e) => {
-			if (pan.onPanStart(e)) return;
 			if (outlineDrawing.onPointerDown(e)) return;
 			graphicDrag?.onPointerDown(e);
 			sceneData.onPointerDown(e);
 		},
-		[pan, outlineDrawing, graphicDrag, sceneData],
+		[outlineDrawing, graphicDrag, sceneData],
 	);
 	const onPointerMove = useCallback(
 		(e) => {
-			if (pan.onPanMove(e)) return;
 			if (outlineDrawing.onPointerMove(e)) return;
 			graphicDrag?.onPointerMove(e);
 			drag.onPointerMove(e);
 			route.onPointerMove(e);
 		},
-		[pan, outlineDrawing, graphicDrag, drag, route],
+		[outlineDrawing, graphicDrag, drag, route],
 	);
 	const onPointerUp = useCallback(
 		(e) => {
-			pan.onPanEnd();
 			if (outlineDrawing.onPointerUp(e)) return;
 			if (graphicDrag?.onPointerUp(e)) return;
 			drag.onDropDrag(e);
 		},
-		[pan, outlineDrawing, graphicDrag, drag],
+		[outlineDrawing, graphicDrag, drag],
 	);
 	return { onPointerDown, onPointerMove, onPointerUp };
 }
@@ -3142,7 +3086,6 @@ function PcbSvgScene({
 	layerState,
 	sceneData,
 	drag,
-	pan,
 	markers,
 	outlineDrawing,
 	armedPlacement,
@@ -3153,7 +3096,6 @@ function PcbSvgScene({
 	const showVias =
 		isVisible(layerState, "F.Cu") || isVisible(layerState, "B.Cu");
 	const ptr = useSvgPointerHandlers({
-		pan,
 		drag,
 		graphicDrag,
 		route,
@@ -3208,18 +3150,13 @@ function PcbSvgScene({
 	);
 }
 
-function useCanvasView(board, ir, svgRef) {
+function useCanvasView(board, ir, containerRef) {
 	const [view, setView] = useState(() =>
 		fitToBounds(getSceneBounds(board, ir), { width: 800, height: 600 }),
 	);
-	useWheelZoom(svgRef, setView);
-	const pan = useCanvasPan(setView);
-	const fitHome = useCallback(() => {
-		const rect = svgRef.current?.getBoundingClientRect();
-		const size = { width: rect?.width || 800, height: rect?.height || 600 };
-		setView(fitToBounds(getSceneBounds(board, ir), size));
-	}, [board, ir, svgRef]);
-	return { view, setView, pan, fitHome };
+	const getBounds = useCallback(() => getSceneBounds(board, ir), [board, ir]);
+	useCanvasNav(containerRef, { view, setView, getBounds });
+	return { view, setView };
 }
 
 function netNameMap(nets) {
@@ -3273,7 +3210,7 @@ function usePcbCanvasState({
 }) {
 	const svgRef = useRef(null);
 	const ir = editor?.state?.ir;
-	const { view, pan, fitHome } = useCanvasView(board, ir, svgRef);
+	const { view } = useCanvasView(board, ir, containerRef);
 	const layers = useCanvasLayers(board);
 	const { fpLookup, padPositions, padRadius, missingFootprints } =
 		usePadGeometry(ir?.parts, board, fetchFootprint, visible);
@@ -3343,7 +3280,6 @@ function usePcbCanvasState({
 		layers,
 		route,
 		history,
-		fitHome,
 		outlineDrawing,
 		armedPlacement,
 		graphicsDrawing,
@@ -3367,7 +3303,6 @@ function usePcbCanvasState({
 		route,
 		sceneData,
 		drag,
-		pan,
 		shortcuts,
 		outlineDrawing,
 		missingFootprints,
@@ -3431,7 +3366,6 @@ export default function PcbCanvas({
 				layerState={s.layers.layerState}
 				sceneData={s.sceneData}
 				drag={s.drag}
-				pan={s.pan}
 				markers={markers}
 				outlineDrawing={s.outlineDrawing}
 				armedPlacement={s.armedPlacement}
