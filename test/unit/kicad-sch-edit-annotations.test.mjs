@@ -12,6 +12,14 @@ const BASE_SCH = `(kicad_sch
 
 const FIXED_UUID = "test-uuid-1234";
 const EDIT_OPTIONS = { newUuid: () => FIXED_UUID };
+const UUID_NODE = [sym("uuid"), FIXED_UUID];
+const FONT_EFFECTS = [sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]];
+const DEFAULT_STROKE = [
+	sym("stroke"),
+	[sym("width"), 0],
+	[sym("type"), sym("default")],
+];
+const INPUT_SHAPE = [sym("shape"), sym("input")];
 
 function findChildNode(node, tag) {
 	return node?.find?.((c) => Array.isArray(c) && c[0]?.sym === tag);
@@ -19,67 +27,73 @@ function findChildNode(node, tag) {
 
 function findNodeByUuid(root, uuid) {
 	for (let i = 1; i < root.length; i++) {
-		const child = root[i];
-		const uuidChild = findChildNode(child, "uuid");
-		if (uuidChild?.[1] === uuid) {
-			return child;
+		if (findChildNode(root[i], "uuid")?.[1] === uuid) {
+			return root[i];
 		}
 	}
 	return null;
 }
 
+function makeTextNode(tag, text, at, extra = null) {
+	const node = [sym(tag), text];
+	if (extra) {
+		node.push(extra);
+	}
+	node.push(at, FONT_EFFECTS, UUID_NODE);
+	return node;
+}
+
+function makeSegmentNode(tag, pts) {
+	return [
+		sym(tag),
+		[sym("pts"), [sym("xy"), pts[0], pts[1]], [sym("xy"), pts[2], pts[3]]],
+		DEFAULT_STROKE,
+		UUID_NODE,
+	];
+}
+
+function makeLabelCase(name, { net, x, y, rot = 0, kind = null }) {
+	const head = kind ? `${kind}_label` : "label";
+	const extra = kind ? INPUT_SHAPE : null;
+	const edit = { op: "addLabel", net, x, y };
+	if (rot) {
+		edit.rot = rot;
+	}
+	if (kind) {
+		edit.kind = kind;
+	}
+	return {
+		name,
+		edit,
+		head,
+		expected: makeTextNode(head, net, [sym("at"), x, y, rot], extra),
+	};
+}
+
+function makeSegmentCase(op, name, head, pts) {
+	return {
+		name,
+		edit: { op, x1: pts[0], y1: pts[1], x2: pts[2], y2: pts[3] },
+		head,
+		expected: makeSegmentNode(head, pts),
+	};
+}
+
 const OP_TEST_CASES = [
-	{
-		name: "addLabel local default",
-		edit: { op: "addLabel", net: "CLK", x: 10, y: 20 },
-		head: "label",
-		expected: [
-			sym("label"),
-			"CLK",
-			[sym("at"), 10, 20, 0],
-			[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
-			[sym("uuid"), FIXED_UUID],
-		],
-	},
-	{
-		name: "addLabel global with rot",
-		edit: {
-			op: "addLabel",
-			net: "VCC",
-			x: 30,
-			y: 40,
-			rot: 180,
-			kind: "global",
-		},
-		head: "global_label",
-		expected: [
-			sym("global_label"),
-			"VCC",
-			[sym("shape"), sym("input")],
-			[sym("at"), 30, 40, 180],
-			[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
-			[sym("uuid"), FIXED_UUID],
-		],
-	},
-	{
-		name: "addLabel hierarchical",
-		edit: {
-			op: "addLabel",
-			net: "DATA",
-			x: 50,
-			y: 60,
-			kind: "hierarchical",
-		},
-		head: "hierarchical_label",
-		expected: [
-			sym("hierarchical_label"),
-			"DATA",
-			[sym("shape"), sym("input")],
-			[sym("at"), 50, 60, 0],
-			[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
-			[sym("uuid"), FIXED_UUID],
-		],
-	},
+	makeLabelCase("addLabel local default", { net: "CLK", x: 10, y: 20 }),
+	makeLabelCase("addLabel global with rot", {
+		net: "VCC",
+		x: 30,
+		y: 40,
+		rot: 180,
+		kind: "global",
+	}),
+	makeLabelCase("addLabel hierarchical", {
+		net: "DATA",
+		x: 50,
+		y: 60,
+		kind: "hierarchical",
+	}),
 	{
 		name: "addJunction",
 		edit: { op: "addJunction", x: 15.24, y: 25.4 },
@@ -89,43 +103,17 @@ const OP_TEST_CASES = [
 			[sym("at"), 15.24, 25.4],
 			[sym("diameter"), 0],
 			[sym("color"), 0, 0, 0, 0],
-			[sym("uuid"), FIXED_UUID],
+			UUID_NODE,
 		],
 	},
 	{
 		name: "addText",
 		edit: { op: "addText", text: "Notes", x: 100, y: 200, rot: 90 },
 		head: "text",
-		expected: [
-			sym("text"),
-			"Notes",
-			[sym("at"), 100, 200, 90],
-			[sym("effects"), [sym("font"), [sym("size"), 1.27, 1.27]]],
-			[sym("uuid"), FIXED_UUID],
-		],
+		expected: makeTextNode("text", "Notes", [sym("at"), 100, 200, 90]),
 	},
-	{
-		name: "addLine",
-		edit: { op: "addLine", x1: 10, y1: 20, x2: 30, y2: 40 },
-		head: "polyline",
-		expected: [
-			sym("polyline"),
-			[sym("pts"), [sym("xy"), 10, 20], [sym("xy"), 30, 40]],
-			[sym("stroke"), [sym("width"), 0], [sym("type"), sym("default")]],
-			[sym("uuid"), FIXED_UUID],
-		],
-	},
-	{
-		name: "addBus",
-		edit: { op: "addBus", x1: 5, y1: 10, x2: 15, y2: 20 },
-		head: "bus",
-		expected: [
-			sym("bus"),
-			[sym("pts"), [sym("xy"), 5, 10], [sym("xy"), 15, 20]],
-			[sym("stroke"), [sym("width"), 0], [sym("type"), sym("default")]],
-			[sym("uuid"), FIXED_UUID],
-		],
-	},
+	makeSegmentCase("addLine", "addLine", "polyline", [10, 20, 30, 40]),
+	makeSegmentCase("addBus", "addBus", "bus", [5, 10, 15, 20]),
 ];
 
 const INVALID_EDIT_CASES = [
@@ -154,14 +142,23 @@ const INVALID_EDIT_CASES = [
 	["deleteItem non-existent uuid", { op: "deleteItem", uuid: "not-found" }],
 ];
 
+function assertValidEdit(tc) {
+	const res = applySchEdits(BASE_SCH, [tc.edit], EDIT_OPTIONS);
+	assert.equal(res.ok, true);
+	const ast = parse(res.text);
+	assert.deepEqual(findChildNode(ast, tc.head), tc.expected);
+}
+
+function assertInvalidEdit(edit) {
+	const res = applySchEdits(BASE_SCH, [edit]);
+	assert.equal(res.ok, false);
+	assert.match(res.error, /\S+/);
+}
+
 describe("kicad-sch-edit annotations", () => {
 	for (const tc of OP_TEST_CASES) {
 		it(`produces exact node for ${tc.name}`, () => {
-			const res = applySchEdits(BASE_SCH, [tc.edit], EDIT_OPTIONS);
-			assert.equal(res.ok, true);
-			const ast = parse(res.text);
-			const node = findChildNode(ast, tc.head);
-			assert.deepEqual(node, tc.expected);
+			assertValidEdit(tc);
 		});
 	}
 
@@ -184,10 +181,7 @@ describe("kicad-sch-edit annotations", () => {
 
 	for (const [name, edit] of INVALID_EDIT_CASES) {
 		it(`rejects invalid input: ${name}`, () => {
-			const res = applySchEdits(BASE_SCH, [edit]);
-			assert.equal(res.ok, false);
-			assert.equal(typeof res.error, "string");
-			assert.ok(res.error.length > 0);
+			assertInvalidEdit(edit);
 		});
 	}
 });
