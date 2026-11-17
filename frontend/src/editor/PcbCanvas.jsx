@@ -1,6 +1,13 @@
-import { message } from "antd";
+import { Input, Modal, message } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import BoardGraphicsLayer from "./BoardGraphicsLayer.jsx";
 import { setOutlineTool, useOutlineTool } from "./BoardTools.jsx";
+import {
+	addGraphic,
+	deleteGraphic,
+	hitTestGraphic,
+	moveGraphic,
+} from "./boardGraphics.js";
 import {
 	outlineToPolygon,
 	polygonBBox,
@@ -13,6 +20,7 @@ import {
 	arcToSvgPath,
 	boardPadPositions,
 	boardPadRadii,
+	calcArcCenter,
 	footprintIdsToFetch,
 	footprintToPrimitives,
 	padOutline,
@@ -383,10 +391,14 @@ function cancelRouting(ctx) {
 	return true;
 }
 
-// Escape: first outline, then armed footprint, else leave the route tool.
+// Escape: first outline, then graphics, then armed footprint, else leave the route tool.
 function handleEscape(e, key, ctx) {
 	if (key !== "escape") return false;
 	if (ctx.cancelOutline?.()) {
+		e.preventDefault();
+		return true;
+	}
+	if (ctx.cancelGraphics?.()) {
 		e.preventDefault();
 		return true;
 	}
@@ -1350,6 +1362,80 @@ function usePartDrag(editor, svgRef, view) {
 	return { onStartDrag, onDropDrag, onPointerMove };
 }
 
+function checkGraphicDragStart(e, { isArmed, isRouting, board, svgEl, view }) {
+	if (isArmed || isRouting || e.button !== 0) return null;
+	const [x, y] = screenToBoardCoords(e, svgEl, view);
+	const hitId = hitTestGraphic(board?.graphics, [x, y]);
+	return hitId ? { id: hitId, startPos: [x, y], moved: false } : null;
+}
+
+function commitGraphicDrop(drag, e, { board, pushBoard, svgEl, view }) {
+	if (!drag?.moved) return false;
+	const curPt = screenToBoardCoords(e, svgEl, view);
+	const [rawDx, rawDy] = dragDelta(drag, curPt);
+	const grid = getEditorStatus()?.grid || 0.25;
+	const dx = Math.round(rawDx / grid) * grid;
+	const dy = Math.round(rawDy / grid) * grid;
+	if (dx !== 0 || dy !== 0) {
+		pushBoard(moveGraphic(board, drag.id, dx, dy));
+		return true;
+	}
+	return false;
+}
+
+function useGraphicDrag({
+	board,
+	pushBoard,
+	svgRef,
+	view,
+	isArmed,
+	isRouting,
+}) {
+	const dragRef = useRef(null);
+	const onPointerDown = useCallback(
+		(e) => {
+			const drag = checkGraphicDragStart(e, {
+				isArmed,
+				isRouting,
+				board,
+				svgEl: svgRef.current,
+				view,
+			});
+			if (drag) {
+				dragRef.current = drag;
+				return true;
+			}
+			return false;
+		},
+		[board, isArmed, isRouting, svgRef, view],
+	);
+	const onPointerMove = useCallback(
+		(e) => {
+			if (!dragRef.current) return false;
+			checkDragMoved(
+				dragRef.current,
+				screenToBoardCoords(e, svgRef.current, view),
+			);
+			return true;
+		},
+		[svgRef, view],
+	);
+	const onPointerUp = useCallback(
+		(e) => {
+			const drag = dragRef.current;
+			dragRef.current = null;
+			return commitGraphicDrop(drag, e, {
+				board,
+				pushBoard,
+				svgEl: svgRef.current,
+				view,
+			});
+		},
+		[board, pushBoard, svgRef, view],
+	);
+	return { onPointerDown, onPointerMove, onPointerUp };
+}
+
 function findPinNet(nets, partId, pinNum) {
 	for (const net of nets ?? []) {
 		for (const pin of net.pins ?? []) {
@@ -1802,37 +1888,87 @@ function useRoutingState(props) {
 	};
 }
 
+function deleteFromBoard(board, target) {
+	const {
+		selectedGraphicId,
+		selectedTrackIndex,
+		selectedPartId,
+		pushBoard,
+		editor,
+	} = target;
+	if (selectedGraphicId !== null) {
+		pushBoard(deleteGraphic(board, selectedGraphicId));
+	} else if (selectedTrackIndex !== null) {
+		pushBoard(deleteTrack(board, selectedTrackIndex));
+	} else if (selectedPartId) {
+		editor.dispatch({ type: "deletePart", partId: selectedPartId });
+	}
+}
+
+function applySelectHit(hit, setters) {
+	const { editor, setSelectedTrackIndex, setSelectedGraphicId } = setters;
+	if (hit?.kind === "graphic") {
+		setSelectedGraphicId(hit.id);
+		setSelectedTrackIndex(null);
+		editor.dispatch({ type: "select", ids: [] });
+	} else if (hit?.kind === "part") {
+		editor.dispatch({ type: "select", ids: [hit.id] });
+		setSelectedTrackIndex(null);
+		setSelectedGraphicId(null);
+	} else if (hit?.kind === "track") {
+		setSelectedTrackIndex(hit.index);
+		setSelectedGraphicId(null);
+		editor.dispatch({ type: "select", ids: [] });
+	} else {
+		editor.dispatch({ type: "select", ids: [] });
+		setSelectedTrackIndex(null);
+		setSelectedGraphicId(null);
+	}
+}
+
 function useCanvasSelection(editor, board, pushBoard, onChange) {
 	const [selectedTrackIndex, setSelectedTrackIndex] = useState(null);
+	const [selectedGraphicId, setSelectedGraphicId] = useState(null);
 	const selectedPartId = editor?.selection?.[0] ?? null;
 
 	const deleteSelected = useCallback(() => {
-		if (selectedTrackIndex !== null) {
-			pushBoard(deleteTrack(board, selectedTrackIndex));
-			setSelectedTrackIndex(null);
-		} else if (selectedPartId) {
-			editor.dispatch({ type: "deletePart", partId: selectedPartId });
-		}
-	}, [selectedTrackIndex, selectedPartId, board, pushBoard, editor]);
+		deleteFromBoard(board, {
+			selectedGraphicId,
+			selectedTrackIndex,
+			selectedPartId,
+			pushBoard,
+			editor,
+		});
+		if (selectedGraphicId !== null) setSelectedGraphicId(null);
+		else if (selectedTrackIndex !== null) setSelectedTrackIndex(null);
+	}, [
+		selectedGraphicId,
+		selectedTrackIndex,
+		selectedPartId,
+		board,
+		pushBoard,
+		editor,
+	]);
 
 	const onSelectHit = useCallback(
 		(hit) => {
-			if (hit?.kind === "part") {
-				editor.dispatch({ type: "select", ids: [hit.id] });
-				setSelectedTrackIndex(null);
-			} else if (hit?.kind === "track") {
-				setSelectedTrackIndex(hit.index);
-				editor.dispatch({ type: "select", ids: [] });
-			} else if (!hit) {
-				editor.dispatch({ type: "select", ids: [] });
-				setSelectedTrackIndex(null);
-			}
+			applySelectHit(hit, {
+				editor,
+				setSelectedTrackIndex,
+				setSelectedGraphicId,
+			});
 			onChange?.(editor.state);
 		},
 		[editor, onChange],
 	);
 
-	return { selectedTrackIndex, selectedPartId, deleteSelected, onSelectHit };
+	return {
+		selectedTrackIndex,
+		selectedPartId,
+		selectedGraphicId,
+		deleteSelected,
+		onSelectHit,
+	};
 }
 
 function fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache) {
@@ -2031,6 +2167,11 @@ function usePointerDownHandler({
 		(e) => {
 			if (route.isRouting || isArmed) return;
 			const [x, y] = screenToBoardCoords(e, svgRef.current, view);
+			const graphicId = hitTestGraphic(board?.graphics, [x, y]);
+			if (graphicId) {
+				sel.onSelectHit({ kind: "graphic", id: graphicId });
+				return;
+			}
 			sel.onSelectHit(hitTest(ir, board, [x, y]));
 		},
 		[route.isRouting, isArmed, ir, board, sel, svgRef, view],
@@ -2056,6 +2197,7 @@ function buildShortcuts(ctx) {
 		stepCopper: ctx.layers.onStepCopper,
 		fitHome: ctx.fitHome,
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
+		cancelGraphics: ctx.graphicsDrawing?.cancelGraphics,
 		disarmFootprint: ctx.armedPlacement?.disarm,
 	};
 }
@@ -2067,10 +2209,14 @@ function buildSceneData(ctx) {
 		rnLines: ctx.rnLines,
 		selectedPartId: ctx.sel.selectedPartId,
 		selectedTrackIndex: ctx.sel.selectedTrackIndex,
+		selectedGraphicId: ctx.sel.selectedGraphicId,
 		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
 		onPointerDown: ctx.onPointerDown,
 		fpLookup: ctx.fpLookup,
-		isRouting: ctx.isRouting || Boolean(ctx.armedPlacement?.armed),
+		isRouting:
+			ctx.isRouting ||
+			Boolean(ctx.armedPlacement?.armed) ||
+			Boolean(ctx.graphicsDrawing?.activeTool),
 	};
 }
 
@@ -2194,6 +2340,11 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 				tracks={sceneData.board?.tracks}
 				layer={layer}
 				selectedIndex={sceneData.selectedTrackIndex}
+			/>
+			<BoardGraphicsLayer
+				graphics={sceneData.board?.graphics}
+				layer={layer}
+				selectedId={sceneData.selectedGraphicId}
 			/>
 			<PartsLayer
 				parts={sceneData.ir?.parts}
@@ -2389,14 +2540,408 @@ function useArmedFootprint({ editor, activeLayer, svgRef, view }) {
 	return { armed, setArmed, cursor, disarm, onPointerMove, onCanvasClick };
 }
 
-function createToolBusHandlers({ route, layers, armedPlacement }) {
+const GRAPHIC_TOOL_KINDS = Object.freeze({
+	drawLine: "line",
+	drawRect: "rect",
+	drawCircle: "circle",
+	placeDimension: "dimension",
+});
+
+function commitTwoClickGraphic({
+	tool,
+	p1,
+	p2,
+	activeLayer,
+	board,
+	pushBoard,
+}) {
+	const kind = GRAPHIC_TOOL_KINDS[tool];
+	if (!kind) return false;
+	pushBoard(
+		addGraphic(board, {
+			kind,
+			layer: activeLayer,
+			x: p1.x,
+			y: p1.y,
+			x2: p2.x,
+			y2: p2.y,
+		}),
+	);
+	return true;
+}
+
+function handleArcClick({
+	pt,
+	points,
+	activeLayer,
+	board,
+	pushBoard,
+	setPoints,
+}) {
+	if (points.length === 0) {
+		setPoints([pt]);
+		return true;
+	}
+	if (points.length === 1) {
+		setPoints([points[0], pt]);
+		return true;
+	}
+	const [p1, pm] = points;
+	pushBoard(
+		addGraphic(board, {
+			kind: "arc",
+			layer: activeLayer,
+			x: p1.x,
+			y: p1.y,
+			xm: pm.x,
+			ym: pm.y,
+			x2: pt.x,
+			y2: pt.y,
+		}),
+	);
+	setPoints([]);
+	return true;
+}
+
+function handleGraphicsClick(e, opts) {
+	const { activeTool, points, activeLayer, board, pushBoard, st, svgEl, view } =
+		opts;
+	if (!activeTool || !isLeftClick(e)) return false;
+	const pt = calcSnappedBoardPoint(e, svgEl, view);
+	if (activeTool === "placeText") {
+		st.setTextModal({ open: true, pos: pt });
+		return true;
+	}
+	if (activeTool === "drawArc") {
+		return handleArcClick({
+			pt,
+			points,
+			activeLayer,
+			board,
+			pushBoard,
+			setPoints: st.setPoints,
+		});
+	}
+	if (points.length === 0) {
+		st.setPoints([pt]);
+		return true;
+	}
+	commitTwoClickGraphic({
+		tool: activeTool,
+		p1: points[0],
+		p2: pt,
+		activeLayer,
+		board,
+		pushBoard,
+	});
+	st.setPoints([]);
+	return true;
+}
+
+function useGraphicsToolState() {
+	const [activeTool, setActiveTool] = useState(null);
+	const [points, setPoints] = useState([]);
+	const [cursor, setCursor] = useState(null);
+	const [textModal, setTextModal] = useState({ open: false, pos: null });
+	const reset = useCallback(() => {
+		setActiveTool(null);
+		setPoints([]);
+		setCursor(null);
+		setTextModal({ open: false, pos: null });
+	}, []);
+	const armTool = useCallback((tool) => {
+		setActiveTool(tool);
+		setPoints([]);
+		setCursor(null);
+		setTextModal({ open: false, pos: null });
+	}, []);
+	return {
+		activeTool,
+		points,
+		cursor,
+		setCursor,
+		textModal,
+		setTextModal,
+		setPoints,
+		reset,
+		armTool,
+	};
+}
+
+function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
+	const { activeTool, points, textModal, setTextModal } = st;
+	const cancelGraphics = useCallback(() => {
+		if (textModal.open) {
+			setTextModal({ open: false, pos: null });
+			return true;
+		}
+		if (points.length > 0) {
+			st.setPoints([]);
+			return true;
+		}
+		if (activeTool) {
+			st.reset();
+			return true;
+		}
+		return false;
+	}, [
+		textModal.open,
+		points.length,
+		activeTool,
+		setTextModal,
+		st.setPoints,
+		st.reset,
+	]);
+
+	const onTextSubmit = useCallback(
+		(text) => {
+			if (textModal.pos && text) {
+				pushBoard(
+					addGraphic(board, {
+						kind: "text",
+						layer: activeLayer,
+						x: textModal.pos.x,
+						y: textModal.pos.y,
+						text,
+					}),
+				);
+			}
+			setTextModal({ open: false, pos: null });
+		},
+		[textModal.pos, board, activeLayer, pushBoard, setTextModal],
+	);
+
+	return { cancelGraphics, onTextSubmit };
+}
+
+function useGraphicsDrawing({ board, pushBoard, activeLayer, svgRef, view }) {
+	const st = useGraphicsToolState();
+	const acts = useGraphicsActions(st, { board, pushBoard, activeLayer });
+	const arm = useCallback((tool) => st.armTool(tool), [st.armTool]);
+	const onPointerMove = useCallback(
+		(e) => {
+			if (st.activeTool) {
+				st.setCursor(calcSnappedBoardPoint(e, svgRef.current, view));
+			}
+		},
+		[st.activeTool, st.setCursor, svgRef, view],
+	);
+	const onCanvasClick = useCallback(
+		(e) =>
+			handleGraphicsClick(e, {
+				activeTool: st.activeTool,
+				points: st.points,
+				activeLayer,
+				board,
+				pushBoard,
+				st,
+				svgEl: svgRef.current,
+				view,
+			}),
+		[st, activeLayer, board, pushBoard, svgRef, view],
+	);
+	return {
+		activeTool: st.activeTool,
+		points: st.points,
+		cursor: st.cursor,
+		textModal: st.textModal,
+		arm,
+		disarm: st.reset,
+		onPointerMove,
+		onCanvasClick,
+		...acts,
+		onTextCancel: () => st.setTextModal({ open: false, pos: null }),
+	};
+}
+
+function TextGraphicModal({ open, onSubmit, onCancel }) {
+	const [text, setText] = useState("");
+	useEffect(() => {
+		if (open) setText("");
+	}, [open]);
+	const handleOk = () => {
+		if (text.trim().length > 0) onSubmit(text);
+		else onCancel();
+	};
+	return (
+		<Modal
+			title="Add Text"
+			open={open}
+			onOk={handleOk}
+			onCancel={onCancel}
+			width={320}
+			destroyOnClose
+		>
+			<Input
+				autoFocus
+				aria-label="Graphic text"
+				placeholder="Enter text..."
+				value={text}
+				onChange={(e) => setText(e.target.value)}
+				onPressEnter={handleOk}
+			/>
+		</Modal>
+	);
+}
+
+function PreviewLine({ p1, cursor, color }) {
+	return (
+		<line
+			x1={p1.x}
+			y1={p1.y}
+			x2={cursor.x}
+			y2={cursor.y}
+			stroke={color}
+			strokeWidth={0.15}
+			strokeDasharray="2,2"
+			strokeLinecap="round"
+		/>
+	);
+}
+
+function PreviewRect({ p1, cursor, color }) {
+	return (
+		<rect
+			x={Math.min(p1.x, cursor.x)}
+			y={Math.min(p1.y, cursor.y)}
+			width={Math.abs(cursor.x - p1.x)}
+			height={Math.abs(cursor.y - p1.y)}
+			fill="none"
+			stroke={color}
+			strokeWidth={0.15}
+			strokeDasharray="2,2"
+		/>
+	);
+}
+
+function PreviewCircle({ p1, cursor, color }) {
+	const r = Math.hypot(cursor.x - p1.x, cursor.y - p1.y);
+	return (
+		<circle
+			cx={p1.x}
+			cy={p1.y}
+			r={r}
+			fill="none"
+			stroke={color}
+			strokeWidth={0.15}
+			strokeDasharray="2,2"
+		/>
+	);
+}
+
+function PreviewDimension({ p1, cursor, color }) {
+	const len = Math.hypot(cursor.x - p1.x, cursor.y - p1.y);
+	return (
+		<g>
+			<line
+				x1={p1.x}
+				y1={p1.y}
+				x2={cursor.x}
+				y2={cursor.y}
+				stroke={color}
+				strokeWidth={0.15}
+				strokeDasharray="2,2"
+			/>
+			<text
+				x={(p1.x + cursor.x) / 2}
+				y={(p1.y + cursor.y) / 2 - 0.5}
+				fill={color}
+				fontSize={0.8}
+				textAnchor="middle"
+			>
+				{`${len.toFixed(2)} mm`}
+			</text>
+		</g>
+	);
+}
+
+const PREVIEW_RENDERERS = {
+	drawLine: PreviewLine,
+	drawRect: PreviewRect,
+	drawCircle: PreviewCircle,
+	placeDimension: PreviewDimension,
+};
+
+function PreviewTwoClick({ tool, p1, cursor, color }) {
+	const Comp = PREVIEW_RENDERERS[tool];
+	return Comp ? <Comp p1={p1} cursor={cursor} color={color} /> : null;
+}
+
+function PreviewArc({ points, cursor, color }) {
+	if (points.length === 1) {
+		return (
+			<line
+				x1={points[0].x}
+				y1={points[0].y}
+				x2={cursor.x}
+				y2={cursor.y}
+				stroke={color}
+				strokeWidth={0.15}
+				strokeDasharray="2,2"
+			/>
+		);
+	}
+	if (points.length === 2) {
+		const p1 = [points[0].x, points[0].y];
+		const pm = [points[1].x, points[1].y];
+		const p2 = [cursor.x, cursor.y];
+		const { center, radius } = calcArcCenter(p1, pm, p2);
+		const d = arcToSvgPath({ start: p1, mid: pm, end: p2, center, radius });
+		return (
+			<path
+				d={d}
+				fill="none"
+				stroke={color}
+				strokeWidth={0.15}
+				strokeDasharray="2,2"
+			/>
+		);
+	}
+	return null;
+}
+
+function GraphicsPreview({ activeTool, points, cursor, activeLayer }) {
+	if (!activeTool || !cursor || points.length === 0) return null;
+	const color = getLayerColor(PCB_THEME, activeLayer);
+	if (activeTool === "drawArc") {
+		return <PreviewArc points={points} cursor={cursor} color={color} />;
+	}
+	return (
+		<PreviewTwoClick
+			tool={activeTool}
+			p1={points[0]}
+			cursor={cursor}
+			color={color}
+		/>
+	);
+}
+
+function createToolBusHandlers({
+	route,
+	layers,
+	armedPlacement,
+	graphicsDrawing,
+}) {
+	const armGfx = (tool) => {
+		if (route.isRouting) route.cancelRoute();
+		armedPlacement.disarm();
+		graphicsDrawing.arm(tool);
+	};
 	return {
 		select: () => {
 			if (route.isRouting) route.cancelRoute();
 			armedPlacement.disarm();
+			graphicsDrawing.disarm();
 		},
+		drawLine: () => armGfx("drawLine"),
+		drawRect: () => armGfx("drawRect"),
+		drawCircle: () => armGfx("drawCircle"),
+		placeDimension: () => armGfx("placeDimension"),
+		drawArc: () => armGfx("drawArc"),
+		placeText: () => armGfx("placeText"),
 		routeTrack: () => {
 			armedPlacement.disarm();
+			graphicsDrawing.disarm();
 			if (!route.isRouting) route.toggleRoute();
 		},
 		addVia: () => {
@@ -2410,12 +2955,17 @@ function createToolBusHandlers({ route, layers, armedPlacement }) {
 		},
 		placeFootprint: (item) => {
 			if (route.isRouting) route.cancelRoute();
+			graphicsDrawing.disarm();
 			if (item) armedPlacement.setArmed(item);
 		},
 	};
 }
 
-function reportActiveTool(isRouting, armedFootprint) {
+function reportActiveTool(isRouting, armedFootprint, activeGraphicsTool) {
+	if (activeGraphicsTool) {
+		emitActiveTool({ tab: "pcb", tool: activeGraphicsTool, item: null });
+		return;
+	}
 	if (isRouting) {
 		emitActiveTool({ tab: "pcb", tool: "routeTrack", item: null });
 		return;
@@ -2431,17 +2981,28 @@ function reportActiveTool(isRouting, armedFootprint) {
 	emitActiveTool({ tab: "pcb", tool: "select", item: null });
 }
 
-function useToolBus({ route, layers, armedPlacement, containerRef }) {
+function useToolBus({
+	route,
+	layers,
+	armedPlacement,
+	graphicsDrawing,
+	containerRef,
+}) {
 	const handlersRef = useRef({});
 	handlersRef.current = createToolBusHandlers({
 		route,
 		layers,
 		armedPlacement,
+		graphicsDrawing,
 	});
 
 	useEffect(() => {
-		reportActiveTool(route.isRouting, armedPlacement.armed);
-	}, [route.isRouting, armedPlacement.armed]);
+		reportActiveTool(
+			route.isRouting,
+			armedPlacement.armed,
+			graphicsDrawing.activeTool,
+		);
+	}, [route.isRouting, armedPlacement.armed, graphicsDrawing.activeTool]);
 
 	useEffect(() => {
 		return onEditorTool((payload) => {
@@ -2452,29 +3013,32 @@ function useToolBus({ route, layers, armedPlacement, containerRef }) {
 	}, [containerRef]);
 }
 
-function useSceneClick(routeClick, armedPlacement) {
+function useSceneClick(routeClick, armedPlacement, graphicsDrawing) {
 	return useCallback(
 		(e) => {
+			if (graphicsDrawing?.onCanvasClick(e)) return;
 			if (armedPlacement?.onCanvasClick(e)) return;
 			routeClick(e);
 		},
-		[routeClick, armedPlacement],
+		[routeClick, armedPlacement, graphicsDrawing],
 	);
 }
 
-function useScenePointer(ptrMove, armedPlacement) {
+function useScenePointer(ptrMove, armedPlacement, graphicsDrawing) {
 	return useCallback(
 		(e) => {
 			ptrMove(e);
 			armedPlacement?.onPointerMove(e);
+			graphicsDrawing?.onPointerMove(e);
 		},
-		[ptrMove, armedPlacement],
+		[ptrMove, armedPlacement, graphicsDrawing],
 	);
 }
 
 function useSvgPointerHandlers({
 	pan,
 	drag,
+	graphicDrag,
 	route,
 	sceneData,
 	outlineDrawing,
@@ -2483,28 +3047,62 @@ function useSvgPointerHandlers({
 		(e) => {
 			if (pan.onPanStart(e)) return;
 			if (outlineDrawing.onPointerDown(e)) return;
+			graphicDrag?.onPointerDown(e);
 			sceneData.onPointerDown(e);
 		},
-		[pan, outlineDrawing, sceneData],
+		[pan, outlineDrawing, graphicDrag, sceneData],
 	);
 	const onPointerMove = useCallback(
 		(e) => {
 			if (pan.onPanMove(e)) return;
 			if (outlineDrawing.onPointerMove(e)) return;
+			graphicDrag?.onPointerMove(e);
 			drag.onPointerMove(e);
 			route.onPointerMove(e);
 		},
-		[pan, outlineDrawing, drag, route],
+		[pan, outlineDrawing, graphicDrag, drag, route],
 	);
 	const onPointerUp = useCallback(
 		(e) => {
 			pan.onPanEnd();
 			if (outlineDrawing.onPointerUp(e)) return;
+			if (graphicDrag?.onPointerUp(e)) return;
 			drag.onDropDrag(e);
 		},
-		[pan, outlineDrawing, drag],
+		[pan, outlineDrawing, graphicDrag, drag],
 	);
 	return { onPointerDown, onPointerMove, onPointerUp };
+}
+
+function PcbSvgOverlays({
+	markers,
+	zoom,
+	outlineDrawing,
+	graphicsDrawing,
+	armedPlacement,
+	activeLayer,
+}) {
+	return (
+		<>
+			<MarkersOverlay markers={markers} zoom={zoom} />
+			<OutlinePreview
+				drag={outlineDrawing.drag}
+				activeTool={outlineDrawing.activeTool}
+				radius={outlineDrawing.radius}
+			/>
+			<GraphicsPreview
+				activeTool={graphicsDrawing?.activeTool}
+				points={graphicsDrawing?.points}
+				cursor={graphicsDrawing?.cursor}
+				activeLayer={activeLayer}
+			/>
+			<FootprintGhost
+				item={armedPlacement?.armed}
+				cursor={armedPlacement?.cursor}
+				activeLayer={activeLayer}
+			/>
+		</>
+	);
 }
 
 function PcbSvgContent({
@@ -2514,10 +3112,7 @@ function PcbSvgContent({
 	drag,
 	showVias,
 	route,
-	markers,
-	outlineDrawing,
-	zoom,
-	armedPlacement,
+	overlays,
 }) {
 	return (
 		<>
@@ -2535,17 +3130,7 @@ function PcbSvgContent({
 				activeLayer={layerState.active}
 				widthMm={route.widthMm}
 			/>
-			<MarkersOverlay markers={markers} zoom={zoom} />
-			<OutlinePreview
-				drag={outlineDrawing.drag}
-				activeTool={outlineDrawing.activeTool}
-				radius={outlineDrawing.radius}
-			/>
-			<FootprintGhost
-				item={armedPlacement?.armed}
-				cursor={armedPlacement?.cursor}
-				activeLayer={layerState.active}
-			/>
+			{overlays}
 		</>
 	);
 }
@@ -2561,6 +3146,8 @@ function PcbSvgScene({
 	markers,
 	outlineDrawing,
 	armedPlacement,
+	graphicsDrawing,
+	graphicDrag,
 }) {
 	const order = useMemo(() => drawOrder(layerState), [layerState]);
 	const showVias =
@@ -2568,13 +3155,32 @@ function PcbSvgScene({
 	const ptr = useSvgPointerHandlers({
 		pan,
 		drag,
+		graphicDrag,
 		route,
 		sceneData,
 		outlineDrawing,
 	});
-	const onClick = useSceneClick(route.onCanvasClick, armedPlacement);
-	const onPointerMove = useScenePointer(ptr.onPointerMove, armedPlacement);
+	const onClick = useSceneClick(
+		route.onCanvasClick,
+		armedPlacement,
+		graphicsDrawing,
+	);
+	const onPointerMove = useScenePointer(
+		ptr.onPointerMove,
+		armedPlacement,
+		graphicsDrawing,
+	);
 	const transform = `translate(${view.pan.x},${view.pan.y}) scale(${view.zoom})`;
+	const overlays = (
+		<PcbSvgOverlays
+			markers={markers}
+			zoom={view.zoom}
+			outlineDrawing={outlineDrawing}
+			graphicsDrawing={graphicsDrawing}
+			armedPlacement={armedPlacement}
+			activeLayer={layerState.active}
+		/>
+	);
 	return (
 		/* biome-ignore lint/a11y/useKeyWithClickEvents: Keyboard handled on parent region */
 		<svg
@@ -2595,10 +3201,7 @@ function PcbSvgScene({
 					drag={drag}
 					showVias={showVias}
 					route={route}
-					markers={markers}
-					outlineDrawing={outlineDrawing}
-					zoom={view.zoom}
-					armedPlacement={armedPlacement}
+					overlays={overlays}
 				/>
 			</g>
 		</svg>
@@ -2621,6 +3224,42 @@ function useCanvasView(board, ir, svgRef) {
 
 function netNameMap(nets) {
 	return Object.fromEntries((nets ?? []).map((n) => [n.id, n.name]));
+}
+
+function useCanvasGraphicsTools({
+	board,
+	history,
+	layers,
+	svgRef,
+	view,
+	armedPlacement,
+	route,
+	containerRef,
+}) {
+	const graphicsDrawing = useGraphicsDrawing({
+		board,
+		pushBoard: history.pushBoard,
+		activeLayer: layers.layerState.active,
+		svgRef,
+		view,
+	});
+	const graphicDrag = useGraphicDrag({
+		board,
+		pushBoard: history.pushBoard,
+		svgRef,
+		view,
+		isArmed:
+			Boolean(armedPlacement.armed) || Boolean(graphicsDrawing.activeTool),
+		isRouting: route.isRouting,
+	});
+	useToolBus({
+		route,
+		layers,
+		armedPlacement,
+		graphicsDrawing,
+		containerRef,
+	});
+	return { graphicsDrawing, graphicDrag };
 }
 
 function usePcbCanvasState({
@@ -2670,10 +3309,14 @@ function usePcbCanvasState({
 		svgRef,
 		view,
 	});
-	useToolBus({
-		route,
+	const { graphicsDrawing, graphicDrag } = useCanvasGraphicsTools({
+		board,
+		history,
 		layers,
+		svgRef,
+		view,
 		armedPlacement,
+		route,
 		containerRef,
 	});
 	const rnLines = useMemo(
@@ -2691,7 +3334,8 @@ function usePcbCanvasState({
 		board,
 		svgRef,
 		view,
-		isArmed: Boolean(armedPlacement.armed),
+		isArmed:
+			Boolean(armedPlacement.armed) || Boolean(graphicsDrawing.activeTool),
 	});
 	const shortcuts = buildShortcuts({
 		editor,
@@ -2702,6 +3346,7 @@ function usePcbCanvasState({
 		fitHome,
 		outlineDrawing,
 		armedPlacement,
+		graphicsDrawing,
 	});
 	const sceneData = buildSceneData({
 		editor,
@@ -2713,6 +3358,7 @@ function usePcbCanvasState({
 		onPointerDown,
 		fpLookup,
 		armedPlacement,
+		graphicsDrawing,
 	});
 	return {
 		svgRef,
@@ -2726,6 +3372,8 @@ function usePcbCanvasState({
 		outlineDrawing,
 		missingFootprints,
 		armedPlacement,
+		graphicsDrawing,
+		graphicDrag,
 	};
 }
 
@@ -2787,6 +3435,8 @@ export default function PcbCanvas({
 				markers={markers}
 				outlineDrawing={s.outlineDrawing}
 				armedPlacement={s.armedPlacement}
+				graphicsDrawing={s.graphicsDrawing}
+				graphicDrag={s.graphicDrag}
 			/>
 			<LayerListOverlay
 				layerState={s.layers.layerState}
@@ -2799,6 +3449,11 @@ export default function PcbCanvas({
 				widthPreset={s.route.widthPreset}
 				routeMode={s.route.routeMode}
 				posture={s.route.posture}
+			/>
+			<TextGraphicModal
+				open={s.graphicsDrawing.textModal.open}
+				onSubmit={s.graphicsDrawing.onTextSubmit}
+				onCancel={s.graphicsDrawing.onTextCancel}
 			/>
 		</div>
 	);
