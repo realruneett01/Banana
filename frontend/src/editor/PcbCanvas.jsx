@@ -1921,6 +1921,22 @@ function useFocusOnShow(containerRef, visible, hasBoard) {
 	}, [containerRef, visible, hasBoard]);
 }
 
+function focusCanvas(containerRef) {
+	if (typeof document === "undefined") return;
+	if (isTextInput(document.activeElement)) return;
+	containerRef?.current?.focus({ preventScroll: true });
+}
+
+function useCanvasAutoFocus(containerRef, _tab) {
+	useEffect(() => {
+		const el = containerRef.current;
+		if (!el) return;
+		const handlePointerEnter = () => focusCanvas(containerRef);
+		el.addEventListener("pointerenter", handlePointerEnter);
+		return () => el.removeEventListener("pointerenter", handlePointerEnter);
+	}, [containerRef]);
+}
+
 function useCanvasLayers(board) {
 	const [layerState, setLayerState] = useState(() =>
 		createLayerState({ copperCount: board?.copperCount ?? 2 }),
@@ -2415,7 +2431,7 @@ function reportActiveTool(isRouting, armedFootprint) {
 	emitActiveTool({ tab: "pcb", tool: "select", item: null });
 }
 
-function useToolBus({ route, layers, armedPlacement }) {
+function useToolBus({ route, layers, armedPlacement, containerRef }) {
 	const handlersRef = useRef({});
 	handlersRef.current = createToolBusHandlers({
 		route,
@@ -2429,10 +2445,11 @@ function useToolBus({ route, layers, armedPlacement }) {
 
 	useEffect(() => {
 		return onEditorTool((payload) => {
+			focusCanvas(containerRef);
 			const handler = handlersRef.current[payload?.tool];
 			handler?.(payload?.item);
 		}, "pcb");
-	}, []);
+	}, [containerRef]);
 }
 
 function useSceneClick(routeClick, armedPlacement) {
@@ -2613,6 +2630,7 @@ function usePcbCanvasState({
 	onChange,
 	fetchFootprint,
 	visible,
+	containerRef,
 }) {
 	const svgRef = useRef(null);
 	const ir = editor?.state?.ir;
@@ -2656,6 +2674,7 @@ function usePcbCanvasState({
 		route,
 		layers,
 		armedPlacement,
+		containerRef,
 	});
 	const rnLines = useMemo(
 		() =>
@@ -2720,6 +2739,7 @@ export default function PcbCanvas({
 	visible = true,
 	onCursorMove,
 }) {
+	const containerRef = useRef(null);
 	const s = usePcbCanvasState({
 		editor,
 		board,
@@ -2727,9 +2747,10 @@ export default function PcbCanvas({
 		onChange,
 		fetchFootprint,
 		visible,
+		containerRef,
 	});
-	const containerRef = useRef(null);
 	useFocusOnShow(containerRef, visible, Boolean(board));
+	useCanvasAutoFocus(containerRef, "pcb");
 
 	return (
 		<div

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { boxSelect, normalizeBox } from "./boxSelect.js";
 import { applyCommand } from "./editorModel.js";
 import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
-import { resolveSchematicAction } from "./hotkeys.js";
+import { isTypingTarget, resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
@@ -1172,13 +1172,32 @@ function reportActiveTool(wireMode, armedPart) {
 	}
 }
 
-function useToolBus({ wireMode, setWireMode, setWireStart }) {
+function focusCanvas(containerRef) {
+	if (typeof document === "undefined") return;
+	if (isTypingTarget(document.activeElement)) return;
+	containerRef?.current?.focus({ preventScroll: true });
+}
+
+function useCanvasAutoFocus(containerRef, _tab) {
+	useEffect(() => {
+		const el = containerRef.current;
+		if (!el) return;
+		const handlePointerEnter = () => focusCanvas(containerRef);
+		el.addEventListener("pointerenter", handlePointerEnter);
+		return () => el.removeEventListener("pointerenter", handlePointerEnter);
+	}, [containerRef]);
+}
+
+function useToolBus({ wireMode, setWireMode, setWireStart, containerRef }) {
 	const [armedPart, setArmedPart] = useState(null);
 
 	useEffect(() => {
 		const setters = { setWireMode, setWireStart, setArmedPart };
-		return onEditorTool((p) => handleBusTool(p, setters), "schematic");
-	}, [setWireMode, setWireStart]);
+		return onEditorTool((p) => {
+			focusCanvas(containerRef);
+			handleBusTool(p, setters);
+		}, "schematic");
+	}, [setWireMode, setWireStart, containerRef]);
 
 	useEffect(() => {
 		reportActiveTool(wireMode, armedPart);
@@ -1285,13 +1304,18 @@ function useEditorModel(editor, onChange, fetchSymbol) {
 	return { ed, symbolCache, allPinPos };
 }
 
-function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
+function useSchematicCanvasState({
+	editor,
+	onChange,
+	fetchSymbol,
+	containerRef,
+}) {
 	const svgRef = useRef(null);
 	const [isSpaceDown, setIsSpaceDown] = useState(false);
 	const [highlightNet, setHighlightNet] = useState(null);
 	const vp = useCanvasViewport(svgRef);
 	const wire = useWireSession();
-	const { armedPart, setArmedPart } = useToolBus(wire);
+	const { armedPart, setArmedPart } = useToolBus({ ...wire, containerRef });
 	const model = useEditorModel(editor, onChange, fetchSymbol);
 	const { ed, symbolCache, allPinPos } = model;
 	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
@@ -1607,12 +1631,20 @@ export default function SchematicCanvas({
 	theme,
 	onCursorMove,
 }) {
-	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
+	const containerRef = useRef(null);
+	const s = useSchematicCanvasState({
+		editor,
+		onChange,
+		fetchSymbol,
+		containerRef,
+	});
 	useCursorReport(onCursorMove, s.ptr.cursorWorld, s.vp.zoom);
+	useCanvasAutoFocus(containerRef, "schematic");
 	const bg = getSchematicColor(theme, "background");
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: canvas container provides schematic interaction area
 		<div
+			ref={containerRef}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: schematic editor canvas requires focus for keyboard shortcuts
 			tabIndex={0}
 			role="region"
