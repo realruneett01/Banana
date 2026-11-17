@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { boxSelect, normalizeBox } from "./boxSelect.js";
 import { applyCommand } from "./editorModel.js";
+import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
 import { resolveSchematicAction } from "./hotkeys.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt, netRingPoints } from "./netHighlight.js";
 import { partItems } from "./partBounds.js";
+import { buildPlacedPart } from "./partPlacement.js";
 import { isPanPointer, pointerDownTarget } from "./pointerIntent.js";
 import {
 	hitTest,
@@ -110,6 +112,12 @@ function useWheelZoom(svgRef, vp) {
 function clientToWorld(clientX, clientY, svgEl, vp) {
 	const rect = svgEl.getBoundingClientRect();
 	return screenToWorld({ x: clientX - rect.left, y: clientY - rect.top }, vp);
+}
+
+const SCH_GRID = 1.27;
+
+function snapToGrid(pt) {
+	return snapPoint(pt, SCH_GRID);
 }
 
 function distToSeg(pt, p1, p2) {
@@ -609,16 +617,111 @@ function RubberbandWire({ wireStart, allPinPos, cursorWorld, theme }) {
 	);
 }
 
+function GhostBox({ snapped, dummyPart, theme }) {
+	const stroke = getSchematicColor(theme, "selection");
+	const { x, y } = snapped;
+	return (
+		<g>
+			<rect
+				x={x - 5}
+				y={y - 5}
+				width={10}
+				height={10}
+				fill="none"
+				stroke={stroke}
+				strokeWidth={0.4}
+				strokeDasharray="1.5,1.5"
+				rx={0.5}
+			/>
+			<PartTextLabels
+				x={x}
+				yRef={y - 1.2}
+				yVal={y + 1.8}
+				refText={dummyPart.ref}
+				valueText={dummyPart.value}
+				theme={theme}
+			/>
+		</g>
+	);
+}
+
+function ghostGeometry(armedPart, cursor, symbol) {
+	if (!armedPart || !cursor) return null;
+	const snapped = snapToGrid(cursor);
+	const item = armedPart.item ?? {};
+	const dummyPart = {
+		id: "__ghost__",
+		ref: item.ref ?? item.prefix ?? "?",
+		value: item.value ?? "",
+		symbol: item.symbol ?? "",
+		placement: { x: snapped.x, y: snapped.y, rot: 0, side: "F" },
+	};
+	return { snapped, dummyPart, symbol };
+}
+
+function ArmedGhostMarker({ armedPart, cursorWorld, symbolCache, theme }) {
+	const symbol = armedPart?.item?.symbol
+		? symbolCache?.[armedPart.item.symbol]
+		: null;
+	const geom = ghostGeometry(armedPart, cursorWorld, symbol);
+	if (!geom) return null;
+	return (
+		<g className="schematic-armed-ghost" opacity={0.5} pointerEvents="none">
+			{geom.symbol ? (
+				<PartSvg
+					part={geom.dummyPart}
+					isSelected={false}
+					dragPos={null}
+					wireStart={null}
+					symbol={geom.symbol}
+					theme={theme}
+				/>
+			) : (
+				<GhostBox
+					snapped={geom.snapped}
+					dummyPart={geom.dummyPart}
+					theme={theme}
+				/>
+			)}
+		</g>
+	);
+}
+
+function SchematicGhostLayer({ s, theme }) {
+	return (
+		<>
+			<RubberbandWire
+				wireStart={s.wire.wireStart}
+				allPinPos={s.allPinPos}
+				cursorWorld={s.ptr.cursorWorld}
+				theme={theme}
+			/>
+			<ArmedGhostMarker
+				armedPart={s.armedPart}
+				cursorWorld={s.ptr.cursorWorld}
+				symbolCache={s.symbolCache}
+				theme={theme}
+			/>
+		</>
+	);
+}
+
+function resetToolMode(target) {
+	target.setWireMode?.(false);
+	target.setWireStart?.(null);
+	target.setArmedPart?.(null);
+}
+
 function handleWireModeKey(ctx) {
+	resetToolMode(ctx);
 	ctx.setWireMode(true);
-	ctx.setWireStart(null);
 }
 
 function handleEscapeKey(ctx) {
-	ctx.setWireMode(false);
-	ctx.setWireStart(null);
+	resetToolMode(ctx);
 	ctx.setDragState(null);
 	ctx.setDragPos(null);
+	ctx.setHighlightNet?.(null);
 }
 
 function forEachSelected(ctx, makeCmd) {
@@ -733,7 +836,7 @@ function handleKeyDown(e, ctx) {
 }
 
 function handlePinConnect(hit, wireState, dispatchCmd) {
-	const { wireStart, setWireStart, setWireMode } = wireState;
+	const { wireStart, setWireStart } = wireState;
 	if (!wireStart) {
 		setWireStart({ partId: hit.id, pin: hit.pin });
 		return;
@@ -747,8 +850,16 @@ function handlePinConnect(hit, wireState, dispatchCmd) {
 			pinB: hit.pin,
 		});
 	}
-	setWireStart(null);
-	setWireMode(false);
+	resetToolMode(wireState);
+}
+
+function handleArmedClick(hit, hitCtx) {
+	if (!hit) {
+		const snapped = snapToGrid(hitCtx.worldPt);
+		const parts = hitCtx.doc.ir?.parts;
+		const part = buildPlacedPart(hitCtx.armedPart.item, parts, snapped);
+		hitCtx.dispatchCmd({ type: "addPart", part });
+	}
 }
 
 function handlePointerDownHit(hit, hitCtx) {
@@ -760,8 +871,7 @@ function handlePointerDownHit(hit, hitCtx) {
 		return;
 	}
 	if (wireMode) {
-		wireState.setWireMode(false);
-		wireState.setWireStart(null);
+		resetToolMode(wireState);
 	}
 	if (target === "part") {
 		dispatchCmd({ type: "select", ids: [hit.id] });
@@ -816,10 +926,10 @@ function updatePartDrag(dragState, worldPt, setDragPos) {
 	const dx = worldPt.x - dragState.mouseStartX;
 	const dy = worldPt.y - dragState.mouseStartY;
 	if (Math.hypot(dx, dy) > 0.5) dragState.moved = true;
-	const pos = snapPoint(
-		{ x: dragState.startX + dx, y: dragState.startY + dy },
-		1.27,
-	);
+	const pos = snapToGrid({
+		x: dragState.startX + dx,
+		y: dragState.startY + dy,
+	});
 	setDragPos({ partId: dragState.partId, x: pos.x, y: pos.y });
 }
 
@@ -852,6 +962,12 @@ function commitPartDrag(dragState, dragPos, dispatchCmd) {
 	}
 }
 
+function updateNetHighlight(hit, doc, hitCtx) {
+	if (hitCtx.wireMode || hitCtx.armedPart) return;
+	const next = nextHighlight(hit, doc.ir);
+	if (next !== undefined) hitCtx.setHighlightNet?.(next);
+}
+
 function onPointerDownEvent(e, ctx) {
 	const { svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx } = ctx;
 	if (!svgRef.current) return;
@@ -862,6 +978,11 @@ function onPointerDownEvent(e, ctx) {
 	if (e.button !== 0 || ctx.keyboardMove) return;
 	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
 	const hit = schematicHitTest(doc, allPinPos, worldPt, vp.zoom);
+	updateNetHighlight(hit, doc, hitCtx);
+	if (hitCtx.armedPart) {
+		handleArmedClick(hit, { ...hitCtx, doc, worldPt });
+		return;
+	}
 	const el = e.currentTarget;
 	const capturePointer = () => el?.setPointerCapture?.(e.pointerId);
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt, capturePointer });
@@ -869,11 +990,27 @@ function onPointerDownEvent(e, ctx) {
 
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
 	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
-	const { doc, dispatchCmd } = editorState;
+	const { doc, dispatchCmd, armedPart, setHighlightNet } = editorState;
 	const { panDragRef, setDragState, setBoxDrag, keyboardMove } = dragInit;
 	const hitCtx = useMemo(
-		() => ({ wireMode, wireState, dispatchCmd, setDragState, setBoxDrag }),
-		[wireMode, wireState, dispatchCmd, setDragState, setBoxDrag],
+		() => ({
+			wireMode,
+			wireState,
+			dispatchCmd,
+			setDragState,
+			setBoxDrag,
+			armedPart,
+			setHighlightNet,
+		}),
+		[
+			wireMode,
+			wireState,
+			dispatchCmd,
+			setDragState,
+			setBoxDrag,
+			armedPart,
+			setHighlightNet,
+		],
 	);
 
 	return useCallback(
@@ -1007,6 +1144,49 @@ function usePointerInteractions(svgRef, editorState, wireState) {
 	};
 }
 
+function isPlaceTool(tool) {
+	return tool === "placeSymbol" || tool === "placePower";
+}
+
+function handleBusTool(payload, setters) {
+	const { tool, item } = payload ?? {};
+	resetToolMode(setters);
+	if (tool === "placeWire") {
+		setters.setWireMode(true);
+	} else if (isPlaceTool(tool) && item) {
+		setters.setArmedPart({ tool, item });
+	}
+}
+
+function reportActiveTool(wireMode, armedPart) {
+	if (wireMode) {
+		emitActiveTool({ tab: "schematic", tool: "placeWire", item: null });
+	} else if (armedPart) {
+		emitActiveTool({
+			tab: "schematic",
+			tool: armedPart.tool,
+			item: armedPart.item,
+		});
+	} else {
+		emitActiveTool({ tab: "schematic", tool: "select", item: null });
+	}
+}
+
+function useToolBus({ wireMode, setWireMode, setWireStart }) {
+	const [armedPart, setArmedPart] = useState(null);
+
+	useEffect(() => {
+		const setters = { setWireMode, setWireStart, setArmedPart };
+		return onEditorTool((p) => handleBusTool(p, setters), "schematic");
+	}, [setWireMode, setWireStart]);
+
+	useEffect(() => {
+		reportActiveTool(wireMode, armedPart);
+	}, [wireMode, armedPart]);
+
+	return { armedPart, setArmedPart };
+}
+
 function useCanvasViewport(svgRef) {
 	const [pan, setPan] = useState({ x: 200, y: 150 });
 	const [zoom, setZoom] = useState(4);
@@ -1057,7 +1237,7 @@ function useWireState(wire, vp, isSpaceDown, allPinPos) {
 }
 
 function useKeyContext(ed, wire, ptr, view) {
-	const { vp, svgRef, allPinPos } = view;
+	const { vp, svgRef, allPinPos, setArmedPart, setHighlightNet } = view;
 	return useMemo(
 		() => ({
 			doc: ed.doc,
@@ -1072,6 +1252,8 @@ function useKeyContext(ed, wire, ptr, view) {
 			allPinPos,
 			vp,
 			svgRef,
+			setArmedPart,
+			setHighlightNet,
 		}),
 		[
 			ed.doc,
@@ -1086,6 +1268,8 @@ function useKeyContext(ed, wire, ptr, view) {
 			allPinPos,
 			vp,
 			svgRef,
+			setArmedPart,
+			setHighlightNet,
 		],
 	);
 }
@@ -1104,21 +1288,31 @@ function useEditorModel(editor, onChange, fetchSymbol) {
 function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 	const svgRef = useRef(null);
 	const [isSpaceDown, setIsSpaceDown] = useState(false);
+	const [highlightNet, setHighlightNet] = useState(null);
 	const vp = useCanvasViewport(svgRef);
 	const wire = useWireSession();
+	const { armedPart, setArmedPart } = useToolBus(wire);
 	const model = useEditorModel(editor, onChange, fetchSymbol);
 	const { ed, symbolCache, allPinPos } = model;
 	const wireState = useWireState(wire, vp, isSpaceDown, allPinPos);
 	const editorState = useMemo(
-		() => ({ doc: ed.doc, dispatchCmd: ed.dispatchCmd, symbolCache }),
-		[ed.doc, ed.dispatchCmd, symbolCache],
+		() => ({
+			doc: ed.doc,
+			dispatchCmd: ed.dispatchCmd,
+			symbolCache,
+			armedPart,
+			setHighlightNet,
+		}),
+		[ed.doc, ed.dispatchCmd, symbolCache, armedPart],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
-	const keyCtx = useKeyContext(ed, wire, ptr, { vp, svgRef, allPinPos });
+	const view = { vp, svgRef, allPinPos, setArmedPart, setHighlightNet };
+	const keyCtx = useKeyContext(ed, wire, ptr, view);
 	return {
 		svgRef,
 		vp,
 		wire,
+		armedPart,
 		doc: ed.doc,
 		symbolCache,
 		allPinPos,
@@ -1126,6 +1320,7 @@ function useSchematicCanvasState({ editor, onChange, fetchSymbol }) {
 		keyCtx,
 		isSpaceDown,
 		setIsSpaceDown,
+		highlightNet,
 	};
 }
 
@@ -1311,7 +1506,7 @@ function SchematicSelectionBox({ boxDrag, vp, theme }) {
 
 function SchematicCrosshair({ cursorWorld, vp, theme }) {
 	if (!cursorWorld) return null;
-	const snapped = snapPoint(cursorWorld, 1.27);
+	const snapped = snapToGrid(cursorWorld);
 	const pt = worldToScreen(snapped, vp);
 	const color = getSchematicColor(theme, "cursor");
 	return (
@@ -1368,27 +1563,6 @@ function nextHighlight(hit, ir) {
 	return undefined;
 }
 
-function useNetHighlight(s) {
-	const [highlightNet, setHighlightNet] = useState(null);
-	const { svgRef, vp, doc, allPinPos, wire, isSpaceDown } = s;
-	const onPointerDown = useCallback(
-		(e) => {
-			// A pan (middle button or Space+left) leaves the highlight alone.
-			if (isPanPointer(e.button, isSpaceDown) || e.button !== 0) return;
-			if (wire.wireMode || !svgRef.current) return;
-			const pt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
-			const hit = schematicHitTest(doc, allPinPos, pt, vp.zoom);
-			const next = nextHighlight(hit, doc.ir);
-			if (next !== undefined) setHighlightNet(next);
-		},
-		[svgRef, vp, doc, allPinPos, wire.wireMode, isSpaceDown],
-	);
-	const onKeyDown = useCallback((e) => {
-		if (e.key === "Escape") setHighlightNet(null);
-	}, []);
-	return { highlightNet, onPointerDown, onKeyDown };
-}
-
 function SchematicSvgScene({ s, problems, theme, highlightNet }) {
 	return (
 		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
@@ -1411,12 +1585,7 @@ function SchematicSvgScene({ s, problems, theme, highlightNet }) {
 				symbolCache={s.symbolCache}
 				theme={theme}
 			/>
-			<RubberbandWire
-				wireStart={s.wire.wireStart}
-				allPinPos={s.allPinPos}
-				cursorWorld={s.ptr.cursorWorld}
-				theme={theme}
-			/>
+			<SchematicGhostLayer s={s} theme={theme} />
 			<SchematicJunctionsLayer doc={s.doc} theme={theme} />
 			<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
 		</g>
@@ -1439,7 +1608,6 @@ export default function SchematicCanvas({
 	onCursorMove,
 }) {
 	const s = useSchematicCanvasState({ editor, onChange, fetchSymbol });
-	const hl = useNetHighlight(s);
 	useCursorReport(onCursorMove, s.ptr.cursorWorld, s.vp.zoom);
 	const bg = getSchematicColor(theme, "background");
 	return (
@@ -1450,15 +1618,9 @@ export default function SchematicCanvas({
 			role="region"
 			aria-label="Schematic editor"
 			style={{ ...CANVAS_CONTAINER_STYLE, background: bg }}
-			onKeyDown={(e) => {
-				hl.onKeyDown(e);
-				handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx);
-			}}
+			onKeyDown={(e) => handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx)}
 			onKeyUp={(e) => handleCanvasKeyUp(e, s.setIsSpaceDown)}
-			onPointerDown={(e) => {
-				hl.onPointerDown(e);
-				s.ptr.onPointerDown(e);
-			}}
+			onPointerDown={s.ptr.onPointerDown}
 			onPointerMove={s.ptr.onPointerMove}
 			onPointerUp={s.ptr.onPointerUp}
 			onPointerCancel={s.ptr.onPointerCancel}
@@ -1476,7 +1638,7 @@ export default function SchematicCanvas({
 					s={s}
 					problems={problems}
 					theme={theme}
-					highlightNet={hl.highlightNet}
+					highlightNet={s.highlightNet}
 				/>
 				<SchematicSelectionBox
 					boxDrag={s.ptr.boxDrag}
