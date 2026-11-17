@@ -14,6 +14,7 @@ const SUMMARY_WORDS = [
 	["connection", "connection"],
 	["track", "track"],
 	["via", "via"],
+	["annotation", "annotation"],
 ];
 
 function isFiniteCoord(coord) {
@@ -393,7 +394,75 @@ function buildSummary(canSaveInPlace, counts) {
 	const clauses = SUMMARY_WORDS.filter(([key]) => counts[key] > 0).map(
 		([key, word]) => formatPlural(counts[key], word),
 	);
+	if (clauses.length === 0) return "Edits will be saved";
 	return `${joinClauses(clauses)} will be saved`;
+}
+
+const ANNOTATION_MAP = {
+	label: { op: "addLabel", kind: "local", net: true, rot: true },
+	globalLabel: { op: "addLabel", kind: "global", net: true, rot: true },
+	hierLabel: { op: "addLabel", kind: "hierarchical", net: true, rot: true },
+	noConnect: { op: "addNoConnect" },
+	junction: { op: "addJunction" },
+	text: { op: "addText", text: true, rot: true },
+	line: { op: "addLine", segment: true },
+	bus: { op: "addBus", segment: true },
+};
+
+export function annotationToOp(ann) {
+	const spec = ANNOTATION_MAP[ann.kind];
+	if (!spec) return null;
+	if (spec.segment) {
+		return { op: spec.op, x1: ann.x, y1: ann.y, x2: ann.x2, y2: ann.y2 };
+	}
+	const edit = { op: spec.op };
+	if (spec.net) edit.net = ann.text;
+	if (spec.text) edit.text = ann.text;
+	edit.x = ann.x;
+	edit.y = ann.y;
+	if (spec.rot && ann.rot !== undefined) edit.rot = ann.rot;
+	if (spec.kind) edit.kind = spec.kind;
+	return edit;
+}
+
+const MOVED_FIELDS = ["x", "y", "x2", "y2", "rot", "text"];
+
+function isMoved(prev, curr) {
+	return MOVED_FIELDS.some((k) => prev[k] !== curr[k]);
+}
+
+function processAnnotationItem(ann, prev, ctx) {
+	if (!prev) {
+		count(ctx, "annotation");
+		stage(ctx, "add", "sch", annotationToOp(ann));
+		return;
+	}
+	const uuid = ann.uuid ?? prev.uuid;
+	if (isMoved(prev, ann) && uuid) {
+		count(ctx, "annotation");
+		stage(ctx, "delete", "sch", { op: "deleteItem", uuid });
+		stage(ctx, "add", "sch", annotationToOp(ann));
+	}
+}
+
+function processRemovedAnnotation(ann, afterMap, ctx) {
+	if (!afterMap.has(ann.id) && ann.uuid) {
+		count(ctx, "annotation");
+		stage(ctx, "delete", "sch", { op: "deleteItem", uuid: ann.uuid });
+	}
+}
+
+function processAnnotations(beforeIr, afterIr, ctx) {
+	const beforeList = listOf(beforeIr?.annotations);
+	const afterList = listOf(afterIr?.annotations);
+	const beforeMap = new Map(beforeList.map((a) => [a.id, a]));
+	const afterMap = new Map(afterList.map((a) => [a.id, a]));
+	for (const ann of afterList) {
+		processAnnotationItem(ann, beforeMap.get(ann.id), ctx);
+	}
+	for (const ann of beforeList) {
+		processRemovedAnnotation(ann, afterMap, ctx);
+	}
 }
 
 function collectEdits(diff, boards, ctx) {
@@ -415,6 +484,7 @@ function collectEdits(diff, boards, ctx) {
 export function editsFromIrChange(before, after, boards) {
 	const ctx = createContext(after);
 	collectEdits(diffIr(before, after), boards, ctx);
+	processAnnotations(before, after, ctx);
 	const sch = orderedEdits(ctx, "sch");
 	const pcb = orderedEdits(ctx, "pcb");
 	const hasEdits = sch.length > 0 || pcb.length > 0;
