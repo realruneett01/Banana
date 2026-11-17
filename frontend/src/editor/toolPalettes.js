@@ -37,15 +37,15 @@ highlightNet|Highlight net|backquote|net|0
 placeSymbol|Add symbol|a|symbol|1
 placePower|Add power|p|power|1
 placeWire|Wire|w|wire|1
-placeBus|Bus|b|bus|0
-placeNoConnect|No-connect flag|q|noconnect|0
-placeJunction|Junction|j|junction|0
-placeLabel|Net label|l|label|0
-placeGlobalLabel|Global label|ctrl+l|glabel|0
-placeHierLabel|Hierarchical label|h|hlabel|0
+placeBus|Bus|b|bus|1
+placeNoConnect|No-connect flag|q|noconnect|1
+placeJunction|Junction|j|junction|1
+placeLabel|Net label|l|label|1
+placeGlobalLabel|Global label|ctrl+l|glabel|1
+placeHierLabel|Hierarchical label|h|hlabel|1
 placeSheet|Sheet|s|sheet|0
-placeText|Text|t|text|0
-placeLine|Graphic line||line|0
+placeText|Text|t|text|1
+placeLine|Graphic line||line|1
 `;
 
 const PCB_TOOL_TEXT = `

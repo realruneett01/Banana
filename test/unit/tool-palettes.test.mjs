@@ -27,6 +27,21 @@ const EXPECTED_SCHEMATIC_TOOL_IDS = [
 	"placeLine",
 ];
 
+const EXPECTED_READY_SCHEMATIC_TOOL_IDS = [
+	"select",
+	"placeSymbol",
+	"placePower",
+	"placeWire",
+	"placeBus",
+	"placeNoConnect",
+	"placeJunction",
+	"placeLabel",
+	"placeGlobalLabel",
+	"placeHierLabel",
+	"placeText",
+	"placeLine",
+];
+
 const EXPECTED_PCB_TOOL_IDS = [
 	"select",
 	"highlightNet",
@@ -92,6 +107,17 @@ describe("toolPalettes", () => {
 	it("preserves exact id order for SCHEMATIC_TOOLS", () => {
 		const ids = SCHEMATIC_TOOLS.map((tool) => tool.id);
 		assert.deepEqual(ids, EXPECTED_SCHEMATIC_TOOL_IDS);
+	});
+
+	it("asserts exactly which schematic tool ids are ready", () => {
+		const readyIds = SCHEMATIC_TOOLS.filter((tool) => tool.ready).map(
+			(tool) => tool.id,
+		);
+		assert.deepEqual(readyIds, EXPECTED_READY_SCHEMATIC_TOOL_IDS);
+		const unreadyIds = SCHEMATIC_TOOLS.filter((tool) => !tool.ready).map(
+			(tool) => tool.id,
+		);
+		assert.deepEqual(unreadyIds, ["highlightNet", "placeSheet"]);
 	});
 
 	it("preserves exact id order for PCB_TOOLS", () => {
