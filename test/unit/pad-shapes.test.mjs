@@ -44,6 +44,25 @@ function worldPad(pad, placement = {}) {
 	return transformPrimitives(prims, placement).pads[0];
 }
 
+function roundPad(extra = [], placement = {}, size = [2, 2]) {
+	return worldPad(irPad("roundrect", size, extra), placement);
+}
+
+function assertHits(pad, tests) {
+	for (const [pt, expected] of tests) {
+		assert.equal(padHitTest([pad], pt), expected);
+	}
+}
+
+function assertDistance(pad, pt, expected) {
+	assert.ok(near(padSegmentDistance(pad, pt, pt), expected));
+}
+
+function coordBounds(pts, axis) {
+	const vals = pts.map((p) => p[axis]);
+	return [Math.min(...vals), Math.max(...vals)];
+}
+
 describe("roundrect corner radius from roundrect_rratio", () => {
 	test("rratio sets the radius; 0.25 when absent", () => {
 		const pad = (rr) =>
@@ -54,35 +73,35 @@ describe("roundrect corner radius from roundrect_rratio", () => {
 					rr === undefined ? [] : [[s("roundrect_rratio"), rr]],
 				),
 			);
-		assert.equal(padCornerRadius(pad(0.1)), 0.1);
-		assert.equal(padCornerRadius(pad(0.5)), 0.5);
-		assert.equal(padCornerRadius(pad(undefined)), 0.25);
-		assert.equal(padCornerRadius(worldPad(irPad("rect", [2, 1], []))), 0);
+		const cases = [
+			[pad(0.1), 0.1],
+			[pad(0.5), 0.5],
+			[pad(undefined), 0.25],
+			[worldPad(irPad("rect", [2, 1], [])), 0],
+		];
+		for (const [p, expected] of cases) {
+			assert.equal(padCornerRadius(p), expected);
+		}
 	});
 
 	test("hit test and clearance use the pad's own radius", () => {
 		// 2 x 2 pad: rratio 0.5 is a circle of radius 1; 0.1 leaves (0.9, 0.9) copper.
-		const round = worldPad(
-			irPad("roundrect", [2, 2], [[s("roundrect_rratio"), 0.5]]),
-		);
-		const sharp = worldPad(
-			irPad("roundrect", [2, 2], [[s("roundrect_rratio"), 0.1]]),
-		);
-		assert.equal(padHitTest([round], [0.9, 0.9]), null);
-		assert.equal(padHitTest([sharp], [0.9, 0.9]), "1");
+		const round = roundPad([[s("roundrect_rratio"), 0.5]]);
+		const sharp = roundPad([[s("roundrect_rratio"), 0.1]]);
+		assertHits(round, [[[0.9, 0.9], null]]);
+		assertHits(sharp, [[[0.9, 0.9], "1"]]);
 		const corner = [2, 2];
-		assert.ok(
-			near(padSegmentDistance(round, corner, corner), Math.hypot(2, 2) - 1),
-		);
-		const d = Math.hypot(1.2, 1.2) - 0.2;
-		assert.ok(near(padSegmentDistance(sharp, corner, corner), d));
+		assertDistance(round, corner, Math.hypot(2, 2) - 1);
+		assertDistance(sharp, corner, Math.hypot(1.2, 1.2) - 0.2);
 	});
 
 	test("default ratio: the hit test matches clearance (r = 0.25 * min side)", () => {
-		const pad = worldPad(irPad("roundrect", [2, 2], []));
+		const pad = roundPad();
 		// Corner centre (0.5, 0.5), radius 0.5: (0.85, 0.85) is inside.
-		assert.equal(padHitTest([pad], [0.85, 0.85]), "1");
-		assert.equal(padHitTest([pad], [0.9, 0.9]), null);
+		assertHits(pad, [
+			[[0.85, 0.85], "1"],
+			[[0.9, 0.9], null],
+		]);
 	});
 });
 
@@ -94,20 +113,23 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 	];
 
 	test("chamfer cuts only the named corner", () => {
-		const pad = worldPad(irPad("roundrect", [2, 2], CHAMFER));
+		const pad = roundPad(CHAMFER);
 		assert.equal(padOutline(pad).pts.length, 5);
 		// Cut 0.5 at top-left: (-0.9, -0.9) is off the copper, (0.9, -0.9) is on it.
-		assert.equal(padHitTest([pad], [-0.9, -0.9]), null);
-		assert.equal(padHitTest([pad], [0.9, -0.9]), "1");
-		const p = [-1, -1];
-		assert.ok(near(padSegmentDistance(pad, p, p), Math.SQRT2 * 0.25));
+		assertHits(pad, [
+			[[-0.9, -0.9], null],
+			[[0.9, -0.9], "1"],
+		]);
+		assertDistance(pad, [-1, -1], Math.SQRT2 * 0.25);
 	});
 
 	test("a library pad on B mirrors the chamfer to top-right", () => {
-		const pad = worldPad(irPad("roundrect", [2, 2], CHAMFER), { side: "B" });
+		const pad = roundPad(CHAMFER, { side: "B" });
 		assert.equal(pad.mirror, "x");
-		assert.equal(padHitTest([pad], [0.9, -0.9]), null);
-		assert.equal(padHitTest([pad], [-0.9, -0.9]), "1");
+		assertHits(pad, [
+			[[0.9, -0.9], null],
+			[[-0.9, -0.9], "1"],
+		]);
 	});
 
 	// The importer keeps an embedded B pad's chamfer as the board file has it
@@ -123,17 +145,20 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 		const pad = transformPrimitives(footprintToPrimitives(fp), pl).pads[0];
 		assert.equal(pad.mirror, "y");
 		assert.deepEqual(padLocalPoint([-0.9, 0.9], pad), [-0.9, -0.9]);
-		assert.equal(padHitTest([pad], [-0.9, -0.9]), null);
-		assert.equal(padHitTest([pad], [-0.9, 0.9]), "1");
+		assertHits(pad, [
+			[[-0.9, -0.9], null],
+			[[-0.9, 0.9], "1"],
+		]);
 	});
 
 	test("rect_delta narrows one side of a trapezoid", () => {
 		const pad = worldPad(irPad("trapezoid", [2, 2], [[s("rect_delta"), 0, 1]]));
-		const ys = padOutline(pad).pts.map((p) => p[1]);
-		assert.deepEqual([Math.min(...ys), Math.max(...ys)], [-1, 1]);
+		assert.deepEqual(coordBounds(padOutline(pad).pts, 1), [-1, 1]);
 		// Top side (y = -1) is 1 wide, bottom (y = 1) is 3 wide.
-		assert.equal(padHitTest([pad], [0.9, -0.9]), null);
-		assert.equal(padHitTest([pad], [1.4, 0.95]), "1");
+		assertHits(pad, [
+			[[0.9, -0.9], null],
+			[[1.4, 0.95], "1"],
+		]);
 	});
 
 	test("custom pad clearance is the box of its anchor and primitives", () => {
@@ -150,10 +175,8 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 		const pad = worldPad(irPad("custom", [1, 1], extra));
 		assert.equal(pad.primitives.length, 1);
 		assert.equal(pad.primitives[0].fill, true);
-		const xs = padOutline(pad).pts.map((p) => p[0]);
-		assert.deepEqual([Math.min(...xs), Math.max(...xs)], [-0.5, 3.1]);
-		const p = [4.1, 0];
-		assert.ok(near(padSegmentDistance(pad, p, p), 1));
+		assert.deepEqual(coordBounds(padOutline(pad).pts, 0), [-0.5, 3.1]);
+		assertDistance(pad, [4.1, 0], 1);
 	});
 });
 
@@ -174,10 +197,15 @@ const PCBNEW = [
 	"print(json.dumps(out))",
 ].join("\n");
 
+function writeTempFile(prefix, name, content) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+	const file = path.join(dir, name);
+	fs.writeFileSync(file, content);
+	return file;
+}
+
 function kicadPads(board) {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "padshape-"));
-	const script = path.join(dir, "pads.py");
-	fs.writeFileSync(script, PCBNEW);
+	const script = writeTempFile("padshape-", "pads.py", PCBNEW);
 	const out = execFileSync(KIPYTHON, ["-I", script, board], {
 		maxBuffer: 64 * 1024 * 1024,
 	});
@@ -223,27 +251,44 @@ function worldBox(pad) {
 			pad.center[1] + lx * Math.sin(rad) + ly * Math.cos(rad),
 		];
 	});
-	const xs = world.map((p) => p[0]);
-	const ys = world.map((p) => p[1]);
-	return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+	const [minX, maxX] = coordBounds(world, 0);
+	const [minY, maxY] = coordBounds(world, 1);
+	return [minX, minY, maxX, maxY];
+}
+
+function isSharpPoly(shape, r) {
+	return r === 0 && (shape === 3 || shape === 5);
+}
+
+function isAlignedCustom(shape, angle) {
+	return shape === 6 && angle % 90 === 0;
+}
+
+function shouldCheckBox(shape, r, angle) {
+	return isSharpPoly(shape, r) || isAlignedCustom(shape, angle);
+}
+
+function checkBox(pad, box, where) {
+	worldBox(pad).forEach((v, i) => {
+		assert.ok(near(v, box[i], 1e-3), `${where} box[${i}]: ${v} vs ${box[i]}`);
+	});
 }
 
 // PAD_SHAPE values in pcbnew: 4 roundrect, 5 chamfered rect, 6 custom.
 function checkPad(pad, [, , , shape, radius, area, box, angle]) {
 	const r = padCornerRadius(pad);
 	const where = `${pad.partId} ${pad.number} ${pad.size}`;
-	if (shape === 4)
-		return assert.ok(near(r, radius, 1e-3), `${where}: ${r} vs ${radius}`);
+	if (shape === 4) {
+		assert.ok(near(r, radius, 1e-3), `${where}: ${r} vs ${radius}`);
+		return;
+	}
 	if (shape === 3 || shape === 5) {
 		const ours = outlineArea(padOutline(pad));
 		assert.ok(near(ours, area, 1e-3), `${where}: area ${ours} vs ${area}`);
 	}
-	// A sharp polygon's world box shows which corner or side it is cut on.
-	const sharp = (shape === 3 || shape === 5) && r === 0;
-	if (!sharp && (shape !== 6 || angle % 90 !== 0)) return;
-	worldBox(pad).forEach((v, i) => {
-		assert.ok(near(v, box[i], 1e-3), `${where} box[${i}]: ${v} vs ${box[i]}`);
-	});
+	if (shouldCheckBox(shape, r, angle)) {
+		checkBox(pad, box, where);
+	}
 }
 
 // Each board with the pcbnew pad shapes it must compare. RoyalBlue54L-Feather
@@ -294,12 +339,7 @@ function synthBoard() {
 		synthFootprint("U2", "B.Cu", "40 20 15"),
 		")",
 	].join("\n");
-	const file = path.join(
-		fs.mkdtempSync(path.join(os.tmpdir(), "padsynth-")),
-		"in.kicad_pcb",
-	);
-	fs.writeFileSync(file, text);
-	return file;
+	return writeTempFile("padsynth-", "in.kicad_pcb", text);
 }
 
 describe("pcbnew oracle: pad radius, chamfer and trapezoid area, custom box", {
