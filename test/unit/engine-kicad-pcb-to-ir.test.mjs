@@ -14,77 +14,83 @@ const RECT_100_80_OUTLINE = [
 	[0, 80],
 ];
 
+const makeScopedId = (prefix, seq) =>
+	`${prefix}_00000000-0000-0000-0000-${String(seq).padStart(12, "0")}`;
+
+const buildPad = (number, spec) => ({ number: String(number), ...spec });
+
+const buildFootprintPads = (coords, spec) =>
+	coords.map((x, idx) => buildPad(idx + 1, { ...spec, at: [x, 0] }));
+
+const createCircuitPart = (seq, spec) => ({
+	id: makeScopedId("part", seq),
+	props: {},
+	...spec,
+});
+
+const createCircuitNet = (seq, name, pinPairs) => ({
+	id: makeScopedId("net", seq),
+	name,
+	pins: pinPairs.map(([partSeq, pin]) => ({
+		partId: makeScopedId("part", partSeq),
+		pin,
+	})),
+});
+
 const SAMPLE_FOOTPRINTS = {
 	"Resistor_SMD:R_0805": {
-		pads: [-1, 1].map((x, idx) => ({
-			number: String(idx + 1),
+		pads: buildFootprintPads([-1, 1], {
 			type: "smd",
 			shape: "roundrect",
-			at: [x, 0],
 			size: [1, 1],
 			layers: F_CU_LAYERS,
-		})),
+		}),
 	},
-	"Package_TO_SOT_THT:TO-92": [-1.27, 0, 1.27].map((x, idx) => ({
-		number: String(idx + 1),
+	"Package_TO_SOT_THT:TO-92": buildFootprintPads([-1.27, 0, 1.27], {
 		type: "thru_hole",
 		shape: "circle",
-		at: [x, 0],
 		size: [1.5, 1.5],
 		drill: 0.8,
 		layers: ["*.Cu", "*.Mask"],
-	})),
+	}),
 };
 
 const ROUND_TRIP_IR = {
 	schemaVersion: 1,
 	name: "RoundTripBoard",
 	parts: [
-		{
-			id: "part_00000000-0000-0000-0000-000000000001",
-			ref: "R1",
-			value: "10k",
-			symbol: "Device:R",
-			footprint: "Resistor_SMD:R_0805",
-			props: {},
-			placement: { x: 30, y: 40, rot: 90, side: "F" },
-		},
-		{
-			id: "part_00000000-0000-0000-0000-000000000002",
-			ref: "Q1",
-			value: "2N3904",
-			symbol: "Device:Q_NPN",
-			footprint: "Package_TO_SOT_THT:TO-92",
-			props: {},
-			placement: { x: 70, y: 40, rot: 0, side: "B" },
-		},
-	],
+		[1, "R1", "10k", "Device:R", "Resistor_SMD:R_0805", 30, 40, 90, "F"],
+		[
+			2,
+			"Q1",
+			"2N3904",
+			"Device:Q_NPN",
+			"Package_TO_SOT_THT:TO-92",
+			70,
+			40,
+			0,
+			"B",
+		],
+	].map(([seq, ref, value, symbol, footprint, x, y, rot, side]) =>
+		createCircuitPart(seq, {
+			ref,
+			value,
+			symbol,
+			footprint,
+			placement: { x, y, rot, side },
+		}),
+	),
 	nets: [
-		{
-			id: "net_00000000-0000-0000-0000-000000000001",
-			name: "GND",
-			pins: [
-				{
-					partId: "part_00000000-0000-0000-0000-000000000001",
-					pin: "1",
-				},
-				{
-					partId: "part_00000000-0000-0000-0000-000000000002",
-					pin: "1",
-				},
+		[
+			1,
+			"GND",
+			[
+				[1, "1"],
+				[2, "1"],
 			],
-		},
-		{
-			id: "net_00000000-0000-0000-0000-000000000002",
-			name: "+3V3",
-			pins: [
-				{
-					partId: "part_00000000-0000-0000-0000-000000000001",
-					pin: "2",
-				},
-			],
-		},
-	],
+		],
+		[2, "+3V3", [[1, "2"]]],
+	].map(([seq, name, pins]) => createCircuitNet(seq, name, pins)),
 	constraints: [],
 };
 
@@ -129,8 +135,7 @@ const UNIQUE_REF_CASES = [
 
 function makeIdCounter() {
 	let seq = 0;
-	return (prefix) =>
-		`${prefix}_00000000-0000-0000-0000-${String(++seq).padStart(12, "0")}`;
+	return (prefix) => makeScopedId(prefix, ++seq);
 }
 
 function assertInvalid(input) {
@@ -284,16 +289,17 @@ function assertUniqueRefCase(tc) {
 }
 
 describe("kicadPcbToIr garbage and invalid input", () => {
-	for (const [name, input] of INVALID_INPUTS) {
+	INVALID_INPUTS.forEach(([name, input]) => {
 		test(`returns { ok: false } without throwing for ${name}`, () => {
 			assertInvalid(input);
 		});
-	}
+	});
 });
 
 describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 	test("parses modern KiCad 8 property footprints", () => {
-		const text = `(kicad_pcb
+		const res = kicadPcbToIr(
+			`(kicad_pcb
 			(version 20241229)
 			(layers (0 "F.Cu" signal) (2 "B.Cu" signal))
 			(net 1 "GND")
@@ -306,8 +312,9 @@ describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 				(pad "1" smd roundrect (at -1 0) (size 1 1) (net 1 "GND"))
 				(pad "2" smd roundrect (at 1 0) (size 1 1))
 			)
-		)`;
-		const res = kicadPcbToIr(text, { idFn: makeIdCounter() });
+		)`,
+			{ idFn: makeIdCounter() },
+		);
 		const p = assertParsedSinglePart(res, {
 			ref: "R1",
 			value: "10k",
@@ -322,7 +329,8 @@ describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 	});
 
 	test("parses older KiCad 6/7 fp_text reference and value and bottom side", () => {
-		const text = `(kicad_pcb
+		const res = kicadPcbToIr(
+			`(kicad_pcb
 			(version 20211014)
 			(layers (0 "F.Cu" signal) (2 "B.Cu" signal))
 			(footprint "Capacitor_SMD:C_0603"
@@ -332,8 +340,9 @@ describe("kicadPcbToIr footprints and legacy fp_text support", () => {
 				(fp_text value "100nF" (at 0 2 0) (layer "B.Fab"))
 				(pad "1" smd roundrect (at -0.75 0) (size 0.8 0.8))
 			)
-		)`;
-		const res = kicadPcbToIr(text, { idFn: makeIdCounter() });
+		)`,
+			{ idFn: makeIdCounter() },
+		);
 		assertParsedSinglePart(res, {
 			ref: "C1",
 			value: "100nF",
@@ -446,6 +455,16 @@ describe("kicadPcbToIr unique references and empty ref handling", () => {
 	}
 });
 
+function assertRecoveryOutcome(res, expected) {
+	assert.deepEqual(
+		{
+			ok: res.ok,
+			warnings: res.warnings,
+		},
+		expected,
+	);
+}
+
 // KiCad 10's RoyalBlue54L demo writes "(curved_edges no)filter_ratio 0.9)".
 // KiCad reads the bare keyword as "(filter_ratio 0.9)" and re-saves it that way.
 function teardropPad(number) {
@@ -481,8 +500,7 @@ describe("kicadPcbToIr recovers a list missing its '(' like KiCad does", () => {
 	test("a clean board gets no recovery warning", () => {
 		const clean = teardropBoard().replaceAll(")filter", ") (filter");
 		const res = kicadPcbToIr(clean);
-		assert.equal(res.ok, true);
-		assert.deepEqual(res.warnings, []);
+		assertRecoveryOutcome(res, { ok: true, warnings: [] });
 	});
 
 	test("other unbalanced input keeps its original error", () => {
