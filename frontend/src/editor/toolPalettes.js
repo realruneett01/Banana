@@ -57,12 +57,12 @@ addVia|Via|v|via|1
 addZone|Filled zone|ctrl+shift+z|zone|1
 outlineRect|Board outline (rectangle)||outline|1
 outlineRounded|Board outline (rounded)||outlineRounded|1
-drawLine|Line|ctrl+shift+l|line|0
-drawArc|Arc|ctrl+shift+a|arc|0
-drawRect|Rectangle||rect|0
-drawCircle|Circle|ctrl+shift+c|circle|0
-placeText|Text|ctrl+shift+t|text|0
-placeDimension|Dimension|ctrl+shift+h|dimension|0
+drawLine|Line|ctrl+shift+l|line|1
+drawArc|Arc|ctrl+shift+a|arc|1
+drawRect|Rectangle||rect|1
+drawCircle|Circle|ctrl+shift+c|circle|1
+placeText|Text|ctrl+shift+t|text|1
+placeDimension|Dimension|ctrl+shift+h|dimension|1
 `;
 
 const SCHEMATIC_PART_TEXT = `

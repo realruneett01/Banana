@@ -59,6 +59,22 @@ const EXPECTED_PCB_TOOL_IDS = [
 	"placeDimension",
 ];
 
+const EXPECTED_READY_PCB_TOOL_IDS = [
+	"select",
+	"placeFootprint",
+	"routeTrack",
+	"addVia",
+	"addZone",
+	"outlineRect",
+	"outlineRounded",
+	"drawLine",
+	"drawArc",
+	"drawRect",
+	"drawCircle",
+	"placeText",
+	"placeDimension",
+];
+
 const PALETTE_LISTS = [
 	{ name: "SCHEMATIC_TOOLS", list: SCHEMATIC_TOOLS },
 	{ name: "PCB_TOOLS", list: PCB_TOOLS },
@@ -123,6 +139,17 @@ describe("toolPalettes", () => {
 	it("preserves exact id order for PCB_TOOLS", () => {
 		const ids = PCB_TOOLS.map((tool) => tool.id);
 		assert.deepEqual(ids, EXPECTED_PCB_TOOL_IDS);
+	});
+
+	it("asserts exactly which PCB tool ids are ready", () => {
+		const readyIds = PCB_TOOLS.filter((tool) => tool.ready).map(
+			(tool) => tool.id,
+		);
+		assert.deepEqual(readyIds, EXPECTED_READY_PCB_TOOL_IDS);
+		const unreadyIds = PCB_TOOLS.filter((tool) => !tool.ready).map(
+			(tool) => tool.id,
+		);
+		assert.deepEqual(unreadyIds, ["highlightNet"]);
 	});
 
 	it("returns frozen palette for schematic tab", () => {
