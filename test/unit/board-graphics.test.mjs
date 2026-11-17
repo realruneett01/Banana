@@ -19,6 +19,52 @@ const lineAt = (x, y, extra = {}) => ({
 	y,
 	...extra,
 });
+const rectAt = (layer, [x, y, x2, y2], extra = {}) => ({
+	kind: "rect",
+	layer,
+	x,
+	y,
+	x2,
+	y2,
+	...extra,
+});
+const circleAt = (layer, [x, y, x2, y2], extra = {}) => ({
+	kind: "circle",
+	layer,
+	x,
+	y,
+	x2,
+	y2,
+	...extra,
+});
+const arcAt = (layer, [x, y, xm, ym, x2, y2], extra = {}) => ({
+	kind: "arc",
+	layer,
+	x,
+	y,
+	xm,
+	ym,
+	x2,
+	y2,
+	...extra,
+});
+const textAt = (layer, [x, y], text, extra = {}) => ({
+	kind: "text",
+	layer,
+	x,
+	y,
+	text,
+	...extra,
+});
+const dimAt = (layer, [x, y, x2, y2], extra = {}) => ({
+	kind: "dimension",
+	layer,
+	x,
+	y,
+	x2,
+	y2,
+	...extra,
+});
 
 describe("addGraphic", () => {
 	function checkAdd(input, expectedId = "gfx-1", expectedWidth = 0.15) {
@@ -39,56 +85,23 @@ describe("addGraphic", () => {
 	}
 
 	test("defaults line width to 0.15 on F.SilkS and auto-generates id", () =>
-		checkAdd({ kind: "line", layer: "F.SilkS", x: 0, y: 0, x2: 10, y2: 0 }));
+		checkAdd(lineAt(0, 0, { x2: 10, y2: 0 })));
 	test("defaults width to 0.1 on Edge.Cuts", () =>
-		checkAdd(
-			{ kind: "rect", layer: "Edge.Cuts", x: 0, y: 0, x2: 20, y2: 15 },
-			"gfx-1",
-			0.1,
-		));
+		checkAdd(rectAt("Edge.Cuts", [0, 0, 20, 15]), "gfx-1", 0.1));
 	test("preserves explicit id and explicit width", () =>
 		checkAdd(
-			{
+			arcAt("Edge.Cuts", [0, 0, 5, 2, 10, 0], {
 				id: "custom-arc",
-				kind: "arc",
-				layer: "Edge.Cuts",
-				x: 0,
-				y: 0,
-				xm: 5,
-				ym: 2,
-				x2: 10,
-				y2: 0,
 				width: 0.4,
-			},
+			}),
 			"custom-arc",
 			0.4,
 		));
 	test("adds circle on B.SilkS with default 0.15 width", () =>
-		checkAdd({
-			kind: "circle",
-			layer: "B.SilkS",
-			x: 10,
-			y: 10,
-			x2: 15,
-			y2: 10,
-		}));
+		checkAdd(circleAt("B.SilkS", [10, 10, 15, 10])));
 	test("adds text on Dwgs.User with body text", () =>
-		checkAdd({
-			kind: "text",
-			layer: "Dwgs.User",
-			x: 5,
-			y: 5,
-			text: "Banana v2",
-		}));
-	test("adds dimension on F.Cu", () =>
-		checkAdd({
-			kind: "dimension",
-			layer: "F.Cu",
-			x: 0,
-			y: 0,
-			x2: 25,
-			y2: 0,
-		}));
+		checkAdd(textAt("Dwgs.User", [5, 5], "Banana v2")));
+	test("adds dimension on F.Cu", () => checkAdd(dimAt("F.Cu", [0, 0, 25, 0])));
 
 	test("auto id increments past existing gfx-<n>", () => {
 		let board = {};
@@ -111,13 +124,10 @@ describe("addGraphic", () => {
 });
 
 describe("deleteGraphic", () => {
-	const board = boardWith(lineAt(0, 0, { id: "gfx-1" }), {
-		id: "gfx-2",
-		kind: "circle",
-		layer: "B.SilkS",
-		x: 5,
-		y: 5,
-	});
+	const board = boardWith(
+		lineAt(0, 0, { id: "gfx-1" }),
+		circleAt("B.SilkS", [5, 5], { id: "gfx-2" }),
+	);
 
 	test("deletes existing graphic by id", () => {
 		const next = deleteGraphic(board, "gfx-1");
@@ -147,40 +157,31 @@ const MOVE_CASES = [
 	],
 	[
 		"moves rect coordinates (x, y, x2, y2)",
-		{ kind: "rect", layer: "Edge.Cuts", x: 10, y: 20, x2: 30, y2: 40 },
+		rectAt("Edge.Cuts", [10, 20, 30, 40]),
 		[-2, 3],
 		{ x: 8, y: 23, x2: 28, y2: 43 },
 	],
 	[
 		"moves circle coordinates (x, y, x2, y2)",
-		{ kind: "circle", layer: "F.SilkS", x: 5, y: 5, x2: 8, y2: 5 },
+		circleAt("F.SilkS", [5, 5, 8, 5]),
 		[2, 2],
 		{ x: 7, y: 7, x2: 10, y2: 7 },
 	],
 	[
 		"moves arc coordinates (x, y, xm, ym, x2, y2)",
-		{
-			kind: "arc",
-			layer: "Dwgs.User",
-			x: 0,
-			y: 0,
-			xm: 5,
-			ym: 2,
-			x2: 10,
-			y2: 0,
-		},
+		arcAt("Dwgs.User", [0, 0, 5, 2, 10, 0]),
 		[1, 4],
 		{ x: 1, y: 4, xm: 6, ym: 6, x2: 11, y2: 4 },
 	],
 	[
 		"moves text anchor (x, y)",
-		{ kind: "text", layer: "F.SilkS", x: 12, y: 18, text: "Note" },
+		textAt("F.SilkS", [12, 18], "Note"),
 		[-2, -3],
 		{ x: 10, y: 15 },
 	],
 	[
 		"moves dimension (x, y, x2, y2)",
-		{ kind: "dimension", layer: "F.SilkS", x: 0, y: 10, x2: 20, y2: 10 },
+		dimAt("F.SilkS", [0, 10, 20, 10]),
 		[5, 5],
 		{ x: 5, y: 15, x2: 25, y2: 15 },
 	],
@@ -219,34 +220,15 @@ describe("moveGraphic", () => {
 	});
 });
 
-const editLine = {
-	id: "g1",
-	kind: "line",
-	layer: "F.SilkS",
-	x: 0,
-	y: 0,
-	x2: 5,
-	y2: 0,
-};
-const movedCircle = {
+const editLine = lineAt(0, 0, { id: "g1", x2: 5, y2: 0 });
+const movedCircle = circleAt("F.SilkS", [15, 15, 17, 15], {
 	id: "g1",
 	uuid: "u-456",
-	kind: "circle",
-	layer: "F.SilkS",
-	x: 15,
-	y: 15,
-	x2: 17,
-	y2: 15,
-};
-const sameText = {
+});
+const sameText = textAt("F.SilkS", [5, 5], "Same", {
 	id: "g1",
 	uuid: "u-789",
-	kind: "text",
-	layer: "F.SilkS",
-	x: 5,
-	y: 5,
-	text: "Same",
-};
+});
 
 const EDITS_CASES = [
 	[
@@ -264,18 +246,7 @@ const EDITS_CASES = [
 	["ignores removed graphic without uuid", [editLine], [], []],
 	[
 		"emits deleteGraphic then addGraphic for moved graphic with uuid",
-		[
-			{
-				id: "g1",
-				uuid: "u-456",
-				kind: "circle",
-				layer: "F.SilkS",
-				x: 10,
-				y: 10,
-				x2: 12,
-				y2: 10,
-			},
-		],
+		[circleAt("F.SilkS", [10, 10, 12, 10], { id: "g1", uuid: "u-456" })],
 		[movedCircle],
 		[
 			{ op: "deleteGraphic", uuid: "u-456" },
@@ -298,128 +269,63 @@ describe("graphicsEdits", () => {
 
 const hit = (shape, pt, tol = 0.5) => hitTestGraphic([shape], pt, tol);
 
-describe("hitTestGraphic - line", () => {
-	const s = {
-		id: "line-1",
-		kind: "line",
-		layer: "F.SilkS",
-		x: 0,
-		y: 0,
-		x2: 10,
-		y2: 0,
-	};
-	test("hits near start", () => assert.equal(hit(s, [0.1, 0.1]), "line-1"));
-	test("hits near middle", () => assert.equal(hit(s, [5, 0.2]), "line-1"));
-	test("hits near end", () => assert.equal(hit(s, [9.9, -0.1]), "line-1"));
-	test("misses when outside tolerance", () =>
-		assert.equal(hit(s, [5, 2]), null));
-});
+const HIT_SHAPES = {
+	line: lineAt(0, 0, { id: "line-1", x2: 10, y2: 0 }),
+	rect: rectAt("Edge.Cuts", [0, 0, 10, 10], { id: "rect-1" }),
+	circle: circleAt("F.SilkS", [10, 10, 15, 10], { id: "circle-1" }),
+	arc: arcAt("Dwgs.User", [0, 0, 5, 5, 10, 0], { id: "arc-1" }),
+	text: textAt("F.SilkS", [10, 20], "Label", { id: "text-1" }),
+	dimension: dimAt("F.SilkS", [5, 10, 25, 10], { id: "dim-1" }),
+};
 
-describe("hitTestGraphic - rect", () => {
-	const s = {
-		id: "rect-1",
-		kind: "rect",
-		layer: "Edge.Cuts",
-		x: 0,
-		y: 0,
-		x2: 10,
-		y2: 10,
-	};
-	test("hits top edge", () => assert.equal(hit(s, [5, 0.1]), "rect-1"));
-	test("hits right edge", () => assert.equal(hit(s, [9.9, 5]), "rect-1"));
-	test("hits bottom edge", () => assert.equal(hit(s, [5, 9.9]), "rect-1"));
-	test("hits left edge", () => assert.equal(hit(s, [0.1, 5]), "rect-1"));
-	test("misses deep inside unfilled rect", () =>
-		assert.equal(hit(s, [5, 5]), null));
-	test("misses far outside rect", () => assert.equal(hit(s, [15, 15]), null));
-});
+const HIT_CASES = [
+	["line", [0.1, 0.1], "hits near start", "line-1"],
+	["line", [5, 0.2], "hits near middle", "line-1"],
+	["line", [9.9, -0.1], "hits near end", "line-1"],
+	["line", [5, 2], "misses when outside tolerance", null],
+	["rect", [5, 0.1], "hits top edge", "rect-1"],
+	["rect", [9.9, 5], "hits right edge", "rect-1"],
+	["rect", [5, 9.9], "hits bottom edge", "rect-1"],
+	["rect", [0.1, 5], "hits left edge", "rect-1"],
+	["rect", [5, 5], "misses deep inside unfilled rect", null],
+	["rect", [15, 15], "misses far outside rect", null],
+	["circle", [10, 5.1], "hits circumference at top", "circle-1"],
+	["circle", [14.9, 10], "hits circumference at right", "circle-1"],
+	["circle", [10, 10], "misses at center", null],
+	["circle", [20, 10], "misses outside radius", null],
+	["arc", [0.1, 0.1], "hits near start", "arc-1"],
+	["arc", [5.1, 4.9], "hits near mid", "arc-1"],
+	["arc", [9.9, 0.1], "hits near end", "arc-1"],
+	["arc", [5, 10], "misses far off arc", null],
+	["text", [10.2, 20.3], "hits within bbox around anchor", "text-1"],
+	["text", [10, 20], "hits at anchor point exactly", "text-1"],
+	["text", [11, 20], "misses outside bbox around anchor", null],
+	["dimension", [4.8, 9.9], "hits within bbox around anchor", "dim-1"],
+	["dimension", [8, 10], "misses outside bbox around anchor", null],
+];
 
-describe("hitTestGraphic - circle", () => {
-	const s = {
-		id: "circle-1",
-		kind: "circle",
-		layer: "F.SilkS",
-		x: 10,
-		y: 10,
-		x2: 15,
-		y2: 10,
-	};
-	test("hits circumference at top", () =>
-		assert.equal(hit(s, [10, 5.1]), "circle-1"));
-	test("hits circumference at right", () =>
-		assert.equal(hit(s, [14.9, 10]), "circle-1"));
-	test("misses at center", () => assert.equal(hit(s, [10, 10]), null));
-	test("misses outside radius", () => assert.equal(hit(s, [20, 10]), null));
-});
-
-describe("hitTestGraphic - arc", () => {
-	const s = {
-		id: "arc-1",
-		kind: "arc",
-		layer: "Dwgs.User",
-		x: 0,
-		y: 0,
-		xm: 5,
-		ym: 5,
-		x2: 10,
-		y2: 0,
-	};
-	test("hits near start", () => assert.equal(hit(s, [0.1, 0.1]), "arc-1"));
-	test("hits near mid", () => assert.equal(hit(s, [5.1, 4.9]), "arc-1"));
-	test("hits near end", () => assert.equal(hit(s, [9.9, 0.1]), "arc-1"));
-	test("misses far off arc", () => assert.equal(hit(s, [5, 10]), null));
-});
-
-describe("hitTestGraphic - text", () => {
-	const s = {
-		id: "text-1",
-		kind: "text",
-		layer: "F.SilkS",
-		x: 10,
-		y: 20,
-		text: "Label",
-	};
-	test("hits within bbox around anchor", () =>
-		assert.equal(hit(s, [10.2, 20.3]), "text-1"));
-	test("hits at anchor point exactly", () =>
-		assert.equal(hit(s, [10, 20]), "text-1"));
-	test("misses outside bbox around anchor", () =>
-		assert.equal(hit(s, [11, 20]), null));
-});
-
-describe("hitTestGraphic - dimension", () => {
-	const s = {
-		id: "dim-1",
-		kind: "dimension",
-		layer: "F.SilkS",
-		x: 5,
-		y: 10,
-		x2: 25,
-		y2: 10,
-	};
-	test("hits within bbox around anchor", () =>
-		assert.equal(hit(s, [4.8, 9.9]), "dim-1"));
-	test("misses outside bbox around anchor", () =>
-		assert.equal(hit(s, [8, 10]), null));
-});
+for (const [kind, shape] of Object.entries(HIT_SHAPES)) {
+	describe(`hitTestGraphic - ${kind}`, () => {
+		const cases = HIT_CASES.filter(([k]) => k === kind);
+		for (const [, pt, title, expected] of cases) {
+			test(title, () => assert.equal(hit(shape, pt), expected));
+		}
+	});
+}
 
 describe("hitTestGraphic - edge cases", () => {
 	test("returns null for non-array graphics or missing pt", () => {
-		assert.equal(hitTestGraphic(null, [0, 0]), null);
-		assert.equal(hitTestGraphic([], [0, 0]), null);
-		assert.equal(hitTestGraphic([{ id: "g1", kind: "line" }], null), null);
+		for (const [gfx, pt] of [
+			[null, [0, 0]],
+			[[], [0, 0]],
+			[[{ id: "g1", kind: "line" }], null],
+		]) {
+			assert.equal(hitTestGraphic(gfx, pt), null);
+		}
 	});
 
 	test("supports point object input", () => {
-		const line = {
-			id: "line-1",
-			kind: "line",
-			layer: "F.SilkS",
-			x: 0,
-			y: 0,
-			x2: 10,
-			y2: 0,
-		};
+		const line = lineAt(0, 0, { id: "line-1", x2: 10, y2: 0 });
 		assert.equal(hitTestGraphic([line], { x: 5, y: 0.1 }, 0.5), "line-1");
 	});
 });
