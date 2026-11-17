@@ -155,13 +155,25 @@ for (const entry of ICON_MAP.split("|")) {
 	ICONS[k] = type === "t" ? T_ICONS[Number(idx)] : M_ICONS[Number(idx)];
 }
 
-const PART_RULES =
-	"ground:^GND|flash:^(VCC|\\+|PWR_FLAG)|capacitorPolarized:^(C_Polarized|CP_)|capacitor:^(C$|C_\\d)|resistor:^(R$|R_)|inductor:^(L$|L_\\d)|zener:^D_Zener|led:^LED|diode:^(D$|D_)|chip:^(Q_|SOT-|TO-)|ic:^(LM358|SOIC|DIP)|plug:^(Conn_|PinHeader)|button:^SW_P|crystal:^Crystal|fuse:^Fuse|battery:^Battery|hole:^MountingHole"
-		.split("|")
-		.map((entry) => {
-			const [key, pat] = entry.split(":");
-			return [new RegExp(pat, key === "button" ? "i" : ""), key];
-		});
+const PART_RULES = Object.freeze([
+	[/^GND/, "ground"],
+	[/^(VCC|\+|PWR_FLAG)/, "flash"],
+	[/^(C_Polarized|CP_)/, "capacitorPolarized"],
+	[/^(C$|C_\d)/, "capacitor"],
+	[/^(R$|R_)/, "resistor"],
+	[/^(L$|L_\d)/, "inductor"],
+	[/^D_Zener/, "zener"],
+	[/^LED/, "led"],
+	[/^(D$|D_)/, "diode"],
+	[/^(Q_|SOT-|TO-)/, "chip"],
+	[/^(LM358|SOIC|DIP)/, "ic"],
+	[/^(Conn_|PinHeader)/, "plug"],
+	[/^SW_P/i, "button"],
+	[/^Crystal/, "crystal"],
+	[/^Fuse/, "fuse"],
+	[/^Battery/, "battery"],
+	[/^MountingHole/, "hole"],
+]);
 
 function resolvePartIconKey(item) {
 	const id = item?.id ?? "";
