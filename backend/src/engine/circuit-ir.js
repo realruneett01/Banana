@@ -78,6 +78,29 @@ export const CIRCUIT_IR_SCHEMA = {
 			value: {},
 			unit: stringProp,
 		}),
+		annotations: arrayOfObjects(["id", "kind", "x", "y"], {
+			id: stringProp,
+			kind: {
+				type: "string",
+				enum: [
+					"label",
+					"globalLabel",
+					"hierLabel",
+					"noConnect",
+					"junction",
+					"text",
+					"line",
+					"bus",
+				],
+			},
+			x: { type: "number" },
+			y: { type: "number" },
+			x2: { type: "number" },
+			y2: { type: "number" },
+			rot: { type: "number" },
+			text: stringProp,
+			uuid: stringProp,
+		}),
 	},
 };
 

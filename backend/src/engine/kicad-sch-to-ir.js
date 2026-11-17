@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { validateCircuitIR } from "./circuit-ir.js";
 import { PIN_TYPES } from "./erc-pin-matrix.js";
 import { newId } from "./ids.js";
@@ -916,6 +917,121 @@ function assembleCircuit(ast, ctx, idFn) {
 	return { parts, nets, groups };
 }
 
+const TEXT_ANNOTATION_KINDS = {
+	label: "label",
+	global_label: "globalLabel",
+	hierarchical_label: "hierLabel",
+	text: "text",
+};
+
+const POINT_ANNOTATION_KINDS = {
+	no_connect: "noConnect",
+	junction: "junction",
+};
+
+function nextAnnotationId(idFn) {
+	return idFn?.("annotation") ?? `ann_${randomUUID()}`;
+}
+
+function extractAtCoords(node) {
+	const atNode = extractChildNode(node, "at");
+	if (!atNode) return null;
+	const x = Number(atNode[1]);
+	const y = Number(atNode[2]);
+	const rot = atNode.length > 3 ? Number(atNode[3]) : undefined;
+	return { x, y, rot };
+}
+
+function parseTextAnnotation(head, child, idFn) {
+	const kind = TEXT_ANNOTATION_KINDS[head];
+	if (!kind) return null;
+	const at = extractAtCoords(child);
+	if (!at) return null;
+	const uuid = extractChildText(child, "uuid");
+	return {
+		id: nextAnnotationId(idFn),
+		kind,
+		x: at.x,
+		y: at.y,
+		text: nodeSym(child[1]),
+		...(at.rot !== undefined && { rot: at.rot }),
+		...(uuid && { uuid }),
+	};
+}
+
+function parsePointAnnotation(head, child, idFn) {
+	const kind = POINT_ANNOTATION_KINDS[head];
+	if (!kind) return null;
+	const at = extractAtCoords(child);
+	if (!at) return null;
+	const uuid = extractChildText(child, "uuid");
+	return {
+		id: nextAnnotationId(idFn),
+		kind,
+		x: at.x,
+		y: at.y,
+		...(uuid && { uuid }),
+	};
+}
+
+function parseLineAnnotation(child, idFn) {
+	const pts = extractWirePoints(child);
+	if (pts.length !== 2) return null;
+	const uuid = extractChildText(child, "uuid");
+	return {
+		id: nextAnnotationId(idFn),
+		kind: "line",
+		x: pts[0].x,
+		y: pts[0].y,
+		x2: pts[1].x,
+		y2: pts[1].y,
+		...(uuid && { uuid }),
+	};
+}
+
+function parseBusSegments(child, idFn) {
+	const pts = extractWirePoints(child);
+	if (pts.length < 2) return [];
+	const uuid = extractChildText(child, "uuid");
+	const segments = [];
+	for (let i = 0; i < pts.length - 1; i++) {
+		segments.push({
+			id: nextAnnotationId(idFn),
+			kind: "bus",
+			x: pts[i].x,
+			y: pts[i].y,
+			x2: pts[i + 1].x,
+			y2: pts[i + 1].y,
+			...(uuid && { uuid }),
+		});
+	}
+	return segments;
+}
+
+function parseChildAnnotation(child, idFn) {
+	if (!Array.isArray(child) || !child[0]) return null;
+	const head = child[0]?.sym;
+	if (head === "polyline") return parseLineAnnotation(child, idFn);
+	if (head === "bus") return parseBusSegments(child, idFn);
+	return (
+		parseTextAnnotation(head, child, idFn) ??
+		parsePointAnnotation(head, child, idFn)
+	);
+}
+
+function collectAnnotations(ast, idFn) {
+	const annotations = [];
+	for (const child of ast.slice(1)) {
+		const parsed = parseChildAnnotation(child, idFn);
+		if (Array.isArray(parsed)) {
+			annotations.push(...parsed);
+		} else if (parsed) {
+			annotations.push(parsed);
+		}
+	}
+	return annotations;
+}
+
 function convertSchToIr(text, { name, idFn }) {
 	const parsed = parseSchAst(text);
 	if (!parsed.ok) return parsed;
@@ -923,12 +1039,14 @@ function convertSchToIr(text, { name, idFn }) {
 	const { ast } = parsed;
 	const ctx = createParseContext();
 	const { parts, nets } = assembleCircuit(ast, ctx, idFn);
+	const annotations = collectAnnotations(ast, idFn);
 	const ir = {
 		schemaVersion: 1,
 		name: resolveIrName(name, ast),
 		parts,
 		nets,
 		constraints: [],
+		annotations,
 	};
 
 	const validation = validateCircuitIR(ir);
