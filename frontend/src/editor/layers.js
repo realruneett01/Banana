@@ -1,32 +1,20 @@
-export const NON_COPPER_LAYERS = Object.freeze([
-	"F.Adhes",
-	"B.Adhes",
-	"F.Paste",
-	"B.Paste",
-	"F.SilkS",
-	"B.SilkS",
-	"F.Mask",
-	"B.Mask",
-	"Dwgs.User",
-	"Cmts.User",
-	"Eco1.User",
-	"Eco2.User",
-	"Edge.Cuts",
-	"Margin",
-	"F.CrtYd",
-	"B.CrtYd",
-	"F.Fab",
-	"B.Fab",
-	"User.1",
-	"User.2",
-	"User.3",
-	"User.4",
-	"User.5",
-	"User.6",
-	"User.7",
-	"User.8",
-	"User.9",
-]);
+function buildNonCopperLayers() {
+	const frontBack = (names) => names.flatMap((n) => [`F.${n}`, `B.${n}`]);
+	const numbered = Array.from({ length: 9 }, (_, i) => `User.${i + 1}`);
+	return [
+		...frontBack(["Adhes", "Paste", "SilkS", "Mask"]),
+		"Dwgs.User",
+		"Cmts.User",
+		"Eco1.User",
+		"Eco2.User",
+		"Edge.Cuts",
+		"Margin",
+		...frontBack(["CrtYd", "Fab"]),
+		...numbered,
+	];
+}
+
+export const NON_COPPER_LAYERS = Object.freeze(buildNonCopperLayers());
 
 function isValidCopperCount(count) {
 	if (!Number.isInteger(count)) return false;
@@ -39,23 +27,16 @@ export function copperLayers(count) {
 	if (!isValidCopperCount(count)) {
 		throw new RangeError(`Invalid copper layer count: ${count}`);
 	}
-	if (count === 1) {
-		return Object.freeze(["F.Cu"]);
-	}
-	const layers = ["F.Cu"];
-	for (let i = 1; i <= count - 2; i++) {
-		layers.push(`In${i}.Cu`);
-	}
-	layers.push("B.Cu");
-	return Object.freeze(layers);
+	if (count === 1) return Object.freeze(["F.Cu"]);
+	const inners = Array.from({ length: count - 2 }, (_, i) => `In${i + 1}.Cu`);
+	return Object.freeze(["F.Cu", ...inners, "B.Cu"]);
 }
 
 export function layerKind(name) {
 	if (typeof name !== "string") return "tech";
 	if (name.endsWith(".Cu")) return "copper";
 	if (name === "Edge.Cuts") return "edge";
-	if (name.endsWith(".User")) return "user";
-	if (/^User\.[1-9]$/.test(name)) return "user";
+	if (name.endsWith(".User") || /^User\.[1-9]$/.test(name)) return "user";
 	return "tech";
 }
 
@@ -79,27 +60,23 @@ export function createLayerState({ copperCount = 2 } = {}) {
 }
 
 export function setActive(state, layer) {
-	if (!state.all.includes(layer)) return state;
-	if (state.active === layer) return state;
+	if (!state.all.includes(layer) || state.active === layer) return state;
 	return Object.freeze({ ...state, active: layer });
 }
 
 export function isVisible(state, layer) {
-	if (!state.all.includes(layer)) return false;
-	return !state.hidden.includes(layer);
+	return state.all.includes(layer) && !state.hidden.includes(layer);
 }
 
 export function setVisible(state, layer, visible) {
 	if (!state.all.includes(layer)) return state;
 	const isCurrentlyHidden = state.hidden.includes(layer);
-	if (visible) {
-		if (!isCurrentlyHidden) return state;
-		const hidden = Object.freeze(state.hidden.filter((l) => l !== layer));
-		return Object.freeze({ ...state, hidden });
-	}
-	if (isCurrentlyHidden) return state;
+	if (visible && !isCurrentlyHidden) return state;
+	if (!visible && isCurrentlyHidden) return state;
 	const hidden = Object.freeze(
-		state.all.filter((l) => l === layer || state.hidden.includes(l)),
+		visible
+			? state.hidden.filter((l) => l !== layer)
+			: state.all.filter((l) => l === layer || state.hidden.includes(l)),
 	);
 	return Object.freeze({ ...state, hidden });
 }
@@ -126,23 +103,19 @@ export function stepCopper(state, dir) {
 }
 
 export function jumpCopper(state, which) {
-	if (which === "top") {
-		return setActive(state, "F.Cu");
-	}
+	if (which === "top") return setActive(state, "F.Cu");
 	if (which === "bottom") {
-		const lastLayer = state.copper[state.copper.length - 1];
-		return setActive(state, lastLayer);
+		return setActive(state, state.copper[state.copper.length - 1]);
 	}
 	return state;
 }
 
 export function drawOrder(state) {
 	const isVis = (l) => !state.hidden.includes(l);
-	const back = NON_COPPER_LAYERS.filter((l) => l.startsWith("B.") && isVis(l));
+	const isBack = (l) => l.startsWith("B.");
+	const back = NON_COPPER_LAYERS.filter((l) => isBack(l) && isVis(l));
 	const copper = [...state.copper].reverse().filter(isVis);
-	const front = NON_COPPER_LAYERS.filter(
-		(l) => !l.startsWith("B.") && isVis(l),
-	);
+	const front = NON_COPPER_LAYERS.filter((l) => !isBack(l) && isVis(l));
 	const combined = [...back, ...copper, ...front];
 	if (!combined.includes(state.active)) {
 		return Object.freeze(combined);
