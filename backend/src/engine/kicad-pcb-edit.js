@@ -123,9 +123,10 @@ function refreshChildUuids(node, newUuid) {
 }
 
 function findLastIndexByHeads(ast, heads) {
+	const headSet = new Set(heads);
 	for (let i = ast.length - 1; i >= 1; i--) {
 		const head = ast[i]?.[0]?.sym;
-		if (heads.includes(head)) return i;
+		if (headSet.has(head)) return i;
 	}
 	return -1;
 }
@@ -248,13 +249,13 @@ function flipFootprintItem(child) {
 	// The flip negates a pad's angle; text is turned to read from below
 	// and drawn mirrored.
 	if (head === "pad") turnItem(child, (a) => -a);
-	if (TEXT_HEADS.includes(head)) {
+	if (TEXT_HEADS.has(head)) {
 		turnItem(child, (a) => 180 - a);
 		toggleTextMirror(child);
 	}
 }
 
-const TEXT_HEADS = ["property", "fp_text"];
+const TEXT_HEADS = new Set(["property", "fp_text"]);
 
 function childOrNew(node, tag) {
 	const found = findChildByTag(node, tag);
@@ -286,7 +287,7 @@ function rotateFootprintItems(fpNode, rot) {
 	if (!rot) return;
 	for (const child of fpNode) {
 		const head = Array.isArray(child) ? child[0]?.sym : null;
-		if (head === "pad" || TEXT_HEADS.includes(head)) {
+		if (head === "pad" || TEXT_HEADS.has(head)) {
 			turnItem(child, (a) => a + rot);
 		}
 	}
@@ -556,6 +557,186 @@ function handleDeleteTrack(ast, edit) {
 	return { ok: true };
 }
 
+const DIMENSION_FORMAT = [
+	sym("format"),
+	[sym("units"), 2],
+	[sym("units_format"), 1],
+	[sym("precision"), 4],
+];
+
+const DIMENSION_STYLE = [
+	sym("style"),
+	[sym("thickness"), 0.15],
+	[sym("arrow_length"), 1.27],
+	[sym("text_position_mode"), 0],
+	[sym("extension_height"), 0.58642],
+	[sym("extension_offset"), 0.5],
+];
+
+const TEXT_EFFECTS = [
+	sym("effects"),
+	[sym("font"), [sym("size"), 1, 1], [sym("thickness"), 0.15]],
+];
+
+function graphicTail(g, w, uuid, fill) {
+	const stroke = [
+		sym("stroke"),
+		[sym("width"), w],
+		[sym("type"), sym("default")],
+	];
+	const fillNodes = fill ? [[sym("fill"), sym("none")]] : [];
+	return [stroke, ...fillNodes, [sym("layer"), g.layer], [sym("uuid"), uuid]];
+}
+
+function buildGraphicLine(g, w, uuid) {
+	return [
+		sym("gr_line"),
+		[sym("start"), roundCoord(g.x), roundCoord(g.y)],
+		[sym("end"), roundCoord(g.x2), roundCoord(g.y2)],
+		...graphicTail(g, w, uuid, false),
+	];
+}
+
+function buildGraphicRect(g, w, uuid) {
+	return [
+		sym("gr_rect"),
+		[sym("start"), roundCoord(g.x), roundCoord(g.y)],
+		[sym("end"), roundCoord(g.x2), roundCoord(g.y2)],
+		...graphicTail(g, w, uuid, true),
+	];
+}
+
+function buildGraphicCircle(g, w, uuid) {
+	return [
+		sym("gr_circle"),
+		[sym("center"), roundCoord(g.x), roundCoord(g.y)],
+		[sym("end"), roundCoord(g.x2), roundCoord(g.y2)],
+		...graphicTail(g, w, uuid, true),
+	];
+}
+
+function buildGraphicArc(g, w, uuid) {
+	return [
+		sym("gr_arc"),
+		[sym("start"), roundCoord(g.x), roundCoord(g.y)],
+		[sym("mid"), roundCoord(g.xm), roundCoord(g.ym)],
+		[sym("end"), roundCoord(g.x2), roundCoord(g.y2)],
+		...graphicTail(g, w, uuid, false),
+	];
+}
+
+function buildGraphicText(g, _w, uuid) {
+	return [
+		sym("gr_text"),
+		g.text,
+		[sym("at"), roundCoord(g.x), roundCoord(g.y), 0],
+		[sym("layer"), g.layer],
+		[sym("uuid"), uuid],
+		structuredClone(TEXT_EFFECTS),
+	];
+}
+
+function buildGraphicDimension(g, _w, uuid) {
+	return [
+		sym("dimension"),
+		[sym("type"), sym("aligned")],
+		[sym("layer"), g.layer],
+		[sym("uuid"), uuid],
+		[
+			sym("pts"),
+			[sym("xy"), roundCoord(g.x), roundCoord(g.y)],
+			[sym("xy"), roundCoord(g.x2), roundCoord(g.y2)],
+		],
+		[sym("height"), 2],
+		structuredClone(DIMENSION_FORMAT),
+		structuredClone(DIMENSION_STYLE),
+	];
+}
+
+const GRAPHIC_BUILDERS = {
+	line: buildGraphicLine,
+	rect: buildGraphicRect,
+	circle: buildGraphicCircle,
+	arc: buildGraphicArc,
+	text: buildGraphicText,
+	dimension: buildGraphicDimension,
+};
+
+function graphicCoordsList(g) {
+	if (g.kind === "text") return [g.x, g.y];
+	if (g.kind === "arc") return [g.x, g.y, g.xm, g.ym, g.x2, g.y2];
+	return [g.x, g.y, g.x2, g.y2];
+}
+
+function validateGraphicCoords(g) {
+	const coords = graphicCoordsList(g);
+	return coords.every(isBoardCoord) ? null : "Non-finite coords";
+}
+
+function validateGraphicBase(g) {
+	if (!g || typeof g !== "object") return "Invalid graphic";
+	if (!GRAPHIC_BUILDERS[g.kind]) return "Unknown graphic kind";
+	if (!isString(g.layer)) return "Invalid layer";
+	return null;
+}
+
+function validateGraphicWidth(width) {
+	if (width === undefined) return null;
+	return isPositiveNumber(width) ? null : "Invalid width";
+}
+
+function validateGraphicText(g) {
+	if (g.kind !== "text") return null;
+	return isString(g.text) ? null : "Invalid text";
+}
+
+function validateGraphicParams(g) {
+	const baseErr = validateGraphicBase(g);
+	if (baseErr) return baseErr;
+	const widthErr = validateGraphicWidth(g.width);
+	if (widthErr) return widthErr;
+	const textErr = validateGraphicText(g);
+	if (textErr) return textErr;
+	return validateGraphicCoords(g);
+}
+
+function resolveGraphicWidth(g) {
+	if (g.width !== undefined) return roundCoord(g.width);
+	return g.layer === "Edge.Cuts" ? 0.1 : 0.15;
+}
+
+function handleAddGraphic(ast, edit, newUuid) {
+	const g = edit.graphic ?? edit;
+	const err = validateGraphicParams(g);
+	if (err) return { ok: false, error: err };
+	const builder = GRAPHIC_BUILDERS[g.kind];
+	const w = resolveGraphicWidth(g);
+	const uuid = isString(g.uuid) ? g.uuid : newUuid();
+	ast.push(builder(g, w, uuid));
+	return { ok: true };
+}
+
+function isGraphicNode(node, uuid) {
+	if (!Array.isArray(node)) return false;
+	const head = nodeSym(node[0]);
+	if (!head.startsWith("gr_") && head !== "dimension") return false;
+	return findChildByTag(node, "uuid")?.[1] === uuid;
+}
+
+function handleDeleteGraphic(ast, edit) {
+	if (!isString(edit.uuid)) {
+		return { ok: false, error: "Invalid graphic uuid" };
+	}
+	const idx = ast.findIndex(
+		(node, i) => i > 0 && isGraphicNode(node, edit.uuid),
+	);
+	if (idx === -1) {
+		return { ok: false, error: `Graphic ${edit.uuid} not found` };
+	}
+	ast.splice(idx, 1);
+	return { ok: true };
+}
+
 const HANDLERS = {
 	addFootprint: handleAddFootprint,
 	deleteFootprint: handleDeleteFootprint,
@@ -564,6 +745,8 @@ const HANDLERS = {
 	addTrack: handleAddTrack,
 	addVia: handleAddVia,
 	deleteTrack: handleDeleteTrack,
+	addGraphic: handleAddGraphic,
+	deleteGraphic: handleDeleteGraphic,
 };
 
 function dispatchEdit(ast, edit, newUuid) {
