@@ -22,33 +22,80 @@ function assertPartialMatch(actual, expected) {
 	}
 }
 
+function assertListPartialMatch(actualList, expectedList) {
+	assert.equal(actualList.length, expectedList.length);
+	for (let i = 0; i < expectedList.length; i++) {
+		assertPartialMatch(actualList[i], expectedList[i]);
+	}
+}
+
 function assertTrackSegments(actualSegments, expectedSegments) {
-	assert.equal(actualSegments.length, expectedSegments.length);
-	for (const [i, expected] of expectedSegments.entries()) {
-		assertPartialMatch(actualSegments[i], expected);
+	assertListPartialMatch(actualSegments, expectedSegments);
+}
+
+function assertNetMap(actualMap, expectedEntries) {
+	for (const [id, name] of expectedEntries) {
+		assert.equal(actualMap.get(id), name);
+	}
+}
+
+function assertBoardAbsolute(actual, expected) {
+	for (const [prop, target] of Object.entries(expected)) {
+		const val = prop === "rotation" ? actual[prop] : Math.round(actual[prop]);
+		assert.equal(val, target);
 	}
 }
 
 function assertBoardSummary(board) {
-	const checks = [
-		[board.metadata.version, "20211014"],
-		[board.metadata.generator, "pcbnew"],
-		[board.metadata.thickness, 1.6],
-		[board.metadata.titleBlock?.title, "Demo Board"],
-		[board.layers.get("F.Cu")?.type, "signal"],
-		[board.nets.get(1), "GND"],
-		[board.netClasses.length, 1],
-		[board.footprints.length, 1],
-		[board.footprints[0].reference.text, "R1"],
-		[board.footprints[0].pads.length, 1],
-		[board.tracks.length, 1],
-		[board.vias.length, 1],
-		[board.zones.length, 1],
-		[board.groups.length, 1],
+	assertPartialMatch(board.metadata, {
+		version: "20211014",
+		generator: "pcbnew",
+		thickness: 1.6,
+	});
+	assertPartialMatch(
+		{
+			title: board.metadata.titleBlock?.title,
+			layerType: board.layers.get("F.Cu")?.type,
+			netName: board.nets.get(1),
+			ref: board.footprints[0]?.reference?.text,
+		},
+		{
+			title: "Demo Board",
+			layerType: "signal",
+			netName: "GND",
+			ref: "R1",
+		},
+	);
+	const collectionCounts = [
+		board.netClasses,
+		board.footprints,
+		board.footprints[0]?.pads,
+		board.tracks,
+		board.vias,
+		board.zones,
+		board.groups,
+	].map((col) => col?.length ?? 0);
+	assert.deepEqual(collectionCounts, [1, 1, 1, 1, 1, 1, 1]);
+}
+
+function makeTrackSegment(start, end, opts) {
+	return {
+		start: { x: start[0], y: start[1] },
+		end: { x: end[0], y: end[1] },
+		...opts,
+	};
+}
+
+function makeAstSegment(start, end, opts = {}) {
+	const node = [
+		"segment",
+		["start", start[0], start[1]],
+		["end", end[0], end[1]],
 	];
-	for (const [actual, expected] of checks) {
-		assert.equal(actual, expected);
-	}
+	if (opts.width !== undefined) node.push(["width", opts.width]);
+	if (opts.layer) node.push(["layer", opts.layer]);
+	if (opts.net !== undefined) node.push(["net", opts.net]);
+	return node;
 }
 
 function withTempPcbFile(fileName, content, callback) {
@@ -67,21 +114,42 @@ const SAMPLE_NET_AST = [
 	["net", 0, ""],
 	["net", 1, "GND"],
 	["net", 2, "+3V3"],
-	[
-		"segment",
-		["start", 10, 20],
-		["end", 30, 40],
-		["width", 0.25],
-		["layer", "F.Cu"],
-		["net", 1],
-	],
-	[
-		"segment",
-		["start", 50, 60],
-		["end", 70, 80],
-		["layer", "B.Cu"],
-		["net", 2],
-	],
+	makeAstSegment([10, 20], [30, 40], {
+		width: 0.25,
+		layer: "F.Cu",
+		net: 1,
+	}),
+	makeAstSegment([50, 60], [70, 80], {
+		layer: "B.Cu",
+		net: 2,
+	}),
+];
+
+const BOARD_ABSOLUTE_CASES = [
+	{
+		name: "computes board-absolute coordinates for front layer (F.Cu)",
+		fp: { at: { x: 100, y: 50, rotation: 0 }, layer: "F.Cu" },
+		args: [10, 5, 90],
+		expected: { x: 110, y: 55, rotation: 90 },
+	},
+	{
+		name: "computes mirrored board-absolute coordinates for back layer (B.Cu)",
+		fp: { at: { x: 100, y: 50, rotation: 90 }, layer: "B.Cu" },
+		args: [10, 5, 45],
+		expected: { x: 105, y: 40, rotation: 225 },
+	},
+	{
+		name: "defaults localRot to 0 when omitted",
+		fp: { at: { x: 20, y: 30, rotation: 0 }, layer: "F.Cu" },
+		args: [5, 10],
+		expected: { x: 25, y: 40, rotation: 0 },
+	},
+	{
+		name: "normalizes rotation angle within [0, 360)",
+		fp: { at: { x: 0, y: 0, rotation: 270 }, layer: "F.Cu" },
+		args: [0, 0, 180],
+		expected: { rotation: 90 },
+	},
 ];
 
 const METADATA_CASES = [
@@ -100,13 +168,11 @@ const METADATA_CASES = [
 		`,
 		expectedNets: [[1, "GND"]],
 		expectedSegments: [
-			{
-				start: { x: 10.5, y: 20.5 },
-				end: { x: 30.5, y: 40.5 },
+			makeTrackSegment([10.5, 20.5], [30.5, 40.5], {
 				layer: "F.Cu",
 				netId: 1,
 				netName: "GND",
-			},
+			}),
 		],
 		expectedFootprints: [
 			{
@@ -166,58 +232,33 @@ describe("parseSExpr", () => {
 });
 
 describe("toBoardAbsolute", () => {
-	test("computes board-absolute coordinates for front layer (F.Cu)", () => {
-		const fp = { at: { x: 100, y: 50, rotation: 0 }, layer: "F.Cu" };
-		const result = toBoardAbsolute(fp, 10, 5, 90);
-		assert.equal(result.x, 110);
-		assert.equal(result.y, 55);
-		assert.equal(result.rotation, 90);
-	});
-
-	test("computes mirrored board-absolute coordinates for back layer (B.Cu)", () => {
-		const fp = { at: { x: 100, y: 50, rotation: 90 }, layer: "B.Cu" };
-		const result = toBoardAbsolute(fp, 10, 5, 45);
-		assert.equal(Math.round(result.x), 105);
-		assert.equal(Math.round(result.y), 40);
-		assert.equal(result.rotation, 225);
-	});
-
-	test("defaults localRot to 0 when omitted", () => {
-		const fp = { at: { x: 20, y: 30, rotation: 0 }, layer: "F.Cu" };
-		const result = toBoardAbsolute(fp, 5, 10);
-		assert.equal(result.x, 25);
-		assert.equal(result.y, 40);
-		assert.equal(result.rotation, 0);
-	});
-
-	test("normalizes rotation angle within [0, 360)", () => {
-		const fp = { at: { x: 0, y: 0, rotation: 270 }, layer: "F.Cu" };
-		const result = toBoardAbsolute(fp, 0, 0, 180);
-		assert.equal(result.rotation, 90);
-	});
+	for (const tc of BOARD_ABSOLUTE_CASES) {
+		test(tc.name, () => {
+			const result = toBoardAbsolute(tc.fp, ...tc.args);
+			assertBoardAbsolute(result, tc.expected);
+		});
+	}
 });
 
 describe("parsePcbNetSegments", () => {
 	test("extracts net declarations and track segments with resolved net names", () => {
 		const { netIndexMap, trackSegments } = parsePcbNetSegments(SAMPLE_NET_AST);
 		assert.equal(netIndexMap.size, 3);
-		assert.equal(netIndexMap.get(1), "GND");
-		assert.equal(netIndexMap.get(2), "+3V3");
+		assertNetMap(netIndexMap, [
+			[1, "GND"],
+			[2, "+3V3"],
+		]);
 		const expectedTracks = [
-			{
-				start: { x: 10, y: 20 },
-				end: { x: 30, y: 40 },
+			makeTrackSegment([10, 20], [30, 40], {
+				layer: "F.Cu",
 				netId: 1,
 				netName: "GND",
-				layer: "F.Cu",
-			},
-			{
-				start: { x: 50, y: 60 },
-				end: { x: 70, y: 80 },
+			}),
+			makeTrackSegment([50, 60], [70, 80], {
+				layer: "B.Cu",
 				netId: 2,
 				netName: "+3V3",
-				layer: "B.Cu",
-			},
+			}),
 		];
 		assertTrackSegments(trackSegments, expectedTracks);
 	});
@@ -231,7 +272,7 @@ describe("parsePcbNetSegments", () => {
 	test("labels unmapped net ids as unconnected and ignores segments without endpoints", () => {
 		const ast = [
 			"kicad_pcb",
-			["segment", ["start", 1, 2], ["end", 3, 4], ["net", 99]],
+			makeAstSegment([1, 2], [3, 4], { net: 99 }),
 			["segment", ["start", 5, 6]],
 		];
 		const { trackSegments } = parsePcbNetSegments(ast);
@@ -248,17 +289,9 @@ describe("parsePcbMetadata", () => {
 	for (const tc of METADATA_CASES) {
 		test(tc.name, () => {
 			const { netMap, segments, footprints } = parsePcbMetadata(tc.pcbContent);
-			for (const [netId, netName] of tc.expectedNets) {
-				assert.equal(netMap.get(netId), netName);
-			}
-			assert.equal(segments.length, tc.expectedSegments.length);
-			for (const [i, expSeg] of tc.expectedSegments.entries()) {
-				assertPartialMatch(segments[i], expSeg);
-			}
-			assert.equal(footprints.length, tc.expectedFootprints.length);
-			for (const [i, expFp] of tc.expectedFootprints.entries()) {
-				assertPartialMatch(footprints[i], expFp);
-			}
+			assertNetMap(netMap, tc.expectedNets);
+			assertListPartialMatch(segments, tc.expectedSegments);
+			assertListPartialMatch(footprints, tc.expectedFootprints);
 		});
 	}
 
@@ -266,9 +299,10 @@ describe("parsePcbMetadata", () => {
 		const falsyInputs = [null, undefined, "", 123, {}];
 		for (const input of falsyInputs) {
 			const res = parsePcbMetadata(input);
-			assert.equal(res.netMap.size, 0);
-			assert.equal(res.segments.length, 0);
-			assert.equal(res.footprints.length, 0);
+			assert.deepEqual(
+				[res.netMap.size, res.segments.length, res.footprints.length],
+				[0, 0, 0],
+			);
 		}
 	});
 });
