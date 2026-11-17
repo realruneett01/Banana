@@ -27,6 +27,11 @@ const makeIR = (parts, nets, name = "TestIR") => ({
 	schemaVersion: 1,
 });
 
+const makeRegulator = (ref = "U1") =>
+	makePart(ref, "AMS1117-3.3", {
+		props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
+	});
+
 const safePattern = /^[A-Za-z0-9_ .+\-=(){}*,]+$/;
 
 function assertSafeCharacters(lines) {
@@ -39,21 +44,21 @@ function assertSafeCharacters(lines) {
 	}
 }
 
+function isPayloadLine(line) {
+	if (!line || line.startsWith("*")) return false;
+	return !line.startsWith(".save");
+}
+
 function assertPayloadLinesSafe(netlist) {
-	const nonCommentLines = netlist
-		.split("\n")
-		.filter(
-			(line) => line && !line.startsWith("*") && !line.startsWith(".save"),
-		);
+	const nonCommentLines = netlist.split("\n").filter(isPayloadLine);
 	assertSafeCharacters(nonCommentLines);
 }
 
 function assertForbiddenSubstrings(lines) {
 	const forbidden = [".control", "shell", ";", "`", "\n"];
 	for (const line of lines) {
-		for (const sub of forbidden) {
-			assert.strictEqual(line.includes(sub), false);
-		}
+		const matched = forbidden.find((sub) => line.includes(sub));
+		assert.strictEqual(matched, undefined);
 	}
 }
 
@@ -73,9 +78,7 @@ function assertCircuitSpiceResult(
 
 function makeComplexPartModelCircuit() {
 	const parts = {
-		reg: makePart("U1", "AMS1117-3.3", {
-			props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
-		}),
+		reg: makeRegulator("U1"),
 		op: makePart("U2", "LM358", {
 			props: {
 				pinRoles: { out: "1", inn: "2", inp: "3", vee: "4", vcc: "8" },
@@ -104,9 +107,7 @@ function makeComplexPartModelCircuit() {
 }
 
 function convertRegulatorWithRef(ref) {
-	const reg = makePart(ref, "AMS1117-3.3", {
-		props: { pinRoles: { in: "1", gnd: "2", out: "3" } },
-	});
+	const reg = makeRegulator(ref);
 	const ir = makeIR(
 		[reg],
 		[
@@ -122,86 +123,49 @@ function convertRegulatorWithRef(ref) {
 }
 
 describe("modelForPart - family detection", () => {
-	const detectionCases = [
-		{
-			name: "AMS1117-3.3 by value",
-			part: makePart("U1", "AMS1117-3.3"),
-			kind: "regulator",
-		},
-		{ name: "7805 by value", part: makePart("U1", "7805"), kind: "regulator" },
-		{
-			name: "LM317 by value",
-			part: makePart("U1", "LM317"),
-			kind: "regulator",
-		},
-		{ name: "LDO by value", part: makePart("U1", "LDO"), kind: "regulator" },
-		{
-			name: "regulator keyword",
-			part: makePart("U1", "Voltage-Regulator"),
-			kind: "regulator",
-		},
-		{
-			name: "regulator by props.vout",
-			part: makePart("U1", "CustomIC", { props: { vout: "5V" } }),
-			kind: "regulator",
-		},
-		{
-			name: "regulator by footprint",
-			part: makePart("U1", "Generic", { footprint: "SOT-223_AMS1117" }),
-			kind: "regulator",
-		},
-		{ name: "LM358 by value", part: makePart("U1", "LM358"), kind: "opamp" },
-		{ name: "TL072 by value", part: makePart("U1", "TL072"), kind: "opamp" },
-		{ name: "LM741 by value", part: makePart("U1", "LM741"), kind: "opamp" },
-		{
-			name: "MCP6002 by value",
-			part: makePart("U1", "MCP6002"),
-			kind: "opamp",
-		},
-		{
-			name: "opamp keyword",
-			part: makePart("U1", "Dual-OpAmp"),
-			kind: "opamp",
-		},
-		{
-			name: "op-amp keyword",
-			part: makePart("U1", "Precision-Op-Amp"),
-			kind: "opamp",
-		},
-		{
-			name: "opamp by footprint",
-			part: makePart("U1", "Generic", { footprint: "SOIC-8_OpAmp" }),
-			kind: "opamp",
-		},
-		{ name: "STM32 by value", part: makePart("U1", "STM32F103"), kind: "mcu" },
-		{
-			name: "ATmega by value",
-			part: makePart("U1", "ATmega328P"),
-			kind: "mcu",
-		},
-		{
-			name: "ESP32 by value",
-			part: makePart("U1", "ESP32-WROOM"),
-			kind: "mcu",
-		},
-		{ name: "RP2040 by value", part: makePart("U1", "RP2040"), kind: "mcu" },
-		{ name: "PIC by value", part: makePart("U1", "PIC16F877A"), kind: "mcu" },
-		{ name: "MCU keyword", part: makePart("U1", "Generic-MCU"), kind: "mcu" },
-		{
-			name: "MCU by supplyCurrent",
-			part: makePart("U1", "CustomLogic", { props: { supplyCurrent: 0.03 } }),
-			kind: "mcu",
-		},
-		{
-			name: "MCU by footprint",
-			part: makePart("U1", "Generic", { footprint: "LQFP-48_STM32" }),
-			kind: "mcu",
-		},
+	const detectionRows = [
+		["AMS1117-3.3 by value", "AMS1117-3.3", "regulator"],
+		["7805 by value", "7805", "regulator"],
+		["LM317 by value", "LM317", "regulator"],
+		["LDO by value", "LDO", "regulator"],
+		["regulator keyword", "Voltage-Regulator", "regulator"],
+		[
+			"regulator by props.vout",
+			"CustomIC",
+			"regulator",
+			{ props: { vout: "5V" } },
+		],
+		[
+			"regulator by footprint",
+			"Generic",
+			"regulator",
+			{ footprint: "SOT-223_AMS1117" },
+		],
+		["LM358 by value", "LM358", "opamp"],
+		["TL072 by value", "TL072", "opamp"],
+		["LM741 by value", "LM741", "opamp"],
+		["MCP6002 by value", "MCP6002", "opamp"],
+		["opamp keyword", "Dual-OpAmp", "opamp"],
+		["op-amp keyword", "Precision-Op-Amp", "opamp"],
+		["opamp by footprint", "Generic", "opamp", { footprint: "SOIC-8_OpAmp" }],
+		["STM32 by value", "STM32F103", "mcu"],
+		["ATmega by value", "ATmega328P", "mcu"],
+		["ESP32 by value", "ESP32-WROOM", "mcu"],
+		["RP2040 by value", "RP2040", "mcu"],
+		["PIC by value", "PIC16F877A", "mcu"],
+		["MCU keyword", "Generic-MCU", "mcu"],
+		[
+			"MCU by supplyCurrent",
+			"CustomLogic",
+			"mcu",
+			{ props: { supplyCurrent: 0.03 } },
+		],
+		["MCU by footprint", "Generic", "mcu", { footprint: "LQFP-48_STM32" }],
 	];
 
-	for (const { name, part, kind } of detectionCases) {
+	for (const [name, val, kind, overrides] of detectionRows) {
 		test(`detects ${name}`, () => {
-			const model = modelForPart(part);
+			const model = modelForPart(makePart("U1", val, overrides));
 			assert.notStrictEqual(model, null);
 			assert.strictEqual(model.kind, kind);
 		});
@@ -214,20 +178,20 @@ describe("modelForPart - family detection", () => {
 });
 
 describe("modelForPart - vout parsing", () => {
-	const voutCases = [
-		{ value: "7805", props: {}, expected: 5 },
-		{ value: "7812", props: {}, expected: 12 },
-		{ value: "AMS1117-3.3", props: {}, expected: 3.3 },
-		{ value: "AMS1117-5.0", props: {}, expected: 5 },
-		{ value: "LDO-3V3", props: {}, expected: 3.3 },
-		{ value: "Regulator", props: { vout: "5V" }, expected: 5 },
-		{ value: "Regulator", props: { vout: 2.5 }, expected: 2.5 },
-		{ value: "LDO", props: {}, expected: 3.3 },
+	const voutRows = [
+		["7805", {}, 5],
+		["7812", {}, 12],
+		["AMS1117-3.3", {}, 3.3],
+		["AMS1117-5.0", {}, 5],
+		["LDO-3V3", {}, 3.3],
+		["Regulator", { vout: "5V" }, 5],
+		["Regulator", { vout: 2.5 }, 2.5],
+		["LDO", {}, 3.3],
 	];
 
-	for (const { value, props, expected } of voutCases) {
-		test(`parses vout ${expected} from ${value} with props ${JSON.stringify(props)}`, () => {
-			const model = modelForPart(makePart("U1", value, { props }));
+	for (const [val, props, expected] of voutRows) {
+		test(`parses vout ${expected} from ${val} with props ${JSON.stringify(props)}`, () => {
+			const model = modelForPart(makePart("U1", val, { props }));
 			assert.notStrictEqual(model, null);
 			assert.strictEqual(model.params.vout, expected);
 		});
@@ -235,36 +199,36 @@ describe("modelForPart - vout parsing", () => {
 });
 
 describe("modelForPart - character set and template lines", () => {
-	const charsetCases = [
-		{
-			title: "regulator lines match allowed character set",
-			part: makePart("U1", "AMS1117-3.3"),
-			nodes: { in: "n_in", gnd: "0", out: "n_out" },
-			minLines: 2,
-		},
-		{
-			title: "opamp lines match allowed character set",
-			part: makePart("U1", "LM358"),
-			nodes: {
+	const charsetRows = [
+		[
+			"regulator lines match allowed character set",
+			"AMS1117-3.3",
+			{ in: "n_in", gnd: "0", out: "n_out" },
+			2,
+		],
+		[
+			"opamp lines match allowed character set",
+			"LM358",
+			{
 				inp: "n_inp",
 				inn: "n_inn",
 				out: "n_out",
 				vcc: "n_vcc",
 				vee: "0",
 			},
-			minLines: 2,
-		},
-		{
-			title: "mcu lines match allowed character set",
-			part: makePart("U1", "STM32F103"),
-			nodes: { supply: "n_vcc", gnd: "0" },
-			minLines: 1,
-		},
+			2,
+		],
+		[
+			"mcu lines match allowed character set",
+			"STM32F103",
+			{ supply: "n_vcc", gnd: "0" },
+			1,
+		],
 	];
 
-	for (const { title, part, nodes, minLines } of charsetCases) {
+	for (const [title, value, nodes, minLines] of charsetRows) {
 		test(title, () => {
-			const model = modelForPart(part);
+			const model = modelForPart(makePart("U1", value));
 			const lines = model.build(nodes, "U1", model.params);
 			assert.strictEqual(lines.length >= minLines, true);
 			assertSafeCharacters(lines);
@@ -306,22 +270,29 @@ describe("modelForPart - security and hostile values", () => {
 });
 
 describe("modelForPart - non-finite numeric props fallback", () => {
-	test("regulator falls back to defaults for non-finite vout and dropout", () => {
-		const part = makePart("U1", "LDO", {
+	const fallbackCases = [
+		{
+			title: "regulator falls back to defaults for non-finite vout and dropout",
+			value: "LDO",
 			props: { vout: Number.NaN, dropout: Number.POSITIVE_INFINITY },
-		});
-		const model = modelForPart(part);
-		assert.strictEqual(model.params.vout, 3.3);
-		assert.strictEqual(model.params.dropout, 1.1);
-	});
-
-	test("mcu falls back to default for non-finite supplyCurrent", () => {
-		const part = makePart("U1", "MCU", {
+			expected: { vout: 3.3, dropout: 1.1 },
+		},
+		{
+			title: "mcu falls back to default for non-finite supplyCurrent",
+			value: "MCU",
 			props: { supplyCurrent: "invalid_current" },
+			expected: { supplyCurrent: 0.02 },
+		},
+	];
+
+	for (const { title, value, props, expected } of fallbackCases) {
+		test(title, () => {
+			const model = modelForPart(makePart("U1", value, { props }));
+			for (const [key, val] of Object.entries(expected)) {
+				assert.strictEqual(model.params[key], val);
+			}
 		});
-		const model = modelForPart(part);
-		assert.strictEqual(model.params.supplyCurrent, 0.02);
-	});
+	}
 });
 
 describe("irToSpice - integration with part models and passives", () => {
@@ -343,16 +314,16 @@ describe("irToSpice - integration with part models and passives", () => {
 });
 
 describe("irToSpice - part model prefix sanitization", () => {
-	const prefixCases = [
-		{ ref: ";x", rawChar: ";", forbiddenInName: ";" },
-		{ ref: "$U1", rawChar: "$", forbiddenInName: "$" },
-		{ ref: ".control", rawChar: ".", forbiddenInName: "." },
-		{ ref: "'a", rawChar: "'", forbiddenInName: "'" },
-		{ ref: " \n.shell", rawChar: ".", forbiddenInName: "." },
-		{ ref: "1abc", rawChar: "1", forbiddenInName: null },
+	const prefixRows = [
+		[";x", ";", ";"],
+		["$U1", "$", "$"],
+		[".control", ".", "."],
+		["'a", "'", "'"],
+		[" \n.shell", ".", "."],
+		["1abc", "1", null],
 	];
 
-	for (const { ref, rawChar, forbiddenInName } of prefixCases) {
+	for (const [ref, rawChar, forbiddenInName] of prefixRows) {
 		test(`sanitizes regulator reference ${JSON.stringify(ref)}`, () => {
 			const { elementName } = convertRegulatorWithRef(ref);
 			assert.notStrictEqual(elementName, undefined);
