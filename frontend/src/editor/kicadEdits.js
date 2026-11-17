@@ -1,4 +1,5 @@
 import { diffIr } from "../irDiff.js";
+import { graphicsEdits } from "./boardGraphics.js";
 import { buildAllPinPos } from "./schematicGeometry.js";
 
 // Patch ops beyond setValue/move run after them, in this stage order, so
@@ -364,6 +365,17 @@ function processTracks(boards, ctx) {
 	processBoardItems(boards, "vias", [addViaOp, removeViaOp], ctx);
 }
 
+function stageGraphicOp(ctx, op) {
+	const stageName = op.op === "deleteGraphic" ? "delete" : "track";
+	stage(ctx, stageName, "pcb", op);
+}
+
+function processGraphics(boards, ctx) {
+	for (const op of graphicsEdits(boards?.before, boards?.after)) {
+		stageGraphicOp(ctx, op);
+	}
+}
+
 function compareEdits(a, b) {
 	const refCmp = String(a.ref ?? "").localeCompare(String(b.ref ?? ""));
 	if (refCmp !== 0) return refCmp;
@@ -471,14 +483,15 @@ function collectEdits(diff, boards, ctx) {
 	for (const part of diff.parts.changed) processChangedPart(part, ctx);
 	processNets(diff.nets, ctx);
 	processTracks(boards, ctx);
+	processGraphics(boards, ctx);
 	ctx.counts.value = ctx.legacy.sch.length;
 	ctx.counts.position = ctx.legacy.pcb.filter((e) => e.op === "move").length;
 }
 
 /**
  * Maps editor model changes onto KiCad patch ops for the backend patch
- * pipeline. `boards` ({ before, after }) is optional and adds track and
- * via edits.
+ * pipeline. `boards` ({ before, after }) is optional and adds track,
+ * via, and board graphics edits.
  * Library sources are resolved server-side from each op's libId.
  */
 export function editsFromIrChange(before, after, boards) {
