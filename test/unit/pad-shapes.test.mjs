@@ -39,8 +39,8 @@ function irPad(shape, size, extra) {
 	};
 }
 
-function worldPad(pad, placement = {}) {
-	const prims = footprintToPrimitives({ pads: [pad] });
+function worldPad(pad, placement = {}, embedded = false) {
+	const prims = footprintToPrimitives({ embedded, pads: [pad] });
 	return transformPrimitives(prims, placement).pads[0];
 }
 
@@ -52,6 +52,11 @@ function assertHits(pad, tests) {
 	for (const [pt, expected] of tests) {
 		assert.equal(padHitTest([pad], pt), expected);
 	}
+}
+
+function assertMirrorAndHits(pad, mirror, hits) {
+	assert.equal(pad.mirror, mirror);
+	assertHits(pad, hits);
 }
 
 function assertDistance(pad, pt, expected) {
@@ -86,13 +91,14 @@ describe("roundrect corner radius from roundrect_rratio", () => {
 
 	test("hit test and clearance use the pad's own radius", () => {
 		// 2 x 2 pad: rratio 0.5 is a circle of radius 1; 0.1 leaves (0.9, 0.9) copper.
-		const round = roundPad([[s("roundrect_rratio"), 0.5]]);
-		const sharp = roundPad([[s("roundrect_rratio"), 0.1]]);
-		assertHits(round, [[[0.9, 0.9], null]]);
-		assertHits(sharp, [[[0.9, 0.9], "1"]]);
-		const corner = [2, 2];
-		assertDistance(round, corner, Math.hypot(2, 2) - 1);
-		assertDistance(sharp, corner, Math.hypot(1.2, 1.2) - 0.2);
+		for (const [rr, hit, dist] of [
+			[0.5, null, Math.hypot(2, 2) - 1],
+			[0.1, "1", Math.hypot(1.2, 1.2) - 0.2],
+		]) {
+			const pad = roundPad([[s("roundrect_rratio"), rr]]);
+			assertHits(pad, [[[0.9, 0.9], hit]]);
+			assertDistance(pad, [2, 2], dist);
+		}
 	});
 
 	test("default ratio: the hit test matches clearance (r = 0.25 * min side)", () => {
@@ -125,8 +131,7 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 
 	test("a library pad on B mirrors the chamfer to top-right", () => {
 		const pad = roundPad(CHAMFER, { side: "B" });
-		assert.equal(pad.mirror, "x");
-		assertHits(pad, [
+		assertMirrorAndHits(pad, "x", [
 			[[0.9, -0.9], null],
 			[[-0.9, -0.9], "1"],
 		]);
@@ -139,13 +144,13 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 			s("gr_poly"),
 			[s("pts"), [s("xy"), 0, 1], [s("xy"), 0, 2], [s("xy"), 0.2, 2]],
 		];
-		const extra = [...CHAMFER, [s("primitives"), tri]];
-		const fp = { embedded: true, pads: [irPad("roundrect", [2, 2], extra)] };
-		const pl = { x: 0, y: 0, rot: 0, side: "F", flipPads: true };
-		const pad = transformPrimitives(footprintToPrimitives(fp), pl).pads[0];
-		assert.equal(pad.mirror, "y");
+		const pad = worldPad(
+			irPad("roundrect", [2, 2], [...CHAMFER, [s("primitives"), tri]]),
+			{ side: "F", flipPads: true },
+			true,
+		);
 		assert.deepEqual(padLocalPoint([-0.9, 0.9], pad), [-0.9, -0.9]);
-		assertHits(pad, [
+		assertMirrorAndHits(pad, "y", [
 			[[-0.9, -0.9], null],
 			[[-0.9, 0.9], "1"],
 		]);
@@ -181,21 +186,19 @@ describe("chamfered, trapezoid and custom pad outlines", () => {
 });
 
 // pcbnew's own numbers for every copper pad: corner radius, polygon area, box.
-const PCBNEW = [
-	"import sys, json, pcbnew",
-	"b = pcbnew.LoadBoard(sys.argv[1])",
-	"out = []",
-	"for f in b.GetFootprints():",
-	"    for p in f.Pads():",
-	"        lay = p.GetPrincipalLayer()",
-	"        bb = p.GetBoundingBox()",
-	"        area = p.GetEffectivePolygon(lay, pcbnew.ERROR_INSIDE).Area() / 1e12",
-	"        box = [bb.GetLeft() / 1e6, bb.GetTop() / 1e6, bb.GetRight() / 1e6, bb.GetBottom() / 1e6]",
-	"        out.append([f.GetReference(), p.GetPosition().x / 1e6, p.GetPosition().y / 1e6,",
-	"            p.GetShape(lay), p.GetRoundRectCornerRadius(lay) / 1e6, area, box, p.GetOrientationDegrees(),",
-	"            p.GetSize(lay).x / 1e6, p.GetSize(lay).y / 1e6])",
-	"print(json.dumps(out))",
-].join("\n");
+const PCBNEW = `import sys, json, pcbnew
+b = pcbnew.LoadBoard(sys.argv[1])
+out = []
+for f in b.GetFootprints():
+    for p in f.Pads():
+        lay = p.GetPrincipalLayer()
+        bb = p.GetBoundingBox()
+        area = p.GetEffectivePolygon(lay, pcbnew.ERROR_INSIDE).Area() / 1e12
+        box = [bb.GetLeft() / 1e6, bb.GetTop() / 1e6, bb.GetRight() / 1e6, bb.GetBottom() / 1e6]
+        out.append([f.GetReference(), p.GetPosition().x / 1e6, p.GetPosition().y / 1e6,
+            p.GetShape(lay), p.GetRoundRectCornerRadius(lay) / 1e6, area, box, p.GetOrientationDegrees(),
+            p.GetSize(lay).x / 1e6, p.GetSize(lay).y / 1e6])
+print(json.dumps(out))`;
 
 function writeTempFile(prefix, name, content) {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -317,12 +320,10 @@ function compareBoard(board) {
 
 // Shapes the demos pcbnew can load lack: trapezoids, chamfers with and
 // without rounding; on a front and a back footprint.
-const SYNTH_PADS = [
-	'(pad "1" smd trapezoid (at 0 0 30) (size 2 1.5) (rect_delta 0 0.6) (layers "F.Cu"))',
-	'(pad "2" smd trapezoid (at 4 0 0) (size 1.5 2) (rect_delta 0.5 0) (layers "F.Cu"))',
-	'(pad "3" smd roundrect (at 0 4 0) (size 2 1.2) (roundrect_rratio 0) (chamfer_ratio 0.3) (chamfer top_left bottom_right) (layers "F.Cu"))',
-	'(pad "4" smd roundrect (at 4 4 90) (size 2 1.2) (roundrect_rratio 0.2) (chamfer_ratio 0.25) (chamfer top_right) (layers "F.Cu"))',
-].join("\n");
+const SYNTH_PADS = `(pad "1" smd trapezoid (at 0 0 30) (size 2 1.5) (rect_delta 0 0.6) (layers "F.Cu"))
+(pad "2" smd trapezoid (at 4 0 0) (size 1.5 2) (rect_delta 0.5 0) (layers "F.Cu"))
+(pad "3" smd roundrect (at 0 4 0) (size 2 1.2) (roundrect_rratio 0) (chamfer_ratio 0.3) (chamfer top_left bottom_right) (layers "F.Cu"))
+(pad "4" smd roundrect (at 4 4 90) (size 2 1.2) (roundrect_rratio 0.2) (chamfer_ratio 0.25) (chamfer top_right) (layers "F.Cu"))`;
 
 function synthFootprint(ref, layer, at) {
 	const pads =
