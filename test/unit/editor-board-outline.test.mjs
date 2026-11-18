@@ -23,24 +23,51 @@ const line = (x1, y1, x2, y2) => ({
 
 const relError = (actual, expected) => Math.abs(actual - expected) / expected;
 
+const toValidPolygon = (shapes) => {
+	const res = outlineToPolygon(shapes);
+	assert.equal(res.ok, true);
+	return res.polygon;
+};
+
+const assertPolygonBounds = (poly, expectedArea, expectedBBox) => {
+	assert.equal(polygonArea(poly), expectedArea);
+	assert.deepEqual(polygonBBox(poly), expectedBBox);
+};
+
+const assertAreaWithinTol = (polygon, expectedArea, tol) => {
+	assert.ok(relError(polygonArea(polygon), expectedArea) < tol);
+};
+
+const assertPointClose = (actual, expected, tol = 1e-6) => {
+	assert.ok(actual !== null);
+	assert.ok(Math.abs(actual.x - expected.x) < tol);
+	assert.ok(Math.abs(actual.y - expected.y) < tol);
+};
+
+const assertOpenOutline = (shapes, expectedError = "Outline is not closed") => {
+	assert.deepEqual(outlineToPolygon(shapes), {
+		ok: false,
+		error: expectedError,
+	});
+};
+
+const checkRectOutline = (tc) => {
+	const shapes = rectOutline(tc.x, tc.y, tc.w, tc.h);
+	assert.equal(shapes.length, 4);
+	assertPolygonBounds(toValidPolygon(shapes), tc.expectedArea, tc.expectedBBox);
+};
+
 const RECT_OUTLINE_CASES = [
-	{
-		x: 0,
-		y: 0,
-		w: 100,
-		h: 80,
-		expectedArea: 8000,
-		expectedBBox: bbox(0, 0, 100, 80),
-	},
-	{
-		x: 10,
-		y: 20,
-		w: 50,
-		h: 30,
-		expectedArea: 1500,
-		expectedBBox: bbox(10, 20, 60, 50),
-	},
-];
+	[0, 0, 100, 80, 8000, bbox(0, 0, 100, 80)],
+	[10, 20, 50, 30, 1500, bbox(10, 20, 60, 50)],
+].map(([x, y, w, h, expectedArea, expectedBBox]) => ({
+	x,
+	y,
+	w,
+	h,
+	expectedArea,
+	expectedBBox,
+}));
 
 const ROUNDED_RECT_CASES = [
 	{ x: 0, y: 0, w: 100, h: 80, r: 10 },
@@ -49,79 +76,63 @@ const ROUNDED_RECT_CASES = [
 ];
 
 const ARC_CENTER_CASES = [
-	{
-		name: "known circle centered at origin",
-		start: pt(0, 5),
-		mid: pt(5, 0),
-		end: pt(0, -5),
-		expected: pt(0, 0),
-	},
-	{
-		name: "known circle centered at (3, 4)",
-		start: pt(3, 9),
-		mid: pt(8, 4),
-		end: pt(3, -1),
-		expected: pt(3, 4),
-	},
-	{
-		name: "collinear horizontal points return null",
-		start: pt(0, 0),
-		mid: pt(5, 0),
-		end: pt(10, 0),
-		expected: null,
-	},
-	{
-		name: "collinear diagonal points return null",
-		start: pt(1, 1),
-		mid: pt(2, 2),
-		end: pt(3, 3),
-		expected: null,
-	},
-];
+	["known circle centered at origin", [0, 5], [5, 0], [0, -5], pt(0, 0)],
+	["known circle centered at (3, 4)", [3, 9], [8, 4], [3, -1], pt(3, 4)],
+	["collinear horizontal points return null", [0, 0], [5, 0], [10, 0], null],
+	["collinear diagonal points return null", [1, 1], [2, 2], [3, 3], null],
+].map(([name, s, m, e, expected]) => ({
+	name,
+	start: pt(s[0], s[1]),
+	mid: pt(m[0], m[1]),
+	end: pt(e[0], e[1]),
+	expected,
+}));
+
+const chainCase = (name, shapes, expectedArea) => ({
+	name,
+	shapes,
+	expectedArea,
+});
 
 const CHAIN_CLOSED_CASES = [
-	{
-		name: "shuffled and reversed line segments for 100x80 rectangle",
-		shapes: [
+	chainCase(
+		"shuffled and reversed line segments for 100x80 rectangle",
+		[
 			line(100, 80, 0, 80),
 			line(0, 0, 100, 0),
 			line(0, 80, 0, 0),
 			line(100, 80, 100, 0),
 		],
-		expectedArea: 8000,
-	},
-	{
-		name: "reversed triangle segments",
-		shapes: [line(30, 0, 0, 40), line(0, 0, 30, 0), line(0, 40, 0, 0)],
-		expectedArea: 600,
-	},
+		8000,
+	),
+	chainCase(
+		"reversed triangle segments",
+		[line(30, 0, 0, 40), line(0, 0, 30, 0), line(0, 40, 0, 0)],
+		600,
+	),
 ];
 
+const openCase = (name, shapes) => ({ name, shapes });
+
 const OPEN_OUTLINE_CASES = [
-	{
-		name: "missing fourth edge of rectangle",
-		shapes: [line(0, 0, 100, 0), line(100, 0, 100, 80), line(100, 80, 0, 80)],
-	},
-	{
-		name: "disconnected segments",
-		shapes: [line(0, 0, 10, 0), line(20, 20, 30, 20)],
-	},
-	{
-		name: "empty shape array",
-		shapes: [],
-	},
+	openCase(
+		"missing fourth edge of rectangle",
+		rectOutline(0, 0, 100, 80).slice(0, 3),
+	),
+	openCase("disconnected segments", [line(0, 0, 10, 0), line(20, 20, 30, 20)]),
+	openCase("empty shape array", []),
 ];
 
 const POINT_IN_POLYGON_CASES = [
-	{ pt: pt(50, 40), expected: true },
-	{ pt: pt(10, 10), expected: true },
-	{ pt: pt(90, 70), expected: true },
-	{ pt: pt(-5, 40), expected: false },
-	{ pt: pt(105, 40), expected: false },
-	{ pt: pt(50, -10), expected: false },
-	{ pt: pt(50, 90), expected: false },
-	{ pt: pt(200, 200), expected: false },
-];
+	[50, 40, true],
+	[10, 10, true],
+	[90, 70, true],
+	[-5, 40, false],
+	[105, 40, false],
+	[50, -10, false],
+	[50, 90, false],
+	[200, 200, false],
+].map(([x, y, expected]) => ({ pt: pt(x, y), expected }));
 
 const CIRCLE_CASES = [
 	{ center: pt(0, 0), end: pt(10, 0), r: 10 },
@@ -131,12 +142,7 @@ const CIRCLE_CASES = [
 describe("boardOutline - rectOutline", () => {
 	for (const tc of RECT_OUTLINE_CASES) {
 		test(`produces closed rectangle outline (${tc.w}x${tc.h})`, () => {
-			const shapes = rectOutline(tc.x, tc.y, tc.w, tc.h);
-			assert.equal(shapes.length, 4);
-			const res = outlineToPolygon(shapes);
-			assert.equal(res.ok, true);
-			assert.equal(polygonArea(res.polygon), tc.expectedArea);
-			assert.deepEqual(polygonBBox(res.polygon), tc.expectedBBox);
+			checkRectOutline(tc);
 		});
 	}
 });
@@ -146,18 +152,18 @@ describe("boardOutline - roundedRectOutline", () => {
 		test(`rounded rect area within 1 percent (${tc.w}x${tc.h} r=${tc.r})`, () => {
 			const shapes = roundedRectOutline(tc.x, tc.y, tc.w, tc.h, tc.r);
 			assert.equal(shapes.length, 8);
-			const res = outlineToPolygon(shapes);
-			assert.equal(res.ok, true);
-			const expectedArea = tc.w * tc.h - (4 - Math.PI) * tc.r * tc.r;
-			assert.ok(relError(polygonArea(res.polygon), expectedArea) < 0.01);
+			const expected = tc.w * tc.h - (4 - Math.PI) * tc.r * tc.r;
+			assertAreaWithinTol(toValidPolygon(shapes), expected, 0.01);
 		});
 	}
 
 	for (const r of [0, -5]) {
 		test(`non-positive radius (${r}) falls back to rectOutline`, () => {
-			const shapes = roundedRectOutline(0, 0, 100, 80, r);
-			assert.equal(shapes.length, 4);
-			assert.equal(shapes[0].type, "line");
+			const fallbackShapes = roundedRectOutline(0, 0, 100, 80, r);
+			assert.deepEqual(
+				fallbackShapes.map((s) => s.type),
+				["line", "line", "line", "line"],
+			);
 		});
 	}
 });
@@ -166,13 +172,11 @@ describe("boardOutline - arcCenter", () => {
 	for (const tc of ARC_CENTER_CASES) {
 		test(`calculates circumcentre: ${tc.name}`, () => {
 			const center = arcCenter(tc.start, tc.mid, tc.end);
-			if (tc.expected === null) {
+			if (!tc.expected) {
 				assert.equal(center, null);
-			} else {
-				assert.ok(center !== null);
-				assert.ok(Math.abs(center.x - tc.expected.x) < 1e-6);
-				assert.ok(Math.abs(center.y - tc.expected.y) < 1e-6);
+				return;
 			}
+			assertPointClose(center, tc.expected);
 		});
 	}
 });
@@ -180,37 +184,29 @@ describe("boardOutline - arcCenter", () => {
 describe("boardOutline - outlineToPolygon chaining", () => {
 	for (const tc of CHAIN_CLOSED_CASES) {
 		test(`chains shuffled and reversed segments: ${tc.name}`, () => {
-			const res = outlineToPolygon(tc.shapes);
-			assert.equal(res.ok, true);
-			const areaDiff = Math.abs(polygonArea(res.polygon) - tc.expectedArea);
-			assert.ok(areaDiff < 1e-3);
+			const poly = toValidPolygon(tc.shapes);
+			assert.ok(Math.abs(polygonArea(poly) - tc.expectedArea) < 1e-3);
 		});
 	}
 
 	for (const tc of OPEN_OUTLINE_CASES) {
 		test(`open outline returns ok false with exact error: ${tc.name}`, () => {
-			const res = outlineToPolygon(tc.shapes);
-			assert.equal(res.ok, false);
-			assert.equal(res.error, "Outline is not closed");
+			assertOpenOutline(tc.shapes);
 		});
 	}
 
 	test("single rect is treated as already closed", () => {
-		const rectRes = outlineToPolygon([
+		const poly = toValidPolygon([
 			{ type: "rect", start: pt(0, 0), end: pt(100, 80) },
 		]);
-		assert.equal(rectRes.ok, true);
-		const rectArea = polygonArea(rectRes.polygon);
-		assert.equal(rectArea, 8000);
+		assert.equal(polygonArea(poly), 8000);
 	});
 
 	test("single circle is treated as already closed", () => {
-		const circleRes = outlineToPolygon([
-			{ type: "circle", center: pt(0, 0), end: pt(10, 0) },
-		]);
-		assert.equal(circleRes.ok, true);
-		const polyLength = circleRes.polygon.length;
-		assert.ok(polyLength > 0);
+		assert.ok(
+			toValidPolygon([{ type: "circle", center: pt(0, 0), end: pt(10, 0) }])
+				.length > 0,
+		);
 	});
 });
 
@@ -227,12 +223,13 @@ describe("boardOutline - pointInPolygon", () => {
 });
 
 describe("boardOutline - circle area", () => {
-	for (const tc of CIRCLE_CASES) {
+	CIRCLE_CASES.forEach((tc) => {
 		test(`circle area (r=${tc.r}) close to pi*r^2 within 2 percent`, () => {
-			const shape = { type: "circle", center: tc.center, end: tc.end };
-			const pts = flattenShape(shape, 64);
-			const expectedArea = Math.PI * tc.r * tc.r;
-			assert.ok(relError(polygonArea(pts), expectedArea) < 0.02);
+			const pts = flattenShape(
+				{ type: "circle", center: tc.center, end: tc.end },
+				64,
+			);
+			assertAreaWithinTol(pts, Math.PI * tc.r * tc.r, 0.02);
 		});
-	}
+	});
 });
