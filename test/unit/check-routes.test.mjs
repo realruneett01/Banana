@@ -10,65 +10,81 @@ import { createCheckRouter } from "../../backend/src/routes/check-routes.js";
 const VALID_PCB = "(kicad_pcb (version 20240108) (generator check_tests))";
 const VALID_SCH = "(kicad_sch (version 20240108) (generator check_tests))";
 
-function makeViolation(type, severity, description, item) {
-	return [{ type, severity, description, items: [item] }];
+function buildDrcFixture() {
+	const entries = [
+		[
+			"violations",
+			"clearance",
+			"error",
+			"Clearance violation",
+			"Pad 1 of R1",
+			{ x: 10.5, y: 20.25 },
+			"uuid-1",
+		],
+		[
+			"unconnected_items",
+			"unconnected_items",
+			"warning",
+			"Unconnected pin",
+			"Pin 2 of U1",
+			null,
+			"uuid-2",
+		],
+		[
+			"schematic_parity",
+			"schematic_parity",
+			"warning",
+			"Component not in schematic",
+			"R2 missing",
+			{ x: 5, y: 5 },
+			null,
+		],
+	];
+	const report = {};
+	for (const [key, type, severity, desc, itemDesc, pos, uuid] of entries) {
+		const item = { description: itemDesc, pos };
+		if (uuid) item.uuid = uuid;
+		report[key] = [{ type, severity, description: desc, items: [item] }];
+	}
+	return report;
 }
 
-const SAMPLE_DRC_REPORT = {
-	violations: makeViolation("clearance", "error", "Clearance violation", {
-		uuid: "uuid-1",
-		description: "Pad 1 of R1",
-		pos: { x: 10.5, y: 20.25 },
-	}),
-	unconnected_items: makeViolation(
-		"unconnected_items",
-		"warning",
-		"Unconnected pin",
-		{
-			uuid: "uuid-2",
-			description: "Pin 2 of U1",
-			pos: null,
-		},
-	),
-	schematic_parity: makeViolation(
-		"schematic_parity",
-		"warning",
-		"Component not in schematic",
-		{
-			description: "R2 missing",
-			pos: { x: 5, y: 5 },
-		},
-	),
-};
-
-const SAMPLE_ERC_REPORT = {
-	sheets: [
+function buildErcFixture() {
+	const sheets = [
 		{
 			name: "/",
-			violations: makeViolation(
-				"pin_not_connected",
-				"error",
-				"Pin not connected",
-				{
-					description: "Pin 1 of U1",
-					pos: { x: 12.0, y: 34.0 },
-				},
-			),
+			type: "pin_not_connected",
+			severity: "error",
+			desc: "Pin not connected",
+			itemDesc: "Pin 1 of U1",
+			pos: { x: 12.0, y: 34.0 },
 		},
 		{
 			name: "/power",
-			violations: makeViolation(
-				"power_pin_not_driven",
-				"warning",
-				"Power pin not driven",
-				{
-					description: "VCC pin of U2",
-					pos: null,
-				},
-			),
+			type: "power_pin_not_driven",
+			severity: "warning",
+			desc: "Power pin not driven",
+			itemDesc: "VCC pin of U2",
+			pos: null,
 		},
-	],
-};
+	];
+	return {
+		sheets: sheets.map((s) => ({
+			name: s.name,
+			violations: [
+				{
+					type: s.type,
+					severity: s.severity,
+					description: s.desc,
+					items: [{ description: s.itemDesc, pos: s.pos }],
+				},
+			],
+		})),
+	};
+}
+
+const SAMPLE_DRC_REPORT = buildDrcFixture();
+const SAMPLE_ERC_REPORT = buildErcFixture();
 
 function getReportPath(argv) {
 	const idx = argv.indexOf("--output");
@@ -117,32 +133,33 @@ function buildExpressApp(execFileImpl, cliPath = process.execPath) {
 	return app;
 }
 
+async function postJson(port, endpoint, payload) {
+	const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const text = await res.text();
+	let json = {};
+	try {
+		json = JSON.parse(text);
+	} catch (err) {
+		// Non-JSON response body handled gracefully as raw text payload
+		json = { raw: text, parseError: err.message };
+	}
+	return { status: res.status, json, text };
+}
+
 async function createTestHarness(options = {}) {
 	const cli = options.cli ?? createMockCli({ report: options.report });
 	const app = options.app ?? buildExpressApp(cli.exec, options.cliPath);
 	const srv = http.createServer(app);
 	await new Promise((resolve) => srv.listen(0, "127.0.0.1", resolve));
-	const port = srv.address().port;
-
-	const post = async (endpoint, payload) => {
-		const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(payload),
-		});
-		const text = await res.text();
-		let json = {};
-		try {
-			json = JSON.parse(text);
-		} catch (err) {
-			json = { raw: text, parseError: err.message };
-		}
-		return { status: res.status, json, text };
-	};
+	const { port } = srv.address();
 
 	return {
 		cli,
-		post,
+		post: (endpoint, payload) => postJson(port, endpoint, payload),
 		close: () => new Promise((resolve) => srv.close(resolve)),
 	};
 }
@@ -198,32 +215,49 @@ function verifyCheckResult(res, cli, spec) {
 	assertTmpCleaned(cli);
 }
 
-async function runDrcCheck(cliConfig) {
-	const cli = createMockCli(cliConfig);
+async function postAndVerifyCheck(harness, endpoint, payload, spec) {
+	const res = await harness.post(endpoint, payload);
+	assert.equal(res.status, 200);
+	verifyCheckResult(res, harness.cli, spec);
+	return res;
+}
+
+async function requestDrcWithServer(serverOpts) {
 	let res;
-	await withTestServer({ cli }, async (harness) => {
+	await withTestServer(serverOpts, async (harness) => {
 		res = await harness.post("/api/checks/drc", { pcb: VALID_PCB });
 	});
+	return res;
+}
+
+async function runDrcCheck(cliConfig) {
+	const cli = createMockCli(cliConfig);
+	const res = await requestDrcWithServer({ cli });
 	assertTmpCleaned(cli);
 	return res;
 }
+
+const expV = (type, severity, pos) =>
+	pos !== undefined ? { type, severity, pos } : { type, severity };
 
 describe("check-routes DRC tests", () => {
 	const getHarness = bindHarness(SAMPLE_DRC_REPORT);
 
 	test("runs DRC and normalises violations, unconnected, and parity", async () => {
-		const harness = getHarness();
-		const res = await harness.post("/api/checks/drc", { pcb: VALID_PCB });
-		assert.equal(res.status, 200);
-		verifyCheckResult(res, harness.cli, {
-			count: 3,
-			summary: { error: 1, warning: 2 },
-			violations: [
-				{ type: "clearance", severity: "error", pos: { x: 10.5, y: 20.25 } },
-				{ type: "unconnected_items", severity: "warning", pos: null },
-				{ type: "schematic_parity", severity: "warning" },
-			],
-		});
+		await postAndVerifyCheck(
+			getHarness(),
+			"/api/checks/drc",
+			{ pcb: VALID_PCB },
+			{
+				count: 3,
+				summary: { error: 1, warning: 2 },
+				violations: [
+					expV("clearance", "error", { x: 10.5, y: 20.25 }),
+					expV("unconnected_items", "warning", null),
+					expV("schematic_parity", "warning"),
+				],
+			},
+		);
 	});
 
 	test("excludes unconnected_items when unconnected is false", async () => {
@@ -256,60 +290,49 @@ describe("check-routes ERC tests", () => {
 	const getHarness = bindHarness(SAMPLE_ERC_REPORT);
 
 	test("runs ERC and normalises sheet violations", async () => {
-		const harness = getHarness();
-		const res = await harness.post("/api/checks/erc", { sch: VALID_SCH });
-		assert.equal(res.status, 200);
-		verifyCheckResult(res, harness.cli, {
-			count: 2,
-			summary: { error: 1, warning: 1 },
-			violations: [
-				{
-					type: "pin_not_connected",
-					severity: "error",
-					pos: { x: 12.0, y: 34.0 },
-				},
-				{ type: "power_pin_not_driven", severity: "warning", pos: null },
-			],
-		});
+		await postAndVerifyCheck(
+			getHarness(),
+			"/api/checks/erc",
+			{ sch: VALID_SCH },
+			{
+				count: 2,
+				summary: { error: 1, warning: 1 },
+				violations: [
+					expV("pin_not_connected", "error", { x: 12.0, y: 34.0 }),
+					expV("power_pin_not_driven", "warning", null),
+				],
+			},
+		);
 	});
 });
 
 describe("check-routes 400 validation cases", () => {
 	const getHarness = bindHarness(SAMPLE_DRC_REPORT);
 
+	const DRC_BAD_PARAMS = [
+		["missing pcb", {}],
+		["pcb not string", { pcb: 12345 }],
+		["invalid pcb header", { pcb: "(wrong_pcb (version 1))" }],
+		["unconnected not boolean", { pcb: VALID_PCB, unconnected: "no" }],
+	];
+	const ERC_BAD_PARAMS = [
+		["missing sch", {}],
+		["sch not string", { sch: true }],
+		["invalid sch header", { sch: "(wrong_sch (version 1))" }],
+	];
 	const BAD_PARAM_CASES = [
-		{ route: "/api/checks/drc", prefix: "DRC", desc: "missing pcb", body: {} },
-		{
-			route: "/api/checks/drc",
+		...DRC_BAD_PARAMS.map(([desc, body]) => ({
 			prefix: "DRC",
-			desc: "pcb not string",
-			body: { pcb: 12345 },
-		},
-		{
 			route: "/api/checks/drc",
-			prefix: "DRC",
-			desc: "invalid pcb header",
-			body: { pcb: "(wrong_pcb (version 1))" },
-		},
-		{
-			route: "/api/checks/drc",
-			prefix: "DRC",
-			desc: "unconnected not boolean",
-			body: { pcb: VALID_PCB, unconnected: "no" },
-		},
-		{ route: "/api/checks/erc", prefix: "ERC", desc: "missing sch", body: {} },
-		{
-			route: "/api/checks/erc",
+			desc,
+			body,
+		})),
+		...ERC_BAD_PARAMS.map(([desc, body]) => ({
 			prefix: "ERC",
-			desc: "sch not string",
-			body: { sch: true },
-		},
-		{
 			route: "/api/checks/erc",
-			prefix: "ERC",
-			desc: "invalid sch header",
-			body: { sch: "(wrong_sch (version 1))" },
-		},
+			desc,
+			body,
+		})),
 	];
 
 	for (const tc of BAD_PARAM_CASES) {
@@ -351,21 +374,18 @@ describe("check-routes failures and service availability", () => {
 	});
 
 	test("returns 503 when CLI is missing or path does not exist", async () => {
-		await withTestServer(
-			{ cliPath: "/nonexistent/kicad-cli" },
-			async (harness) => {
-				const res = await harness.post("/api/checks/drc", { pcb: VALID_PCB });
-				assertErrorResponse(res, 503, "KiCad CLI");
-			},
-		);
+		const res = await requestDrcWithServer({
+			cliPath: "/nonexistent/kicad-cli",
+		});
+		assertErrorResponse(res, 503, "KiCad CLI");
 	});
 
 	test("integrates with createApp at /api/checks/drc and /api/checks/erc", async () => {
 		await withTestServer({ app: createApp() }, async (harness) => {
-			const resDrc = await harness.post("/api/checks/drc", {});
-			assert.equal(resDrc.status, 400);
-			const resErc = await harness.post("/api/checks/erc", {});
-			assert.equal(resErc.status, 400);
+			for (const ep of ["/api/checks/drc", "/api/checks/erc"]) {
+				const res = await harness.post(ep, {});
+				assert.equal(res.status, 400);
+			}
 		});
 	});
 });
