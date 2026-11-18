@@ -10,11 +10,20 @@ export function isCircuitIr(candidate) {
 	return !Array.isArray(candidate) && Array.isArray(candidate.parts);
 }
 
+export function triggerEditorSave() {
+	if (typeof document === "undefined") return;
+	const saveBtn = document.querySelector("button[aria-label='Save']");
+	if (saveBtn && !saveBtn.disabled) {
+		saveBtn.click();
+	}
+}
+
 function useStudioState(setIr) {
 	const [studioOpen, setStudioOpen] = useState(false);
 	const closeStudio = useCallback(() => setStudioOpen(false), []);
 	const openStudio = useCallback(
 		(nextIr) => {
+			triggerEditorSave();
 			if (isCircuitIr(nextIr)) {
 				setIr(nextIr);
 			}
@@ -97,18 +106,29 @@ function useEditorDocument(setIr, setEditorOpen) {
 		[setIr, setEditorOpen],
 	);
 
-	return { board, symbols, editorTab, docKey, newDesign, openDesign };
+	return {
+		board,
+		setBoard,
+		symbols,
+		editorTab,
+		docKey,
+		newDesign,
+		openDesign,
+	};
 }
 
-function useSaveFromEditor(setIr) {
+function useSaveFromEditor(setIr, setBoard) {
 	return useCallback(
 		(payload) => {
 			const next = payload?.ir !== undefined ? payload.ir : payload;
 			if (isCircuitIr(next)) {
 				setIr(next);
 			}
+			if (payload?.board !== undefined && typeof setBoard === "function") {
+				setBoard(payload.board);
+			}
 		},
-		[setIr],
+		[setIr, setBoard],
 	);
 }
 
@@ -117,6 +137,7 @@ function useEditorState(setIr) {
 	const { focusItemId, clearFocus, focusInEditor } =
 		useEditorFocus(setEditorOpen);
 	const closeEditor = useCallback(() => {
+		triggerEditorSave();
 		setEditorOpen(false);
 		clearFocus();
 	}, [clearFocus]);
@@ -129,8 +150,8 @@ function useEditorState(setIr) {
 		},
 		[setIr],
 	);
-	const saveFromEditor = useSaveFromEditor(setIr);
 	const doc = useEditorDocument(setIr, setEditorOpen);
+	const saveFromEditor = useSaveFromEditor(setIr, doc.setBoard);
 	return {
 		editorOpen,
 		openEditor,
@@ -147,6 +168,7 @@ function useSimState(setIr) {
 	const closeSimulation = useCallback(() => setSimOpen(false), []);
 	const openSimulation = useCallback(
 		(nextIr) => {
+			triggerEditorSave();
 			if (isCircuitIr(nextIr)) {
 				setIr(nextIr);
 			}

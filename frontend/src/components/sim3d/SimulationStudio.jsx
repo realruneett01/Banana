@@ -11,6 +11,7 @@ import { API_BASE_URL } from "../../config.js";
 import BoardPreview from "../BoardPreview.jsx";
 import Board3DScene from "./Board3DScene.jsx";
 import StudioSidePanel from "./StudioSidePanel.jsx";
+import { footprintToModelPath } from "./stepModels.js";
 import { useCircuitSim } from "./useCircuitSim.js";
 
 const HoloViewer = lazy(() => import("../holo/HoloViewer.jsx"));
@@ -28,6 +29,24 @@ export function extractPcbTextFromFiles(files) {
 	if (!files || typeof files !== "object") return null;
 	const entry = Object.entries(files).find(([k]) => k.endsWith(".kicad_pcb"));
 	return entry ? entry[1] : null;
+}
+
+export function enrichPcbTextWithModels(pcbText, resolver) {
+	if (!pcbText || typeof pcbText !== "string") return pcbText;
+	const resolve =
+		resolver ??
+		(typeof footprintToModelPath === "function"
+			? footprintToModelPath
+			: () => null);
+	return pcbText.replace(
+		/\(footprint\s+"([^"]+)"([\s\S]*?)\n(\t*|\s*)\)/g,
+		(match, fpName, rest, indent) => {
+			if (match.includes("(model ")) return match;
+			const modelPath = resolve(fpName);
+			if (!modelPath) return match;
+			return `(footprint "${fpName}"${rest}\n\t\t(model "${modelPath}"\n\t\t\t(offset (xyz 0 0 0))\n\t\t\t(scale (xyz 1 1 1))\n\t\t\t(rotate (xyz 0 0 0))\n\t\t)\n${indent})`;
+		},
+	);
 }
 
 async function exportViaApi(api, ir, board, signal) {
@@ -62,6 +81,7 @@ export async function fetchCurrentPcbText({
 	signal,
 	fetchImpl = fetch,
 	baseUrl = API_BASE_URL,
+	modelResolver,
 }) {
 	const files =
 		typeof api?.editorExport === "function"
@@ -74,7 +94,7 @@ export async function fetchCurrentPcbText({
 				);
 	const text = extractPcbTextFromFiles(files);
 	if (!text) throw new Error("No .kicad_pcb file in export");
-	return text;
+	return enrichPcbTextWithModels(text, modelResolver);
 }
 // --- SIMULATION STUDIO PURE HELPERS END ---
 
@@ -297,18 +317,7 @@ function useStudioSelection() {
 	};
 }
 
-function useEditorSync(ir) {
-	useEffect(() => {
-		if (ir?.parts?.length || typeof document === "undefined") return;
-		const saveBtn = document.querySelector("button[aria-label='Save']");
-		if (saveBtn && !saveBtn.disabled) {
-			saveBtn.click();
-		}
-	}, [ir]);
-}
-
 export default function SimulationStudio({ api, ir, board, onApplyFix }) {
-	useEditorSync(ir);
 	const sim = useCircuitSim({ api, ir });
 	const [env, setEnv] = useState(null);
 	const sel = useStudioSelection();
