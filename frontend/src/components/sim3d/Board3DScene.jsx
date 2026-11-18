@@ -101,9 +101,14 @@ function createPartMesh(part, isHigh, toScene) {
 	return mesh;
 }
 
+function resolvePartFootprint(part) {
+	return part?.footprint || part?.fp || part?.props?.footprint || null;
+}
+
 function attachPartModel(group, mesh, part, toScene) {
-	if (!part.footprint) return;
-	loadModel(part.footprint)
+	const fp = resolvePartFootprint(part);
+	if (!fp) return;
+	loadModel(fp)
 		.then((modelGroup) => {
 			if (!modelGroup || mesh.parent !== group) return;
 			const clone = cloneModel(modelGroup);

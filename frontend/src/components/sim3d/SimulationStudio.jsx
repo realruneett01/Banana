@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import BoardPreview from "../BoardPreview.jsx";
 import Board3DScene from "./Board3DScene.jsx";
 import StudioSidePanel from "./StudioSidePanel.jsx";
@@ -132,7 +132,7 @@ function useStudioSelection() {
 		selectedCard,
 	);
 
-	const handleCardSelect = useCallback(
+	const onSelectCard = useCallback(
 		(card) => {
 			setSelectedCard((prev) => (prev?.id === card?.id ? null : card));
 			setSelectedPartId(null);
@@ -141,7 +141,7 @@ function useStudioSelection() {
 		[setTourIds],
 	);
 
-	const handleTourHighlight = useCallback(
+	const onHighlight = useCallback(
 		(ids) => {
 			setTourIds(ids || []);
 			setSelectedCard(null);
@@ -154,12 +154,23 @@ function useStudioSelection() {
 		selectedCardId: selectedCard?.id,
 		highlightIds,
 		onSelectPart: setSelectedPartId,
-		onSelectCard: handleCardSelect,
-		onHighlight: handleTourHighlight,
+		onSelectCard,
+		onHighlight,
 	};
 }
 
+function useEditorSync(ir) {
+	useEffect(() => {
+		if (ir?.parts?.length || typeof document === "undefined") return;
+		const saveBtn = document.querySelector("button[aria-label='Save']");
+		if (saveBtn && !saveBtn.disabled) {
+			saveBtn.click();
+		}
+	}, [ir]);
+}
+
 export default function SimulationStudio({ api, ir, board, onApplyFix }) {
+	useEditorSync(ir);
 	const sim = useCircuitSim({ api, ir });
 	const [env, setEnv] = useState(null);
 	const sel = useStudioSelection();
