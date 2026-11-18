@@ -26,13 +26,10 @@ import {
 } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { guardFormWrites, nextFormConnection } from "../formConnection.js";
+import { DARK_BORDER, MUTED_GRAY, YELLOW_ACCENT } from "./githubTheme.js";
 import { useGithubSync } from "./useGithubSync.js";
 
 const { Text, Title } = Typography;
-
-const DARK_BORDER = "#232738";
-const YELLOW_ACCENT = "#fadb14";
-const MUTED_GRAY = "#8b949e";
 
 const BANANA_BUTTON_STYLE = Object.freeze({
 	background: "linear-gradient(135deg, #fadb14 0%, #faad14 100%)",

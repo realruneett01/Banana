@@ -26,16 +26,17 @@ import {
 } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../config.js";
+import {
+	DARK_BG,
+	DARK_BORDER,
+	MUTED_GRAY,
+	YELLOW_ACCENT,
+} from "./githubTheme.js";
 
 const { Text, Paragraph } = Typography;
 
 const NEW_TOKEN_URL =
 	"https://github.com/settings/tokens/new?scopes=repo,read:user&description=Banana%20Hardware%20Diff%20Studio";
-
-const DARK_BG = "#0f1015";
-const DARK_BORDER = "#232738";
-const YELLOW_ACCENT = "#fadb14";
-const MUTED_GRAY = "#8b949e";
 
 const MODAL_STYLES = Object.freeze({
 	content: {
