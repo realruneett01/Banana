@@ -10,7 +10,7 @@ import {
 	UpOutlined,
 } from "@ant-design/icons";
 import { Button, Segmented, Select, Slider, Spin, Tooltip } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE_URL } from "../../config.js";
 import { createFlowLayer } from "../sim3d/flowLayer.js";
 import { buildFlowPaths, faultEffects } from "../sim3d/flowModel.js";
@@ -35,22 +35,32 @@ const STYLE_OPTIONS = [
 	{ label: "Hologram", value: "holo" },
 ];
 
+// --- HOLO VIEWER PURE HELPERS START ---
+export function buildGlbRequestBody(source, commit) {
+	if (source?.pcbText != null) {
+		return { pcb: source.pcbText };
+	}
+	const { repoPath, owner, repo, relativeFilePath } = source || {};
+	return {
+		repoPath,
+		owner,
+		repo,
+		commit,
+		relativeFilePath,
+		filePath: relativeFilePath,
+	};
+}
+// --- HOLO VIEWER PURE HELPERS END ---
+
 async function fetchBoardGlb(source, commit, signal) {
-	const { repoPath, owner, repo, relativeFilePath, githubToken } = source;
+	const { githubToken } = source || {};
 	const headers = { "Content-Type": "application/json" };
 	if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
 	const res = await fetch(`${API_BASE_URL}/api/board/glb`, {
 		method: "POST",
 		headers,
 		signal,
-		body: JSON.stringify({
-			repoPath,
-			owner,
-			repo,
-			commit,
-			relativeFilePath,
-			filePath: relativeFilePath,
-		}),
+		body: JSON.stringify(buildGlbRequestBody(source, commit)),
 	});
 	if (!res.ok) {
 		const data = await res.json().catch(() => ({}));
@@ -59,31 +69,63 @@ async function fetchBoardGlb(source, commit, signal) {
 	return res.arrayBuffer();
 }
 
+function useDebounce(value, delayMs) {
+	const [debounced, setDebounced] = useState(value);
+	useEffect(() => {
+		const timer = setTimeout(() => setDebounced(value), delayMs);
+		return () => clearTimeout(timer);
+	}, [value, delayMs]);
+	return debounced;
+}
+
+function loadGlbToState(reqSource, commit, setState) {
+	const ctrl = new AbortController();
+	setState({ status: "loading", buffer: null, error: null });
+	fetchBoardGlb(reqSource, commit, ctrl.signal)
+		.then((buffer) => setState({ status: "ready", buffer, error: null }))
+		.catch((err) => {
+			if (err.name !== "AbortError") {
+				setState({ status: "error", buffer: null, error: err.message });
+			}
+		});
+	return () => ctrl.abort();
+}
+
 function useBoardGlb(source, commit) {
 	const [state, setState] = useState({
 		status: "idle",
 		buffer: null,
 		error: null,
 	});
+	const isPcbMode = source?.pcbText != null;
+	const debouncedPcb = useDebounce(source?.pcbText, 800);
 	const { repoPath, owner, repo, relativeFilePath, githubToken } = source || {};
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: tracking source properties ensures re-fetch when fields change
 	useEffect(() => {
+		if (isPcbMode) {
+			if (!debouncedPcb) {
+				setState({ status: "idle", buffer: null, error: null });
+				return;
+			}
+			return loadGlbToState({ pcbText: debouncedPcb }, null, setState);
+		}
 		if (!source || !commit) {
 			setState({ status: "idle", buffer: null, error: null });
 			return;
 		}
-		const ctrl = new AbortController();
-		setState({ status: "loading", buffer: null, error: null });
-		fetchBoardGlb(source, commit, ctrl.signal)
-			.then((buffer) => setState({ status: "ready", buffer, error: null }))
-			.catch((err) => {
-				if (err.name !== "AbortError") {
-					setState({ status: "error", buffer: null, error: err.message });
-				}
-			});
-		return () => ctrl.abort();
-	}, [source, commit, repoPath, owner, repo, relativeFilePath, githubToken]);
+		return loadGlbToState(source, commit, setState);
+	}, [
+		isPcbMode,
+		debouncedPcb,
+		source,
+		commit,
+		repoPath,
+		owner,
+		repo,
+		relativeFilePath,
+		githubToken,
+	]);
 
 	return state;
 }
@@ -121,10 +163,13 @@ function calcStepExplode(explode, layerCount, delta) {
 }
 
 function getStatus(source, glb, parseError) {
-	if (!source) {
+	const isPcbMode = source?.pcbText != null;
+	if (!source || (isPcbMode && !source.pcbText)) {
 		return {
 			title: "No board loaded",
-			text: "Load a .kicad_pcb diff from the Controls panel to see it as a 3D hologram.",
+			text: isPcbMode
+				? "Design or open a board in the editor to see it as a 3D hologram."
+				: "Load a .kicad_pcb diff from the Controls panel to see it as a 3D hologram.",
 		};
 	}
 	if (glb.status === "loading") {
@@ -211,7 +256,7 @@ function formatCommitLabel(name, hash) {
 }
 
 function HoloCommitSelector({ source, which, onChange }) {
-	if (!source) return null;
+	if (!source || source.pcbText != null) return null;
 	const options = [
 		{
 			label: formatCommitLabel("Target", source.targetCommit),
@@ -685,7 +730,9 @@ function HoloPanelContent({ state }) {
 		sceneRef,
 	} = state;
 	const meta = {
-		filePath: source?.relativeFilePath,
+		filePath:
+			source?.relativeFilePath ||
+			(source?.pcbText ? "board.kicad_pcb" : undefined),
 		which,
 		style: styling.style,
 	};
@@ -844,12 +891,17 @@ function buildPanelState(source, s) {
  */
 export default function HoloViewer({
 	source,
+	pcbText,
 	flow,
 	faults = [],
 	playing = true,
 }) {
 	const onFrameRef = useRef(null);
-	const s = useHoloViewState(source, onFrameRef);
+	const activeSource = useMemo(() => {
+		if (pcbText != null) return { ...(source || {}), pcbText };
+		return source;
+	}, [source, pcbText]);
+	const s = useHoloViewState(activeSource, onFrameRef);
 	useFlowSync({
 		flow,
 		faults,
@@ -866,7 +918,7 @@ export default function HoloViewer({
 			<HoloStatusOverlay status={s.status} />
 			<HoloTip hover={s.holo.hover} />
 			<HoloReadout board={s.loader.board} bufferSize={s.loader.bufferSize} />
-			<HoloPanel state={buildPanelState(source, s)} />
+			<HoloPanel state={buildPanelState(activeSource, s)} />
 		</div>
 	);
 }
