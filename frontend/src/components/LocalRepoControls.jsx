@@ -9,6 +9,8 @@ import {
 	Button,
 	Form,
 	Input,
+	Modal,
+	message,
 	Select,
 	Switch,
 	Timeline,
@@ -16,6 +18,7 @@ import {
 	Upload,
 } from "antd";
 import { useEffect } from "react";
+import { resolveDroppedFolder } from "../useLocalGitRepo.js";
 import { CommitWorktreeButton } from "./CommitWorktreeButton.jsx";
 
 const { Title, Text } = Typography;
@@ -255,9 +258,186 @@ function DraggerContent() {
 	);
 }
 
-function LocalRepoDragger({ onFileDropped }) {
+// --- Pure folder dragger helpers ---
+export function pickFolderStrategy({ banana, showDirectoryPicker } = {}) {
+	if (banana?.selectFolder) {
+		return "desktop";
+	}
+	if (typeof showDirectoryPicker === "function" || showDirectoryPicker) {
+		return "directory-picker";
+	}
+	return "upload-input";
+}
+
+export function createFolderDataTransfer(name) {
+	return {
+		files: [],
+		items: [
+			{
+				webkitGetAsEntry: () => ({
+					isDirectory: true,
+					name,
+				}),
+			},
+		],
+	};
+}
+
+export async function resolveFolderName(name, options = {}) {
+	const resolveFn = options.resolveFolder || resolveDroppedFolder;
+	return resolveFn(createFolderDataTransfer(name), options);
+}
+
+export function applyRepoPath(path, form, setRepoPath, loadRepoInfo) {
+	setRepoPath?.(path);
+	form?.setFieldValue?.("repoPath", path);
+	loadRepoInfo?.(path, false);
+}
+
+function handlePickerChoices(choices, ctx) {
+	if (ctx.onChoices) {
+		ctx.onChoices(choices);
+		return;
+	}
+	showRepoChoicesModal(choices, (chosen) => {
+		applyRepoPath(chosen, ctx.form, ctx.setRepoPath, ctx.loadRepoInfo);
+	});
+}
+
+function handlePickerError(error, ctx) {
+	if (ctx.onError) {
+		ctx.onError(error);
+		return;
+	}
+	message.warning(error);
+}
+
+export function applyPickerResult(result, ctx) {
+	if (result.path) {
+		applyRepoPath(result.path, ctx.form, ctx.setRepoPath, ctx.loadRepoInfo);
+	} else if (result.choices?.length) {
+		handlePickerChoices(result.choices, ctx);
+	} else if (result.error) {
+		handlePickerError(result.error, ctx);
+	}
+}
+
+async function requestDirectoryHandle(showDirectoryPicker, onError) {
+	try {
+		return await showDirectoryPicker({ mode: "read" });
+	} catch (err) {
+		if (err?.name === "AbortError") return null;
+		if (onError) onError(err.message);
+		return null;
+	}
+}
+
+export async function openDirectoryPicker(options = {}) {
+	const picker =
+		options.showDirectoryPicker || globalThis.window?.showDirectoryPicker;
+	if (!picker) return null;
+	const handle = await requestDirectoryHandle(picker, options.onError);
+	if (!handle?.name) return null;
+	const resolver =
+		options.resolveName ||
+		((name) => resolveFolderName(name, options.resolveOptions));
+	const result = await resolver(handle.name);
+	applyPickerResult(result, options);
+	return result;
+}
+
+export async function browseFolderForRepo(setRepoPath, form, loadRepoInfo) {
+	const banana = globalThis.window?.banana;
+	if (!banana?.selectFolder) return;
+	const selected = await banana.selectFolder();
+	if (selected) {
+		applyRepoPath(selected, form, setRepoPath, loadRepoInfo);
+	}
+}
+// --- End pure folder dragger helpers ---
+
+function ChoiceButtons({ choices, onSelect, onClose }) {
+	const handleClick = (choice) => {
+		onClose();
+		onSelect(choice);
+	};
+	return (
+		<div
+			style={{
+				display: "flex",
+				flexDirection: "column",
+				gap: "8px",
+				marginTop: "16px",
+			}}
+		>
+			{choices.map((choice) => (
+				<Button
+					key={choice}
+					type="default"
+					block
+					style={{
+						textAlign: "left",
+						whiteSpace: "normal",
+						height: "auto",
+						padding: "8px 12px",
+					}}
+					onClick={() => handleClick(choice)}
+				>
+					{choice}
+				</Button>
+			))}
+		</div>
+	);
+}
+
+function showRepoChoicesModal(choices, onSelect) {
+	let modalInstance = null;
+	const closeModal = () => modalInstance?.destroy();
+	modalInstance = Modal.info({
+		title: "Select Repository",
+		icon: null,
+		closable: true,
+		maskClosable: true,
+		footer: null,
+		content: (
+			<ChoiceButtons
+				choices={choices}
+				onSelect={onSelect}
+				onClose={closeModal}
+			/>
+		),
+	});
+}
+
+function activateDragger(e, props) {
+	const strategy = pickFolderStrategy({
+		banana: window.banana,
+		showDirectoryPicker: window.showDirectoryPicker,
+	});
+	if (strategy === "desktop") {
+		browseFolderForRepo(props.setRepoPath, props.form, props.loadRepoInfo);
+		return;
+	}
+	if (strategy === "directory-picker") {
+		openDirectoryPicker(props);
+		return;
+	}
+	const input = e?.currentTarget
+		?.closest?.(".ant-upload")
+		?.querySelector?.('input[type="file"]');
+	input?.click();
+}
+
+function handleDraggerKeyDown(e, props) {
+	if (e.key === "Enter" || e.key === " ") {
+		e.preventDefault();
+		activateDragger(e, props);
+	}
+}
+
+function LocalRepoDragger(props) {
 	const handleBeforeUpload = (file) => {
-		onFileDropped(file);
+		props.onFileDropped?.(file);
 		return false;
 	};
 
@@ -266,22 +446,29 @@ function LocalRepoDragger({ onFileDropped }) {
 			directory
 			multiple={false}
 			showUploadList={false}
+			openFileDialogOnClick={false}
 			beforeUpload={handleBeforeUpload}
 			style={DRAGGER_STYLE}
 		>
-			<DraggerContent />
+			<button
+				type="button"
+				style={{
+					background: "transparent",
+					border: "none",
+					width: "100%",
+					padding: 0,
+					outline: "none",
+					cursor: "pointer",
+					textAlign: "center",
+					display: "block",
+				}}
+				onClick={(e) => activateDragger(e, props)}
+				onKeyDown={(e) => handleDraggerKeyDown(e, props)}
+			>
+				<DraggerContent />
+			</button>
 		</Upload.Dragger>
 	);
-}
-
-async function browseFolderForRepo(setRepoPath, form, loadRepoInfo) {
-	if (!window.banana?.selectFolder) return;
-	const selected = await window.banana.selectFolder();
-	if (selected) {
-		setRepoPath(selected);
-		form.setFieldValue("repoPath", selected);
-		loadRepoInfo(selected, false);
-	}
 }
 
 function BrowseFolderButton({ onBrowse }) {
@@ -608,7 +795,12 @@ export function LocalRepoControls(props) {
 
 	return (
 		<>
-			<LocalRepoDragger onFileDropped={props.onFileDropped} />
+			<LocalRepoDragger
+				onFileDropped={props.onFileDropped}
+				setRepoPath={props.setRepoPath}
+				form={props.form}
+				loadRepoInfo={props.loadRepoInfo}
+			/>
 			<CommitWorktreeButton
 				repoPath={props.repoPath}
 				baseCommit={props.baseCommit}
