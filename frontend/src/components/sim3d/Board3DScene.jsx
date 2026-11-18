@@ -12,6 +12,7 @@ import { createFlowLayer } from "./flowLayer.js";
 import { buildFlowPaths, faultEffects } from "./flowModel.js";
 import { createHeatLayer } from "./heatLayer.js";
 import { heatGrid, legendStops, partTemperatures } from "./heatModel.js";
+import { cloneModel, loadModel } from "./stepModels.js";
 
 const CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -100,12 +101,30 @@ function createPartMesh(part, isHigh, toScene) {
 	return mesh;
 }
 
+function attachPartModel(group, mesh, part, toScene) {
+	if (!part.footprint) return;
+	loadModel(part.footprint)
+		.then((modelGroup) => {
+			if (!modelGroup || mesh.parent !== group) return;
+			const clone = cloneModel(modelGroup);
+			if (!clone) return;
+			const pl = part.placement ?? { x: 0, y: 0, rot: 0 };
+			const [sx, sy, sz] = toScene(pl.x, pl.y, 0);
+			clone.position.set(sx, sy, sz);
+			clone.rotation.y = -((pl.rot || 0) * Math.PI) / 180;
+			disposeHierarchy(mesh);
+			group.add(clone);
+		})
+		.catch(() => {});
+}
+
 function createPartsGroup(parts, highlightIds, toScene) {
 	const group = new THREE.Group();
 	for (const part of parts) {
 		const high = isHighlighted(part.id, highlightIds);
 		const mesh = createPartMesh(part, high, toScene);
 		group.add(mesh);
+		attachPartModel(group, mesh, part, toScene);
 	}
 	return group;
 }
