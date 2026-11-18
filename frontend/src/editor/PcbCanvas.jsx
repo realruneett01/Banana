@@ -17,6 +17,7 @@ import {
 	rectOutline,
 	roundedRectOutline,
 } from "./boardOutline.js";
+import { copyBoard, duplicateBoard, pasteBoard } from "./clipboard.js";
 import {
 	isDiffPairName,
 	partnerNetName,
@@ -41,6 +42,7 @@ import {
 	refLabelPlacement,
 	transformPrimitives,
 } from "./footprintRender.js";
+import { PCB_HOTKEYS } from "./hotkeys.js";
 import {
 	createLayerState,
 	drawOrder,
@@ -398,9 +400,49 @@ function handleSelectionShortcuts(e, key, ctx) {
 	return false;
 }
 
+function hasCtrlModifierOnly(e) {
+	if (!hasModifier(e)) return false;
+	return !e.shiftKey && !e.altKey;
+}
+
+function matchPcbHotkey(e, key, action) {
+	const spec = PCB_HOTKEYS?.[action];
+	if (!spec) return false;
+	if (spec.startsWith("ctrl+")) {
+		const target = spec.slice(5).toLowerCase();
+		return hasCtrlModifierOnly(e) && key === target;
+	}
+	return !hasModifier(e) && key === spec.toLowerCase();
+}
+
+function handleClipboardShortcuts(e, key, ctx) {
+	if (matchPcbHotkey(e, key, "copy")) {
+		e.preventDefault();
+		ctx.copyBoard?.();
+		return true;
+	}
+	if (matchPcbHotkey(e, key, "paste")) {
+		e.preventDefault();
+		ctx.pasteBoard?.();
+		return true;
+	}
+	if (matchPcbHotkey(e, key, "duplicate")) {
+		e.preventDefault();
+		ctx.duplicateBoard?.();
+		return true;
+	}
+	if (matchPcbHotkey(e, key, "cut")) {
+		e.preventDefault();
+		ctx.cutBoard?.();
+		return true;
+	}
+	return false;
+}
+
 function handleCanvasActionKeys(e, key, ctx) {
 	if (handleLayerShortcuts(e, ctx)) return true;
 	if (handleSelectionShortcuts(e, key, ctx)) return true;
+	if (handleClipboardShortcuts(e, key, ctx)) return true;
 	return false;
 }
 
@@ -2563,13 +2605,75 @@ function useCanvasSelection(options = {}) {
 		[editor, onChange],
 	);
 
+	const selectItems = useCallback(
+		(items = {}) => {
+			setTracks(items.trackIndices ?? []);
+			setVias(items.viaIndices ?? []);
+			setZones(items.zoneIndices ?? []);
+			setGraphics(items.graphicIds ?? []);
+			setPad(null);
+			editor?.dispatch({ type: "select", ids: items.partIds ?? [] });
+			onChange?.(editor?.state);
+		},
+		[editor, onChange],
+	);
+
 	return {
 		...state,
 		deleteSelected,
 		selectAll,
 		selectConnected,
 		onSelectHit,
+		selectItems,
 	};
+}
+
+function hasClipboardItems(clip) {
+	if (!clip) return false;
+	const count =
+		(clip.tracks?.length ?? 0) +
+		(clip.vias?.length ?? 0) +
+		(clip.zones?.length ?? 0) +
+		(clip.graphics?.length ?? 0) +
+		(clip.footprints?.length ?? 0);
+	return count > 0;
+}
+
+function commitBoardAction(board, nextBoard, pushBoard, sel) {
+	if (!nextBoard) return;
+	pushBoard(nextBoard);
+	sel?.selectItems?.(collectPastedSelection(board, nextBoard));
+}
+
+function usePcbClipboard(options = {}) {
+	const { board, pushBoard, sel, cursorWorldRef, gridPitch } = options;
+	const clipboardRef = useRef(null);
+
+	const copy = useCallback(() => {
+		const items = collectSelectedBoardItems(board, sel);
+		if (items.length > 0) clipboardRef.current = copyBoard(board, items);
+	}, [board, sel]);
+
+	const paste = useCallback(() => {
+		const clip = clipboardRef.current;
+		if (!hasClipboardItems(clip)) return;
+		const anchor = calculatePasteAnchor(cursorWorldRef?.current, gridPitch);
+		commitBoardAction(board, pasteBoard(board, clip, anchor), pushBoard, sel);
+	}, [board, pushBoard, sel, cursorWorldRef, gridPitch]);
+
+	const duplicate = useCallback(() => {
+		const items = collectSelectedBoardItems(board, sel);
+		if (items.length > 0) {
+			commitBoardAction(board, duplicateBoard(board, items), pushBoard, sel);
+		}
+	}, [board, pushBoard, sel]);
+
+	const cut = useCallback(() => {
+		copy();
+		sel?.deleteSelected?.();
+	}, [copy, sel]);
+
+	return { copy, paste, duplicate, cut, clipboardRef };
 }
 
 function fetchSingleFootprint(fpId, fetchFootprint, pendingRef, setCache) {
@@ -2803,10 +2907,20 @@ function armToolShortcut(ctx, tool) {
 	ctx.highlight?.setHighlightMode(false);
 }
 
+function buildClipboardShortcuts(ctx) {
+	return {
+		copyBoard: ctx.clipboard?.copy,
+		pasteBoard: ctx.clipboard?.paste,
+		duplicateBoard: ctx.clipboard?.duplicate,
+		cutBoard: ctx.clipboard?.cut,
+	};
+}
+
 function buildShortcuts(ctx) {
 	return {
 		...buildNavShortcuts(ctx),
 		...buildHighlightShortcuts(ctx),
+		...buildClipboardShortcuts(ctx),
 		editor: ctx.editor,
 		selectedPartId: ctx.sel.selectedPartId,
 		armVia: () => armToolShortcut(ctx, "placeVia"),
@@ -5083,6 +5197,102 @@ export function deleteItemsFromBoard(board, target = {}) {
 
 // --- End PCB Select and Layer pure helpers ---
 
+// --- PCB Clipboard pure helpers ---
+
+export function calculatePasteAnchor(cursor, grid = 0.25) {
+	if (!cursor) return { x: 0, y: 0 };
+	const raw = Array.isArray(cursor)
+		? { x: cursor[0] ?? 0, y: cursor[1] ?? 0 }
+		: { x: cursor.x ?? 0, y: cursor.y ?? 0 };
+	return snapToGrid(raw, grid);
+}
+
+function indexRange(start, end) {
+	const res = [];
+	for (let i = start; i < end; i++) res.push(i);
+	return res;
+}
+
+function sliceIds(items, startIdx) {
+	if (!Array.isArray(items)) return [];
+	return items
+		.slice(startIdx)
+		.map((item) => item?.id ?? item?.uuid)
+		.filter(Boolean);
+}
+
+export function collectPastedSelection(prevBoard, nextBoard) {
+	if (!nextBoard) {
+		return {
+			partIds: [],
+			trackIndices: [],
+			viaIndices: [],
+			zoneIndices: [],
+			graphicIds: [],
+		};
+	}
+	const prevFps = Array.isArray(prevBoard?.footprints)
+		? prevBoard.footprints.length
+		: 0;
+	return {
+		trackIndices: indexRange(
+			prevBoard?.tracks?.length ?? 0,
+			nextBoard.tracks?.length ?? 0,
+		),
+		viaIndices: indexRange(
+			prevBoard?.vias?.length ?? 0,
+			nextBoard.vias?.length ?? 0,
+		),
+		zoneIndices: indexRange(
+			prevBoard?.zones?.length ?? 0,
+			nextBoard.zones?.length ?? 0,
+		),
+		graphicIds: sliceIds(nextBoard.graphics, prevBoard?.graphics?.length ?? 0),
+		partIds: sliceIds(nextBoard.footprints, prevFps),
+	};
+}
+
+function getSelectedIndices(plural, singular) {
+	if (Array.isArray(plural) && plural.length > 0) return plural;
+	if (typeof singular === "number") return [singular];
+	return [];
+}
+
+function pickByIndices(list, indices) {
+	if (!Array.isArray(list) || !Array.isArray(indices)) return [];
+	return indices.map((i) => list[i]).filter(Boolean);
+}
+
+function getSelectedIds(plural, singular) {
+	if (Array.isArray(plural)) return plural;
+	return singular ? [singular] : [];
+}
+
+function collectIndexedItems(board, sel) {
+	const tracks = pickByIndices(
+		board?.tracks,
+		getSelectedIndices(sel.selectedTrackIndices, sel.selectedTrackIndex),
+	);
+	const vias = pickByIndices(
+		board?.vias,
+		getSelectedIndices(sel.selectedViaIndices, sel.selectedViaIndex),
+	);
+	const zones = pickByIndices(
+		board?.zones,
+		getSelectedIndices(sel.selectedZoneIndices, sel.selectedZoneIndex),
+	);
+	return [...tracks, ...vias, ...zones];
+}
+
+export function collectSelectedBoardItems(board, sel = {}) {
+	const indexed = collectIndexedItems(board, sel);
+	const gfx = getSelectedIds(sel.selectedGraphicIds, sel.selectedGraphicId);
+	const parts = getSelectedIds(sel.selectedPartIds, sel.selectedPartId);
+	return [...indexed, ...gfx, ...parts];
+}
+
+// --- End PCB Clipboard pure helpers ---
+
 function PcbGridDefs(props) {
 	const { step, majorStep, dotR, majorR, dot, major } = props;
 	return (
@@ -5460,6 +5670,13 @@ function usePcbCanvasState({
 		onChange,
 		pads,
 	});
+	const clipboard = usePcbClipboard({
+		board,
+		pushBoard: history.pushBoard,
+		sel,
+		cursorWorldRef,
+		gridPitch,
+	});
 	const drag = usePartDrag(editor, svgRef, view);
 	const route = useRoutingState({
 		board,
@@ -5539,6 +5756,7 @@ function usePcbCanvasState({
 	const shortcuts = buildShortcuts({
 		editor,
 		sel,
+		clipboard,
 		layers,
 		route,
 		history,
