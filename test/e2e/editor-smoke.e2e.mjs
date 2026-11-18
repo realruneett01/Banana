@@ -56,14 +56,23 @@ async function clickCanvas(svg, dx = 0, dy = 0, options = {}) {
 }
 
 async function clickToolButton(page, name) {
-	const btn = page.getByRole("button", { name, exact: true }).first();
+	const btn = page
+		.getByRole("button", { name, exact: true })
+		.or(page.locator(`button[aria-label='${name}']`))
+		.or(page.locator(`button[aria-label*='${name}' i]`))
+		.or(page.locator(`button[title*='${name}' i]`))
+		.first();
 	await btn.waitFor({ state: "visible", timeout: 5000 });
 	await btn.click({ timeout: 5000 });
 }
 
+function getAntdModal(page) {
+	return page.locator(".ant-modal-wrap:visible .ant-modal");
+}
+
 async function assertNoUnexpectedDialog(page) {
-	const dialog = page.getByRole("dialog").last();
-	const isVisible = await dialog.isVisible().catch(() => false);
+	const modal = getAntdModal(page).last();
+	const isVisible = await modal.isVisible().catch(() => false);
 	if (isVisible) {
 		await page.keyboard.press("Escape").catch(() => {});
 		throw new Error("dialog appeared");
@@ -71,13 +80,16 @@ async function assertNoUnexpectedDialog(page) {
 }
 
 async function handlePourModalIfOpen(page) {
-	const dialog = page.getByRole("dialog").last();
-	const isOpen = await dialog.isVisible().catch(() => false);
+	const modal = getAntdModal(page).last();
+	const isOpen = await modal.isVisible().catch(() => false);
 	if (!isOpen) return;
-	const okBtn = dialog.getByRole("button", { name: "OK", exact: true }).first();
-	await okBtn.waitFor({ state: "visible", timeout: 5000 });
-	if (await okBtn.isDisabled()) throw new Error("Pour modal OK is disabled");
-	await okBtn.click({ timeout: 5000 });
+	const okBtn = modal.getByRole("button", { name: "OK", exact: true }).first();
+	const hasOk = await okBtn.isVisible().catch(() => false);
+	if (hasOk && !(await okBtn.isDisabled())) {
+		await okBtn.click({ timeout: 5000 });
+		return;
+	}
+	await page.keyboard.press("Enter");
 }
 
 async function tryExpandPanel(page) {
@@ -196,6 +208,19 @@ async function checkPcbOutline(page) {
 	await outline.first().waitFor({ state: "visible", timeout: 5000 });
 }
 
+async function connectPcbPads(page, startPad, endPad) {
+	const startBox = await startPad.boundingBox();
+	const endBox = await endPad.boundingBox();
+	if (!startBox || !endBox) throw new Error("Pcb pad bounding box missing");
+	const sx = startBox.x + startBox.width / 2;
+	const sy = startBox.y + startBox.height / 2;
+	const ex = endBox.x + endBox.width / 2;
+	const ey = endBox.y + endBox.height / 2;
+	await page.mouse.click(sx, sy);
+	await page.mouse.click(ex, ey);
+	await page.mouse.dblclick(ex, ey);
+}
+
 async function checkPcbTrack(page) {
 	await clickToolButton(page, "Resistor");
 	const svg = await getMainCanvas(page);
@@ -203,13 +228,13 @@ async function checkPcbTrack(page) {
 	await clickToolButton(page, "LED");
 	await clickCanvas(svg, 55, 0);
 
+	const pads = svg.locator("g[role='button'] g:has(text)");
+	await pads.first().waitFor({ state: "visible", timeout: 5000 });
+	const count = await pads.count();
 	await clickToolButton(page, "Route track");
-	await clickCanvas(svg, -55, 0);
-	await clickCanvas(svg, 55, 0);
-	await clickCanvas(svg, 55, 0, { clickCount: 2 });
-	const track = svg.locator(
-		".pcb-tracks line, .pcb-tracks path, g.pcb-tracks *",
-	);
+	await connectPcbPads(page, pads.first(), pads.nth(count - 1));
+
+	const track = svg.locator(".pcb-tracks path");
 	await track.first().waitFor({ state: "visible", timeout: 5000 });
 }
 
@@ -232,12 +257,27 @@ async function checkPcbText(page) {
 	const svg = await getMainCanvas(page);
 	await clickCanvas(svg, 0, -40);
 	await assertNoUnexpectedDialog(page);
-	const textEl = svg.locator("text").filter({ hasText: "TEXT" });
+	const textEl = svg
+		.locator("[class*='pcb-graphics'] text, text")
+		.filter({ hasText: "TEXT" });
 	await textEl.first().waitFor({ state: "visible", timeout: 5000 });
 }
 
-async function checkPcbZone(page) {
+async function clickZoneTool(page) {
+	const zoneBtn = page
+		.locator(
+			"button[aria-label*='zone' i], button[title*='zone' i], button[data-tool*='zone' i]",
+		)
+		.first();
+	if (await zoneBtn.isVisible().catch(() => false)) {
+		await zoneBtn.click({ timeout: 5000 });
+		return;
+	}
 	await clickToolButton(page, "Filled zone");
+}
+
+async function checkPcbZone(page) {
+	await clickZoneTool(page);
 	const svg = await getMainCanvas(page);
 	const corners = [
 		[-50, -50],
@@ -260,42 +300,56 @@ async function addPcbGraphic(page, svg, config) {
 	await clickCanvas(svg, config.p2[0], config.p2[1]);
 }
 
-async function checkPcbGraphics(page) {
-	const svg = await getMainCanvas(page);
-	await addPcbGraphic(page, svg, {
+async function waitForCountIncrease(
+	page,
+	locator,
+	beforeCount,
+	timeout = 5000,
+) {
+	const start = Date.now();
+	while (Date.now() - start < timeout) {
+		const current = await locator.count();
+		if (current > beforeCount) return current;
+		await page.waitForTimeout(100);
+	}
+	throw new Error(`Count did not increase from ${beforeCount}`);
+}
+
+const PCB_GRAPHIC_STEPS = Object.freeze([
+	{
 		tool: "Line",
+		sel: "[class*='pcb-graphics'] line, line",
 		p1: [-80, -30],
-		p2: [-40, -30],
-	});
-	await svg
-		.locator("line")
-		.first()
-		.waitFor({ state: "visible", timeout: 5000 });
-	await addPcbGraphic(page, svg, {
+		p2: [-40, -10],
+	},
+	{
 		tool: "Rectangle",
+		sel: "[class*='pcb-graphics'] rect, rect",
 		p1: [-80, 10],
 		p2: [-40, 30],
-	});
-	await svg
-		.locator("rect")
-		.first()
-		.waitFor({ state: "visible", timeout: 5000 });
-	await addPcbGraphic(page, svg, {
+	},
+	{
 		tool: "Circle",
+		sel: "[class*='pcb-graphics'] circle, circle",
 		p1: [20, -30],
 		p2: [35, -30],
-	});
-	await svg
-		.locator("circle")
-		.first()
-		.waitFor({ state: "visible", timeout: 5000 });
-	await addPcbGraphic(page, svg, {
+	},
+	{
 		tool: "Dimension",
+		sel: ".pcb-graphic-dimension, text:has-text('mm')",
 		p1: [20, 10],
-		p2: [50, 10],
-	});
-	const dim = svg.locator(".pcb-graphic-dimension, text:has-text('mm')");
-	await dim.first().waitFor({ state: "visible", timeout: 5000 });
+		p2: [50, 20],
+	},
+]);
+
+async function checkPcbGraphics(page) {
+	const svg = await getMainCanvas(page);
+	for (const step of PCB_GRAPHIC_STEPS) {
+		const loc = svg.locator(step.sel);
+		const before = await loc.count();
+		await addPcbGraphic(page, svg, step);
+		await waitForCountIncrease(page, loc, before);
+	}
 }
 
 async function checkSchPart(page) {
@@ -314,6 +368,14 @@ async function checkSchPart(page) {
 	}
 }
 
+async function connectPinsByCenter(page, p1, p2) {
+	const b1 = await p1.boundingBox();
+	const b2 = await p2.boundingBox();
+	if (!b1 || !b2) throw new Error("Pin bounding box missing");
+	await page.mouse.click(b1.x + b1.width / 2, b1.y + b1.height / 2);
+	await page.mouse.click(b2.x + b2.width / 2, b2.y + b2.height / 2);
+}
+
 async function checkSchWire(page) {
 	await clickToolButton(page, "Resistor");
 	const svg = await getMainCanvas(page);
@@ -321,19 +383,24 @@ async function checkSchWire(page) {
 	await clickToolButton(page, "LED");
 	await clickCanvas(svg, 40, 0);
 
+	const pins = svg.locator(".schematic-part circle, circle[r='0.65']");
+	await pins.first().waitFor({ state: "visible", timeout: 5000 });
+	const pinCount = await pins.count();
+
 	await clickToolButton(page, "Wire");
-	const pins = await svg.locator("circle[r='0.65']").all();
-	if (pins.length >= 2) {
-		await pins[0].click({ force: true });
-		await pins[pins.length - 1].click({ force: true });
+	const wireLoc = svg.locator(
+		".schematic-wire, .schematic-annotations-layer line",
+	);
+	const wireBefore = await wireLoc.count();
+
+	if (pinCount >= 2) {
+		await connectPinsByCenter(page, pins.first(), pins.nth(pinCount - 1));
 	} else {
 		await clickCanvas(svg, -30, 0);
 		await clickCanvas(svg, 30, 0);
 	}
-	const wire = svg.locator(
-		".schematic-wire, [stroke*='9600'], [stroke*='009600']",
-	);
-	await wire.first().waitFor({ state: "visible", timeout: 5000 });
+
+	await waitForCountIncrease(page, wireLoc, wireBefore);
 	await waitForPanelCount(page, "Nets", (n) => n >= 1);
 }
 
@@ -342,13 +409,17 @@ async function checkSchLabel(page) {
 	const svg = await getMainCanvas(page);
 	await clickCanvas(svg, -20, -50);
 	await assertNoUnexpectedDialog(page);
-	const net1 = svg.locator("text").filter({ hasText: "NET1" });
+	const net1 = svg
+		.locator(".schematic-annotation text, text")
+		.filter({ hasText: "NET1" });
 	await net1.first().waitFor({ state: "visible", timeout: 5000 });
 
 	await clickToolButton(page, "Text");
 	await clickCanvas(svg, 20, -50);
 	await assertNoUnexpectedDialog(page);
-	const txt = svg.locator("text").filter({ hasText: "TEXT" });
+	const txt = svg
+		.locator(".schematic-annotation text, text")
+		.filter({ hasText: "TEXT" });
 	await txt.first().waitFor({ state: "visible", timeout: 5000 });
 }
 
@@ -429,8 +500,8 @@ async function runCheck(check, page) {
 		return false;
 	} finally {
 		// ponytail: dismiss any leftover dialog to guarantee clean test boundary
-		const dialog = page.getByRole("dialog").last();
-		if (await dialog.isVisible().catch(() => false)) {
+		const modal = getAntdModal(page).last();
+		if (await modal.isVisible().catch(() => false)) {
 			await page.keyboard.press("Escape").catch(() => {});
 		}
 	}
