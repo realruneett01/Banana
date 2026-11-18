@@ -3,31 +3,26 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { createLayerState } from "../../frontend/src/editor/layers.js";
 
-const pcbCanvasSrc = readFileSync(
-	new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
-	"utf8",
-);
+function extractHelpersModule() {
+	const canvasContent = readFileSync(
+		new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
+		"utf8",
+	);
+	const startTag = "// --- PCB Select and Layer pure helpers ---";
+	const endTag = "// --- End PCB Select and Layer pure helpers ---";
+	const content = canvasContent.split(startTag)[1]?.split(endTag)[0];
+	assert.ok(content, "PcbCanvas helper section missing");
 
-const startMarker = "// --- PCB Select and Layer pure helpers ---";
-const endMarker = "// --- End PCB Select and Layer pure helpers ---";
-const sliceStart = pcbCanvasSrc.indexOf(startMarker);
-const sliceEnd = pcbCanvasSrc.indexOf(endMarker);
-assert.ok(
-	sliceStart !== -1 && sliceEnd !== -1,
-	"Found PCB select and layer pure helpers section in PcbCanvas.jsx",
-);
-const pureHelpersCode = pcbCanvasSrc.slice(sliceStart, sliceEnd);
+	const layersHref = new URL(
+		"../../frontend/src/editor/layers.js",
+		import.meta.url,
+	).href;
+	const bundled = `import { stepCopper, jumpCopper } from "${layersHref}";\n${content}`;
+	const base64Uri = `data:text/javascript;base64,${Buffer.from(bundled).toString("base64")}`;
+	return { canvasContent, base64Uri };
+}
 
-const layersUrl = new URL(
-	"../../frontend/src/editor/layers.js",
-	import.meta.url,
-).href;
-
-const dynamicModule = [
-	`import { stepCopper, jumpCopper } from ${JSON.stringify(layersUrl)};`,
-	pureHelpersCode,
-].join("\n");
-
+const { canvasContent: pcbCanvasSrc, base64Uri } = extractHelpersModule();
 const {
 	collectSelectAllIds,
 	walkConnectedTracksAndVias,
@@ -35,29 +30,88 @@ const {
 	cycleCopperLayer,
 	jumpCopperLayer,
 	deleteItemsFromBoard,
-} = await import(
-	`data:text/javascript;base64,${Buffer.from(dynamicModule).toString("base64")}`
-);
+} = await import(base64Uri);
+
+const EMPTY_SELECTION = Object.freeze({
+	partIds: [],
+	trackIndices: [],
+	viaIndices: [],
+	zoneIndices: [],
+	graphicIds: [],
+});
+
+function buildBoardFixture({
+	trackCount = 2,
+	viaCount = 1,
+	zoneNets = ["GND"],
+	graphicIds = ["gfx-1", "gfx-2"],
+} = {}) {
+	return {
+		tracks: Array.from({ length: trackCount }, (_, i) => ({
+			start: [i * 10, 0],
+			end: [(i + 1) * 10, 0],
+		})),
+		vias: Array.from({ length: viaCount }, (_, i) => ({
+			at: [(i + 1) * 10, 0],
+		})),
+		zones: zoneNets.map((netId) => ({ netId })),
+		graphics: graphicIds.map((id) => ({ id })),
+	};
+}
+
+function makeTrack(start, end, netId) {
+	return netId ? { start, end, netId } : { start, end };
+}
+
+function runWalk(tracks, start = { trackIndex: 0 }, extra = {}) {
+	return walkConnectedTracksAndVias({ tracks, start, ...extra });
+}
+
+function assertConnected(res, trackIndices, viaIndices = []) {
+	assert.deepEqual(res.trackIndices, trackIndices);
+	assert.deepEqual(res.viaIndices, viaIndices);
+}
+
+function verifyLayerSteps(initialState, steps) {
+	let current = initialState;
+	for (const [dir, expected] of steps) {
+		current = cycleCopperLayer(current, dir);
+		assert.equal(current.active, expected);
+	}
+	return current;
+}
+
+function verifyLayerJumps(state) {
+	const top = jumpCopperLayer(state, "top");
+	assert.equal(top.active, "F.Cu");
+	const bottom = jumpCopperLayer(top, "bottom");
+	assert.equal(bottom.active, "B.Cu");
+}
+
+function testCopperCycle(copperCount, forwardExpected, backwardExpected) {
+	const initial = createLayerState({ copperCount });
+	assert.equal(initial.active, "F.Cu");
+	verifyLayerSteps(
+		initial,
+		forwardExpected.map((exp) => [1, exp]),
+	);
+	const backState = verifyLayerSteps(
+		initial,
+		backwardExpected.map((exp) => [-1, exp]),
+	);
+	verifyLayerJumps(backState);
+}
+
+function assertSingleItem(items, expected) {
+	assert.equal(items.length, 1);
+	assert.deepEqual(items[0], expected);
+}
 
 describe("collectSelectAllIds pure helper", () => {
 	it("returns empty arrays when ir and board are empty or missing", () => {
-		const emptyRes = collectSelectAllIds();
-		assert.deepEqual(emptyRes, {
-			partIds: [],
-			trackIndices: [],
-			viaIndices: [],
-			zoneIndices: [],
-			graphicIds: [],
-		});
-
-		const nullRes = collectSelectAllIds({ ir: null, board: null });
-		assert.deepEqual(nullRes, {
-			partIds: [],
-			trackIndices: [],
-			viaIndices: [],
-			zoneIndices: [],
-			graphicIds: [],
-		});
+		for (const input of [undefined, { ir: null, board: null }]) {
+			assert.deepEqual(collectSelectAllIds(input), EMPTY_SELECTION);
+		}
 	});
 
 	it("collects all footprint, track, via, zone, and graphic identifiers", () => {
@@ -67,15 +121,11 @@ describe("collectSelectAllIds pure helper", () => {
 				{ id: "C1", ref: "C1" },
 			],
 		};
-		const board = {
-			tracks: [
-				{ start: [0, 0], end: [10, 0] },
-				{ start: [10, 0], end: [20, 0] },
-			],
-			vias: [{ at: [10, 0] }],
-			zones: [{ netId: "GND" }],
-			graphics: [{ id: "gfx-1" }, { id: "gfx-2" }],
-		};
+		const board = buildBoardFixture({
+			trackCount: 2,
+			viaCount: 1,
+			zoneNets: ["GND"],
+		});
 
 		const res = collectSelectAllIds({ ir, board });
 		assert.deepEqual(res.partIds, ["R1", "C1"]);
@@ -89,20 +139,14 @@ describe("collectSelectAllIds pure helper", () => {
 describe("walkConnectedTracksAndVias pure helper", () => {
 	it("walks a connected track graph of the same net", () => {
 		const tracks = [
-			{ start: [0, 0], end: [10, 0], netId: "Net1" },
-			{ start: [10, 0], end: [20, 0], netId: "Net1" },
-			{ start: [30, 0], end: [40, 0], netId: "Net1" }, // disconnected
-			{ start: [10, 0], end: [10, 10], netId: "Net2" }, // different net
+			makeTrack([0, 0], [10, 0], "Net1"),
+			makeTrack([10, 0], [20, 0], "Net1"),
+			makeTrack([30, 0], [40, 0], "Net1"),
+			makeTrack([10, 0], [10, 10], "Net2"),
 		];
 
-		const res = walkConnectedTracksAndVias({
-			tracks,
-			start: { trackIndex: 0 },
-		});
-		assert.deepEqual(res.trackIndices, [0, 1]);
-		assert.deepEqual(res.viaIndices, []);
+		assertConnected(runWalk(tracks), [0, 1]);
 
-		// Also check alias findConnectedTracksAndVias
 		const aliasRes = findConnectedTracksAndVias({
 			tracks,
 			start: { trackIndex: 1 },
@@ -112,148 +156,80 @@ describe("walkConnectedTracksAndVias pure helper", () => {
 
 	it("walks across vias connecting tracks of the same net", () => {
 		const tracks = [
-			{ start: [0, 0], end: [10, 0], netId: "NetA" },
-			{ start: [10, 0], end: [20, 0], netId: "NetA" },
-			{ start: [20, 0], end: [20, 10], netId: "NetA" },
+			makeTrack([0, 0], [10, 0], "NetA"),
+			makeTrack([10, 0], [20, 0], "NetA"),
+			makeTrack([20, 0], [20, 10], "NetA"),
 		];
 		const vias = [
 			{ at: [10, 0], netId: "NetA" },
-			{ at: [50, 50], netId: "NetA" }, // disconnected via
+			{ at: [50, 50], netId: "NetA" },
 		];
 
-		const fromVia = walkConnectedTracksAndVias({
-			tracks,
-			vias,
-			start: { viaIndex: 0 },
-		});
-		assert.deepEqual(fromVia.trackIndices, [0, 1, 2]);
-		assert.deepEqual(fromVia.viaIndices, [0]);
-
-		const fromTrack = walkConnectedTracksAndVias({
-			tracks,
-			vias,
-			start: { trackIndex: 2 },
-		});
-		assert.deepEqual(fromTrack.trackIndices, [0, 1, 2]);
-		assert.deepEqual(fromTrack.viaIndices, [0]);
+		for (const start of [{ viaIndex: 0 }, { trackIndex: 2 }]) {
+			assertConnected(runWalk(tracks, start, { vias }), [0, 1, 2], [0]);
+		}
 	});
 
 	it("walks connected tracks starting from a pad", () => {
 		const tracks = [
-			{ start: [5, 5], end: [15, 5], netId: "NetPad" },
-			{ start: [15, 5], end: [25, 5], netId: "NetPad" },
+			makeTrack([5, 5], [15, 5], "NetPad"),
+			makeTrack([15, 5], [25, 5], "NetPad"),
 		];
 		const pads = [{ center: [5, 5], netId: "NetPad" }];
 
-		const res = walkConnectedTracksAndVias({
-			tracks,
-			pads,
-			start: { pad: pads[0] },
-		});
-		assert.deepEqual(res.trackIndices, [0, 1]);
-		assert.deepEqual(res.viaIndices, []);
+		assertConnected(runWalk(tracks, { pad: pads[0] }, { pads }), [0, 1]);
 	});
 
 	it("respects the 0.01 mm connection tolerance threshold", () => {
 		const tracks = [
-			{ start: [0, 0], end: [10, 0], netId: "NetTol" },
-			{ start: [10.005, 0], end: [20, 0], netId: "NetTol" }, // within 0.01 mm
-			{ start: [20.02, 0], end: [30, 0], netId: "NetTol" }, // outside 0.01 mm
+			makeTrack([0, 0], [10, 0], "NetTol"),
+			makeTrack([10.005, 0], [20, 0], "NetTol"),
+			makeTrack([20.02, 0], [30, 0], "NetTol"),
 		];
 
-		const res = walkConnectedTracksAndVias({
-			tracks,
-			start: { trackIndex: 0 },
-		});
-		assert.deepEqual(res.trackIndices, [0, 1]);
+		assertConnected(runWalk(tracks), [0, 1]);
 	});
 
 	it("handles closed cyclic loops without infinite recursion", () => {
 		const tracks = [
-			{ start: [0, 0], end: [10, 0], netId: "Loop" },
-			{ start: [10, 0], end: [10, 10], netId: "Loop" },
-			{ start: [10, 10], end: [0, 0], netId: "Loop" },
+			makeTrack([0, 0], [10, 0], "Loop"),
+			makeTrack([10, 0], [10, 10], "Loop"),
+			makeTrack([10, 10], [0, 0], "Loop"),
 		];
 
-		const res = walkConnectedTracksAndVias({
-			tracks,
-			start: { trackIndex: 0 },
-		});
-		assert.deepEqual(res.trackIndices, [0, 1, 2]);
+		assertConnected(runWalk(tracks), [0, 1, 2]);
 	});
 
 	it("returns empty arrays for invalid or missing start", () => {
-		const res = walkConnectedTracksAndVias({
-			tracks: [{ start: [0, 0], end: [10, 0] }],
-			start: null,
+		const tracks = [makeTrack([0, 0], [10, 0])];
+		assert.deepEqual(runWalk(tracks, null), {
+			trackIndices: [],
+			viaIndices: [],
 		});
-		assert.deepEqual(res, { trackIndices: [], viaIndices: [] });
 	});
 });
 
 describe("copper layer cycling pure helpers", () => {
 	it("cycles 2-layer board copper forward, backward, and wraps", () => {
-		const state2 = createLayerState({ copperCount: 2 });
-		assert.equal(state2.active, "F.Cu");
-
-		const next1 = cycleCopperLayer(state2, 1);
-		assert.equal(next1.active, "B.Cu");
-
-		const next2 = cycleCopperLayer(next1, 1);
-		assert.equal(next2.active, "F.Cu"); // wraps forward
-
-		const prev1 = cycleCopperLayer(state2, -1);
-		assert.equal(prev1.active, "B.Cu"); // wraps backward
-
-		const top = jumpCopperLayer(state2, "top");
-		assert.equal(top.active, "F.Cu");
-
-		const bottom = jumpCopperLayer(state2, "bottom");
-		assert.equal(bottom.active, "B.Cu");
+		testCopperCycle(2, ["B.Cu", "F.Cu"], ["B.Cu"]);
 	});
 
 	it("cycles 4-layer board copper through all copper layers", () => {
-		const state4 = createLayerState({ copperCount: 4 });
-		assert.equal(state4.active, "F.Cu");
-
-		const step1 = cycleCopperLayer(state4, 1);
-		assert.equal(step1.active, "In1.Cu");
-
-		const step2 = cycleCopperLayer(step1, 1);
-		assert.equal(step2.active, "In2.Cu");
-
-		const step3 = cycleCopperLayer(step2, 1);
-		assert.equal(step3.active, "B.Cu");
-
-		const step4 = cycleCopperLayer(step3, 1);
-		assert.equal(step4.active, "F.Cu"); // wraps
-
-		const back1 = cycleCopperLayer(state4, -1);
-		assert.equal(back1.active, "B.Cu"); // wraps backward
-
-		const back2 = cycleCopperLayer(back1, -1);
-		assert.equal(back2.active, "In2.Cu");
-
-		const top = jumpCopperLayer(back2, "top");
-		assert.equal(top.active, "F.Cu");
-
-		const bottom = jumpCopperLayer(top, "bottom");
-		assert.equal(bottom.active, "B.Cu");
+		testCopperCycle(
+			4,
+			["In1.Cu", "In2.Cu", "B.Cu", "F.Cu"],
+			["B.Cu", "In2.Cu"],
+		);
 	});
 });
 
 describe("deleteItemsFromBoard pure helper", () => {
 	it("removes specified track, via, zone, and graphic items in one push", () => {
-		const board = {
-			tracks: [
-				{ start: [0, 0], end: [10, 0] },
-				{ start: [10, 0], end: [20, 0] },
-				{ start: [20, 0], end: [30, 0] },
-			],
-			vias: [{ at: [10, 0] }, { at: [20, 0] }],
-			zones: [{ netId: "GND" }, { netId: "VCC" }],
-			graphics: [{ id: "gfx-1" }, { id: "gfx-2" }],
-		};
+		const board = buildBoardFixture({
+			trackCount: 3,
+			viaCount: 2,
+			zoneNets: ["GND", "VCC"],
+		});
 
 		const nextBoard = deleteItemsFromBoard(board, {
 			trackIndices: [0, 2],
@@ -262,31 +238,21 @@ describe("deleteItemsFromBoard pure helper", () => {
 			graphicIds: ["gfx-1"],
 		});
 
-		assert.equal(nextBoard.tracks.length, 1);
-		assert.deepEqual(nextBoard.tracks[0], { start: [10, 0], end: [20, 0] });
-
-		assert.equal(nextBoard.vias.length, 1);
-		assert.deepEqual(nextBoard.vias[0], { at: [10, 0] });
-
-		assert.equal(nextBoard.zones.length, 1);
-		assert.deepEqual(nextBoard.zones[0], { netId: "VCC" });
-
-		assert.equal(nextBoard.graphics.length, 1);
-		assert.deepEqual(nextBoard.graphics[0], { id: "gfx-2" });
+		assertSingleItem(nextBoard.tracks, { start: [10, 0], end: [20, 0] });
+		assertSingleItem(nextBoard.vias, { at: [10, 0] });
+		assertSingleItem(nextBoard.zones, { netId: "VCC" });
+		assertSingleItem(nextBoard.graphics, { id: "gfx-2" });
 	});
 });
 
 describe("PcbCanvas shortcuts contracts", () => {
 	it("includes selectAll and selectConnected in shortcut dispatching", () => {
-		assert.ok(
-			pcbCanvasSrc.includes("handleSelectAllShortcut") ||
-				pcbCanvasSrc.includes("selectAll"),
-			"PcbCanvas handles selectAll shortcut",
-		);
-		assert.ok(
-			pcbCanvasSrc.includes("handleSelectConnectedShortcut") ||
-				pcbCanvasSrc.includes("selectConnected"),
-			"PcbCanvas handles selectConnected shortcut",
-		);
+		for (const name of ["selectAll", "selectConnected"]) {
+			const handler = `handle${name[0].toUpperCase()}${name.slice(1)}Shortcut`;
+			assert.ok(
+				pcbCanvasSrc.includes(handler) || pcbCanvasSrc.includes(name),
+				`PcbCanvas handles ${name} shortcut`,
+			);
+		}
 	});
 });
