@@ -1,8 +1,11 @@
 import {
 	DeleteOutlined,
 	DownloadOutlined,
+	DownOutlined,
+	LeftOutlined,
 	PlusOutlined,
 	RedoOutlined,
+	RightOutlined,
 	RotateRightOutlined,
 	SaveOutlined,
 	SwapOutlined,
@@ -11,6 +14,7 @@ import {
 import {
 	App as AntApp,
 	Button,
+	Dropdown,
 	Modal,
 	message,
 	Radio,
@@ -64,16 +68,28 @@ const HEADER_STYLE = Object.freeze({
 	display: "flex",
 	justifyContent: "space-between",
 	alignItems: "center",
-	padding: "0 12px",
+	padding: "0 8px",
 	background: "#12151c",
 	borderBottom: "1px solid #232836",
 	minHeight: "44px",
+	gap: "8px",
 });
 
 const TOOLBAR_CONTAINER_STYLE = Object.freeze({
 	display: "flex",
 	alignItems: "center",
-	gap: "8px",
+	gap: "4px",
+	flexWrap: "nowrap",
+});
+
+const PANEL_TOGGLE_STYLE = Object.freeze({
+	position: "absolute",
+	top: "12px",
+	right: "12px",
+	zIndex: 20,
+	background: "#181c25",
+	borderColor: "#232836",
+	color: "#8a91a3",
 });
 
 const CONTENT_ROW_STYLE = Object.freeze({
@@ -408,45 +424,39 @@ function AddPartButton({ onAddPart }) {
 	);
 }
 
-const EXPORT_BUTTON_CONFIGS = [
-	{
-		key: "kicad",
-		title: "Export KiCad files",
-		text: "Export KiCad files",
-		actionKey: "exportKiCad",
-		loadingKey: "exporting",
-	},
-	{
-		key: "bom",
-		title: "Export BOM",
-		text: "BOM",
-		actionKey: "exportBom",
-		loadingKey: "bomLoading",
-	},
-	{
-		key: "netlist",
-		title: "Export Netlist",
-		text: "Netlist",
-		actionKey: "exportNetlist",
-		loadingKey: "netlistLoading",
-	},
-];
+function buildExportItems(state) {
+	return [
+		{ key: "kicad", label: "KiCad files", disabled: state.exporting },
+		{ key: "bom", label: "BOM", disabled: state.bomLoading },
+		{ key: "netlist", label: "Netlist", disabled: state.netlistLoading },
+	];
+}
 
-function ExportButtons({ state, actions }) {
+function runExportAction(key, actions) {
+	if (key === "kicad") actions.exportKiCad?.();
+	if (key === "bom") actions.exportBom?.();
+	if (key === "netlist") actions.exportNetlist?.();
+}
+
+function ExportDropdown({ state, actions }) {
+	const isExporting = Boolean(
+		state.exporting || state.bomLoading || state.netlistLoading,
+	);
+	const items = buildExportItems(state);
+	const onMenuClick = ({ key }) => runExportAction(key, actions);
 	return (
-		<>
-			{EXPORT_BUTTON_CONFIGS.map((cfg) => (
-				<ToolButton
-					key={cfg.key}
-					title={cfg.title}
+		<Dropdown menu={{ items, onClick: onMenuClick }} disabled={isExporting}>
+			<Tooltip title="Export design files">
+				<Button
 					icon={<DownloadOutlined />}
-					loading={state[cfg.loadingKey]}
-					onClick={actions[cfg.actionKey]}
-					ariaLabel={cfg.title}
-					text={cfg.text}
-				/>
-			))}
-		</>
+					size="small"
+					loading={isExporting}
+					aria-label="Export"
+				>
+					Export <DownOutlined />
+				</Button>
+			</Tooltip>
+		</Dropdown>
 	);
 }
 
@@ -564,6 +574,7 @@ function ActionGroup({ state, actions }) {
 }
 
 function EditorToolbar({ state, actions }) {
+	const isPcb = state.activeTab === "pcb";
 	return (
 		<div
 			style={TOOLBAR_CONTAINER_STYLE}
@@ -576,14 +587,18 @@ function EditorToolbar({ state, actions }) {
 				save={actions.save}
 				openCommit={actions.openCommit}
 			/>
-			<AnnotateAction onApply={actions.annotate} />
-			<BoardTools
-				ir={state.ir}
-				board={state.board}
-				onChange={actions.onBoardToolsChange}
-				disabled={state.activeTab !== "pcb"}
-			/>
-			<ExportButtons state={state} actions={actions} />
+			<div style={{ display: !isPcb ? "flex" : "none", alignItems: "center" }}>
+				<AnnotateAction onApply={actions.annotate} />
+			</div>
+			<div style={{ display: isPcb ? "flex" : "none", alignItems: "center" }}>
+				<BoardTools
+					ir={state.ir}
+					board={state.board}
+					onChange={actions.onBoardToolsChange}
+					disabled={!isPcb}
+				/>
+			</div>
+			<ExportDropdown state={state} actions={actions} />
 		</div>
 	);
 }
@@ -951,29 +966,87 @@ function CanvasTab({ visible, children }) {
 	);
 }
 
+function PanelToggleButton({ open, onToggle }) {
+	return (
+		<Tooltip title={open ? "Collapse board summary" : "Toggle board summary"}>
+			<Button
+				size="small"
+				onClick={onToggle}
+				aria-expanded={open}
+				aria-label="Toggle board summary"
+				icon={open ? <RightOutlined /> : <LeftOutlined />}
+				style={PANEL_TOGGLE_STYLE}
+			/>
+		</Tooltip>
+	);
+}
+
+function useCollapsiblePanel(selection) {
+	const [panelOpen, setPanelOpen] = useState(false);
+	const prevSelectedRef = useRef(null);
+	const selectedId = selection?.[0] ?? null;
+
+	useEffect(() => {
+		if (selectedId && selectedId !== prevSelectedRef.current) {
+			setPanelOpen(true);
+		}
+		prevSelectedRef.current = selectedId;
+	}, [selectedId]);
+
+	const togglePanel = useCallback(() => setPanelOpen((prev) => !prev), []);
+	return { panelOpen, togglePanel };
+}
+
+function SchematicViewportTab({ visible, docState, fetchers, problems }) {
+	return (
+		<CanvasTab visible={visible}>
+			<SchematicCanvas
+				editor={docState.editor}
+				fetchSymbol={fetchers.fetchSymbol}
+				problems={problems}
+				onCursorMove={setCursor}
+			/>
+		</CanvasTab>
+	);
+}
+
+function PcbViewportTab({ visible, docState, curBoard, fetchers, markers }) {
+	return (
+		<CanvasTab visible={visible}>
+			<PcbCanvas
+				editor={docState.editor}
+				board={curBoard}
+				onBoardChange={docState.setBoard}
+				fetchFootprint={fetchers.fetchFootprint}
+				visible={visible}
+				markers={markers}
+				onCursorMove={setCursor}
+			/>
+		</CanvasTab>
+	);
+}
+
 function CanvasViewport(props) {
 	const { activeTab, docState, curBoard, fetchers, markers, problems } = props;
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
-			<CanvasTab visible={activeTab === "schematic"}>
-				<SchematicCanvas
-					editor={docState.editor}
-					fetchSymbol={fetchers.fetchSymbol}
-					problems={problems}
-					onCursorMove={setCursor}
-				/>
-			</CanvasTab>
-			<CanvasTab visible={activeTab === "pcb"}>
-				<PcbCanvas
-					editor={docState.editor}
-					board={curBoard}
-					onBoardChange={docState.setBoard}
-					fetchFootprint={fetchers.fetchFootprint}
-					visible={activeTab === "pcb"}
-					markers={markers}
-					onCursorMove={setCursor}
-				/>
-			</CanvasTab>
+			<PanelToggleButton
+				open={props.panelOpen}
+				onToggle={props.onTogglePanel}
+			/>
+			<SchematicViewportTab
+				visible={activeTab === "schematic"}
+				docState={docState}
+				fetchers={fetchers}
+				problems={problems}
+			/>
+			<PcbViewportTab
+				visible={activeTab === "pcb"}
+				docState={docState}
+				curBoard={curBoard}
+				fetchers={fetchers}
+				markers={markers}
+			/>
 		</div>
 	);
 }
@@ -985,7 +1058,7 @@ function EditorHeader({ activeTab, onTabChange, toolState, actions }) {
 				activeKey={activeTab}
 				onChange={onTabChange}
 				items={TAB_ITEMS}
-				style={{ marginBottom: 0 }}
+				style={{ marginBottom: 0, flexShrink: 0 }}
 				aria-label="Editor views"
 			/>
 			<EditorToolbar state={toolState} actions={actions} />
@@ -1008,7 +1081,8 @@ function buildToolState(docState, activeTab, exports = {}) {
 	};
 }
 
-function EditorBody({ activeTab, ctrl, onOpenLibrary }) {
+function EditorBody(props) {
+	const { activeTab, ctrl, onOpenLibrary, panelOpen, onTogglePanel } = props;
 	const openLib = onOpenLibrary ?? ctrl?.actions?.openLibrary;
 	return (
 		<div style={CONTENT_ROW_STYLE}>
@@ -1020,11 +1094,15 @@ function EditorBody({ activeTab, ctrl, onOpenLibrary }) {
 				fetchers={ctrl.fetchers}
 				markers={ctrl.liveChecks.markers}
 				problems={ctrl.liveChecks.issues}
+				panelOpen={panelOpen}
+				onTogglePanel={onTogglePanel}
 			/>
-			<PropertiesPanel
-				doc={ctrl.docState.doc}
-				dispatch={ctrl.docState.dispatch}
-			/>
+			{panelOpen && (
+				<PropertiesPanel
+					doc={ctrl.docState.doc}
+					dispatch={ctrl.docState.dispatch}
+				/>
+			)}
 		</div>
 	);
 }
@@ -1118,7 +1196,9 @@ function EditorPanels({ problemsOpen, ctrl, api }) {
 	);
 }
 
-function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
+function EditorMainContent(props) {
+	const { ctrl, activeTab, toolState, onTabChange, panelOpen, onTogglePanel } =
+		props;
 	return (
 		<>
 			<EditorHeader
@@ -1131,6 +1211,8 @@ function EditorMainContent({ ctrl, activeTab, toolState, onTabChange }) {
 				activeTab={activeTab}
 				ctrl={ctrl}
 				onOpenLibrary={ctrl.actions.openLibrary}
+				panelOpen={panelOpen}
+				onTogglePanel={onTogglePanel}
 			/>
 		</>
 	);
@@ -1174,44 +1256,38 @@ function CommitDialog(props) {
 	);
 }
 
-function useEditorScreen({
-	ir,
-	board,
-	onSave,
-	api,
-	focusItemId,
-	repo,
-	initialTab,
-	symbols,
-}) {
-	const [activeTab, setActiveTab] = useState(
-		initialTab === "pcb" ? "pcb" : "schematic",
-	);
+function useScreenCommit(saveFn, repo, activeTab) {
+	return useCommitController(saveFn, () => ({
+		repoPath: repo?.repoPath,
+		filePath: activeTab === "pcb" ? repo?.pcbPath : repo?.schPath,
+	}));
+}
+
+function useProblemsState(issues) {
 	const [problemsOpen, setProblemsOpen] = useState(false);
 	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
-	const commit = useCommitController(
+	const problems = { count: issues?.length ?? 0, open: problemsOpen, toggle };
+	return { problemsOpen, problems };
+}
+
+function useEditorScreen(props) {
+	const [activeTab, setActiveTab] = useState(
+		props.initialTab === "pcb" ? "pcb" : "schematic",
+	);
+	const commit = useScreenCommit(
 		() => ctrl.actions.save(),
-		() => ({
-			repoPath: repo?.repoPath,
-			filePath: activeTab === "pcb" ? repo?.pcbPath : repo?.schPath,
-		}),
+		props.repo,
+		activeTab,
 	);
 	const ctrl = useScreenController({
-		ir,
-		board,
-		onSave,
-		api,
+		...props,
 		openCommit: commit.openCommit,
-		symbols,
 		activeTab,
 	});
-	useFocusItem(focusItemId, ctrl.onSelectIssue);
+	useFocusItem(props.focusItemId, ctrl.onSelectIssue);
 	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exports);
-	const problems = {
-		count: ctrl.liveChecks.issues.length,
-		open: problemsOpen,
-		toggle,
-	};
+	const { problemsOpen, problems } = useProblemsState(ctrl.liveChecks.issues);
+	const panel = useCollapsiblePanel(ctrl.docState.doc?.selection);
 	return {
 		activeTab,
 		setActiveTab,
@@ -1220,6 +1296,7 @@ function useEditorScreen({
 		toolState,
 		problems,
 		commit,
+		panel,
 	};
 }
 
@@ -1231,6 +1308,8 @@ function EditorView({ s, ir, board, api, repo }) {
 				activeTab={s.activeTab}
 				toolState={s.toolState}
 				onTabChange={s.setActiveTab}
+				panelOpen={s.panel.panelOpen}
+				onTogglePanel={s.panel.togglePanel}
 			/>
 			<EditorPanels problemsOpen={s.problemsOpen} ctrl={s.ctrl} api={api} />
 			<CommitDialog

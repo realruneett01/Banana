@@ -68,4 +68,21 @@ describe("editor UX wiring", () => {
 	test("export shows every warning summary", () => {
 		assert.match(src("editor/EditorScreen.jsx"), /summarizeWarnings\(/);
 	});
+
+	test("export actions are grouped into an Export dropdown", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /<Dropdown/);
+		assert.match(editor, /function ExportDropdown/);
+	});
+
+	test("right board summary panel is collapsible with a toggle button", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /Toggle board summary/);
+		assert.match(editor, /useCollapsiblePanel/);
+	});
+
+	test("tabs retain full labels without shrinking", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /flexShrink:\s*0/);
+	});
 });
