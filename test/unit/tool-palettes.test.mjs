@@ -147,20 +147,24 @@ function assertToolReadiness(fixture) {
 function assertTabPalette(tab, expected) {
 	const palette = paletteFor(tab);
 	assert.ok(palette);
-	assert.equal(palette.tools, expected.tools);
-	assert.equal(palette.parts, expected.parts);
-	if (Array.isArray(expected.power)) {
-		assert.deepEqual(palette.power, expected.power);
-	} else {
-		assert.equal(palette.power, expected.power);
-	}
-	if (Array.isArray(expected.layers)) {
-		assert.deepEqual(palette.layers, expected.layers);
-	} else {
-		assert.equal(palette.layers, expected.layers);
-	}
-	assert.equal(Object.isFrozen(palette), true);
-	assert.equal(Object.isFrozen(palette[expected.emptyProp]), true);
+	assert.deepEqual(
+		{
+			tools: palette.tools,
+			parts: palette.parts,
+			power: palette.power,
+			layers: palette.layers,
+			isFrozen: Object.isFrozen(palette),
+			emptyFrozen: Object.isFrozen(palette[expected.emptyProp]),
+		},
+		{
+			tools: expected.tools,
+			parts: expected.parts,
+			power: expected.power,
+			layers: expected.layers,
+			isFrozen: true,
+			emptyFrozen: true,
+		},
+	);
 }
 
 function assertListDeeplyFrozen(list) {
@@ -254,77 +258,63 @@ describe("toolPalettes", () => {
 	it("verifies PCB highlightNet tool is ready with backquote hotkey", () => {
 		const hlTool = PCB_TOOLS.find((t) => t.id === "highlightNet");
 		assert.ok(hlTool);
-		assert.equal(hlTool.ready, true);
-		assert.equal(hlTool.hotkey, "backquote");
-		assert.equal(hlTool.icon, "net");
-		assert.equal(hlTool.label, "Highlight net");
+		assert.deepEqual(
+			{
+				ready: hlTool.ready,
+				hotkey: hlTool.hotkey,
+				icon: hlTool.icon,
+				label: hlTool.label,
+			},
+			{
+				ready: true,
+				hotkey: "backquote",
+				icon: "net",
+				label: "Highlight net",
+			},
+		);
 	});
 });
 
-const pcbCanvasSrc = readFileSync(
-	new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
-	"utf8",
-);
-const startMarker = "// --- PCB Net Highlight pure helpers ---";
-const endMarker = "// --- End PCB Net Highlight pure helpers ---";
-const sliceStart = pcbCanvasSrc.indexOf(startMarker);
-const sliceEnd = pcbCanvasSrc.indexOf(endMarker);
-assert.ok(
-	sliceStart !== -1 && sliceEnd !== -1,
-	"Found PCB net highlight pure helpers",
-);
-const pureHelpersCode = pcbCanvasSrc.slice(sliceStart, sliceEnd);
+async function loadPcbHighlightHelpers() {
+	const src = readFileSync(
+		new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
+		"utf8",
+	);
+	const imports = [
+		["hitTest", "pcbGeometry"],
+		["pointInZone", "zoneModel"],
+		["netItemsAt", "netHighlight"],
+		["padHitTest", "footprintRender"],
+	].map(
+		([fn, mod]) =>
+			`import { ${fn} } from ${JSON.stringify(new URL(`../../frontend/src/editor/${mod}.js`, import.meta.url).href)};`,
+	);
+	const slices = [
+		["export function chooseViaNet", "export function buildDefaultTextGraphic"],
+		["function findNearPad(", "function findPadSnap("],
+		["function findPinNet(", "function findTrackNet("],
+		[
+			"// --- PCB Net Highlight pure helpers ---",
+			"// --- End PCB Net Highlight pure helpers ---",
+		],
+	].map(([start, end]) => src.slice(src.indexOf(start), src.indexOf(end)));
 
-const pcbGeometryUrl = new URL(
-	"../../frontend/src/editor/pcbGeometry.js",
-	import.meta.url,
-).href;
-const zoneModelUrl = new URL(
-	"../../frontend/src/editor/zoneModel.js",
-	import.meta.url,
-).href;
-const netHighlightUrl = new URL(
-	"../../frontend/src/editor/netHighlight.js",
-	import.meta.url,
-).href;
-const footprintRenderUrl = new URL(
-	"../../frontend/src/editor/footprintRender.js",
-	import.meta.url,
-).href;
+	const code = [
+		...imports,
+		"function isNear(p1, p2, tol = 1.0) { return Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) <= tol; }",
+		...slices,
+	].join("\n");
 
-const chooseViaStart = pcbCanvasSrc.indexOf("export function chooseViaNet");
-const chooseViaEnd = pcbCanvasSrc.indexOf(
-	"export function buildDefaultTextGraphic",
-);
-const chooseViaCode = pcbCanvasSrc.slice(chooseViaStart, chooseViaEnd);
-
-const findNearPadStart = pcbCanvasSrc.indexOf("function findNearPad(");
-const findNearPadEnd = pcbCanvasSrc.indexOf("function findPadSnap(");
-const findNearPadCode = pcbCanvasSrc.slice(findNearPadStart, findNearPadEnd);
-
-const findPinNetStart = pcbCanvasSrc.indexOf("function findPinNet(");
-const findPinNetEnd = pcbCanvasSrc.indexOf("function findTrackNet(");
-const findPinNetCode = pcbCanvasSrc.slice(findPinNetStart, findPinNetEnd);
-
-const dynamicModule = [
-	`import { hitTest } from ${JSON.stringify(pcbGeometryUrl)};`,
-	`import { pointInZone } from ${JSON.stringify(zoneModelUrl)};`,
-	`import { netItemsAt } from ${JSON.stringify(netHighlightUrl)};`,
-	`import { padHitTest } from ${JSON.stringify(footprintRenderUrl)};`,
-	"function isNear(p1, p2, tol = 1.0) { return Math.hypot(p1[0] - p2[0], p1[1] - p2[1]) <= tol; }",
-	chooseViaCode,
-	findNearPadCode,
-	findPinNetCode,
-	pureHelpersCode,
-].join("\n");
+	const b64 = Buffer.from(code).toString("base64");
+	return import(`data:text/javascript;base64,${b64}`);
+}
 
 const { resolvePcbNetAtPoint, isNetMatch, isPadNetMatch, getPcbCopperOpacity } =
-	await import(
-		`data:text/javascript;base64,${Buffer.from(dynamicModule).toString("base64")}`
-	);
+	await loadPcbHighlightHelpers();
 
-describe("pcbNetHighlight pure helpers", () => {
-	const sampleIr = {
+function buildPcbIr() {
+	const netPins = (pairs) => pairs.map(([partId, pin]) => ({ partId, pin }));
+	return {
 		parts: [
 			{ id: "p1", ref: "R1", pins: ["1", "2"], placement: { x: 10, y: 10 } },
 			{ id: "p2", ref: "R2", pins: ["1", "2"], placement: { x: 30, y: 10 } },
@@ -333,20 +323,24 @@ describe("pcbNetHighlight pure helpers", () => {
 			{
 				id: "net_gnd",
 				name: "GND",
-				pins: [
-					{ partId: "p1", pin: "1" },
-					{ partId: "p2", pin: "1" },
-				],
+				pins: netPins([
+					["p1", "1"],
+					["p2", "1"],
+				]),
 			},
-			{
-				id: "net_vcc",
-				name: "+5V",
-				pins: [{ partId: "p1", pin: "2" }],
-			},
+			{ id: "net_vcc", name: "+5V", pins: netPins([["p1", "2"]]) },
 		],
 	};
+}
 
-	const sampleBoard = {
+function buildPcbBoard() {
+	const poly = (x1, y1, x2, y2) => [
+		[x1, y1],
+		[x2, y1],
+		[x2, y2],
+		[x1, y2],
+	];
+	return {
 		tracks: [
 			{
 				start: [10, 10],
@@ -363,146 +357,130 @@ describe("pcbNetHighlight pure helpers", () => {
 				netId: "net_vcc",
 			},
 		],
-		vias: [
-			{
-				at: [20, 10],
-				sizeMm: 0.8,
-				drillMm: 0.4,
-				netId: "net_gnd",
-			},
-		],
+		vias: [{ at: [20, 10], sizeMm: 0.8, drillMm: 0.4, netId: "net_gnd" }],
 		zones: [
-			{
-				netId: "net_vcc",
-				layer: "F.Cu",
-				polygon: [
-					[40, 40],
-					[70, 40],
-					[70, 70],
-					[40, 70],
-				],
-			},
+			{ netId: "net_vcc", layer: "F.Cu", polygon: poly(40, 40, 70, 70) },
 			{
 				keepout: true,
 				netId: "",
 				layer: "F.Cu",
-				polygon: [
-					[0, 80],
-					[20, 80],
-					[20, 100],
-					[0, 100],
-				],
+				polygon: poly(0, 80, 20, 100),
 			},
 		],
 	};
+}
 
-	const samplePadPositions = {
-		p1: { 1: [10, 10], 2: [12, 10] },
-		p2: { 1: [30, 10], 2: [32, 10] },
+function buildPcbPads() {
+	const mkPad = (num, netId, x) => ({
+		partId: "p1",
+		netId,
+		number: String(num),
+		center: [x, 10],
+		size: [1.5, 1.5],
+		shape: "rect",
+	});
+	return {
+		pads: [mkPad(1, "net_gnd", 10), mkPad(2, "net_vcc", 12)],
+		positions: {
+			p1: { 1: [10, 10], 2: [12, 10] },
+			p2: { 1: [30, 10], 2: [32, 10] },
+		},
+	};
+}
+
+function assertResolvedNet(res, expected) {
+	if (expected === null) {
+		assert.equal(res, null);
+		return;
+	}
+	assert.deepEqual(
+		{ ok: Boolean(res), netId: res?.netId, netName: res?.netName },
+		{ ok: true, netId: expected.netId, netName: expected.netName },
+	);
+	if (expected.parts) {
+		for (const p of expected.parts) {
+			assert.equal(res.partIds.has(p), true);
+		}
+	}
+}
+
+function testResolveAt(pt, fixture, withPads) {
+	return resolvePcbNetAtPoint({
+		ir: fixture.ir,
+		board: fixture.board,
+		pads: withPads ? fixture.pads : [],
+		padPositions: withPads ? fixture.positions : {},
+		pt,
+	});
+}
+
+describe("pcbNetHighlight pure helpers", () => {
+	const padsData = buildPcbPads();
+	const fixture = {
+		ir: buildPcbIr(),
+		board: buildPcbBoard(),
+		pads: padsData.pads,
+		positions: padsData.positions,
 	};
 
-	const samplePads = [
+	const RESOLVE_CASES = [
 		{
-			partId: "p1",
-			netId: "net_gnd",
-			number: "1",
-			center: [10, 10],
-			size: [1.5, 1.5],
-			shape: "rect",
+			title: "resolves net from clicking a pad",
+			pt: [10, 10],
+			withPads: true,
+			expected: { netId: "net_gnd", netName: "GND", parts: ["p1", "p2"] },
 		},
 		{
-			partId: "p1",
-			netId: "net_vcc",
-			number: "2",
-			center: [12, 10],
-			size: [1.5, 1.5],
-			shape: "rect",
+			title: "resolves net from clicking a via",
+			pt: [20, 10],
+			withPads: false,
+			expected: { netId: "net_gnd", netName: "GND" },
+		},
+		{
+			title: "resolves net from clicking a track",
+			pt: [55, 50],
+			withPads: false,
+			expected: { netId: "net_vcc", netName: "+5V" },
+		},
+		{
+			title: "resolves net from clicking a zone",
+			pt: [50, 60],
+			withPads: false,
+			expected: { netId: "net_vcc", netName: "+5V" },
+		},
+		{
+			title: "returns null when clicking empty board",
+			pt: [0, 0],
+			withPads: true,
+			expected: null,
+		},
+		{
+			title: "returns null when clicking keepout zone",
+			pt: [10, 90],
+			withPads: false,
+			expected: null,
 		},
 	];
 
-	it("resolves net from clicking a pad", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: samplePads,
-			padPositions: samplePadPositions,
-			pt: [10, 10],
+	for (const tc of RESOLVE_CASES) {
+		it(tc.title, () => {
+			const res = testResolveAt(tc.pt, fixture, tc.withPads);
+			assertResolvedNet(res, tc.expected);
 		});
-		assert.ok(res);
-		assert.equal(res.netId, "net_gnd");
-		assert.equal(res.netName, "GND");
-		assert.equal(res.partIds.has("p1"), true);
-		assert.equal(res.partIds.has("p2"), true);
-	});
-
-	it("resolves net from clicking a via", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: [],
-			padPositions: {},
-			pt: [20, 10],
-		});
-		assert.ok(res);
-		assert.equal(res.netId, "net_gnd");
-		assert.equal(res.netName, "GND");
-	});
-
-	it("resolves net from clicking a track", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: [],
-			padPositions: {},
-			pt: [55, 50],
-		});
-		assert.ok(res);
-		assert.equal(res.netId, "net_vcc");
-		assert.equal(res.netName, "+5V");
-	});
-
-	it("resolves net from clicking a zone", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: [],
-			padPositions: {},
-			pt: [50, 60],
-		});
-		assert.ok(res);
-		assert.equal(res.netId, "net_vcc");
-		assert.equal(res.netName, "+5V");
-	});
-
-	it("returns null when clicking empty board", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: samplePads,
-			padPositions: samplePadPositions,
-			pt: [0, 0],
-		});
-		assert.equal(res, null);
-	});
-
-	it("returns null when clicking keepout zone", () => {
-		const res = resolvePcbNetAtPoint({
-			ir: sampleIr,
-			board: sampleBoard,
-			pads: [],
-			padPositions: {},
-			pt: [10, 90],
-		});
-		assert.equal(res, null);
-	});
+	}
 
 	it("tests isNetMatch with netId and netName", () => {
 		const hl = { netId: "net_gnd", netName: "GND" };
-		assert.equal(isNetMatch("net_gnd", hl), true);
-		assert.equal(isNetMatch("GND", hl), true);
-		assert.equal(isNetMatch("net_vcc", hl), false);
-		assert.equal(isNetMatch(null, hl), false);
-		assert.equal(isNetMatch("net_gnd", null), false);
+		const cases = [
+			["net_gnd", hl, true],
+			["GND", hl, true],
+			["net_vcc", hl, false],
+			[null, hl, false],
+			["net_gnd", null, false],
+		];
+		for (const [candidate, highlight, expected] of cases) {
+			assert.equal(isNetMatch(candidate, highlight), expected);
+		}
 	});
 
 	it("tests isPadNetMatch with pin and partId", () => {
@@ -515,17 +493,27 @@ describe("pcbNetHighlight pure helpers", () => {
 				{ partId: "p2", pin: "1" },
 			],
 		};
-		assert.equal(isPadNetMatch("p1", "1", hl), true);
-		assert.equal(isPadNetMatch("p1", 1, hl), true);
-		assert.equal(isPadNetMatch("p1", "2", hl), false);
-		assert.equal(isPadNetMatch("p3", "1", hl), false);
-		assert.equal(isPadNetMatch("p1", "1", null), false);
+		const cases = [
+			["p1", "1", hl, true],
+			["p1", 1, hl, true],
+			["p1", "2", hl, false],
+			["p3", "1", hl, false],
+			["p1", "1", null, false],
+		];
+		for (const [partId, pin, highlight, expected] of cases) {
+			assert.equal(isPadNetMatch(partId, pin, highlight), expected);
+		}
 	});
 
 	it("tests getPcbCopperOpacity for highlighted and dimmed states", () => {
-		assert.equal(getPcbCopperOpacity(false, false), 1);
-		assert.equal(getPcbCopperOpacity(true, false), 1);
-		assert.equal(getPcbCopperOpacity(true, true), 1);
-		assert.equal(getPcbCopperOpacity(false, true), 0.3);
+		const cases = [
+			[false, false, 1],
+			[true, false, 1],
+			[true, true, 1],
+			[false, true, 0.3],
+		];
+		for (const [isHl, isDim, expected] of cases) {
+			assert.equal(getPcbCopperOpacity(isHl, isDim), expected);
+		}
 	});
 });
