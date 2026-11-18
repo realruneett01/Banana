@@ -133,15 +133,67 @@ function getPourBounds(board, ir) {
 	return getPartsBounds(ir?.parts, 5);
 }
 
-function getDefaultNetId(nets) {
+const PREFERRED_NET_NAMES = Object.freeze(["gnd", "gndd", "gnda", "0v"]);
+
+function netMatchesName(net, targetLower) {
+	if (!net) return false;
+	const name =
+		typeof net.name === "string" ? net.name.trim().toLowerCase() : "";
+	const id = typeof net.id === "string" ? net.id.trim().toLowerCase() : "";
+	return name === targetLower || id === targetLower;
+}
+
+function findPreferredNet(nets) {
+	for (const target of PREFERRED_NET_NAMES) {
+		const match = nets.find((n) => netMatchesName(n, target));
+		if (match) return match;
+	}
+	return null;
+}
+
+function getNetPadCount(net) {
+	if (Array.isArray(net?.pins)) return net.pins.length;
+	if (Array.isArray(net?.pads)) return net.pads.length;
+	if (typeof net?.padCount === "number") return net.padCount;
+	return 0;
+}
+
+function findNetWithMostPads(nets) {
+	let best = null;
+	let maxPads = 0;
+	for (const net of nets) {
+		const count = getNetPadCount(net);
+		if (count > maxPads) {
+			maxPads = count;
+			best = net;
+		}
+	}
+	return best;
+}
+
+function getNetIdentifier(net) {
+	if (!net) return "";
+	return net.id || net.name || "";
+}
+
+export function getDefaultNetId(nets) {
 	if (!Array.isArray(nets) || nets.length === 0) return "";
-	const gnd = nets.find((n) => {
-		const label = n?.name || n?.id;
-		return typeof label === "string" && label.toLowerCase() === "gnd";
-	});
-	if (gnd) return gnd.id ?? gnd.name ?? "";
-	const first = nets[0];
-	return first?.id ?? first?.name ?? "";
+	const preferred = findPreferredNet(nets);
+	if (preferred) return getNetIdentifier(preferred);
+	const mostPads = findNetWithMostPads(nets);
+	if (mostPads) return getNetIdentifier(mostPads);
+	return "";
+}
+
+function isCopperLayer(layer) {
+	return typeof layer === "string" && layer.endsWith(".Cu");
+}
+
+function resolveActiveCopperLayer(activeLayer, board) {
+	if (isCopperLayer(activeLayer)) return activeLayer;
+	if (isCopperLayer(board?.activeLayer)) return board.activeLayer;
+	if (isCopperLayer(board?.activeCopperLayer)) return board.activeCopperLayer;
+	return "F.Cu";
 }
 
 function hasOrphans(report) {
@@ -271,6 +323,10 @@ function PourModal({ open, onCancel, onOk, formProps }) {
 			onOk={onOk}
 			okText="OK"
 			cancelText="Cancel"
+			autoFocusButton="ok"
+			okButtonProps={{ autoFocus: true }}
+			focusable={{ autoFocusButton: "ok" }}
+			destroyOnClose
 		>
 			<PourModalContent {...formProps} />
 		</Modal>
@@ -336,20 +392,8 @@ function useBoardSync({ ir, board, onChange }) {
 	return { result, open, onUpdate, close, apply, applyRemove };
 }
 
-function useCopperPour({ board, ir, onChange }) {
-	const [open, setOpen] = useState(false);
-	const [net, setNet] = useState("");
-	const [layer, setLayer] = useState("B.Cu");
-	const [keepout, setKeepout] = useState(false);
-	const defaultNet = useMemo(() => getDefaultNetId(ir?.nets), [ir?.nets]);
-	const onOpen = useCallback(() => {
-		setNet(defaultNet);
-		setLayer("B.Cu");
-		setKeepout(false);
-		setOpen(true);
-	}, [defaultNet]);
-	const close = useCallback(() => setOpen(false), []);
-	const submit = useCallback(() => {
+function usePourSubmit({ board, ir, net, layer, keepout, onChange, close }) {
+	return useCallback(() => {
 		const res = buildPourZone({ board, ir, net, layer, keepout });
 		if (res.error) {
 			message.error(res.error);
@@ -359,6 +403,37 @@ function useCopperPour({ board, ir, onChange }) {
 		message.success("Copper pour added");
 		close();
 	}, [board, ir, net, layer, keepout, onChange, close]);
+}
+
+function useCopperPour({ board, ir, onChange, activeLayer }) {
+	const [open, setOpen] = useState(false);
+	const [net, setNet] = useState("");
+	const [layer, setLayer] = useState("F.Cu");
+	const [keepout, setKeepout] = useState(false);
+	const defaultNet = useMemo(() => getDefaultNetId(ir?.nets), [ir?.nets]);
+	const defaultLayer = useMemo(
+		() => resolveActiveCopperLayer(activeLayer, board),
+		[activeLayer, board],
+	);
+	const onOpen = useCallback(
+		(prefLayer) => {
+			setNet(defaultNet);
+			setLayer(isCopperLayer(prefLayer) ? prefLayer : defaultLayer);
+			setKeepout(false);
+			setOpen(true);
+		},
+		[defaultNet, defaultLayer],
+	);
+	const close = useCallback(() => setOpen(false), []);
+	const submit = usePourSubmit({
+		board,
+		ir,
+		net,
+		layer,
+		keepout,
+		onChange,
+		close,
+	});
 	return {
 		open,
 		net,
@@ -525,7 +600,7 @@ function OutlineToolGroup({ disabled, toolState }) {
 	);
 }
 
-function handleToolEvent(tool, onPour) {
+function handleToolEvent(tool, onPour, layer) {
 	if (tool === "outlineRect") {
 		setOutlineTool({ activeTool: "rect" });
 		return;
@@ -535,7 +610,7 @@ function handleToolEvent(tool, onPour) {
 		return;
 	}
 	if (tool === "addZone") {
-		onPour?.();
+		onPour?.(layer);
 		return;
 	}
 	if (tool === "select") {
@@ -572,17 +647,25 @@ export function useBoardToolBus({ disabled, onPour, pour, activeTool } = {}) {
 	}, [currentTool]);
 
 	useEffect(() => {
-		const handler = ({ tool }) => {
+		const handler = (detail) => {
 			if (disabled) return;
-			handleToolEvent(tool, handlePour);
+			const tool = detail?.tool;
+			const layer = detail?.layer ?? detail?.item?.layer;
+			handleToolEvent(tool, handlePour, layer);
 		};
 		return onEditorTool(handler, "pcb");
 	}, [disabled, handlePour]);
 }
 
-export default function BoardTools({ ir, board, onChange, disabled }) {
+export default function BoardTools({
+	ir,
+	board,
+	onChange,
+	disabled,
+	activeLayer,
+}) {
 	const sync = useBoardSync({ ir, board, onChange });
-	const pour = useCopperPour({ board, ir, onChange });
+	const pour = useCopperPour({ board, ir, onChange, activeLayer });
 	const toolState = useOutlineTool();
 
 	useBoardToolBus({
