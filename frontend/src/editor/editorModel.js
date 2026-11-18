@@ -27,6 +27,10 @@ function withAnnotations(doc, annotations) {
 	return withIr(doc, { ...doc.ir, annotations });
 }
 
+function withSheets(doc, sheets) {
+	return withIr(doc, { ...doc.ir, sheets });
+}
+
 function findNetWithPin(nets, partId, pin) {
 	return nets.find((n) =>
 		n.pins.some((p) => p.partId === partId && p.pin === pin),
@@ -162,21 +166,38 @@ function handleFlipPart(doc, command) {
 	return mutatePartPlacement(doc, command, computeFlipPlacement);
 }
 
-const VALID_FIELDS = new Set(["ref", "value", "footprint", "symbol"]);
+const VALID_FIELDS = new Set([
+	"ref",
+	"value",
+	"footprint",
+	"symbol",
+	"datasheet",
+]);
+
+function applyPartFieldValue(part, field, value) {
+	if (value === undefined) {
+		const copy = { ...part };
+		delete copy[field];
+		return copy;
+	}
+	return { ...part, [field]: value };
+}
 
 function handleSetPartField(doc, command) {
 	const { partId, field, value } = command;
 	if (!VALID_FIELDS.has(field)) {
 		return { ...doc, error: `setPartField: invalid field ${field}` };
 	}
-	if (typeof value !== "string") {
+	if (typeof value !== "string" && value !== undefined) {
 		return { ...doc, error: "setPartField: value must be a string" };
 	}
 	const part = findPart(doc.ir, partId);
 	if (!part) {
 		return { ...doc, error: `setPartField: part not found ${partId}` };
 	}
-	return updateDocPart(doc, partId, (p) => ({ ...p, [field]: value }));
+	return updateDocPart(doc, partId, (p) =>
+		applyPartFieldValue(p, field, value),
+	);
 }
 
 function handleSetPartProp(doc, command) {
@@ -285,16 +306,21 @@ function findAnnotation(ir, id) {
 	return (ir?.annotations ?? []).find((a) => a.id === id);
 }
 
-function autoAnnotationId(annotations) {
+function autoPrefixedId(items, prefix) {
+	const re = new RegExp(`^${prefix}[-_](\\d+)$`);
 	let max = 0;
-	for (const a of annotations ?? []) {
-		const m = typeof a?.id === "string" ? /^ann-(\d+)$/.exec(a.id) : null;
+	for (const item of items ?? []) {
+		const m = typeof item?.id === "string" ? re.exec(item.id) : null;
 		if (m) {
 			const n = Number.parseInt(m[1], 10);
 			if (n > max) max = n;
 		}
 	}
-	return `ann-${max + 1}`;
+	return `${prefix}-${max + 1}`;
+}
+
+function autoAnnotationId(annotations) {
+	return autoPrefixedId(annotations, "ann");
 }
 
 function handleAddAnnotation(doc, command) {
@@ -314,32 +340,34 @@ function handleAddAnnotation(doc, command) {
 	return withAnnotations(doc, annotations);
 }
 
-function restorePrevAnnotations(doc, prev) {
+function restoreSection(doc, section, prev) {
 	const ir = { ...doc.ir };
 	if (prev === undefined) {
-		delete ir.annotations;
+		delete ir[section];
 	} else {
-		ir.annotations = prev;
+		ir[section] = prev;
 	}
 	return withIr(doc, ir);
 }
 
+function deleteDocItem(doc, section, targetId) {
+	const items = (doc.ir[section] ?? []).filter((x) => x.id !== targetId);
+	const selection = doc.selection.filter((id) => id !== targetId);
+	return {
+		ir: { ...doc.ir, [section]: items },
+		selection,
+		history: doc.history,
+	};
+}
+
 function handleDeleteAnnotation(doc, command) {
 	if ("_prevAnnotations" in command) {
-		return restorePrevAnnotations(doc, command._prevAnnotations);
+		return restoreSection(doc, "annotations", command._prevAnnotations);
 	}
 	if (!command.id || !findAnnotation(doc.ir, command.id)) {
 		return doc;
 	}
-	const annotations = (doc.ir.annotations ?? []).filter(
-		(a) => a.id !== command.id,
-	);
-	const selection = doc.selection.filter((id) => id !== command.id);
-	return {
-		ir: { ...doc.ir, annotations },
-		selection,
-		history: doc.history,
-	};
+	return deleteDocItem(doc, "annotations", command.id);
 }
 
 function moveAnnotationItem(ann, dx, dy) {
@@ -365,6 +393,219 @@ function handleMoveAnnotation(doc, command) {
 		a.id === command.id ? next : a,
 	);
 	return withAnnotations(doc, annotations);
+}
+
+function findSheet(ir, sheetId) {
+	return (ir?.sheets ?? []).find((s) => s.id === sheetId);
+}
+
+function autoSheetId(sheets) {
+	return autoPrefixedId(sheets, "sheet");
+}
+
+function autoSheetPinId(pins) {
+	return autoPrefixedId(pins, "pin");
+}
+
+function nextUnusedName(items, prefix) {
+	const names = new Set((items ?? []).map((x) => x.name));
+	let i = 1;
+	while (names.has(`${prefix}${i}`)) i++;
+	return `${prefix}${i}`;
+}
+
+function nextSheetName(sheets) {
+	return nextUnusedName(sheets, "Sheet");
+}
+
+function sheetFileName(name) {
+	const clean = (name ?? "").replace(/[^A-Za-z0-9_-]/g, "");
+	return `${clean || "sheet"}.kicad_sch`;
+}
+
+function clampDim(val) {
+	return typeof val === "number" ? Math.max(10, val) : 10;
+}
+
+function normalizeSheet(sheet, sheets) {
+	const id = sheet.id || autoSheetId(sheets);
+	const name = sheet.name || nextSheetName(sheets);
+	const isExplicit = Boolean(
+		sheet.explicitFile || ("file" in sheet && sheet.file !== undefined),
+	);
+	const file = sheet.file || sheetFileName(name);
+	return {
+		...sheet,
+		id,
+		name,
+		file,
+		explicitFile: isExplicit,
+		x: sheet.x ?? 0,
+		y: sheet.y ?? 0,
+		w: clampDim(sheet.w),
+		h: clampDim(sheet.h),
+		pins: sheet.pins ? [...sheet.pins] : [],
+	};
+}
+
+function updateSheet(doc, sheetId, transform) {
+	const sheets = (doc.ir.sheets ?? []).map((s) =>
+		s.id === sheetId ? transform(s) : s,
+	);
+	return withSheets(doc, sheets);
+}
+
+function handleAddSheet(doc, command) {
+	if (command._sheets) {
+		return withSheets(doc, command._sheets);
+	}
+	const sheet = command.sheet;
+	if (!sheet || typeof sheet !== "object") {
+		return { ...doc, error: "addSheet: missing sheet object" };
+	}
+	const id = sheet.id || autoSheetId(doc.ir.sheets);
+	if (findSheet(doc.ir, id)) {
+		return { ...doc, error: `addSheet: duplicate sheet id ${id}` };
+	}
+	const newSheet = normalizeSheet({ ...sheet, id }, doc.ir.sheets);
+	return withSheets(doc, [...(doc.ir.sheets ?? []), newSheet]);
+}
+
+function handleDeleteSheet(doc, command) {
+	if ("_prevSheets" in command) {
+		return restoreSection(doc, "sheets", command._prevSheets);
+	}
+	if (!command.sheetId || !findSheet(doc.ir, command.sheetId)) {
+		return doc;
+	}
+	return deleteDocItem(doc, "sheets", command.sheetId);
+}
+
+function handleMoveSheet(doc, command) {
+	const { dx, dy, sheetId } = command;
+	if (typeof dx !== "number" || typeof dy !== "number") {
+		return { ...doc, error: "moveSheet: dx and dy must be numbers" };
+	}
+	if (!findSheet(doc.ir, sheetId)) return doc;
+	return updateSheet(doc, sheetId, (s) => ({
+		...s,
+		x: (s.x ?? 0) + dx,
+		y: (s.y ?? 0) + dy,
+	}));
+}
+
+function handleResizeSheet(doc, command) {
+	const { w, h, sheetId } = command;
+	if (typeof w !== "number" || typeof h !== "number") {
+		return { ...doc, error: "resizeSheet: w and h must be numbers" };
+	}
+	if (!findSheet(doc.ir, sheetId)) return doc;
+	return updateSheet(doc, sheetId, (s) => ({
+		...s,
+		w: clampDim(w),
+		h: clampDim(h),
+	}));
+}
+
+function isSheetFileExplicit(sheet) {
+	if (sheet.explicitFile === true) return true;
+	if (sheet.explicitFile === false) return false;
+	return Boolean(sheet.file && sheet.file !== sheetFileName(sheet.name));
+}
+
+function handleRenameSheet(doc, command) {
+	const { sheetId, name } = command;
+	if (typeof name !== "string" || !name) {
+		return { ...doc, error: "renameSheet: name must be a non-empty string" };
+	}
+	const sheet = findSheet(doc.ir, sheetId);
+	if (!sheet) return doc;
+	const explicit = isSheetFileExplicit(sheet);
+	const nextFile =
+		command._prevFile !== undefined
+			? command._prevFile
+			: explicit
+				? sheet.file
+				: sheetFileName(name);
+	return updateSheet(doc, sheetId, (s) => ({ ...s, name, file: nextFile }));
+}
+
+function resolvePinName(pins, pin, command) {
+	const candidate =
+		pin?.name ||
+		pin?.hierLabel ||
+		pin?.label ||
+		command?.hierLabel ||
+		command?.label;
+	if (typeof candidate === "string" && candidate.trim()) {
+		return candidate.trim();
+	}
+	return nextUnusedName(pins, "Pin");
+}
+
+function normalizePin(pin, pins, command) {
+	const id = pin.id || autoSheetPinId(pins);
+	const name = resolvePinName(pins, pin, command);
+	return {
+		id,
+		name,
+		type: pin.type || "input",
+		side: pin.side || "left",
+		offset: typeof pin.offset === "number" ? pin.offset : 0,
+	};
+}
+
+function validatePinInput(pin) {
+	if (!pin || typeof pin !== "object") {
+		return "addSheetPin: missing pin object";
+	}
+	return null;
+}
+
+function checkDuplicatePin(pins, id) {
+	if ((pins ?? []).some((p) => p.id === id)) {
+		return `addSheetPin: duplicate pin id ${id}`;
+	}
+	return null;
+}
+
+function handleAddSheetPin(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (!sheet) {
+		return { ...doc, error: `addSheetPin: sheet not found ${command.sheetId}` };
+	}
+	if (command._pins) {
+		return updateSheet(doc, command.sheetId, (s) => ({
+			...s,
+			pins: command._pins,
+		}));
+	}
+	const err = validatePinInput(command.pin);
+	if (err) return { ...doc, error: err };
+	const id = command.pin.id || autoSheetPinId(sheet.pins);
+	const dupErr = checkDuplicatePin(sheet.pins, id);
+	if (dupErr) return { ...doc, error: dupErr };
+	const newPin = normalizePin({ ...command.pin, id }, sheet.pins, command);
+	return updateSheet(doc, command.sheetId, (s) => ({
+		...s,
+		pins: [...(s.pins ?? []), newPin],
+	}));
+}
+
+function handleDeleteSheetPin(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (!sheet) return doc;
+	if (command._prevPins) {
+		return updateSheet(doc, command.sheetId, (s) => ({
+			...s,
+			pins: command._prevPins,
+		}));
+	}
+	if (!command.pinId || !sheet.pins?.some((p) => p.id === command.pinId)) {
+		return doc;
+	}
+	const pins = (sheet.pins ?? []).filter((p) => p.id !== command.pinId);
+	return updateSheet(doc, command.sheetId, (s) => ({ ...s, pins }));
 }
 
 function handleSelect(doc, command) {
@@ -404,6 +645,13 @@ const HANDLERS = {
 	addAnnotation: handleAddAnnotation,
 	deleteAnnotation: handleDeleteAnnotation,
 	moveAnnotation: handleMoveAnnotation,
+	addSheet: handleAddSheet,
+	deleteSheet: handleDeleteSheet,
+	moveSheet: handleMoveSheet,
+	resizeSheet: handleResizeSheet,
+	renameSheet: handleRenameSheet,
+	addSheetPin: handleAddSheetPin,
+	deleteSheetPin: handleDeleteSheetPin,
 	select: handleSelect,
 	batch: handleBatch,
 };
@@ -547,17 +795,106 @@ function invertDeleteAnnotation(doc, command) {
 	};
 }
 
-function invertMoveAnnotation(doc, command) {
-	const ann = findAnnotation(doc.ir, command.id);
-	if (!ann) return null;
-	if (typeof command.dx !== "number" || typeof command.dy !== "number") {
+function invertDeltaMove(exists, type, idKey, command) {
+	if (
+		!exists ||
+		typeof command.dx !== "number" ||
+		typeof command.dy !== "number"
+	) {
 		return null;
 	}
 	return {
-		type: "moveAnnotation",
-		id: command.id,
+		type,
+		[idKey]: command[idKey],
 		dx: -command.dx,
 		dy: -command.dy,
+	};
+}
+
+function invertMoveAnnotation(doc, command) {
+	return invertDeltaMove(
+		Boolean(findAnnotation(doc.ir, command.id)),
+		"moveAnnotation",
+		"id",
+		command,
+	);
+}
+
+function invertAddSheet(doc, command) {
+	return {
+		type: "deleteSheet",
+		sheetId: command.sheet?.id,
+		_prevSheets: doc.ir.sheets,
+	};
+}
+
+function invertDeleteSheet(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (!sheet) return null;
+	return {
+		type: "addSheet",
+		sheet,
+		_sheets: doc.ir.sheets,
+	};
+}
+
+function invertMoveSheet(doc, command) {
+	return invertDeltaMove(
+		Boolean(findSheet(doc.ir, command.sheetId)),
+		"moveSheet",
+		"sheetId",
+		command,
+	);
+}
+
+function invertResizeSheet(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (
+		!sheet ||
+		typeof command.w !== "number" ||
+		typeof command.h !== "number"
+	) {
+		return null;
+	}
+	return {
+		type: "resizeSheet",
+		sheetId: command.sheetId,
+		w: sheet.w,
+		h: sheet.h,
+	};
+}
+
+function invertRenameSheet(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (!sheet) return null;
+	return {
+		type: "renameSheet",
+		sheetId: command.sheetId,
+		name: sheet.name,
+		_prevFile: sheet.file,
+	};
+}
+
+function invertAddSheetPin(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	return {
+		type: "deleteSheetPin",
+		sheetId: command.sheetId,
+		pinId: command.pin?.id,
+		_prevPins: sheet?.pins,
+	};
+}
+
+function invertDeleteSheetPin(doc, command) {
+	const sheet = findSheet(doc.ir, command.sheetId);
+	if (!sheet) return null;
+	const pin = (sheet.pins ?? []).find((p) => p.id === command.pinId);
+	if (!pin) return null;
+	return {
+		type: "addSheetPin",
+		sheetId: command.sheetId,
+		pin,
+		_pins: sheet.pins,
 	};
 }
 
@@ -585,6 +922,13 @@ const INVERTERS = {
 	addAnnotation: invertAddAnnotation,
 	deleteAnnotation: invertDeleteAnnotation,
 	moveAnnotation: invertMoveAnnotation,
+	addSheet: invertAddSheet,
+	deleteSheet: invertDeleteSheet,
+	moveSheet: invertMoveSheet,
+	resizeSheet: invertResizeSheet,
+	renameSheet: invertRenameSheet,
+	addSheetPin: invertAddSheetPin,
+	deleteSheetPin: invertDeleteSheetPin,
 	batch: invertBatch,
 };
 
@@ -613,18 +957,48 @@ function prepareBatch(doc, command, idFn) {
 	return { ...command, commands: prepared };
 }
 
+function prepareAddSheetPin(doc, cmd) {
+	if (cmd.pin?.id) return cmd;
+	const sheet = findSheet(doc.ir, cmd.sheetId);
+	return {
+		...cmd,
+		pin: { ...cmd.pin, id: autoSheetPinId(sheet?.pins) },
+	};
+}
+
+const ENTITY_PREPARERS = {
+	addPart: (_d, cmd, idFn) =>
+		cmd.part?.id ? cmd : { ...cmd, part: { ...cmd.part, id: idFn("part") } },
+	addAnnotation: (doc, cmd) =>
+		cmd.annotation?.id
+			? cmd
+			: {
+					...cmd,
+					annotation: {
+						...cmd.annotation,
+						id: autoAnnotationId(doc.ir?.annotations),
+					},
+				},
+	addSheet: (doc, cmd) =>
+		cmd.sheet?.id
+			? cmd
+			: {
+					...cmd,
+					sheet: { ...cmd.sheet, id: autoSheetId(doc.ir?.sheets) },
+				},
+	addSheetPin: prepareAddSheetPin,
+};
+
+function prepareEntityCommand(doc, command, idFn) {
+	const preparer = ENTITY_PREPARERS[command.type];
+	return preparer ? preparer(doc, command, idFn) : command;
+}
+
 function prepareCommand(doc, command, idFn) {
-	if (command.type === "addPart" && !command.part?.id) {
-		return { ...command, part: { ...command.part, id: idFn("part") } };
-	}
-	if (command.type === "addAnnotation" && !command.annotation?.id) {
-		const id = autoAnnotationId(doc.ir?.annotations);
-		return { ...command, annotation: { ...command.annotation, id } };
-	}
 	if (command.type === "batch" && Array.isArray(command.commands)) {
 		return prepareBatch(doc, command, idFn);
 	}
-	return command;
+	return prepareEntityCommand(doc, command, idFn);
 }
 
 function dispatchStep(doc, command, idFn) {

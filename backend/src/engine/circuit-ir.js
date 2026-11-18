@@ -15,6 +15,17 @@ function arrayOfObjects(required, properties) {
 	};
 }
 
+const PIN_TYPES = ["input", "output", "bidirectional", "tri_state", "passive"];
+const PIN_SIDES = ["left", "right", "top", "bottom"];
+
+const sheetPinsSchema = arrayOfObjects(["id"], {
+	id: stringProp,
+	name: stringProp,
+	type: { type: "string", enum: PIN_TYPES },
+	side: { type: "string", enum: PIN_SIDES },
+	offset: { type: "number" },
+});
+
 export const CIRCUIT_IR_SCHEMA = {
 	type: "object",
 	required: ["schemaVersion", "name", "parts", "nets", "constraints"],
@@ -33,6 +44,7 @@ export const CIRCUIT_IR_SCHEMA = {
 				value: stringProp,
 				symbol: stringProp,
 				footprint: stringProp,
+				datasheet: stringProp,
 				props: { type: "object" },
 				pinTypes: { type: "object" },
 				pinNames: { type: "object" },
@@ -100,6 +112,18 @@ export const CIRCUIT_IR_SCHEMA = {
 			rot: { type: "number" },
 			text: stringProp,
 			uuid: stringProp,
+		}),
+		sheets: arrayOfObjects(["id"], {
+			id: stringProp,
+			name: stringProp,
+			file: stringProp,
+			x: { type: "number" },
+			y: { type: "number" },
+			w: { type: "number" },
+			h: { type: "number" },
+			uuid: stringProp,
+			explicitFile: { type: "boolean" },
+			pins: sheetPinsSchema,
 		}),
 	},
 };
