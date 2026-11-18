@@ -13,38 +13,84 @@ const boardToolsSrc = readFileSync(
 	"utf8",
 );
 
-async function loadTryCommitZone() {
-	const start = pcbCanvasSrc.indexOf("function tryCommitZone");
-	const end = pcbCanvasSrc.indexOf("function handleGraphicsCancel");
-	const fnBody = pcbCanvasSrc.slice(start, end);
-	const code = `
-		import { addZone } from "${new URL("../../frontend/src/editor/zoneModel.js", import.meta.url).href}";
-		${fnBody}
-		export { tryCommitZone };
-	`;
-	const mod = await import(
-		`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
-	);
-	return mod.tryCommitZone;
+async function extractModule(src, startToken, endToken, preamble) {
+	const start = src.indexOf(startToken);
+	const end = src.indexOf(endToken);
+	const fnBody = src.slice(start, end);
+	const fnName = startToken.replace("function ", "");
+	const code = `${preamble}\n${fnBody}\nexport { ${fnName} };`;
+	const b64 = Buffer.from(code).toString("base64");
+	const mod = await import(`data:text/javascript;base64,${b64}`);
+	return mod[fnName];
 }
 
-async function loadHandleToolEvent() {
-	const start = boardToolsSrc.indexOf("function handleToolEvent");
-	const end = boardToolsSrc.indexOf("export function useBoardToolBus");
-	const fnBody = boardToolsSrc.slice(start, end);
-	const code = `
-		const setOutlineTool = () => {};
-		${fnBody}
-		export { handleToolEvent };
-	`;
-	const mod = await import(
-		`data:text/javascript;base64,${Buffer.from(code).toString("base64")}`
-	);
-	return mod.handleToolEvent;
+const zoneModelUrl = new URL(
+	"../../frontend/src/editor/zoneModel.js",
+	import.meta.url,
+).href;
+
+const tryCommitZone = await extractModule(
+	pcbCanvasSrc,
+	"function tryCommitZone",
+	"function handleGraphicsCancel",
+	`import { addZone } from "${zoneModelUrl}";`,
+);
+
+const handleToolEvent = await extractModule(
+	boardToolsSrc,
+	"function handleToolEvent",
+	"export function useBoardToolBus",
+	"const setOutlineTool = () => {};",
+);
+
+function assertTrackEndpoints(tracks, expectedStart, expectedEnd) {
+	assert.ok(tracks.length >= 1);
+	assert.deepEqual(tracks[0].start, expectedStart);
+	assert.deepEqual(tracks.at(-1).end, expectedEnd);
 }
 
-const tryCommitZone = await loadTryCommitZone();
-const handleToolEvent = await loadHandleToolEvent();
+function createZoneContext(options = {}) {
+	let committedBoard = null;
+	let resetCalled = false;
+	const st = {
+		reset: () => {
+			resetCalled = true;
+		},
+	};
+	const ctx = {
+		activeTool: options.activeTool ?? "addZone",
+		points: options.points ?? [
+			[0, 0],
+			[10, 0],
+			[10, 10],
+		],
+		board: { zones: [] },
+		pushBoard: (b) => {
+			committedBoard = b;
+		},
+		activeLayer: options.activeLayer ?? "F.Cu",
+		toolProps: options.toolProps ?? {},
+	};
+	return {
+		st,
+		ctx,
+		getBoard: () => committedBoard,
+		wasReset: () => resetCalled,
+	};
+}
+
+function assertCommittedZone(result, board, expected) {
+	assert.equal(result, true);
+	assert.equal(board?.zones?.length, 1);
+	const zone = board.zones[0];
+	for (const [key, value] of Object.entries(expected)) {
+		if (key === "polygonLength") {
+			assert.equal(zone.polygon.length, value);
+		} else {
+			assert.equal(zone[key], value);
+		}
+	}
+}
 
 describe("pcb_track: double-click route commit", () => {
 	it("commits track from start to target via legPoints on double click", () => {
@@ -62,13 +108,9 @@ describe("pcb_track: double-click route commit", () => {
 			widthMm: 0.25,
 		});
 
-		assert.ok(updated.tracks.length >= 1);
-		const firstTrack = updated.tracks[0];
-		assert.equal(firstTrack.netId, "Net-(D1-A)");
-		assert.equal(firstTrack.layer, "F.Cu");
-		assert.deepEqual(firstTrack.start, [10, 10]);
-		const lastTrack = updated.tracks.at(-1);
-		assert.deepEqual(lastTrack.end, [25, 25]);
+		assertTrackEndpoints(updated.tracks, [10, 10], [25, 25]);
+		assert.equal(updated.tracks[0].netId, "Net-(D1-A)");
+		assert.equal(updated.tracks[0].layer, "F.Cu");
 	});
 
 	it("simulates double-click commit logic with single starting point", () => {
@@ -103,9 +145,7 @@ describe("pcb_track: double-click route commit", () => {
 
 		assert.ok(sessionReset, "session must be reset after commit");
 		assert.ok(committedBoard, "board must receive committed track");
-		assert.ok(committedBoard.tracks.length >= 1);
-		assert.deepEqual(committedBoard.tracks[0].start, [0, 0]);
-		assert.deepEqual(committedBoard.tracks.at(-1).end, [10, 10]);
+		assertTrackEndpoints(committedBoard.tracks, [0, 0], [10, 10]);
 	});
 
 	it("returns early without committing when points array is empty", () => {
@@ -174,112 +214,66 @@ describe("pcb_zone: interactive pour modal flow and commit", () => {
 	});
 
 	it("tryCommitZone commits zone polygon with netId, layer, and keepout from toolProps", () => {
-		let committedBoard = null;
-		let resetCalled = false;
-		const st = {
-			reset: () => {
-				resetCalled = true;
-			},
-		};
-		const ctx = {
-			activeTool: "addZone",
+		const harness = createZoneContext({
 			points: [
 				[-50, -50],
 				[50, -50],
 				[50, 50],
 				[-50, 50],
 			],
-			board: { zones: [] },
-			pushBoard: (b) => {
-				committedBoard = b;
-			},
-			activeLayer: "F.Cu",
 			toolProps: {
 				netId: "Net-(R1-Pad1)",
 				layer: "B.Cu",
 				keepout: false,
 			},
-		};
+		});
 
-		const result = tryCommitZone(st, ctx);
-		assert.equal(result, true, "tryCommitZone should return true");
-		assert.ok(resetCalled, "st.reset() must be called");
-		assert.ok(committedBoard, "pushBoard must receive updated board");
-		assert.equal(committedBoard.zones.length, 1);
-		const zone = committedBoard.zones[0];
-		assert.equal(zone.netId, "Net-(R1-Pad1)");
-		assert.equal(zone.layer, "B.Cu");
-		assert.equal(zone.keepout, undefined);
-		assert.equal(zone.polygon.length, 4);
+		const result = tryCommitZone(harness.st, harness.ctx);
+		assert.ok(harness.wasReset(), "st.reset() must be called");
+		assertCommittedZone(result, harness.getBoard(), {
+			netId: "Net-(R1-Pad1)",
+			layer: "B.Cu",
+			keepout: undefined,
+			polygonLength: 4,
+		});
 	});
 
 	it("tryCommitZone commits keepout zone correctly", () => {
-		let committedBoard = null;
-		const st = { reset: () => {} };
-		const ctx = {
-			activeTool: "addZone",
-			points: [
-				[0, 0],
-				[10, 0],
-				[10, 10],
-			],
-			board: { zones: [] },
-			pushBoard: (b) => {
-				committedBoard = b;
-			},
-			activeLayer: "F.Cu",
+		const harness = createZoneContext({
 			toolProps: {
 				netId: "GND",
 				layer: "F.Cu",
 				keepout: true,
 			},
-		};
+		});
 
-		const result = tryCommitZone(st, ctx);
-		assert.equal(result, true);
-		assert.equal(committedBoard.zones.length, 1);
-		const zone = committedBoard.zones[0];
-		assert.equal(zone.keepout, true);
-		assert.equal(zone.netId, "");
+		const result = tryCommitZone(harness.st, harness.ctx);
+		assertCommittedZone(result, harness.getBoard(), {
+			netId: "",
+			keepout: true,
+		});
 	});
 
 	it("tryCommitZone returns false when points count is less than 3", () => {
-		let pushCalled = false;
-		const st = { reset: () => {} };
-		const ctx = {
-			activeTool: "addZone",
+		const harness = createZoneContext({
 			points: [
 				[0, 0],
 				[10, 0],
 			],
-			board: { zones: [] },
-			pushBoard: () => {
-				pushCalled = true;
-			},
-			activeLayer: "F.Cu",
 			toolProps: { netId: "GND" },
-		};
+		});
 
-		const result = tryCommitZone(st, ctx);
+		const result = tryCommitZone(harness.st, harness.ctx);
 		assert.equal(result, false);
-		assert.equal(pushCalled, false);
+		assert.equal(harness.getBoard(), null);
 	});
 
 	it("tryCommitZone returns false when activeTool is not addZone", () => {
-		const st = { reset: () => {} };
-		const ctx = {
+		const harness = createZoneContext({
 			activeTool: "drawLine",
-			points: [
-				[0, 0],
-				[10, 0],
-				[10, 10],
-			],
-			board: { zones: [] },
-			pushBoard: () => {},
-			activeLayer: "F.Cu",
-		};
+		});
 
-		const result = tryCommitZone(st, ctx);
+		const result = tryCommitZone(harness.st, harness.ctx);
 		assert.equal(result, false);
 	});
 });
