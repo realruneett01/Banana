@@ -360,14 +360,36 @@ function isForeignNet(netId, otherNetId) {
 	return !(netId && otherNetId && netId === otherNetId);
 }
 
-function collectObstacles(board, pads, layer, netId) {
+function isPadEndpoint(pad, endpoints) {
+	if (!endpoints) return false;
+	return endpoints.some((pt) => {
+		const coords = ptCoords(pt);
+		return padSegmentDistance(pad, coords, coords) <= 1e-6;
+	});
+}
+
+function isNoNetTerminal(o, netId, endpoints) {
+	if (netId || o.netId) return false;
+	if (o.kind !== "pad") return false;
+	return isPadEndpoint(o, endpoints);
+}
+
+function isRouteObstacle(o, netId, endpoints) {
+	if (isNoNetTerminal(o, netId, endpoints)) return false;
+	return isForeignNet(netId, o.netId);
+}
+
+function collectObstacles(options) {
+	const { board, pads, layer, netId, endpoints } = options;
 	const vias = (Array.isArray(board?.vias) ? board.vias : []).map((v) =>
 		obstacleItem(viaShape(v), "via"),
 	);
 	const onLayer = (Array.isArray(pads) ? pads : [])
 		.filter((p) => padOnLayer(p, layer))
 		.map((p) => obstacleItem(p, "pad"));
-	return [...onLayer, ...vias].filter((o) => isForeignNet(netId, o.netId));
+	return [...onLayer, ...vias].filter((o) =>
+		isRouteObstacle(o, netId, endpoints),
+	);
 }
 
 function worstObstacle(seg, ctx) {
@@ -438,10 +460,10 @@ function checkProposedCollisions(points, ctx) {
 
 // Grid indexes of the foreign-net tracks and of the pads and vias a new route must clear.
 function routeIndexes(options) {
-	const { board, pads, layer, netId, clearanceMm } = options;
+	const { board, layer, netId, clearanceMm } = options;
 	const cellSize = Math.max(2.0, clearanceMm * 4);
 	const tracks = collectCandidateTracks(board, layer, netId);
-	const obstacles = collectObstacles(board, pads, layer, netId);
+	const obstacles = collectObstacles(options);
 	return {
 		index: buildSegmentIndex(tracks, cellSize),
 		obstacles: buildSegmentIndex(obstacles, cellSize),
@@ -462,8 +484,18 @@ export function proposeRoute(options = {}) {
 		mode = "45",
 	} = options;
 
-	const points = [ptCoords(start), ...constrainAngle(start, cursor, mode)];
-	const indexes = routeIndexes({ board, pads, layer, netId, clearanceMm });
+	const s = ptCoords(start);
+	const e = ptCoords(cursor);
+	const points = [s, ...constrainAngle(start, cursor, mode)];
+	const endpoints = options.endpoints ?? [s, e];
+	const indexes = routeIndexes({
+		board,
+		pads,
+		layer,
+		netId,
+		clearanceMm,
+		endpoints,
+	});
 	const ctx = { ...indexes, widthMm, clearanceMm, netNames: options.netNames };
 	return { points, collisions: checkProposedCollisions(points, ctx) };
 }

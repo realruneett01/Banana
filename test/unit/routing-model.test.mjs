@@ -253,6 +253,44 @@ const makeSampleBoard = () => ({
 	],
 });
 
+const makePad = (center, netId = "") => ({
+	center,
+	size: [1, 1],
+	shape: "rect",
+	layers: ["F.Cu"],
+	netId,
+});
+
+const p0 = (net = "") => makePad([0, 0], net);
+const p10 = (net = "") => makePad([10, 0], net);
+
+const ROUTE_PAD_CASES = [
+	{
+		title: "no-net pad to no-net pad accepted",
+		netId: "",
+		pads: [p0(), p10()],
+		expected: [],
+	},
+	{
+		title: "passing near a third no-net pad still refused under clearance",
+		netId: "",
+		pads: [p0(), p10(), makePad([5, 0.4])],
+		expected: [{ netId: "other net", text: "Too close to other net pad" }],
+	},
+	{
+		title: "different real nets still refused",
+		netId: "NET_A",
+		pads: [p0("NET_A"), p10("NET_B")],
+		expected: [{ netId: "NET_B", text: "Too close to NET_B pad" }],
+	},
+	{
+		title: "same net accepted",
+		netId: "NET_A",
+		pads: [p0("NET_A"), p10("NET_A")],
+		expected: [],
+	},
+];
+
 function verifyRouteCollisions(collisions, expectedList) {
 	assert.equal(collisions.length, expectedList.length);
 	for (let i = 0; i < expectedList.length; i++) {
@@ -277,6 +315,21 @@ describe("routingModel - proposeRoute", () => {
 			{ netId: "GND", text: "Too close to GND" },
 		]);
 	});
+
+	for (const tc of ROUTE_PAD_CASES) {
+		test(tc.title, () => {
+			const res = proposeRoute({
+				start: [0, 0],
+				cursor: [10, 0],
+				layer: "F.Cu",
+				widthMm: 0.25,
+				clearanceMm: 0.2,
+				pads: tc.pads,
+				netId: tc.netId,
+			});
+			verifyRouteCollisions(res.collisions, tc.expected);
+		});
+	}
 });
 
 const EXPECTED_WIDTH_PRESETS = [
