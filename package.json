@@ -68,6 +68,7 @@
 		"electron": "^44.4.5",
 		"electron-builder": "^26.15.3",
 		"lefthook": "^2.1.14",
+		"playwright": "^1.65.1",
 		"wait-on": "^9.4.0"
 	},
 	"dependencies": {
