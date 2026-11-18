@@ -16,6 +16,7 @@ import editorRouter from "./routes/editor-routes.js";
 import fabRouter from "./routes/fab-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import libraryRouter from "./routes/library-routes.js";
+import modelsRouter from "./routes/models-routes.js";
 import projectRouter from "./routes/project-routes.js";
 import simRouter from "./routes/sim-routes.js";
 
@@ -187,6 +188,7 @@ export function createApp(options = {}) {
 	app.use("/api", fabRouter);
 	app.use("/api", checkRouter);
 	app.use("/api", libraryRouter);
+	app.use("/api", modelsRouter);
 	app.use("/api", projectRouter);
 
 	// Static files
