@@ -14,44 +14,61 @@ import {
 	withBoardSetup,
 } from "../../frontend/src/editor/boardSetup.js";
 
-const dialogUrl = new URL(
-	"../../frontend/src/editor/BoardSetupDialog.jsx",
-	import.meta.url,
-);
-const dialogSrc = readFileSync(dialogUrl, "utf8");
+const loadSource = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+const dialogSrc = loadSource("../../frontend/src/editor/BoardSetupDialog.jsx");
+
+function assertProps(target, expected) {
+	for (const [key, val] of Object.entries(expected)) {
+		assert.equal(target[key], val);
+	}
+}
+
+const makeBoard = (setup, extra = {}) =>
+	Object.freeze({
+		outline: [{ x: 0, y: 0 }],
+		setup,
+		...extra,
+	});
 
 describe("boardSetup - DEFAULT_SETUP", () => {
 	test("provides KiCad default board stackup and dimensions", () => {
-		assert.equal(DEFAULT_SETUP.thickness, 1.6);
-		assert.equal(DEFAULT_SETUP.copperLayers, 2);
-		assert.equal(DEFAULT_SETUP.clearance, 0.2);
-		assert.equal(DEFAULT_SETUP.track, 0.25);
-		assert.equal(DEFAULT_SETUP.via, 0.6);
-		assert.equal(DEFAULT_SETUP.viaDrill, 0.3);
-		assert.equal(DEFAULT_SETUP.diffPairWidth, 0.2);
-		assert.equal(DEFAULT_SETUP.diffPairGap, 0.25);
+		assertProps(DEFAULT_SETUP, {
+			thickness: 1.6,
+			copperLayers: 2,
+			clearance: 0.2,
+			track: 0.25,
+			via: 0.6,
+			viaDrill: 0.3,
+			diffPairWidth: 0.2,
+			diffPairGap: 0.25,
+		});
 	});
 
 	test("contains default design rules object matching limits", () => {
-		const rules = DEFAULT_SETUP.designRules;
-		assert.equal(rules.minClearance, DEFAULT_DESIGN_RULES.minClearance);
-		assert.equal(rules.minTrackWidth, DEFAULT_DESIGN_RULES.minTrackWidth);
-		assert.equal(rules.minViaSize, DEFAULT_DESIGN_RULES.minViaSize);
-		assert.equal(rules.minViaDrill, DEFAULT_DESIGN_RULES.minViaDrill);
-		assert.equal(rules.minDiffPairWidth, DEFAULT_DESIGN_RULES.minDiffPairWidth);
-		assert.equal(rules.minDiffPairGap, DEFAULT_DESIGN_RULES.minDiffPairGap);
+		assertProps(DEFAULT_SETUP.designRules, {
+			minClearance: DEFAULT_DESIGN_RULES.minClearance,
+			minTrackWidth: DEFAULT_DESIGN_RULES.minTrackWidth,
+			minViaSize: DEFAULT_DESIGN_RULES.minViaSize,
+			minViaDrill: DEFAULT_DESIGN_RULES.minViaDrill,
+			minDiffPairWidth: DEFAULT_DESIGN_RULES.minDiffPairWidth,
+			minDiffPairGap: DEFAULT_DESIGN_RULES.minDiffPairGap,
+		});
 	});
 
 	test("contains Default net class and predefined sizes", () => {
+		const [defNetClass] = DEFAULT_SETUP.netClasses;
 		assert.equal(DEFAULT_SETUP.netClasses.length, 1);
-		const def = DEFAULT_SETUP.netClasses[0];
-		assert.equal(def.name, "Default");
-		assert.equal(def.clearance, DEFAULT_NET_CLASS.clearance);
-		assert.equal(def.trackWidth, DEFAULT_NET_CLASS.trackWidth);
-		assert.equal(def.viaSize, DEFAULT_NET_CLASS.viaSize);
-		assert.equal(def.viaDrill, DEFAULT_NET_CLASS.viaDrill);
-		assert.deepEqual(DEFAULT_SETUP.trackWidths, DEFAULT_TRACK_WIDTHS);
-		assert.deepEqual(DEFAULT_SETUP.viaSizes, DEFAULT_VIA_SIZES);
+		assertProps(defNetClass, {
+			name: "Default",
+			clearance: DEFAULT_NET_CLASS.clearance,
+			trackWidth: DEFAULT_NET_CLASS.trackWidth,
+			viaSize: DEFAULT_NET_CLASS.viaSize,
+			viaDrill: DEFAULT_NET_CLASS.viaDrill,
+		});
+		assert.deepEqual(
+			[DEFAULT_SETUP.trackWidths, DEFAULT_SETUP.viaSizes],
+			[DEFAULT_TRACK_WIDTHS, DEFAULT_VIA_SIZES],
+		);
 	});
 });
 
@@ -70,27 +87,28 @@ describe("boardSetup - merge without mutation", () => {
 			copperLayers: 4,
 			clearance: 0.15,
 		});
-		const board = Object.freeze({
-			outline: [{ x: 0, y: 0 }],
-			setup: origSetup,
-		});
+		const board = makeBoard(origSetup);
 
 		const merged = getBoardSetup(board);
-		assert.equal(merged.thickness, 0.8);
-		assert.equal(merged.copperLayers, 4);
-		assert.equal(merged.clearance, 0.15);
-		assert.equal(merged.track, 0.25);
+		assertProps(merged, {
+			thickness: 0.8,
+			copperLayers: 4,
+			clearance: 0.15,
+			track: 0.25,
+		});
 		assert.equal(board.setup.thickness, 0.8);
 	});
 
 	test("withBoardSetup creates new board and preserves non-setup fields", () => {
-		const initialBoard = Object.freeze({
-			outline: [{ x: 10, y: 10 }],
-			tracks: [{ start: [0, 0], end: [1, 1], widthMm: 0.25 }],
-			vias: [],
-			zones: [],
-			setup: { thickness: 1.6 },
-		});
+		const initialBoard = makeBoard(
+			{ thickness: 1.6 },
+			{
+				outline: [{ x: 10, y: 10 }],
+				tracks: [{ start: [0, 0], end: [1, 1], widthMm: 0.25 }],
+				vias: [],
+				zones: [],
+			},
+		);
 
 		const nextBoard = withBoardSetup(initialBoard, {
 			thickness: 2.0,
@@ -98,11 +116,15 @@ describe("boardSetup - merge without mutation", () => {
 		});
 
 		assert.notEqual(nextBoard, initialBoard);
-		assert.equal(nextBoard.setup.thickness, 2.0);
-		assert.equal(nextBoard.setup.copperLayers, 6);
+		assertProps(nextBoard.setup, {
+			thickness: 2.0,
+			copperLayers: 6,
+		});
 		assert.equal(initialBoard.setup.thickness, 1.6);
-		assert.deepEqual(nextBoard.tracks, initialBoard.tracks);
-		assert.deepEqual(nextBoard.outline, initialBoard.outline);
+		assert.deepEqual(
+			[nextBoard.tracks, nextBoard.outline],
+			[initialBoard.tracks, initialBoard.outline],
+		);
 	});
 });
 
@@ -244,20 +266,21 @@ describe("boardSetup - trackWidthsFromSetup shape", () => {
 			assert.ok(p.mm > 0);
 			assert.ok(p.hint.length > 0);
 		}
-		assert.equal(presets[0].label, "Signal 0.25 mm");
-		assert.equal(presets[0].mm, 0.25);
-		assert.equal(presets[1].label, "Power 0.5 mm");
-		assert.equal(presets[1].mm, 0.5);
-		assert.equal(presets[2].label, "High current 1.0 mm");
-		assert.equal(presets[2].mm, 1.0);
+		const expectedPresets = [
+			{ label: "Signal 0.25 mm", mm: 0.25 },
+			{ label: "Power 0.5 mm", mm: 0.5 },
+			{ label: "High current 1.0 mm", mm: 1.0 },
+		];
+		expectedPresets.forEach((exp, idx) => {
+			assertProps(presets[idx], exp);
+		});
 	});
 
 	test("formats custom widths into presets with label and hint", () => {
 		const customSetup = { trackWidths: [0.15, 0.35] };
 		const presets = trackWidthsFromSetup(customSetup);
 		assert.equal(presets.length, 2);
-		assert.equal(presets[0].mm, 0.15);
-		assert.equal(presets[0].label, "0.15 mm");
+		assertProps(presets[0], { mm: 0.15, label: "0.15 mm" });
 		assert.ok(presets[0].hint.includes("capacity"));
 	});
 });
