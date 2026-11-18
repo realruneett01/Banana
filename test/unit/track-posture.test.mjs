@@ -18,7 +18,6 @@ function isMultipleOf45(deg) {
 }
 
 function checkPath(pts, end) {
-	// all segments are multiples of 45 degrees
 	for (let i = 0; i < pts.length - 1; i++) {
 		const angle = segAngle(pts[i], pts[i + 1]);
 		assert.ok(
@@ -26,49 +25,43 @@ function checkPath(pts, end) {
 			`segment ${i} angle ${angle} not mult of 45`,
 		);
 	}
-	// path ends at end
 	const last = pts[pts.length - 1];
 	assert.equal(last[0], end[0]);
 	assert.equal(last[1], end[1]);
 }
 
+function assertTwoPointPath(pts, start, end) {
+	assert.equal(pts.length, 2);
+	assert.deepEqual(pts[0], start);
+	assert.deepEqual(pts[1], end);
+}
+
+function assertCornerPlacement(pts, expectedCorner) {
+	assert.equal(pts.length, 3);
+	assert.deepEqual(pts[1], expectedCorner);
+}
+
 // 8 octants × 2 modes
 const OCTANT_CASES = [
-	// octant 0: dx>0, dy=0 (east)
 	{ start: [0, 0], end: [5, 0] },
-	// octant 1: dx>dy>0 (ENE)
 	{ start: [0, 0], end: [5, 2] },
-	// octant 2: dx=dy>0 (NE diagonal)
 	{ start: [0, 0], end: [4, 4] },
-	// octant 3: dy>dx>0 (NNE)
 	{ start: [0, 0], end: [2, 5] },
-	// octant 4: dx=0, dy>0 (north)
 	{ start: [0, 0], end: [0, 5] },
-	// octant 5: dx<0, dy>0, |dx|<dy (NNW)
 	{ start: [0, 0], end: [-2, 5] },
-	// octant 6: dx<0, dy>0, |dx|>dy (WNW)
 	{ start: [0, 0], end: [-5, 2] },
-	// octant 7: dx<0, dy=0 (west)
 	{ start: [0, 0], end: [-5, 0] },
 ];
 
-describe("posture45 - 8 octants straight-first", () => {
-	for (const { start, end } of OCTANT_CASES) {
-		test(`straight-first (${start})->(${end})`, () => {
-			const pts = posture45(start, end, "straight-first");
-			checkPath(pts, end);
-		});
-	}
-});
-
-describe("posture45 - 8 octants diagonal-first", () => {
-	for (const { start, end } of OCTANT_CASES) {
-		test(`diagonal-first (${start})->(${end})`, () => {
-			const pts = posture45(start, end, "diagonal-first");
-			checkPath(pts, end);
-		});
-	}
-});
+for (const mode of ["straight-first", "diagonal-first"]) {
+	describe(`posture45 - 8 octants ${mode}`, () => {
+		for (const { start, end } of OCTANT_CASES) {
+			test(`${mode} (${start})->(${end})`, () => {
+				checkPath(posture45(start, end, mode), end);
+			});
+		}
+	});
+}
 
 describe("posture45 - pure H/V/45 cases return 2 points", () => {
 	const ALIGNED = [
@@ -80,10 +73,7 @@ describe("posture45 - pure H/V/45 cases return 2 points", () => {
 	for (const { start, end } of ALIGNED) {
 		for (const mode of ["straight-first", "diagonal-first"]) {
 			test(`${mode} (${start})->(${end})`, () => {
-				const pts = posture45(start, end, mode);
-				assert.equal(pts.length, 2);
-				assert.deepEqual(pts[0], start);
-				assert.deepEqual(pts[1], end);
+				assertTwoPointPath(posture45(start, end, mode), start, end);
 			});
 		}
 	}
@@ -91,50 +81,44 @@ describe("posture45 - pure H/V/45 cases return 2 points", () => {
 
 describe("posture45 - zero-length", () => {
 	test("start equals end returns 2-point path", () => {
-		const pts = posture45([3, 4], [3, 4]);
-		assert.equal(pts.length, 2);
-		assert.deepEqual(pts[0], [3, 4]);
-		assert.deepEqual(pts[1], [3, 4]);
+		const origin = [3, 4];
+		assertTwoPointPath(posture45(origin, origin), origin, origin);
 	});
 });
 
 describe("posture45 - mode corner placement", () => {
-	// start [0,0] end [5,2]: dx=5 dy=2, adx>ady
-	// straight-first: H leg first => corner at (5-2, 0) = (3, 0)
-	// diagonal-first: diag leg first => corner at (0+2, 2) = (2, 2)
-	test("straight-first corner on start row", () => {
-		const pts = posture45([0, 0], [5, 2], "straight-first");
-		assert.equal(pts.length, 3);
-		assert.deepEqual(pts[1], [3, 0]);
-	});
+	const CORNER_CASES = [
+		["straight-first corner on start row", [5, 2], "straight-first", [3, 0]],
+		["diagonal-first corner on end row", [5, 2], "diagonal-first", [2, 2]],
+		[
+			"straight-first ady>adx corner on start col",
+			[2, 5],
+			"straight-first",
+			[0, 3],
+		],
+		[
+			"diagonal-first ady>adx corner on end col",
+			[2, 5],
+			"diagonal-first",
+			[2, 2],
+		],
+	];
 
-	test("diagonal-first corner on end row", () => {
-		const pts = posture45([0, 0], [5, 2], "diagonal-first");
-		assert.equal(pts.length, 3);
-		assert.deepEqual(pts[1], [2, 2]);
-	});
-
-	// start [0,0] end [2,5]: dy>dx
-	// straight-first: V leg first => corner at (0, 5-2) = (0, 3)
-	// diagonal-first: diag leg first => corner at (2, 0+2) = (2, 2)
-	test("straight-first ady>adx corner on start col", () => {
-		const pts = posture45([0, 0], [2, 5], "straight-first");
-		assert.equal(pts.length, 3);
-		assert.deepEqual(pts[1], [0, 3]);
-	});
-
-	test("diagonal-first ady>adx corner on end col", () => {
-		const pts = posture45([0, 0], [2, 5], "diagonal-first");
-		assert.equal(pts.length, 3);
-		assert.deepEqual(pts[1], [2, 2]);
-	});
+	for (const [name, end, mode, corner] of CORNER_CASES) {
+		test(name, () => {
+			assertCornerPlacement(posture45([0, 0], end, mode), corner);
+		});
+	}
 });
 
 describe("togglePosture", () => {
-	test("straight-first -> diagonal-first", () => {
-		assert.equal(togglePosture("straight-first"), "diagonal-first");
-	});
-	test("diagonal-first -> straight-first", () => {
-		assert.equal(togglePosture("diagonal-first"), "straight-first");
-	});
+	const TRANSITIONS = [
+		["straight-first", "diagonal-first"],
+		["diagonal-first", "straight-first"],
+	];
+	for (const [from, to] of TRANSITIONS) {
+		test(`${from} -> ${to}`, () => {
+			assert.equal(togglePosture(from), to);
+		});
+	}
 });
