@@ -1,42 +1,48 @@
 import assert from "node:assert/strict";
+import { once } from "node:events";
 import http from "node:http";
 import { after, before, describe, test } from "node:test";
 import { createApp, DESIGN_BODY_LIMIT } from "../../backend/src/app.js";
 
-const MB = 1024 * 1024;
+const BYTES_PER_MB = 1024 * 1024;
 
-function bootServer(app) {
-	const server = http.createServer(app);
-	return new Promise((done) => {
-		server.listen(0, "127.0.0.1", () => {
-			done({ server, port: server.address().port });
-		});
+async function spawnAppServer() {
+	const instance = http.createServer(createApp());
+	instance.listen(0, "127.0.0.1");
+	await once(instance, "listening");
+	return {
+		origin: `http://127.0.0.1:${instance.address().port}`,
+		teardown: () => new Promise((resolve) => instance.close(resolve)),
+	};
+}
+
+function makePayload(sizeInBytes) {
+	return JSON.stringify({
+		ir: {},
+		board: { pad: "x".repeat(sizeInBytes) },
 	});
 }
 
-function boardBody(bytes) {
-	return JSON.stringify({ ir: {}, board: { pad: "x".repeat(bytes) } });
-}
-
-async function postStatus(port, endpoint, body) {
-	const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+async function requestStatus(origin, path, body) {
+	const response = await fetch(`${origin}${path}`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body,
 	});
-	await res.arrayBuffer();
-	return res.status;
+	await response.arrayBuffer();
+	return response.status;
 }
 
 describe("route-scoped JSON body limit", () => {
-	let server;
-	let port;
+	let env;
 
 	before(async () => {
-		({ server, port } = await bootServer(createApp()));
+		env = await spawnAppServer();
 	});
 
-	after(() => new Promise((done) => server.close(done)));
+	after(async () => {
+		await env?.teardown();
+	});
 
 	test("DESIGN_BODY_LIMIT is 32mb", () => {
 		assert.equal(DESIGN_BODY_LIMIT, "32mb");
@@ -52,9 +58,11 @@ describe("route-scoped JSON body limit", () => {
 			true,
 		],
 	];
+
 	for (const [name, endpoint, sizeMb, tooLarge] of cases) {
 		test(`${name}: 413 is ${tooLarge}`, async () => {
-			const status = await postStatus(port, endpoint, boardBody(sizeMb * MB));
+			const body = makePayload(sizeMb * BYTES_PER_MB);
+			const status = await requestStatus(env.origin, endpoint, body);
 			assert.equal(status === 413, tooLarge);
 		});
 	}
