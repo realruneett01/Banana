@@ -141,7 +141,7 @@ function createCorsOriginValidator(isDesktop) {
 // Measured: KiCad demo CM5_MINIMA_3 is 1.1 MB, jetson-agx-thor-baseboard 11 MB.
 // Everything else keeps express.json's 100 kB default (smaller DoS surface).
 export const DESIGN_BODY_LIMIT = "32mb";
-const DESIGN_BODY_ROUTES = [
+export const DESIGN_BODY_ROUTES = [
 	"/api/editor/check",
 	"/api/editor/export",
 	"/api/editor/bom",
@@ -154,6 +154,7 @@ const DESIGN_BODY_ROUTES = [
 	"/api/circuit/simulate",
 	"/api/circuit/suggest-faults",
 	"/api/git/commit-files",
+	"/api/board/glb",
 ];
 
 export function createApp(options = {}) {
