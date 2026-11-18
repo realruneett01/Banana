@@ -49,6 +49,7 @@ import {
 	toggleVisible,
 } from "./layers.js";
 import { markerGlyphs } from "./markerRender.js";
+import { netItemsAt } from "./netHighlight.js";
 import { buildPlacedPart } from "./partPlacement.js";
 import {
 	addTrack,
@@ -71,7 +72,7 @@ import {
 } from "./trackPosture.js";
 import { useCanvasNav } from "./useCanvasNav.js";
 import { bboxOfPoints, fitToBounds, screenToWorld } from "./viewport.js";
-import { addZone } from "./zoneModel.js";
+import { addZone, pointInZone } from "./zoneModel.js";
 
 const CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -396,32 +397,61 @@ function cancelRouting(ctx) {
 	return true;
 }
 
-// Escape: first outline, then graphics, then armed footprint, else leave the route tool.
+function cancelHighlight(ctx) {
+	if (!ctx.highlightNet && !ctx.highlightMode) return false;
+	ctx.cancelHighlight?.();
+	return true;
+}
+
+// Escape: outline, graphics, armed footprint, route, or net highlight.
 function handleEscape(e, key, ctx) {
 	if (key !== "escape") return false;
-	if (ctx.cancelOutline?.()) {
-		e.preventDefault();
-		return true;
-	}
-	if (ctx.cancelGraphics?.()) {
-		e.preventDefault();
-		return true;
-	}
-	if (ctx.disarmFootprint?.()) {
-		e.preventDefault();
-		return true;
-	}
-	if (cancelRouting(ctx)) {
+	const cancelled =
+		ctx.cancelOutline?.() ||
+		ctx.cancelGraphics?.() ||
+		ctx.disarmFootprint?.() ||
+		cancelRouting(ctx) ||
+		cancelHighlight(ctx);
+	if (cancelled) {
 		e.preventDefault();
 		return true;
 	}
 	return false;
 }
 
+function disarmOtherTools(ctx) {
+	if (ctx.isRouting) ctx.cancelRoute();
+	ctx.disarmFootprint?.();
+	ctx.cancelGraphics?.();
+}
+
+function handleBackquoteShortcut(e, ctx) {
+	if (e.key !== "`" && e.code !== "Backquote") return false;
+	e.preventDefault();
+	if (ctx.cursorWorld) {
+		const net = resolvePcbNetAtPoint({
+			ir: ctx.ir,
+			board: ctx.board,
+			pads: ctx.pads,
+			padPositions: ctx.padPositions,
+			pt: ctx.cursorWorld,
+		});
+		if (net) {
+			ctx.setHighlightNet?.(net);
+			return true;
+		}
+	}
+	const nextMode = !ctx.highlightMode;
+	if (nextMode) disarmOtherTools(ctx);
+	ctx.setHighlightMode?.(nextMode);
+	return true;
+}
+
 function handleShortcuts(e, ctx) {
 	if (isTextInput(e.target)) return;
 	const key = e.key.toLowerCase();
 	if (handleEscape(e, key, ctx)) return;
+	if (handleBackquoteShortcut(e, ctx)) return;
 	if (handleHistoryShortcuts(e, key, ctx)) return;
 	if (handleLayerShortcuts(e, ctx)) return;
 	handleToolKeys(e, key, ctx);
@@ -526,35 +556,41 @@ function EdgeCutsLayer({ outline }) {
 	);
 }
 
-function renderZonePolygon(zone, layer, idx) {
+function renderZonePolygon(zone, layer, idx, highlightNet) {
 	const pts = getZonePoints(zone).map(formatZonePt).filter(Boolean).join(" ");
 	if (!pts) return null;
 	const color = getLayerColor(PCB_THEME, zone.layer ?? layer);
 	const key = zone.id ?? `zone_${zone.layer ?? layer}_${idx}`;
+	const isHl = isNetMatch(zone.netId, highlightNet);
+	const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
 	return (
 		<polygon
 			key={key}
 			points={pts}
 			fill={color}
-			fillOpacity={0.25}
-			stroke={color}
-			strokeWidth={0.2}
+			fillOpacity={isHl ? 0.45 : 0.25}
+			stroke={isHl ? "#facc15" : color}
+			strokeWidth={isHl ? 0.4 : 0.2}
+			style={{
+				opacity,
+				filter: isHl ? "drop-shadow(0 0 1px #facc15)" : undefined,
+			}}
 		/>
 	);
 }
 
-function ZonesLayer({ zones, layer }) {
+function ZonesLayer({ zones, layer, highlightNet }) {
 	if (!Array.isArray(zones)) return null;
 	const filtered = zones.filter((z) => (z.layer ?? "F.Cu") === layer);
 	if (filtered.length === 0) return null;
 	return (
 		<g className="pcb-zones">
-			{filtered.map((z, i) => renderZonePolygon(z, layer, i))}
+			{filtered.map((z, i) => renderZonePolygon(z, layer, i, highlightNet))}
 		</g>
 	);
 }
 
-function TracksLayer({ tracks, layer, selectedIndex }) {
+function TracksLayer({ tracks, layer, selectedIndex, highlightNet }) {
 	if (!Array.isArray(tracks)) return null;
 	const filtered = tracks
 		.map((track, originalIndex) => ({ track, index: originalIndex }))
@@ -564,6 +600,10 @@ function TracksLayer({ tracks, layer, selectedIndex }) {
 		<g className="pcb-tracks">
 			{filtered.map(({ track, index }) => {
 				const isSelected = selectedIndex === index;
+				const isHl = isNetMatch(track.netId, highlightNet);
+				const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
+				const baseWidth = track.widthMm || 0.25;
+				const strokeWidth = isHl ? baseWidth + 0.15 : baseWidth;
 				const color = isSelected
 					? "#fadb14"
 					: getLayerColor(PCB_THEME, track.layer);
@@ -573,8 +613,12 @@ function TracksLayer({ tracks, layer, selectedIndex }) {
 						d={trackPath(track)}
 						fill="none"
 						stroke={color}
-						strokeWidth={track.widthMm || 0.25}
+						strokeWidth={strokeWidth}
 						strokeLinecap="round"
+						style={{
+							opacity,
+							filter: isHl ? "drop-shadow(0 0 0.8px #facc15)" : undefined,
+						}}
 					/>
 				);
 			})}
@@ -582,7 +626,7 @@ function TracksLayer({ tracks, layer, selectedIndex }) {
 	);
 }
 
-function ViasLayer({ vias }) {
+function ViasLayer({ vias, highlightNet }) {
 	if (!Array.isArray(vias)) return null;
 	return (
 		<g className="pcb-vias">
@@ -591,15 +635,25 @@ function ViasLayer({ vias }) {
 				const outerR = (via.sizeMm || 0.8) / 2;
 				const innerR = (via.drillMm || 0.4) / 2;
 				const key = `via_${x}_${y}`;
+				const isHl = isNetMatch(via.netId, highlightNet);
+				const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
+				const stroke = isHl ? "#facc15" : "#059669";
+				const strokeWidth = isHl ? 0.25 : 0.1;
 				return (
-					<g key={key}>
+					<g
+						key={key}
+						style={{
+							opacity,
+							filter: isHl ? "drop-shadow(0 0 0.8px #facc15)" : undefined,
+						}}
+					>
 						<circle
 							cx={x}
 							cy={y}
 							r={outerR}
 							fill={PCB_THEME.via}
-							stroke="#059669"
-							strokeWidth={0.1}
+							stroke={stroke}
+							strokeWidth={strokeWidth}
 						/>
 						<circle cx={x} cy={y} r={innerR} fill={PCB_THEME.background} />
 					</g>
@@ -915,7 +969,23 @@ function calcDrillRadius(pad) {
 	return minDim * 0.25 || 0.4;
 }
 
-function FootprintPad({ pad, isBack, layerState }) {
+function PadLabel({ cx, cy, fontSize, number }) {
+	return (
+		<text
+			x={cx}
+			y={cy}
+			textAnchor="middle"
+			dominantBaseline="central"
+			fill="#ffffff"
+			fontSize={fontSize}
+			style={{ pointerEvents: "none", userSelect: "none" }}
+		>
+			{number}
+		</text>
+	);
+}
+
+function FootprintPad({ pad, isBack, layerState, partId, highlightNet }) {
 	if (!isPadVisible(pad, isBack, layerState)) return null;
 	const isThru = isThruHole(pad);
 	const color = isThru
@@ -925,23 +995,20 @@ function FootprintPad({ pad, isBack, layerState }) {
 	const rot = pad.rot ? `rotate(${pad.rot} ${cx} ${cy})` : undefined;
 	const drillR = calcDrillRadius(pad);
 	const fontSize = Math.min(pad.size[0], pad.size[1]) * 0.35;
+	const isHl = isPadNetMatch(partId, pad.number, highlightNet);
+	const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
 	return (
-		<g>
+		<g
+			style={{
+				opacity,
+				filter: isHl ? "drop-shadow(0 0 1px #facc15)" : undefined,
+			}}
+		>
 			<PadShapeElement pad={pad} color={color} rot={rot} />
 			{isThru && (
 				<circle cx={cx} cy={cy} r={drillR} fill={PCB_THEME.background} />
 			)}
-			<text
-				x={cx}
-				y={cy}
-				textAnchor="middle"
-				dominantBaseline="central"
-				fill="#ffffff"
-				fontSize={fontSize}
-				style={{ pointerEvents: "none", userSelect: "none" }}
-			>
-				{pad.number}
-			</text>
+			<PadLabel cx={cx} cy={cy} fontSize={fontSize} number={pad.number} />
 		</g>
 	);
 }
@@ -959,7 +1026,31 @@ function getGraphicKey(g) {
 	return `${g.type}_${g.layer}`;
 }
 
-function FootprintShape({ fp, part, rect, isSelected, layerState }) {
+function SelectedPartOutline({ rect, rot }) {
+	return (
+		<rect
+			x={rect.x - rect.w / 2}
+			y={rect.y - rect.h / 2}
+			width={rect.w}
+			height={rect.h}
+			fill="rgba(250, 219, 20, 0.15)"
+			stroke="#fadb14"
+			strokeWidth={0.5}
+			strokeDasharray="1,1"
+			rx={0.2}
+			transform={rot}
+		/>
+	);
+}
+
+function FootprintShape({
+	fp,
+	part,
+	rect,
+	isSelected,
+	layerState,
+	highlightNet,
+}) {
 	const prims = useMemo(
 		() =>
 			transformPrimitives(
@@ -973,20 +1064,7 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 	const rot = partRotation(rect);
 	return (
 		<g style={{ cursor: "move" }}>
-			{isSelected && (
-				<rect
-					x={rect.x - rect.w / 2}
-					y={rect.y - rect.h / 2}
-					width={rect.w}
-					height={rect.h}
-					fill="rgba(250, 219, 20, 0.15)"
-					stroke="#fadb14"
-					strokeWidth={0.5}
-					strokeDasharray="1,1"
-					rx={0.2}
-					transform={rot}
-				/>
-			)}
+			{isSelected && <SelectedPartOutline rect={rect} rot={rot} />}
 			{prims.graphics.map((g) => (
 				<FootprintGraphic
 					key={getGraphicKey(g)}
@@ -999,8 +1077,10 @@ function FootprintShape({ fp, part, rect, isSelected, layerState }) {
 					// biome-ignore lint/suspicious/noArrayIndexKey: pads keep file order; numbers repeat (MP) or are empty
 					key={`pad_${i}_${pad.number}`}
 					pad={pad}
+					partId={part.id}
 					isBack={isBack}
 					layerState={layerState}
+					highlightNet={highlightNet}
 				/>
 			))}
 			{!fp.refLabel?.hide && <PartRefLabel rect={rect} label={label} />}
@@ -1048,6 +1128,7 @@ function PartItem({
 	onStartDrag,
 	fp,
 	isRouting,
+	highlightNet,
 }) {
 	const [focused, setFocused] = useState(false);
 	const rect = footprintRect(part);
@@ -1073,6 +1154,7 @@ function PartItem({
 					rect={rect}
 					isSelected={isSelected}
 					layerState={layerState}
+					highlightNet={highlightNet}
 				/>
 			) : (
 				<PartShape rect={rect} isSelected={isSelected} />
@@ -1090,6 +1172,7 @@ function PartsLayer({
 	onStartDrag,
 	fpLookup,
 	isRouting,
+	highlightNet,
 }) {
 	if (!Array.isArray(parts)) return null;
 	const isSilk = layer === "F.SilkS" || layer === "B.SilkS";
@@ -1112,28 +1195,39 @@ function PartsLayer({
 					onStartDrag={onStartDrag}
 					fp={fpLookup?.(p)}
 					isRouting={isRouting}
+					highlightNet={highlightNet}
 				/>
 			))}
 		</g>
 	);
 }
 
-function RatsnestLayer({ lines }) {
+function RatsnestLayer({ lines, highlightNet }) {
 	if (!Array.isArray(lines)) return null;
 	return (
 		<g className="pcb-ratsnest" style={{ pointerEvents: "none" }}>
-			{lines.map((l) => (
-				<line
-					key={`rn_${l.netId}_${l.from.x}_${l.from.y}_${l.to.x}_${l.to.y}`}
-					x1={l.from.x}
-					y1={l.from.y}
-					x2={l.to.x}
-					y2={l.to.y}
-					stroke={PCB_THEME.ratsnest}
-					strokeWidth={0.2}
-					strokeDasharray="1,1"
-				/>
-			))}
+			{lines.map((l) => {
+				const isHl = isNetMatch(l.netId, highlightNet);
+				const stroke = isHl ? "#facc15" : PCB_THEME.ratsnest;
+				const strokeWidth = isHl ? 0.35 : 0.2;
+				const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
+				return (
+					<line
+						key={`rn_${l.netId}_${l.from.x}_${l.from.y}_${l.to.x}_${l.to.y}`}
+						x1={l.from.x}
+						y1={l.from.y}
+						x2={l.to.x}
+						y2={l.to.y}
+						stroke={stroke}
+						strokeWidth={strokeWidth}
+						strokeDasharray={isHl ? undefined : "1,1"}
+						style={{
+							opacity,
+							filter: isHl ? "drop-shadow(0 0 1px #facc15)" : undefined,
+						}}
+					/>
+				);
+			})}
 		</g>
 	);
 }
@@ -1317,7 +1411,13 @@ function PcbToolbar({
 	);
 }
 
-function PcbStatusBar({ isRouting, widthPreset, routeMode, posture }) {
+function PcbStatusBar({
+	isRouting,
+	widthPreset,
+	routeMode,
+	posture,
+	highlightNet,
+}) {
 	return (
 		<div style={STATUS_BAR_STYLE}>
 			<span>
@@ -1330,9 +1430,18 @@ function PcbStatusBar({ isRouting, widthPreset, routeMode, posture }) {
 				[/, Ctrl+/]
 			</span>
 			<span>
-				{isRouting
-					? "Routing: Click to route (Shift to bypass DRC), V for via, Double-click to end"
-					: "Ready: Press X to route, V to toggle layer"}
+				{highlightNet ? (
+					<>
+						Net:{" "}
+						<strong style={{ color: "#facc15" }}>
+							{highlightNet.netName || highlightNet.netId}
+						</strong>
+					</>
+				) : isRouting ? (
+					"Routing: Click to route (Shift to bypass DRC), V for via, Double-click to end"
+				) : (
+					"Ready: Press X to route, V to toggle layer"
+				)}
 			</span>
 		</div>
 	);
@@ -1504,6 +1613,67 @@ function detectNetAtPoint(ir, board, pt, padPositions) {
 		findPadNet(ir, padPositions, pt) || findTrackNet(board?.tracks, pt) || ""
 	);
 }
+
+// --- PCB Net Highlight pure helpers ---
+function findZoneNetAt(zones, pt) {
+	for (const z of zones ?? []) {
+		if (!z.keepout && pointInZone(z, pt)) {
+			return z.netId ?? "";
+		}
+	}
+	return "";
+}
+
+function findNetInIr(ir, netId) {
+	if (!ir?.nets || !netId) return null;
+	return ir.nets.find((n) => n.id === netId || n.name === netId) ?? null;
+}
+
+export function isNetMatch(netId, highlightNet) {
+	if (!highlightNet || !netId) return false;
+	return (
+		netId === highlightNet.netId ||
+		Boolean(highlightNet.netName && netId === highlightNet.netName)
+	);
+}
+
+export function isPadNetMatch(partId, padNumber, highlightNet) {
+	if (!highlightNet || !partId || !padNumber) return false;
+	if (!highlightNet.partIds?.has?.(partId)) return false;
+	return Boolean(
+		highlightNet.pins?.some(
+			(p) => p.partId === partId && String(p.pin) === String(padNumber),
+		),
+	);
+}
+
+export function getPcbCopperOpacity(isMatch, hasHighlight) {
+	if (!hasHighlight) return 1;
+	return isMatch ? 1 : 0.3;
+}
+
+function findPadNetAt(pads, ir, padPositions, pt) {
+	return chooseViaNet(pads, pt) || findPadNet(ir, padPositions, pt);
+}
+
+function findCopperNetAt(board, pt) {
+	return hitTest({ parts: [] }, board, pt)?.id ?? "";
+}
+
+function findBoardNetAt(board, pt) {
+	return findCopperNetAt(board, pt) || findZoneNetAt(board?.zones, pt);
+}
+
+export function resolvePcbNetAtPoint(ctx) {
+	if (!ctx?.ir || !ctx.pt) return null;
+	const netId =
+		findPadNetAt(ctx.pads, ctx.ir, ctx.padPositions, ctx.pt) ||
+		findBoardNetAt(ctx.board, ctx.pt);
+	if (!netId) return null;
+	const net = findNetInIr(ctx.ir, netId);
+	return net ? netItemsAt(ctx.ir, { netId: net.id }) : null;
+}
+// --- End PCB Net Highlight pure helpers ---
 
 // Start snaps to a track end, pad or part centre; a later click snaps to a pad centre.
 function resolveRouteTarget(raw, hasPoints, snapCtx) {
@@ -2151,35 +2321,46 @@ function useCanvasLayers(board) {
 	};
 }
 
-function usePointerDownHandler({
-	route,
-	sel,
-	ir,
-	board,
-	svgRef,
-	view,
-	isArmed,
-}) {
+function handlePointerDownHighlight(ctx, pt) {
+	if (ctx.highlight?.highlightMode) {
+		const net = resolvePcbNetAtPoint({
+			ir: ctx.ir,
+			board: ctx.board,
+			pads: ctx.pads,
+			padPositions: ctx.padPositions,
+			pt,
+		});
+		ctx.highlight.setHighlightNet(net);
+		return true;
+	}
+	return false;
+}
+
+function usePointerDownHandler(ctx) {
+	const { route, sel, ir, board, svgRef, view, isArmed, highlight } = ctx;
 	return useCallback(
 		(e) => {
-			if (e.button !== 0) return;
-			if (route.isRouting || isArmed) return;
-			const [x, y] = screenToBoardCoords(e, svgRef.current, view);
-			const graphicId = hitTestGraphic(board?.graphics, [x, y]);
+			if (e.button !== 0 || route.isRouting) return;
+			const pt = screenToBoardCoords(e, svgRef.current, view);
+			if (handlePointerDownHighlight(ctx, pt)) return;
+			if (isArmed) return;
+			const graphicId = hitTestGraphic(board?.graphics, pt);
 			if (graphicId) {
 				sel.onSelectHit({ kind: "graphic", id: graphicId });
 				return;
 			}
-			sel.onSelectHit(hitTest(ir, board, [x, y]));
+			const hit = hitTest(ir, board, pt);
+			if (!hit && highlight?.highlightNet) {
+				highlight.setHighlightNet(null);
+			}
+			sel.onSelectHit(hit);
 		},
-		[route.isRouting, isArmed, ir, board, sel, svgRef, view],
+		[ctx, route.isRouting, isArmed, ir, board, sel, svgRef, view, highlight],
 	);
 }
 
-function buildShortcuts(ctx) {
+function buildNavShortcuts(ctx) {
 	return {
-		editor: ctx.editor,
-		selectedPartId: ctx.sel.selectedPartId,
 		toggleLayer: ctx.layers.toggleLayer,
 		toggleRoute: ctx.route.toggleRoute,
 		cancelRoute: ctx.route.cancelRoute,
@@ -2187,22 +2368,47 @@ function buildShortcuts(ctx) {
 		togglePosture: ctx.route.togglePostureMode,
 		cycleWidthPreset: ctx.route.cycleWidthPreset,
 		placeVia: ctx.route.placeViaAndSwitchLayer,
-		armVia: () => {
-			if (ctx.route.isRouting) ctx.route.cancelRoute();
-			ctx.armedPlacement?.disarm();
-			ctx.graphicsDrawing?.arm("placeVia");
+		jumpCopper: ctx.layers.onJumpCopper,
+		stepCopper: ctx.layers.onStepCopper,
+	};
+}
+
+function buildHighlightShortcuts(ctx) {
+	return {
+		highlightNet: ctx.highlight?.highlightNet,
+		highlightMode: ctx.highlight?.highlightMode,
+		setHighlightNet: ctx.highlight?.setHighlightNet,
+		setHighlightMode: ctx.highlight?.setHighlightMode,
+		cancelHighlight: ctx.highlight?.clearHighlight,
+		ir: ctx.ir,
+		board: ctx.board,
+		pads: ctx.pads,
+		padPositions: ctx.padPositions,
+		get cursorWorld() {
+			return ctx.cursorWorldRef?.current;
 		},
-		armText: () => {
-			if (ctx.route.isRouting) ctx.route.cancelRoute();
-			ctx.armedPlacement?.disarm();
-			ctx.graphicsDrawing?.arm("placeText");
-		},
+	};
+}
+
+function armToolShortcut(ctx, tool) {
+	if (ctx.route.isRouting) ctx.route.cancelRoute();
+	ctx.armedPlacement?.disarm();
+	ctx.graphicsDrawing?.arm(tool);
+	ctx.highlight?.setHighlightMode(false);
+}
+
+function buildShortcuts(ctx) {
+	return {
+		...buildNavShortcuts(ctx),
+		...buildHighlightShortcuts(ctx),
+		editor: ctx.editor,
+		selectedPartId: ctx.sel.selectedPartId,
+		armVia: () => armToolShortcut(ctx, "placeVia"),
+		armText: () => armToolShortcut(ctx, "placeText"),
 		isRouting: ctx.route.isRouting,
 		deleteSelected: ctx.sel.deleteSelected,
 		undoBoard: ctx.history.undoBoard,
 		redoBoard: ctx.history.redoBoard,
-		jumpCopper: ctx.layers.onJumpCopper,
-		stepCopper: ctx.layers.onStepCopper,
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
 		cancelGraphics: ctx.graphicsDrawing?.cancelGraphics,
 		disarmFootprint: ctx.armedPlacement?.disarm,
@@ -2223,7 +2429,9 @@ function buildSceneData(ctx) {
 		isRouting:
 			ctx.isRouting ||
 			Boolean(ctx.armedPlacement?.armed) ||
-			Boolean(ctx.graphicsDrawing?.activeTool),
+			Boolean(ctx.graphicsDrawing?.activeTool) ||
+			Boolean(ctx.highlightNetState?.highlightMode),
+		highlightNet: ctx.highlightNetState?.highlightNet,
 	};
 }
 
@@ -2342,11 +2550,16 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 			{layer === "Edge.Cuts" && (
 				<EdgeCutsLayer outline={sceneData.board?.outline} />
 			)}
-			<ZonesLayer zones={sceneData.board?.zones} layer={layer} />
+			<ZonesLayer
+				zones={sceneData.board?.zones}
+				layer={layer}
+				highlightNet={sceneData.highlightNet}
+			/>
 			<TracksLayer
 				tracks={sceneData.board?.tracks}
 				layer={layer}
 				selectedIndex={sceneData.selectedTrackIndex}
+				highlightNet={sceneData.highlightNet}
 			/>
 			<BoardGraphicsLayer
 				graphics={sceneData.board?.graphics}
@@ -2362,6 +2575,7 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 				onStartDrag={drag.onStartDrag}
 				fpLookup={sceneData.fpLookup}
 				isRouting={sceneData.isRouting}
+				highlightNet={sceneData.highlightNet}
 			/>
 		</g>
 	));
@@ -3227,22 +3441,34 @@ function handleViaTool(route, armGfx) {
 	else armGfx("placeVia");
 }
 
-function handleSelectTool(route, armedPlacement, graphicsDrawing) {
+function disarmTools({ route, armedPlacement, graphicsDrawing, highlight }) {
 	if (route.isRouting) route.cancelRoute();
 	armedPlacement.disarm();
 	graphicsDrawing.disarm();
+	highlight?.setHighlightMode(false);
 }
 
-function handleRouteTrack(route, armedPlacement, graphicsDrawing) {
-	armedPlacement.disarm();
-	graphicsDrawing.disarm();
-	if (!route.isRouting) route.toggleRoute();
+function handleSelectTool(tools) {
+	disarmTools(tools);
 }
 
-function handlePlaceFootprint(item, route, armedPlacement, graphicsDrawing) {
-	if (route.isRouting) route.cancelRoute();
-	graphicsDrawing.disarm();
-	if (item) armedPlacement.setArmed(item);
+function handleRouteTrack(tools) {
+	tools.armedPlacement.disarm();
+	tools.graphicsDrawing.disarm();
+	tools.highlight?.setHighlightMode(false);
+	if (!tools.route.isRouting) tools.route.toggleRoute();
+}
+
+function handlePlaceFootprint(item, tools) {
+	disarmTools(tools);
+	if (item) tools.armedPlacement.setArmed(item);
+}
+
+function handleHighlightNetTool(tools) {
+	if (tools.route.isRouting) tools.route.cancelRoute();
+	tools.armedPlacement.disarm();
+	tools.graphicsDrawing.disarm();
+	tools.highlight?.setHighlightMode(true);
 }
 
 function handleSetLayer(item, layers) {
@@ -3256,15 +3482,19 @@ function createToolBusHandlers({
 	layers,
 	armedPlacement,
 	graphicsDrawing,
+	highlight,
 }) {
+	const tools = { route, armedPlacement, graphicsDrawing, highlight };
 	const armGfx = (tool) => {
 		if (route.isRouting) route.cancelRoute();
 		armedPlacement.disarm();
 		graphicsDrawing.arm(tool);
+		highlight?.setHighlightMode(false);
 	};
 	const onVia = () => handleViaTool(route, armGfx);
 	return {
-		select: () => handleSelectTool(route, armedPlacement, graphicsDrawing),
+		select: () => handleSelectTool(tools),
+		highlightNet: () => handleHighlightNetTool(tools),
 		drawLine: () => armGfx("drawLine"),
 		drawRect: () => armGfx("drawRect"),
 		drawCircle: () => armGfx("drawCircle"),
@@ -3274,16 +3504,24 @@ function createToolBusHandlers({
 		drawText: () => armGfx("placeText"),
 		text: () => armGfx("placeText"),
 		addZone: () => armGfx("addZone"),
-		routeTrack: () => handleRouteTrack(route, armedPlacement, graphicsDrawing),
+		routeTrack: () => handleRouteTrack(tools),
 		addVia: onVia,
 		placeVia: onVia,
 		setLayer: (item) => handleSetLayer(item, layers),
-		placeFootprint: (item) =>
-			handlePlaceFootprint(item, route, armedPlacement, graphicsDrawing),
+		placeFootprint: (item) => handlePlaceFootprint(item, tools),
 	};
 }
 
-function reportActiveTool(isRouting, armedFootprint, activeGraphicsTool) {
+function reportActiveTool(
+	isRouting,
+	armedFootprint,
+	activeGraphicsTool,
+	highlightMode,
+) {
+	if (highlightMode) {
+		emitActiveTool({ tab: "pcb", tool: "highlightNet", item: null });
+		return;
+	}
 	if (activeGraphicsTool) {
 		const tool =
 			activeGraphicsTool === "placeVia" ? "addVia" : activeGraphicsTool;
@@ -3311,6 +3549,7 @@ function useToolBus({
 	armedPlacement,
 	graphicsDrawing,
 	containerRef,
+	highlight,
 }) {
 	const handlersRef = useRef({});
 	handlersRef.current = createToolBusHandlers({
@@ -3318,6 +3557,7 @@ function useToolBus({
 		layers,
 		armedPlacement,
 		graphicsDrawing,
+		highlight,
 	});
 
 	useEffect(() => {
@@ -3325,8 +3565,14 @@ function useToolBus({
 			route.isRouting,
 			armedPlacement.armed,
 			graphicsDrawing.activeTool,
+			highlight?.highlightMode,
 		);
-	}, [route.isRouting, armedPlacement.armed, graphicsDrawing.activeTool]);
+	}, [
+		route.isRouting,
+		armedPlacement.armed,
+		graphicsDrawing.activeTool,
+		highlight?.highlightMode,
+	]);
 
 	useEffect(() => {
 		return onEditorTool((payload) => {
@@ -3443,8 +3689,16 @@ function PcbSvgContent({
 				layerState={layerState}
 				drag={drag}
 			/>
-			{showVias && <ViasLayer vias={sceneData.board?.vias} />}
-			<RatsnestLayer lines={sceneData.rnLines} />
+			{showVias && (
+				<ViasLayer
+					vias={sceneData.board?.vias}
+					highlightNet={sceneData.highlightNet}
+				/>
+			)}
+			<RatsnestLayer
+				lines={sceneData.rnLines}
+				highlightNet={sceneData.highlightNet}
+			/>
 			<RoutingPreviewLayer
 				points={route.points}
 				proposed={route.proposedRoute}
@@ -3827,6 +4081,7 @@ function useCanvasGraphicsTools({
 	route,
 	containerRef,
 	pads,
+	highlight,
 }) {
 	const graphicsDrawing = useGraphicsDrawing({
 		board,
@@ -3842,7 +4097,9 @@ function useCanvasGraphicsTools({
 		svgRef,
 		view,
 		isArmed:
-			Boolean(armedPlacement.armed) || Boolean(graphicsDrawing.activeTool),
+			Boolean(armedPlacement.armed) ||
+			Boolean(graphicsDrawing.activeTool) ||
+			Boolean(highlight?.highlightMode),
 		isRouting: route.isRouting,
 	});
 	useToolBus({
@@ -3851,8 +4108,25 @@ function useCanvasGraphicsTools({
 		armedPlacement,
 		graphicsDrawing,
 		containerRef,
+		highlight,
 	});
 	return { graphicsDrawing, graphicDrag };
+}
+
+function usePcbHighlight() {
+	const [highlightNet, setHighlightNet] = useState(null);
+	const [highlightMode, setHighlightMode] = useState(false);
+	const clearHighlight = useCallback(() => {
+		setHighlightNet(null);
+		setHighlightMode(false);
+	}, []);
+	return {
+		highlightNet,
+		setHighlightNet,
+		highlightMode,
+		setHighlightMode,
+		clearHighlight,
+	};
 }
 
 function usePcbCanvasState({
@@ -3865,6 +4139,8 @@ function usePcbCanvasState({
 	containerRef,
 }) {
 	const svgRef = useRef(null);
+	const cursorWorldRef = useRef(null);
+	const highlight = usePcbHighlight();
 	const gridPitch = useSyncExternalStore(subscribeEditorStatus, currentGrid);
 	const ir = editor?.state?.ir;
 	const { view } = useCanvasView(board, ir, containerRef);
@@ -3913,6 +4189,7 @@ function usePcbCanvasState({
 		route,
 		containerRef,
 		pads,
+		highlight,
 	});
 	const rnLines = useMemo(
 		() =>
@@ -3931,6 +4208,9 @@ function usePcbCanvasState({
 		view,
 		isArmed:
 			Boolean(armedPlacement.armed) || Boolean(graphicsDrawing.activeTool),
+		highlight,
+		pads,
+		padPositions,
 	});
 	const shortcuts = buildShortcuts({
 		editor,
@@ -3941,6 +4221,12 @@ function usePcbCanvasState({
 		outlineDrawing,
 		armedPlacement,
 		graphicsDrawing,
+		highlight,
+		ir,
+		board,
+		pads,
+		padPositions,
+		cursorWorldRef,
 	});
 	const sceneData = buildSceneData({
 		editor,
@@ -3953,6 +4239,7 @@ function usePcbCanvasState({
 		fpLookup,
 		armedPlacement,
 		graphicsDrawing,
+		highlightNetState: highlight,
 	});
 	return {
 		svgRef,
@@ -3968,6 +4255,8 @@ function usePcbCanvasState({
 		graphicsDrawing,
 		graphicDrag,
 		gridPitch,
+		highlight,
+		cursorWorldRef,
 	};
 }
 
@@ -4006,7 +4295,11 @@ export default function PcbCanvas({
 			onPointerMove={(e) => {
 				const raw = screenToBoardCoords(e, s.svgRef.current, s.view);
 				const [x, y] = snapToGrid(raw, s.gridPitch);
+				s.cursorWorldRef.current = [x, y];
 				onCursorMove?.({ x, y, zoom: s.view.zoom });
+			}}
+			onPointerLeave={() => {
+				s.cursorWorldRef.current = null;
 			}}
 		>
 			<PcbToolbar
@@ -4044,6 +4337,7 @@ export default function PcbCanvas({
 				widthPreset={s.route.widthPreset}
 				routeMode={s.route.routeMode}
 				posture={s.route.posture}
+				highlightNet={s.highlight.highlightNet}
 			/>
 			<TextGraphicModal
 				open={Boolean(

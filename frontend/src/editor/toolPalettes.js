@@ -50,7 +50,7 @@ placeLine|Graphic line||line|1
 
 const PCB_TOOL_TEXT = `
 select|Select|esc|select|1
-highlightNet|Highlight net|backquote|net|0
+highlightNet|Highlight net|backquote|net|1
 placeFootprint|Add footprint|a|footprint|1
 routeTrack|Route track|x|route|1
 addVia|Via|v|via|1

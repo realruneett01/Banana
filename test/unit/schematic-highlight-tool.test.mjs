@@ -49,10 +49,10 @@ describe("Highlight Net palette configuration", () => {
 		assert.equal(tool.icon, "net");
 	});
 
-	test("pcb highlightNet tool remains disabled (ready: false)", () => {
+	test("pcb highlightNet tool is enabled and ready", () => {
 		const tool = PCB_TOOLS.find((t) => t.id === "highlightNet");
 		assert.ok(tool, "highlightNet tool exists in pcb palette");
-		assert.equal(tool.ready, false);
+		assert.equal(tool.ready, true);
 	});
 });
 
