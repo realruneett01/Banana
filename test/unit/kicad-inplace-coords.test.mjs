@@ -3,7 +3,8 @@ import { describe, test } from "node:test";
 import { patchKicadText } from "../../backend/src/engine/kicad-inplace.js";
 import { parse, serialize } from "../../backend/src/engine/sexpr.js";
 
-const PCB = `(kicad_pcb
+function createPcbFixture() {
+	const text = `(kicad_pcb
 	(version 20240108)
 	(footprint "Resistor_SMD:R_0603"
 		(layer "F.Cu")
@@ -12,17 +13,37 @@ const PCB = `(kicad_pcb
 		(property "Value" "10k")
 	)
 )`;
+	return {
+		pcbText: text,
+		unchangedText: serialize(parse(text)),
+	};
+}
 
-const UNCHANGED = serialize(parse(PCB));
+const fixture = createPcbFixture();
 
-function move(fields) {
-	return patchKicadText(PCB, {
+function moveFootprint(fields) {
+	return patchKicadText(fixture.pcbText, {
 		kind: "pcb",
 		edits: [{ op: "move", ref: "R1", x: 1, y: 2, ...fields }],
 	});
 }
 
-const REJECTED = [
+function verifyRejectedMove(field, value) {
+	const res = moveFootprint({ [field]: value });
+	assert.equal(res.ok, true);
+	assert.equal(res.applied, 0);
+	assert.equal(res.skipped.length, 1);
+	assert.match(res.skipped[0].reason, /Invalid coordinates/);
+	assert.equal(res.text, fixture.unchangedText);
+}
+
+function verifyAcceptedMove(fields, expectedPattern) {
+	const res = moveFootprint(fields);
+	assert.equal(res.applied, 1);
+	assert.match(res.text, expectedPattern);
+}
+
+const REJECTED_COORDINATES = [
 	["x", 1e308],
 	["x", -1e308],
 	["y", Number.NaN],
@@ -34,27 +55,29 @@ const REJECTED = [
 	["rot", Number.NaN],
 ];
 
+const ACCEPTED_COORDINATES = [
+	{
+		name: "accepts 9999.5 on both axes",
+		fields: { x: 9999.5, y: -9999.5, rot: 90 },
+		expectedPattern: /\(at 9999\.5 -9999\.5 90\)/,
+	},
+	{
+		name: "accepts normal values and the 10000 mm boundary",
+		fields: { x: 10000, y: 12.25 },
+		expectedPattern: /\(at 10000 12\.25 45\)/,
+	},
+];
+
 describe("legacy move coordinate limits", () => {
-	for (const [field, value] of REJECTED) {
+	for (const [field, value] of REJECTED_COORDINATES) {
 		test(`rejects ${field}=${String(value)} and leaves the file unchanged`, () => {
-			const res = move({ [field]: value });
-			assert.equal(res.ok, true);
-			assert.equal(res.applied, 0);
-			assert.equal(res.skipped.length, 1);
-			assert.match(res.skipped[0].reason, /Invalid coordinates/);
-			assert.equal(res.text, UNCHANGED);
+			verifyRejectedMove(field, value);
 		});
 	}
 
-	test("accepts 9999.5 on both axes", () => {
-		const res = move({ x: 9999.5, y: -9999.5, rot: 90 });
-		assert.equal(res.applied, 1);
-		assert.match(res.text, /\(at 9999\.5 -9999\.5 90\)/);
-	});
-
-	test("accepts normal values and the 10000 mm boundary", () => {
-		const res = move({ x: 10000, y: 12.25 });
-		assert.equal(res.applied, 1);
-		assert.match(res.text, /\(at 10000 12\.25 45\)/);
-	});
+	for (const { name, fields, expectedPattern } of ACCEPTED_COORDINATES) {
+		test(name, () => {
+			verifyAcceptedMove(fields, expectedPattern);
+		});
+	}
 });
