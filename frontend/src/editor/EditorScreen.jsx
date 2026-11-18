@@ -52,6 +52,13 @@ import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import SaveCommitDialog from "./SaveCommitDialog.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
+import {
+	breadcrumb,
+	createNavState,
+	enterSheet,
+	jumpTo,
+	leaveSheet,
+} from "./sheetNav.js";
 import ToolPalette from "./ToolPalette.jsx";
 import { useEditorDocument } from "./useEditorDocument.js";
 import { useLiveChecks } from "./useLiveChecks.js";
@@ -108,6 +115,60 @@ const CANVAS_WRAPPER_STYLE = Object.freeze({
 	height: "100%",
 	position: "relative",
 	padding: "8px",
+});
+
+const BREADCRUMB_BAR_STYLE = Object.freeze({
+	display: "flex",
+	justifyContent: "space-between",
+	alignItems: "center",
+	padding: "4px 8px",
+	background: "#12151c",
+	borderBottom: "1px solid #232836",
+	fontSize: "12px",
+	minHeight: "28px",
+});
+
+const BREADCRUMB_LIST_STYLE = Object.freeze({
+	display: "flex",
+	alignItems: "center",
+	gap: "6px",
+	flexWrap: "wrap",
+});
+
+const BREADCRUMB_BUTTON_STYLE = Object.freeze({
+	background: "transparent",
+	border: "none",
+	cursor: "pointer",
+	padding: "2px 4px",
+	borderRadius: "4px",
+	font: "inherit",
+	fontSize: "inherit",
+	color: "#38bdf8",
+});
+
+const BREADCRUMB_CURRENT_STYLE = Object.freeze({
+	background: "transparent",
+	border: "none",
+	padding: "2px 4px",
+	font: "inherit",
+	fontSize: "inherit",
+	color: "#e6e8ee",
+	fontWeight: 600,
+	cursor: "default",
+});
+
+const SCHEMATIC_VIEWPORT_STYLE = Object.freeze({
+	display: "flex",
+	flexDirection: "column",
+	width: "100%",
+	height: "100%",
+});
+
+const SCHEMATIC_CANVAS_HOLDER_STYLE = Object.freeze({
+	flex: 1,
+	minHeight: 0,
+	width: "100%",
+	position: "relative",
 });
 
 const STATUS_BAR_STYLE = Object.freeze({
@@ -778,6 +839,62 @@ function useOriginShortcut() {
 	}, []);
 }
 
+function isLeaveSheetShortcut(e) {
+	if (isEditableElement(e.target)) return false;
+	return Boolean(e.altKey && (e.key === "Backspace" || e.code === "Backspace"));
+}
+
+function useLeaveSheetShortcut(leaveSheet, enabled) {
+	useEffect(() => {
+		if (!enabled) return;
+		const onKeyDown = (e) => {
+			if (isLeaveSheetShortcut(e)) {
+				e.preventDefault();
+				leaveSheet();
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [leaveSheet, enabled]);
+}
+
+function useSheetNav(initialName = "Root") {
+	const [navState, setNavState] = useState(() => createNavState(initialName));
+
+	const enter = useCallback((sheet) => {
+		setNavState((prev) => enterSheet(prev, sheet));
+	}, []);
+
+	const leave = useCallback(() => {
+		setNavState((prev) => leaveSheet(prev));
+	}, []);
+
+	const jump = useCallback((index) => {
+		setNavState((prev) => jumpTo(prev, index));
+	}, []);
+
+	const items = useMemo(() => breadcrumb(navState), [navState]);
+	const canLeave = navState.stack.length > 1;
+
+	return {
+		navState,
+		enterSheet: enter,
+		leaveSheet: leave,
+		jumpTo: jump,
+		items,
+		canLeave,
+	};
+}
+
+function useEditorScreenNav(irName, activeTab) {
+	const nav = useSheetNav(irName || "Root");
+	useLeaveSheetShortcut(
+		nav.leaveSheet,
+		activeTab === "schematic" && nav.canLeave,
+	);
+	return nav;
+}
+
 function useLibraryState() {
 	const [libraryOpen, setLibraryOpen] = useState(false);
 	const openLibrary = useCallback(() => setLibraryOpen(true), []);
@@ -1220,15 +1337,80 @@ function useCollapsiblePanel(selection) {
 	return { panelOpen, togglePanel };
 }
 
-function SchematicViewportTab({ visible, docState, fetchers, problems }) {
+function SheetBreadcrumb({ items, canLeave, onJump, onLeave }) {
+	return (
+		<nav
+			style={BREADCRUMB_BAR_STYLE}
+			aria-label="Hierarchical sheet navigation"
+		>
+			<div style={BREADCRUMB_LIST_STYLE}>
+				{items.map((it, idx) => {
+					const isLast = idx === items.length - 1;
+					return (
+						<span
+							key={it.index}
+							style={{
+								display: "inline-flex",
+								alignItems: "center",
+								gap: "6px",
+							}}
+						>
+							{idx > 0 && <span style={{ color: "#64748b" }}>&gt;</span>}
+							<button
+								type="button"
+								onClick={() => onJump(it.index)}
+								style={
+									isLast ? BREADCRUMB_CURRENT_STYLE : BREADCRUMB_BUTTON_STYLE
+								}
+								aria-current={isLast ? "page" : undefined}
+							>
+								{it.label}
+							</button>
+						</span>
+					);
+				})}
+			</div>
+			<Tooltip title="Leave sheet (Alt+Backspace)">
+				<Button
+					size="small"
+					icon={<LeftOutlined />}
+					disabled={!canLeave}
+					onClick={onLeave}
+					aria-label="Leave sheet (Alt+Backspace)"
+				>
+					Leave sheet
+				</Button>
+			</Tooltip>
+		</nav>
+	);
+}
+
+function SchematicViewportTab({
+	visible,
+	docState,
+	fetchers,
+	problems,
+	sheetNav,
+}) {
 	return (
 		<CanvasTab visible={visible}>
-			<SchematicCanvas
-				editor={docState.editor}
-				fetchSymbol={fetchers.fetchSymbol}
-				problems={problems}
-				onCursorMove={setCursor}
-			/>
+			<div style={SCHEMATIC_VIEWPORT_STYLE}>
+				<SheetBreadcrumb
+					items={sheetNav.items}
+					canLeave={sheetNav.canLeave}
+					onJump={sheetNav.jumpTo}
+					onLeave={sheetNav.leaveSheet}
+				/>
+				<div style={SCHEMATIC_CANVAS_HOLDER_STYLE}>
+					<SchematicCanvas
+						editor={docState.editor}
+						fetchSymbol={fetchers.fetchSymbol}
+						problems={problems}
+						onCursorMove={setCursor}
+						onEnterSheet={sheetNav.enterSheet}
+					/>
+				</div>
+			</div>
 		</CanvasTab>
 	);
 }
@@ -1250,7 +1432,15 @@ function PcbViewportTab({ visible, docState, curBoard, fetchers, markers }) {
 }
 
 function CanvasViewport(props) {
-	const { activeTab, docState, curBoard, fetchers, markers, problems } = props;
+	const {
+		activeTab,
+		docState,
+		curBoard,
+		fetchers,
+		markers,
+		problems,
+		sheetNav,
+	} = props;
 	return (
 		<div style={CANVAS_WRAPPER_STYLE}>
 			<PanelToggleButton
@@ -1262,6 +1452,7 @@ function CanvasViewport(props) {
 				docState={docState}
 				fetchers={fetchers}
 				problems={problems}
+				sheetNav={sheetNav}
 			/>
 			<PcbViewportTab
 				visible={activeTab === "pcb"}
@@ -1312,7 +1503,8 @@ function buildToolState(
 }
 
 function EditorBody(props) {
-	const { activeTab, ctrl, onOpenLibrary, panelOpen, onTogglePanel } = props;
+	const { activeTab, ctrl, onOpenLibrary, panelOpen, onTogglePanel, sheetNav } =
+		props;
 	const openLib = onOpenLibrary ?? ctrl?.actions?.openLibrary;
 	return (
 		<div style={CONTENT_ROW_STYLE}>
@@ -1326,6 +1518,7 @@ function EditorBody(props) {
 				problems={ctrl.liveChecks.issues}
 				panelOpen={panelOpen}
 				onTogglePanel={onTogglePanel}
+				sheetNav={sheetNav}
 			/>
 			{panelOpen && (
 				<PropertiesPanel
@@ -1436,8 +1629,15 @@ function EditorPanels(props) {
 }
 
 function EditorMainContent(props) {
-	const { ctrl, activeTab, toolState, onTabChange, panelOpen, onTogglePanel } =
-		props;
+	const {
+		ctrl,
+		activeTab,
+		toolState,
+		onTabChange,
+		panelOpen,
+		onTogglePanel,
+		sheetNav,
+	} = props;
 	return (
 		<>
 			<EditorHeader
@@ -1452,6 +1652,7 @@ function EditorMainContent(props) {
 				onOpenLibrary={ctrl.actions.openLibrary}
 				panelOpen={panelOpen}
 				onTogglePanel={onTogglePanel}
+				sheetNav={sheetNav}
 			/>
 		</>
 	);
@@ -1506,6 +1707,7 @@ function useEditorScreen(props) {
 	const [activeTab, setActiveTab] = useState(
 		props.initialTab === "pcb" ? "pcb" : "schematic",
 	);
+	const sheetNav = useEditorScreenNav(props.ir?.name, activeTab);
 	const commit = useScreenCommit(
 		() => ctrl.actions.save(),
 		props.repo,
@@ -1531,6 +1733,7 @@ function useEditorScreen(props) {
 		toolState,
 		commit,
 		panel,
+		sheetNav,
 	};
 }
 
@@ -1544,6 +1747,7 @@ function EditorView({ s, ir, board, api, repo }) {
 				onTabChange={s.setActiveTab}
 				panelOpen={s.panel.panelOpen}
 				onTogglePanel={s.panel.togglePanel}
+				sheetNav={s.sheetNav}
 			/>
 			<EditorPanels
 				checks={s.ctrl.checks}
