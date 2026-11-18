@@ -44,6 +44,7 @@ import {
 } from "./editorStatus.js";
 import { emitEditorTool } from "./editorToolBus.js";
 import { summarizeWarnings } from "./exportWarnings.js";
+import { downloadFiles, requestFabOutputs } from "./fabExport.js";
 import LibraryBrowser from "./LibraryBrowser.jsx";
 import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
@@ -419,23 +420,54 @@ function AddPartButton({ onAddPart }) {
 	);
 }
 
+const FAB_EXPORT_ITEMS = [
+	{
+		key: "fab-gerbers",
+		label: "Gerbers + drill",
+		outputs: ["gerbers", "drill"],
+	},
+	{ key: "fab-pos", label: "Pick and place", outputs: ["pos"] },
+	{ key: "fab-pdf", label: "PDF plot", outputs: ["pdf"] },
+	{ key: "fab-step", label: "3D STEP", outputs: ["step"] },
+	{
+		key: "fab-all",
+		label: "Fabrication package",
+		outputs: ["gerbers", "drill", "pos", "pdf", "step"],
+	},
+];
+
 function buildExportItems(state) {
-	return [
+	const items = [
 		{ key: "kicad", label: "KiCad files", disabled: state.exporting },
 		{ key: "bom", label: "BOM", disabled: state.bomLoading },
 		{ key: "netlist", label: "Netlist", disabled: state.netlistLoading },
 	];
+	if (state.activeTab === "pcb") {
+		for (const item of FAB_EXPORT_ITEMS) {
+			items.push({
+				key: item.key,
+				label: item.label,
+				disabled: state.fabLoading,
+			});
+		}
+	}
+	return items;
 }
 
 function runExportAction(key, actions) {
 	if (key === "kicad") actions.exportKiCad?.();
 	if (key === "bom") actions.exportBom?.();
 	if (key === "netlist") actions.exportNetlist?.();
+	const fabItem = FAB_EXPORT_ITEMS.find((item) => item.key === key);
+	if (fabItem) actions.exportFab?.(fabItem.outputs);
 }
 
 function ExportDropdown({ state, actions }) {
 	const isExporting = Boolean(
-		state.exporting || state.bomLoading || state.netlistLoading,
+		state.exporting ||
+			state.bomLoading ||
+			state.netlistLoading ||
+			state.fabLoading,
 	);
 	const items = buildExportItems(state);
 	const onMenuClick = ({ key }) => runExportAction(key, actions);
@@ -732,7 +764,7 @@ function downloadFile(filename, text) {
 	);
 }
 
-function downloadFiles(files) {
+function downloadKiCadFiles(files) {
 	if (!files || typeof files !== "object") return;
 	for (const [name, content] of Object.entries(files)) {
 		downloadFile(name, content);
@@ -825,7 +857,7 @@ function useExportAction({ api, ir, board }) {
 		try {
 			const res = await api.editorExport({ ir, board, title: ir?.name });
 			if (res?.ok && res.data?.files) {
-				downloadFiles(res.data.files);
+				downloadKiCadFiles(res.data.files);
 				showExportWarnings(toast, res.data.warnings);
 			}
 		} finally {
@@ -835,9 +867,71 @@ function useExportAction({ api, ir, board }) {
 	return { exportKiCad, exporting };
 }
 
+async function exportPcbText(api, ir, board) {
+	if (typeof api?.editorExport !== "function") {
+		throw new Error("KiCad export is not available");
+	}
+	const res = await api.editorExport({ ir, board, title: ir?.name });
+	if (!res?.ok || !res?.data?.files) {
+		throw new Error(res?.error || "Failed to generate KiCad PCB");
+	}
+	const entry = Object.entries(res.data.files).find(([k]) =>
+		k.endsWith(".kicad_pcb"),
+	);
+	if (!entry) {
+		throw new Error("No .kicad_pcb file found in export");
+	}
+	return entry[1];
+}
+
+function resolveFabOutputs(outputs) {
+	if (Array.isArray(outputs)) return outputs;
+	const match = FAB_EXPORT_ITEMS.find(
+		(item) => item.key === outputs || item.key === `fab-${outputs}`,
+	);
+	return match ? match.outputs : [outputs];
+}
+
+async function runFabExport({ api, ir, board, outputs }) {
+	const pcbText = await exportPcbText(api, ir, board);
+	const targetOutputs = resolveFabOutputs(outputs);
+	const files = await requestFabOutputs({
+		pcbText,
+		name: ir?.name || "board",
+		outputs: targetOutputs,
+	});
+	downloadFiles(files);
+	return files.length;
+}
+
+function useFabExportAction({ api, ir, board }) {
+	const [fabLoading, setFabLoading] = useState(false);
+	const exportFab = useCallback(
+		async (outputs) => {
+			setFabLoading(true);
+			const hide = message.loading("Exporting fabrication outputs...", 0);
+			try {
+				const count = await runFabExport({ api, ir, board, outputs });
+				hide();
+				message.success(
+					`Exported ${count} fabrication file${count === 1 ? "" : "s"}`,
+				);
+			} catch (err) {
+				hide();
+				message.error(err?.message || "Fabrication export failed");
+			} finally {
+				setFabLoading(false);
+			}
+		},
+		[api, ir, board],
+	);
+	return { exportFab, fabLoading };
+}
+
 function useDesignExports({ api, ir, board }) {
 	const exp = useExportAction({ api, ir, board });
 	const dl = useDownloadActions({ api, ir });
+	const fab = useFabExportAction({ api, ir, board });
 	return {
 		exportKiCad: exp.exportKiCad,
 		exporting: exp.exporting,
@@ -845,6 +939,8 @@ function useDesignExports({ api, ir, board }) {
 		bomLoading: dl.bomLoading,
 		exportNetlist: dl.exportNetlist,
 		netlistLoading: dl.netlistLoading,
+		exportFab: fab.exportFab,
+		fabLoading: fab.fabLoading,
 	};
 }
 
@@ -1071,6 +1167,7 @@ function buildToolState(docState, activeTab, exports = {}) {
 		exporting: exports.exporting,
 		bomLoading: exports.bomLoading,
 		netlistLoading: exports.netlistLoading,
+		fabLoading: exports.fabLoading,
 		ir: docState.ir,
 		board: docState.board,
 	};
@@ -1153,6 +1250,7 @@ function useScreenController({
 		exportKiCad: exports.exportKiCad,
 		exportBom: exports.exportBom,
 		exportNetlist: exports.exportNetlist,
+		exportFab: exports.exportFab,
 		annotate,
 		onBoardToolsChange,
 		openCommit,
