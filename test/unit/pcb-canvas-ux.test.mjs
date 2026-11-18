@@ -167,7 +167,10 @@ describe("PcbCanvas text modal and placement routing", () => {
 		);
 		assert.match(pcbCanvasSrc, /drawText:\s*\(\)\s*=>\s*armGfx\("placeText"\)/);
 		assert.match(pcbCanvasSrc, /text:\s*\(\)\s*=>\s*armGfx\("placeText"\)/);
-		assert.match(pcbCanvasSrc, /addZone:\s*\(\)\s*=>\s*armGfx\("addZone"\)/);
+		assert.match(
+			pcbCanvasSrc,
+			/addZone:\s*\(item\)\s*=>\s*armGfx\("addZone",\s*item\)/,
+		);
 	});
 
 	it("commits zone on escape when at least 3 points collected", () => {

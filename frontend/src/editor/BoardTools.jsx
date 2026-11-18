@@ -26,7 +26,11 @@ import {
 import BoardSetupDialog from "./BoardSetupDialog.jsx";
 import { outlineToPolygon, polygonBBox } from "./boardOutline.js";
 import { createStore } from "./editorStatus.js";
-import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
+import {
+	emitActiveTool,
+	emitEditorTool,
+	onEditorTool,
+} from "./editorToolBus.js";
 import { removeOrphans, syncBoardFromIr } from "./syncModel.js";
 import { addZone, rectZonePoints, validateZone } from "./zoneModel.js";
 
@@ -399,8 +403,26 @@ function useBoardSync({ ir, board, onChange }) {
 	return { result, open, onUpdate, close, apply, applyRemove };
 }
 
-function usePourSubmit({ board, ir, net, layer, keepout, onChange, close }) {
+function usePourSubmit({
+	board,
+	ir,
+	net,
+	layer,
+	keepout,
+	isInteractive,
+	onChange,
+	close,
+}) {
 	return useCallback(() => {
+		if (isInteractive) {
+			emitEditorTool({
+				tab: "pcb",
+				tool: "addZone",
+				item: { netId: keepout ? "" : net, layer, keepout },
+			});
+			close();
+			return;
+		}
 		const res = buildPourZone({ board, ir, net, layer, keepout });
 		if (res.error) {
 			message.error(res.error);
@@ -409,50 +431,58 @@ function usePourSubmit({ board, ir, net, layer, keepout, onChange, close }) {
 		onChange?.({ board: res.board });
 		message.success("Copper pour added");
 		close();
-	}, [board, ir, net, layer, keepout, onChange, close]);
+	}, [board, ir, net, layer, keepout, isInteractive, onChange, close]);
 }
 
-function useCopperPour({ board, ir, onChange, activeLayer }) {
+function usePourState(ir, board, activeLayer) {
 	const [open, setOpen] = useState(false);
 	const [net, setNet] = useState("");
 	const [layer, setLayer] = useState("F.Cu");
 	const [keepout, setKeepout] = useState(false);
+	const [isInteractive, setIsInteractive] = useState(false);
 	const defaultNet = useMemo(() => getDefaultNetId(ir?.nets), [ir?.nets]);
 	const defaultLayer = useMemo(
 		() => resolveActiveCopperLayer(activeLayer, board),
 		[activeLayer, board],
 	);
 	const onOpen = useCallback(
-		(prefLayer) => {
+		(prefLayer, interactive = false) => {
 			setNet(defaultNet);
 			setLayer(isCopperLayer(prefLayer) ? prefLayer : defaultLayer);
 			setKeepout(false);
+			setIsInteractive(Boolean(interactive));
 			setOpen(true);
 		},
 		[defaultNet, defaultLayer],
 	);
-	const close = useCallback(() => setOpen(false), []);
-	const submit = usePourSubmit({
-		board,
-		ir,
-		net,
-		layer,
-		keepout,
-		onChange,
-		close,
-	});
 	return {
 		open,
+		setOpen,
 		net,
 		setNet,
 		layer,
 		setLayer,
 		keepout,
 		setKeepout,
+		isInteractive,
 		onOpen,
-		close,
-		submit,
 	};
+}
+
+function useCopperPour({ board, ir, onChange, activeLayer }) {
+	const st = usePourState(ir, board, activeLayer);
+	const close = useCallback(() => st.setOpen(false), [st.setOpen]);
+	const submit = usePourSubmit({
+		board,
+		ir,
+		net: st.net,
+		layer: st.layer,
+		keepout: st.keepout,
+		isInteractive: st.isInteractive,
+		onChange,
+		close,
+	});
+	return { ...st, close, submit };
 }
 
 function useBoardSetup(onChange) {
@@ -628,7 +658,7 @@ function OutlineToolGroup({ disabled, toolState }) {
 	);
 }
 
-function handleToolEvent(tool, onPour, layer) {
+function handleToolEvent(tool, onPour, layer, item) {
 	if (tool === "outlineRect") {
 		setOutlineTool({ activeTool: "rect" });
 		return;
@@ -638,7 +668,7 @@ function handleToolEvent(tool, onPour, layer) {
 		return;
 	}
 	if (tool === "addZone") {
-		onPour?.(layer);
+		if (!item) onPour?.(layer, true);
 		return;
 	}
 	if (tool === "select") {
@@ -679,7 +709,7 @@ export function useBoardToolBus({ disabled, onPour, pour, activeTool } = {}) {
 			if (disabled) return;
 			const tool = detail?.tool;
 			const layer = detail?.layer ?? detail?.item?.layer;
-			handleToolEvent(tool, handlePour, layer);
+			handleToolEvent(tool, handlePour, layer, detail?.item);
 		};
 		return onEditorTool(handler, "pcb");
 	}, [disabled, handlePour]);

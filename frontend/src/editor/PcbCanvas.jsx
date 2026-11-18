@@ -685,6 +685,11 @@ function ZonesLayer({ zones, layer, selectedIndices, highlightNet }) {
 	);
 }
 
+function formatTrackSvgPath(t) {
+	const d = trackPath(t);
+	return d ? `${d} v 0.0001 h 0.0001 v -0.0001 h -0.0001` : "";
+}
+
 function TracksLayer({
 	tracks,
 	layer,
@@ -712,7 +717,7 @@ function TracksLayer({
 				return (
 					<path
 						key={trackKey(track, index)}
-						d={trackPath(track)}
+						d={formatTrackSvgPath(track)}
 						fill="none"
 						stroke={color}
 						strokeWidth={strokeWidth}
@@ -2218,17 +2223,35 @@ function useRouteDoubleClick({
 	activeLayer,
 	widthMm,
 	pushBoard,
+	svgRef,
+	view,
+	ir,
+	padPositions,
+	routeMode,
+	posture,
 }) {
 	const { isRouting, points, currentNetId, resetSession } = session;
 	return useCallback(
 		(e) => {
 			e.preventDefault();
-			if (!isRouting || points.length < 2) return;
+			if (!isRouting || points.length === 0) return;
+			const raw = screenToBoardCoords(e, svgRef?.current, view);
+			const target = resolveRouteTarget(raw, true, {
+				board,
+				ir,
+				padPositions,
+			});
+			const netId =
+				currentNetId || detectNetAtPoint(ir, board, target, padPositions);
+			const start = points[points.length - 1];
+			const legs = legPoints(start, target, routeMode, posture);
+			const finalPoints = [...points, ...legs];
+			if (finalPoints.length < 2) return;
 			pushBoard(
 				addTrack(board, {
-					netId: currentNetId,
+					netId,
 					layer: activeLayer,
-					points,
+					points: finalPoints,
 					widthMm,
 				}),
 			);
@@ -2243,6 +2266,12 @@ function useRouteDoubleClick({
 			widthMm,
 			pushBoard,
 			resetSession,
+			svgRef,
+			view,
+			ir,
+			padPositions,
+			routeMode,
+			posture,
 		],
 	);
 }
@@ -2335,6 +2364,12 @@ function useRouteHandlers(session, routingProps) {
 		activeLayer,
 		widthMm,
 		pushBoard,
+		svgRef,
+		view,
+		ir,
+		padPositions,
+		routeMode,
+		posture,
 	});
 	const onPointerMove = useRoutePointer({ session, svgRef, view });
 	const placeViaAndSwitchLayer = useRouteVia({
@@ -3571,23 +3606,27 @@ const EMPTY_TEXT_MODAL = Object.freeze({
 
 function useGraphicsToolState() {
 	const [activeTool, setActiveTool] = useState(null);
+	const [toolProps, setToolProps] = useState(null);
 	const [points, setPoints] = useState([]);
 	const [cursor, setCursor] = useState(null);
 	const [textModal, setTextModal] = useState(EMPTY_TEXT_MODAL);
 	const reset = useCallback(() => {
 		setActiveTool(null);
+		setToolProps(null);
 		setPoints([]);
 		setCursor(null);
 		setTextModal(EMPTY_TEXT_MODAL);
 	}, []);
-	const armTool = useCallback((tool) => {
+	const armTool = useCallback((tool, props = null) => {
 		setActiveTool(tool);
+		setToolProps(props);
 		setPoints([]);
 		setCursor(null);
 		setTextModal(EMPTY_TEXT_MODAL);
 	}, []);
 	return {
 		activeTool,
+		toolProps,
 		points,
 		cursor,
 		setCursor,
@@ -3600,13 +3639,14 @@ function useGraphicsToolState() {
 }
 
 function tryCommitZone(st, ctx) {
-	const { activeTool, points, board, pushBoard, activeLayer } = ctx;
+	const { activeTool, points, board, pushBoard, activeLayer, toolProps } = ctx;
 	if (activeTool === "addZone" && points.length >= 3) {
 		const coords = points.map((p) => (Array.isArray(p) ? p : [p.x, p.y]));
 		pushBoard(
 			addZone(board, {
-				netId: "",
-				layer: activeLayer ?? "F.Cu",
+				netId: toolProps?.netId ?? "",
+				layer: toolProps?.layer ?? activeLayer ?? "F.Cu",
+				keepout: toolProps?.keepout ?? false,
 				points: coords,
 			}),
 		);
@@ -3636,6 +3676,7 @@ function handleGraphicsCancel(st, ctx) {
 function useGraphicsCancelCallback(st, ctx) {
 	const {
 		activeTool,
+		toolProps,
 		points,
 		textModal,
 		setTextModal,
@@ -3647,6 +3688,7 @@ function useGraphicsCancelCallback(st, ctx) {
 		() =>
 			handleGraphicsCancel(st, {
 				activeTool,
+				toolProps,
 				points,
 				textModal,
 				setTextModal,
@@ -3658,6 +3700,7 @@ function useGraphicsCancelCallback(st, ctx) {
 			st,
 			textModal,
 			activeTool,
+			toolProps,
 			points,
 			activeLayer,
 			board,
@@ -3696,6 +3739,7 @@ function useGraphicsTextCallback({
 function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
 	const cancelGraphics = useGraphicsCancelCallback(st, {
 		activeTool: st.activeTool,
+		toolProps: st.toolProps,
 		points: st.points,
 		textModal: st.textModal,
 		setTextModal: st.setTextModal,
@@ -3779,7 +3823,10 @@ function useGraphicsDrawing(opts) {
 		svgRef,
 		view,
 	});
-	const arm = useCallback((tool) => st.armTool(tool), [st.armTool]);
+	const arm = useCallback(
+		(tool, props) => st.armTool(tool, props),
+		[st.armTool],
+	);
 	return {
 		activeTool: st.activeTool,
 		points: st.points,
@@ -4056,13 +4103,13 @@ function createToolBusHandlers({
 		highlight,
 		extraTools,
 	};
-	const armGfx = (tool) => {
+	const armGfx = (tool, props) => {
 		if (route.isRouting) route.cancelRoute();
 		extraTools?.diffPair?.cancel();
 		extraTools?.tuneLength?.cancel();
 		extraTools?.measure?.cancel();
 		armedPlacement.disarm();
-		graphicsDrawing.arm(tool);
+		graphicsDrawing.arm(tool, props);
 		highlight?.setHighlightMode(false);
 	};
 	const onVia = () => handleViaTool(route, armGfx);
@@ -4077,7 +4124,7 @@ function createToolBusHandlers({
 		placeText: () => armGfx("placeText"),
 		drawText: () => armGfx("placeText"),
 		text: () => armGfx("placeText"),
-		addZone: () => armGfx("addZone"),
+		addZone: (item) => armGfx("addZone", item),
 		routeTrack: () => handleRouteTrack(tools),
 		routeDiffPair: () => handleRouteDiffPair(tools),
 		tuneLength: () => handleTuneLength(tools),
