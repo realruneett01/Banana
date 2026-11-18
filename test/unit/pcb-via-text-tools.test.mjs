@@ -3,80 +3,91 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { addVia } from "../../frontend/src/editor/routingModel.js";
 
-// Extract pure functions exported from PcbCanvas.jsx
-const pcbCanvasSrc = readFileSync(
-	new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
-	"utf8",
-);
-const startMarker = "export function chooseViaNet";
-const endMarker = "function handleViaClick";
-const sliceStart = pcbCanvasSrc.indexOf(startMarker);
-const sliceEnd = pcbCanvasSrc.indexOf(endMarker);
-assert.ok(sliceStart !== -1 && sliceEnd !== -1, "Found exported pure helpers");
-const pureHelpersCode = pcbCanvasSrc.slice(sliceStart, sliceEnd);
+async function loadCanvasPureHelpers() {
+	const canvasPath = new URL(
+		"../../frontend/src/editor/PcbCanvas.jsx",
+		import.meta.url,
+	);
+	const text = readFileSync(canvasPath, "utf8");
+	const [section] =
+		text.match(
+			/export function chooseViaNet[\s\S]*?(?=function handleViaClick)/,
+		) ?? [];
+	assert.ok(section, "Found exported pure helpers");
+	const resolveUrl = (rel) =>
+		JSON.stringify(new URL(rel, import.meta.url).href);
+	const code = [
+		`import { padHitTest } from ${resolveUrl("../../frontend/src/editor/footprintRender.js")};`,
+		`import { addGraphic } from ${resolveUrl("../../frontend/src/editor/boardGraphics.js")};`,
+		section,
+	].join("\n");
+	const base64 = Buffer.from(code).toString("base64");
+	const mod = await import(`data:text/javascript;base64,${base64}`);
+	return { text, mod };
+}
 
-const footprintRenderUrl = new URL(
-	"../../frontend/src/editor/footprintRender.js",
-	import.meta.url,
-).href;
-const boardGraphicsUrl = new URL(
-	"../../frontend/src/editor/boardGraphics.js",
-	import.meta.url,
-).href;
-
-const dynamicModule = [
-	`import { padHitTest } from ${JSON.stringify(footprintRenderUrl)};`,
-	`import { addGraphic } from ${JSON.stringify(boardGraphicsUrl)};`,
-	pureHelpersCode,
-].join("\n");
-
+const { text: pcbCanvasSrc, mod: canvasHelpers } =
+	await loadCanvasPureHelpers();
 const {
 	chooseViaNet,
 	buildDefaultTextGraphic,
 	commitTextGraphic,
 	findTextGraphicAt,
-} = await import(
-	`data:text/javascript;base64,${Buffer.from(dynamicModule).toString("base64")}`
-);
+} = canvasHelpers;
+
+function createPad(center, size, shape = "rect", netId = undefined) {
+	const pad = { type: "pad", center, size, shape };
+	if (netId) {
+		pad.netId = netId;
+	}
+	return pad;
+}
+
+function assertViaNetCases(cases) {
+	for (const [padList, point, expectedNet] of cases) {
+		assert.equal(chooseViaNet(padList, point), expectedNet);
+	}
+}
+
+function assertFoundTextId(graphicList, point, expectedId) {
+	const hit = findTextGraphicAt(graphicList, point);
+	assert.ok(hit);
+	assert.equal(hit.id, expectedId);
+}
+
+function assertCanvasMatches(patterns) {
+	for (const pattern of patterns) {
+		assert.match(pcbCanvasSrc, pattern);
+	}
+}
 
 describe("chooseViaNet", () => {
 	const pads = [
-		{
-			type: "pad",
-			center: [10, 20],
-			size: [2, 2],
-			shape: "rect",
-			netId: "Net-(R1-Pad1)",
-		},
-		{
-			type: "pad",
-			center: [30, 40],
-			size: [1.5, 1.5],
-			shape: "circle",
-			netId: "Net-(C1-Pad2)",
-		},
-		{
-			type: "pad",
-			center: [50, 60],
-			size: [2, 2],
-			shape: "rect",
-		},
+		createPad([10, 20], [2, 2], "rect", "Net-(R1-Pad1)"),
+		createPad([30, 40], [1.5, 1.5], "circle", "Net-(C1-Pad2)"),
+		createPad([50, 60], [2, 2], "rect"),
 	];
 
 	it("returns pad netId when point is on pad center", () => {
-		assert.equal(chooseViaNet(pads, [10, 20]), "Net-(R1-Pad1)");
-		assert.equal(chooseViaNet(pads, { x: 30, y: 40 }), "Net-(C1-Pad2)");
+		assertViaNetCases([
+			[pads, [10, 20], "Net-(R1-Pad1)"],
+			[pads, { x: 30, y: 40 }, "Net-(C1-Pad2)"],
+		]);
 	});
 
 	it("returns pad netId when point is within pad bounds", () => {
-		assert.equal(chooseViaNet(pads, [10.5, 20.5]), "Net-(R1-Pad1)");
-		assert.equal(chooseViaNet(pads, { x: 30.2, y: 40.2 }), "Net-(C1-Pad2)");
+		assertViaNetCases([
+			[pads, [10.5, 20.5], "Net-(R1-Pad1)"],
+			[pads, { x: 30.2, y: 40.2 }, "Net-(C1-Pad2)"],
+		]);
 	});
 
 	it("returns empty string when point is outside all pads", () => {
-		assert.equal(chooseViaNet(pads, [0, 0]), "");
-		assert.equal(chooseViaNet(pads, [15, 20]), "");
-		assert.equal(chooseViaNet(pads, { x: 100, y: 100 }), "");
+		assertViaNetCases([
+			[pads, [0, 0], ""],
+			[pads, [15, 20], ""],
+			[pads, { x: 100, y: 100 }, ""],
+		]);
 	});
 
 	it("returns empty string when hit pad has no netId", () => {
@@ -84,10 +95,12 @@ describe("chooseViaNet", () => {
 	});
 
 	it("handles empty or invalid inputs gracefully", () => {
-		assert.equal(chooseViaNet(null, [10, 20]), "");
-		assert.equal(chooseViaNet([], [10, 20]), "");
-		assert.equal(chooseViaNet(pads, null), "");
-		assert.equal(chooseViaNet(pads, [Number.NaN, 20]), "");
+		assertViaNetCases([
+			[null, [10, 20], ""],
+			[[], [10, 20], ""],
+			[pads, null, ""],
+			[pads, [Number.NaN, 20], ""],
+		]);
 	});
 });
 
@@ -178,35 +191,27 @@ describe("findTextGraphicAt", () => {
 	];
 
 	it("finds text graphic when clicked near anchor", () => {
-		const hit = findTextGraphicAt(graphics, [10, 20]);
-		assert.ok(hit);
-		assert.equal(hit.id, "gfx-1");
+		assertFoundTextId(graphics, [10, 20], "gfx-1");
 	});
 
 	it("finds text graphic when clicked in body of text", () => {
-		const hit = findTextGraphicAt(graphics, [12, 19.5]);
-		assert.ok(hit);
-		assert.equal(hit.id, "gfx-1");
+		assertFoundTextId(graphics, [12, 19.5], "gfx-1");
 	});
 
 	it("returns null when clicked far away or on non-text", () => {
-		assert.equal(findTextGraphicAt(graphics, [100, 100]), null);
-		assert.equal(findTextGraphicAt(graphics, [13, 23]), null);
-		assert.equal(findTextGraphicAt([], [10, 20]), null);
-		assert.equal(findTextGraphicAt(null, [10, 20]), null);
+		for (const [graphicList, point] of [
+			[graphics, [100, 100]],
+			[graphics, [13, 23]],
+			[[], [10, 20]],
+			[null, [10, 20]],
+		]) {
+			assert.equal(findTextGraphicAt(graphicList, point), null);
+		}
 	});
 });
 
 describe("Via placement flow", () => {
-	const pads = [
-		{
-			type: "pad",
-			center: [15, 25],
-			size: [2, 2],
-			shape: "rect",
-			netId: "Net-(D1-Pad1)",
-		},
-	];
+	const pads = [createPad([15, 25], [2, 2], "rect", "Net-(D1-Pad1)")];
 	const board = { vias: [] };
 
 	it("places via at snapped point with net of copper pad under cursor", () => {
@@ -245,23 +250,20 @@ describe("Via placement flow", () => {
 
 describe("PcbCanvas wiring checks", () => {
 	it("wires armVia into shortcuts on V hotkey when not routing", () => {
-		assert.match(pcbCanvasSrc, /if\s*\(key\s*===\s*"v"\)\s*\{[^}]*armVia/);
+		assertCanvasMatches([/if\s*\(key\s*===\s*"v"\)\s*\{[^}]*armVia/]);
 	});
 
 	it("arms placeVia in toolBus addVia handler when not routing", () => {
-		assert.match(pcbCanvasSrc, /handleViaTool/);
-		assert.match(pcbCanvasSrc, /else\s+armGfx\("placeVia"\)/);
+		assertCanvasMatches([/handleViaTool/, /else\s+armGfx\("placeVia"\)/]);
 	});
 
 	it("places text immediately with default TEXT without opening modal", () => {
-		assert.match(
-			pcbCanvasSrc,
+		assertCanvasMatches([
 			/if\s*\(activeTool\s*===\s*"placeText"\)\s*\{[^}]*st\.onTextSubmit\?\.\("TEXT",\s*pt\)/,
-		);
+		]);
 	});
 
 	it("wires double-click on existing PCB text to open pre-filled modal", () => {
-		assert.match(pcbCanvasSrc, /useSceneDoubleClick/);
-		assert.match(pcbCanvasSrc, /findTextGraphicAt/);
+		assertCanvasMatches([/useSceneDoubleClick/, /findTextGraphicAt/]);
 	});
 });
