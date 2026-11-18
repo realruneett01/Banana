@@ -25,7 +25,7 @@ function isTextHit(ann, px, py, tol) {
 }
 
 function isAnnotationHit(ann, px, py, tol) {
-	if (ann.kind === "line" || ann.kind === "bus") {
+	if (ann.kind === "line" || ann.kind === "bus" || ann.kind === "wire") {
 		return isLineHit(ann, px, py, tol);
 	}
 	if (ann.kind === "junction" || ann.kind === "noConnect") {
@@ -157,6 +157,13 @@ function renderLineAnnotation(ann, isSelected) {
 	return renderStrokeAnnotation(ann, color, 0.254, "1.27,1.27");
 }
 
+function renderWireAnnotation(ann, isSelected, theme) {
+	const color = isSelected
+		? getSchematicColor(theme, "selection")
+		: getSchematicColor(theme, "wire");
+	return renderStrokeAnnotation(ann, color, isSelected ? 0.5 : 0.254);
+}
+
 function renderBusAnnotation(ann, isSelected, theme) {
 	const busColor = getSchematicColor(theme, "bus") || "#000084";
 	const color = isSelected ? getSchematicColor(theme, "selection") : busColor;
@@ -164,6 +171,7 @@ function renderBusAnnotation(ann, isSelected, theme) {
 }
 
 const RENDER_BY_KIND = {
+	wire: renderWireAnnotation,
 	label: (ann, sel, th) => renderTextAnnotation(ann, sel, th, LABEL_DEFS.label),
 	globalLabel: (ann, sel, th) =>
 		renderTextAnnotation(ann, sel, th, LABEL_DEFS.globalLabel),
