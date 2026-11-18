@@ -61,6 +61,7 @@ import {
 } from "./trackPosture.js";
 import { useCanvasNav } from "./useCanvasNav.js";
 import { bboxOfPoints, fitToBounds, screenToWorld } from "./viewport.js";
+import { addZone } from "./zoneModel.js";
 
 const CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -311,6 +312,10 @@ function handleRoutingAction(key, ctx) {
 		else ctx.armVia?.();
 		return true;
 	}
+	if (key === "t") {
+		ctx.armText?.();
+		return true;
+	}
 	const actions = {
 		w: ctx.cycleWidthPreset,
 		"/": ctx.toggleRouteMode,
@@ -438,15 +443,49 @@ function getOutlineBBox(outline) {
 	return bboxOfPoints(outline);
 }
 
-function getSceneBounds(board, ir) {
+export const DEFAULT_WORK_AREA = Object.freeze({
+	minX: -50,
+	maxX: 50,
+	minY: -40,
+	maxY: 40,
+});
+
+export function defaultWorkAreaBounds() {
+	return DEFAULT_WORK_AREA;
+}
+
+export function sceneBoundsFallback(_board, ir) {
+	const fpPts = collectFootprintPoints(ir?.parts);
+	if (fpPts.length > 0) {
+		const fpBox = bboxOfPoints(fpPts);
+		if (fpBox) return fpBox;
+	}
+	return defaultWorkAreaBounds();
+}
+
+export function getSceneBounds(board, ir) {
 	if (isValidOutline(board?.outline)) {
 		const box = getOutlineBBox(board.outline);
 		if (box) return box;
 	}
-	return bboxOfPoints(collectFootprintPoints(ir?.parts));
+	return sceneBoundsFallback(board, ir);
 }
 
 function formatPt(pt) {
+	if (Array.isArray(pt)) return `${pt[0]},${pt[1]}`;
+	if (pt && typeof pt.x === "number" && typeof pt.y === "number") {
+		return `${pt.x},${pt.y}`;
+	}
+	return null;
+}
+
+export function getZonePoints(zone) {
+	if (Array.isArray(zone?.polygon)) return zone.polygon;
+	if (Array.isArray(zone?.points)) return zone.points;
+	return [];
+}
+
+export function formatZonePt(pt) {
 	if (Array.isArray(pt)) return `${pt[0]},${pt[1]}`;
 	if (pt && typeof pt.x === "number" && typeof pt.y === "number") {
 		return `${pt.x},${pt.y}`;
@@ -477,29 +516,30 @@ function EdgeCutsLayer({ outline }) {
 	);
 }
 
+function renderZonePolygon(zone, layer, idx) {
+	const pts = getZonePoints(zone).map(formatZonePt).filter(Boolean).join(" ");
+	if (!pts) return null;
+	const color = getLayerColor(PCB_THEME, zone.layer ?? layer);
+	const key = zone.id ?? `zone_${zone.layer ?? layer}_${idx}`;
+	return (
+		<polygon
+			key={key}
+			points={pts}
+			fill={color}
+			fillOpacity={0.25}
+			stroke={color}
+			strokeWidth={0.2}
+		/>
+	);
+}
+
 function ZonesLayer({ zones, layer }) {
 	if (!Array.isArray(zones)) return null;
-	const filtered = zones.filter((z) => z.layer === layer);
+	const filtered = zones.filter((z) => (z.layer ?? "F.Cu") === layer);
 	if (filtered.length === 0) return null;
 	return (
 		<g className="pcb-zones">
-			{filtered.map((zone) => {
-				const pts = (zone.polygon ?? [])
-					.map((p) => `${p[0]},${p[1]}`)
-					.join(" ");
-				const color = getLayerColor(PCB_THEME, zone.layer);
-				const key = `zone_${zone.layer}_${zone.polygon?.[0]?.[0]}_${zone.polygon?.[0]?.[1]}`;
-				return (
-					<polygon
-						key={key}
-						points={pts}
-						fill={color}
-						fillOpacity={0.25}
-						stroke={color}
-						strokeWidth={0.2}
-					/>
-				);
-			})}
+			{filtered.map((z, i) => renderZonePolygon(z, layer, i))}
 		</g>
 	);
 }
@@ -2139,6 +2179,11 @@ function buildShortcuts(ctx) {
 			ctx.armedPlacement?.disarm();
 			ctx.graphicsDrawing?.arm("placeVia");
 		},
+		armText: () => {
+			if (ctx.route.isRouting) ctx.route.cancelRoute();
+			ctx.armedPlacement?.disarm();
+			ctx.graphicsDrawing?.arm("placeText");
+		},
 		isRouting: ctx.route.isRouting,
 		deleteSelected: ctx.sel.deleteSelected,
 		undoBoard: ctx.history.undoBoard,
@@ -2697,34 +2742,42 @@ function handleViaClick(pt, { pads, board, pushBoard }) {
 	return true;
 }
 
-function handleGraphicsClick(e, opts) {
-	const {
-		activeTool,
-		points,
-		activeLayer,
-		board,
-		pushBoard,
-		st,
-		svgEl,
-		view,
-		pads,
-	} = opts;
-	if (!activeTool || !isLeftClick(e)) return false;
-	const pt = calcSnappedBoardPoint(e, svgEl, view);
+function handleDirectToolClick(activeTool, pt, opts) {
+	const { st } = opts;
 	if (activeTool === "placeVia") {
-		return handleViaClick(pt, { pads, board, pushBoard });
+		return handleViaClick(pt, {
+			pads: opts.pads,
+			board: opts.board,
+			pushBoard: opts.pushBoard,
+		});
 	}
 	if (activeTool === "placeText") {
 		st.onTextSubmit?.("TEXT", pt);
 		return true;
 	}
+	if (activeTool === "text" || activeTool === "drawText") {
+		st.onTextSubmit?.("TEXT", pt);
+		return true;
+	}
+	if (activeTool === "addZone") {
+		st.setPoints((prev) => [...prev, pt]);
+		return true;
+	}
+	return false;
+}
+
+function handleGraphicsClick(e, opts) {
+	const { activeTool, points, st, svgEl, view } = opts;
+	if (!activeTool || !isLeftClick(e)) return false;
+	const pt = calcSnappedBoardPoint(e, svgEl, view);
+	if (handleDirectToolClick(activeTool, pt, opts)) return true;
 	if (activeTool === "drawArc") {
 		return handleArcClick({
 			pt,
 			points,
-			activeLayer,
-			board,
-			pushBoard,
+			activeLayer: opts.activeLayer,
+			board: opts.board,
+			pushBoard: opts.pushBoard,
 			setPoints: st.setPoints,
 		});
 	}
@@ -2736,9 +2789,9 @@ function handleGraphicsClick(e, opts) {
 		tool: activeTool,
 		p1: points[0],
 		p2: pt,
-		activeLayer,
-		board,
-		pushBoard,
+		activeLayer: opts.activeLayer,
+		board: opts.board,
+		pushBoard: opts.pushBoard,
 	});
 	st.setPoints([]);
 	return true;
@@ -2781,32 +2834,82 @@ function useGraphicsToolState() {
 	};
 }
 
-function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
-	const { activeTool, points, textModal, setTextModal } = st;
-	const cancelGraphics = useCallback(() => {
-		if (textModal.open) {
-			setTextModal(EMPTY_TEXT_MODAL);
-			return true;
-		}
-		if (points.length > 0) {
-			st.setPoints([]);
-			return true;
-		}
-		if (activeTool) {
-			st.reset();
-			return true;
-		}
-		return false;
-	}, [
-		textModal.open,
-		points.length,
-		activeTool,
-		setTextModal,
-		st.setPoints,
-		st.reset,
-	]);
+function tryCommitZone(st, ctx) {
+	const { activeTool, points, board, pushBoard, activeLayer } = ctx;
+	if (activeTool === "addZone" && points.length >= 3) {
+		const coords = points.map((p) => (Array.isArray(p) ? p : [p.x, p.y]));
+		pushBoard(
+			addZone(board, {
+				netId: "",
+				layer: activeLayer,
+				points: coords,
+			}),
+		);
+		st.reset();
+		return true;
+	}
+	return false;
+}
 
-	const onTextSubmit = useCallback(
+function handleGraphicsCancel(st, ctx) {
+	if (ctx.textModal.open) {
+		ctx.setTextModal(EMPTY_TEXT_MODAL);
+		return true;
+	}
+	if (tryCommitZone(st, ctx)) return true;
+	if (ctx.points.length > 0) {
+		st.setPoints([]);
+		return true;
+	}
+	if (ctx.activeTool) {
+		st.reset();
+		return true;
+	}
+	return false;
+}
+
+function useGraphicsCancelCallback(st, ctx) {
+	const {
+		activeTool,
+		points,
+		textModal,
+		setTextModal,
+		board,
+		pushBoard,
+		activeLayer,
+	} = ctx;
+	return useCallback(
+		() =>
+			handleGraphicsCancel(st, {
+				activeTool,
+				points,
+				textModal,
+				setTextModal,
+				board,
+				pushBoard,
+				activeLayer,
+			}),
+		[
+			st,
+			textModal,
+			activeTool,
+			points,
+			activeLayer,
+			board,
+			pushBoard,
+			setTextModal,
+		],
+	);
+}
+
+function useGraphicsTextCallback(
+	textModal,
+	board,
+	activeLayer,
+	pushBoard,
+	setTextModal,
+) {
+	return useCallback(
 		(text = "TEXT", targetPos = null) => {
 			const pos = targetPos ?? textModal.pos;
 			if (textModal.graphicId || (pos && text)) {
@@ -2823,7 +2926,25 @@ function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
 		},
 		[textModal, board, activeLayer, pushBoard, setTextModal],
 	);
+}
 
+function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
+	const cancelGraphics = useGraphicsCancelCallback(st, {
+		activeTool: st.activeTool,
+		points: st.points,
+		textModal: st.textModal,
+		setTextModal: st.setTextModal,
+		board,
+		pushBoard,
+		activeLayer,
+	});
+	const onTextSubmit = useGraphicsTextCallback(
+		st.textModal,
+		board,
+		activeLayer,
+		pushBoard,
+		st.setTextModal,
+	);
 	return { cancelGraphics, onTextSubmit };
 }
 
@@ -2918,7 +3039,7 @@ function TextGraphicModal({ open, initialText = "", onSubmit, onCancel }) {
 	};
 	return (
 		<Modal
-			title={initialText ? "Edit Text" : "Add Text"}
+			title="Edit Text"
 			open={open}
 			onOk={handleOk}
 			onCancel={onCancel}
@@ -3053,11 +3174,30 @@ function PreviewArc({ points, cursor, color }) {
 	return null;
 }
 
+function PreviewZone({ points, cursor, color }) {
+	const allPts = cursor ? [...points, cursor] : points;
+	const ptsStr = allPts.map(formatPt).filter(Boolean).join(" ");
+	if (!ptsStr) return null;
+	return (
+		<polygon
+			points={ptsStr}
+			fill={color}
+			fillOpacity={0.15}
+			stroke={color}
+			strokeWidth={0.2}
+			strokeDasharray="2,2"
+		/>
+	);
+}
+
 function GraphicsPreview({ activeTool, points, cursor, activeLayer }) {
 	if (!activeTool || !cursor || points.length === 0) return null;
 	const color = getLayerColor(PCB_THEME, activeLayer);
 	if (activeTool === "drawArc") {
 		return <PreviewArc points={points} cursor={cursor} color={color} />;
+	}
+	if (activeTool === "addZone") {
+		return <PreviewZone points={points} cursor={cursor} color={color} />;
 	}
 	return (
 		<PreviewTwoClick
@@ -3118,6 +3258,9 @@ function createToolBusHandlers({
 		placeDimension: () => armGfx("placeDimension"),
 		drawArc: () => armGfx("drawArc"),
 		placeText: () => armGfx("placeText"),
+		drawText: () => armGfx("placeText"),
+		text: () => armGfx("placeText"),
+		addZone: () => armGfx("addZone"),
 		routeTrack: () => handleRouteTrack(route, armedPlacement, graphicsDrawing),
 		addVia: onVia,
 		placeVia: onVia,
@@ -3622,7 +3765,10 @@ export default function PcbCanvas({
 				posture={s.route.posture}
 			/>
 			<TextGraphicModal
-				open={s.graphicsDrawing.textModal.open}
+				open={Boolean(
+					s.graphicsDrawing.textModal.open &&
+						s.graphicsDrawing.textModal.graphicId,
+				)}
 				initialText={s.graphicsDrawing.textModal.initialText}
 				onSubmit={s.graphicsDrawing.onTextSubmit}
 				onCancel={s.graphicsDrawing.onTextCancel}
