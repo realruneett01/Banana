@@ -1,25 +1,32 @@
-let resolvedApiBaseUrl = "http://localhost:5000";
-try {
-	// Load Vite config when available; catch in Node tests where import.meta.env is undefined
-	const config = await import("../config.js");
-	resolvedApiBaseUrl = config.API_BASE_URL;
-} catch (_err) {
-	const raw =
-		typeof process !== "undefined" ? process.env?.VITE_API_URL : undefined;
-	resolvedApiBaseUrl =
-		raw && raw.trim() !== ""
-			? raw.trim().replace(/\/+$/, "")
+async function resolveBaseUrl() {
+	try {
+		const mod = await import("../config.js");
+		return mod.API_BASE_URL;
+	} catch (_err) {
+		// Fallback for Node test environment where import.meta.env is undefined
+		const envVal =
+			typeof process !== "undefined" ? process.env?.VITE_API_URL : null;
+		return envVal?.trim()
+			? envVal.trim().replace(/\/+$/, "")
 			: "http://localhost:5000";
+	}
 }
 
-export const API_BASE_URL = resolvedApiBaseUrl;
+export const API_BASE_URL = await resolveBaseUrl();
+
+const MIME_BY_EXT = {
+	pdf: "application/pdf",
+	csv: "text/csv",
+	step: "model/step",
+	stp: "model/step",
+};
 
 function getMimeType(name = "") {
-	const lower = String(name).toLowerCase();
-	if (lower.endsWith(".pdf")) return "application/pdf";
-	if (lower.endsWith(".csv")) return "text/csv";
-	if (lower.endsWith(".step") || lower.endsWith(".stp")) return "model/step";
-	return "application/octet-stream";
+	const match = String(name)
+		.toLowerCase()
+		.match(/\.([a-z0-9]+)$/);
+	const ext = match ? match[1] : "";
+	return MIME_BY_EXT[ext] ?? "application/octet-stream";
 }
 
 export function decodeBase64ToBlob(base64, name = "") {
@@ -29,16 +36,24 @@ export function decodeBase64ToBlob(base64, name = "") {
 	return new Blob([bytes], { type });
 }
 
+function triggerAnchorDownload(doc, targetUrl, fileName) {
+	const anchor = Object.assign(doc.createElement("a"), {
+		href: targetUrl,
+		download: fileName,
+	});
+	doc.body?.appendChild?.(anchor);
+	anchor.click();
+	doc.body?.removeChild?.(anchor);
+}
+
 function downloadSingleFile(file, doc) {
-	const blob = file.blob ?? decodeBase64ToBlob(file.base64, file.name);
-	const url = URL.createObjectURL(blob);
-	const link = doc.createElement("a");
-	link.href = url;
-	link.download = file.name;
-	doc.body?.appendChild?.(link);
-	link.click();
-	doc.body?.removeChild?.(link);
-	URL.revokeObjectURL(url);
+	const payload = file.blob ?? decodeBase64ToBlob(file.base64, file.name);
+	const resourceUrl = URL.createObjectURL(payload);
+	try {
+		triggerAnchorDownload(doc, resourceUrl, file.name);
+	} finally {
+		URL.revokeObjectURL(resourceUrl);
+	}
 }
 
 export function downloadFiles(
@@ -51,6 +66,17 @@ export function downloadFiles(
 	}
 }
 
+async function parseFabResponse(response) {
+	if (response.ok) {
+		const result = await response.json();
+		return result?.files ?? [];
+	}
+	const payload = await response.json().catch(() => null);
+	throw new Error(
+		payload?.error || `Export failed with status ${response.status}`,
+	);
+}
+
 export async function requestFabOutputs({
 	pcbText,
 	pcb,
@@ -59,16 +85,17 @@ export async function requestFabOutputs({
 	fetchImpl = fetch,
 	baseUrl = API_BASE_URL,
 }) {
-	const host = (baseUrl ?? "").replace(/\/+$/, "");
-	const res = await fetchImpl(`${host}/api/fab/export`, {
+	const sanitizedHost = String(baseUrl ?? "").replace(/\/+$/, "");
+	const exportUrl = `${sanitizedHost}/api/fab/export`;
+	const requestOptions = {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({ pcb: pcbText ?? pcb, name, outputs }),
-	});
-	if (!res.ok) {
-		const body = await res.json().catch(() => null);
-		throw new Error(body?.error || `Export failed with status ${res.status}`);
-	}
-	const data = await res.json();
-	return data?.files ?? [];
+		body: JSON.stringify({
+			pcb: pcbText ?? pcb,
+			name,
+			outputs,
+		}),
+	};
+	const res = await fetchImpl(exportUrl, requestOptions);
+	return parseFabResponse(res);
 }
