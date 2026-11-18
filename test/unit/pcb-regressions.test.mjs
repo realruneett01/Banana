@@ -7,65 +7,66 @@ const bglSrc = readFileSync(
 	"utf8",
 );
 
-const bglSlice = bglSrc.slice(
-	bglSrc.indexOf("const DEFAULT_WIDTH"),
-	bglSrc.indexOf("function renderLine"),
-);
-const dimSlice = bglSrc.slice(
-	bglSrc.indexOf("export function dimensionGeometry"),
-	bglSrc.indexOf("function renderDimension"),
+function extractExported(source, ranges) {
+	const chunks = ranges.map(([from, to]) =>
+		source.slice(source.indexOf(from), source.indexOf(to)),
+	);
+	const data = Buffer.from(chunks.join("\n")).toString("base64");
+	return import(`data:text/javascript;base64,${data}`);
+}
+
+const { dimensionGeometry, resolveWidth } = await extractExported(bglSrc, [
+	["const DEFAULT_WIDTH", "function renderLine"],
+	["export function dimensionGeometry", "function renderDimension"],
+]);
+
+const { getZonePoints, formatZonePt } = await extractExported(
+	readFileSync(
+		new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
+		"utf8",
+	),
+	[["export function getZonePoints", "function outlinePoints"]],
 );
 
-const bglCode = [bglSlice, dimSlice].join("\n");
-const bglModule = await import(
-	`data:text/javascript;base64,${Buffer.from(bglCode).toString("base64")}`
-);
-const { dimensionGeometry, resolveWidth } = bglModule;
+function checkDimension(segment, expected) {
+	const geom = dimensionGeometry(segment);
+	assert.deepEqual({ len: geom.len, nx: geom.nx, ny: geom.ny }, expected);
+}
 
-const pcbCanvasSrc = readFileSync(
-	new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
-	"utf8",
-);
-const zoneSlice = pcbCanvasSrc.slice(
-	pcbCanvasSrc.indexOf("export function getZonePoints"),
-	pcbCanvasSrc.indexOf("function outlinePoints"),
-);
-const pcbModule = await import(
-	`data:text/javascript;base64,${Buffer.from(zoneSlice).toString("base64")}`
-);
-const { getZonePoints, formatZonePt } = pcbModule;
+function verifyCollision(buttons, pattern, exact, expectedSub) {
+	assert.equal(
+		buttons.find((l) => pattern.test(l)),
+		expectedSub,
+	);
+	assert.equal(
+		buttons.find((l) =>
+			exact === "Line" ? l.toLowerCase() === "line" : l === exact,
+		),
+		exact,
+	);
+}
 
 describe("dimensionGeometry pure function", () => {
 	it("calculates Euclidean length and normal vector for 3-4-5 triangle", () => {
-		const g = { x: 0, y: 0, x2: 30, y2: 40 };
-		const geom = dimensionGeometry(g);
-		assert.equal(geom.len, 50);
-		assert.equal(geom.nx, -40 / 50);
-		assert.equal(geom.ny, 30 / 50);
+		checkDimension(
+			{ x: 0, y: 0, x2: 30, y2: 40 },
+			{ len: 50, nx: -40 / 50, ny: 30 / 50 },
+		);
 	});
 
 	it("handles horizontal segment with upward normal", () => {
-		const g = { x: 10, y: 20, x2: 50, y2: 20 };
-		const geom = dimensionGeometry(g);
-		assert.equal(geom.len, 40);
-		assert.equal(geom.nx, 0);
-		assert.equal(geom.ny, 1);
+		checkDimension({ x: 10, y: 20, x2: 50, y2: 20 }, { len: 40, nx: 0, ny: 1 });
 	});
 
 	it("handles vertical segment with leftward normal", () => {
-		const g = { x: 10, y: 20, x2: 10, y2: 60 };
-		const geom = dimensionGeometry(g);
-		assert.equal(geom.len, 40);
-		assert.equal(geom.nx, -1);
-		assert.equal(geom.ny, 0);
+		checkDimension(
+			{ x: 10, y: 20, x2: 10, y2: 60 },
+			{ len: 40, nx: -1, ny: 0 },
+		);
 	});
 
 	it("handles zero-length point fallback without crashing", () => {
-		const g = { x: 15, y: 25, x2: 15, y2: 25 };
-		const geom = dimensionGeometry(g);
-		assert.equal(geom.len, 0);
-		assert.equal(geom.nx, 0);
-		assert.equal(geom.ny, 1);
+		checkDimension({ x: 15, y: 25, x2: 15, y2: 25 }, { len: 0, nx: 0, ny: 1 });
 	});
 });
 
@@ -80,9 +81,10 @@ describe("resolveWidth pure function", () => {
 	});
 
 	it("defaults non-Edge.Cuts layers to 0.15 mm", () => {
-		assert.equal(resolveWidth({ layer: "F.SilkS" }), 0.15);
-		assert.equal(resolveWidth({ layer: "F.Cu" }), 0.15);
-		assert.equal(resolveWidth({}), 0.15);
+		const widths = [{ layer: "F.SilkS" }, { layer: "F.Cu" }, {}].map(
+			resolveWidth,
+		);
+		assert.deepEqual(widths, [0.15, 0.15, 0.15]);
 	});
 });
 
@@ -111,9 +113,9 @@ describe("getZonePoints pure function", () => {
 	});
 
 	it("returns empty array when no polygon or points array is present", () => {
-		assert.deepEqual(getZonePoints(null), []);
-		assert.deepEqual(getZonePoints({}), []);
-		assert.deepEqual(getZonePoints({ polygon: "invalid" }), []);
+		for (const input of [null, {}, { polygon: "invalid" }]) {
+			assert.deepEqual(getZonePoints(input), []);
+		}
 	});
 });
 
@@ -127,10 +129,10 @@ describe("formatZonePt pure function", () => {
 	});
 
 	it("returns null for invalid or missing coordinates", () => {
-		assert.equal(formatZonePt(null), null);
-		assert.equal(formatZonePt(undefined), null);
-		assert.equal(formatZonePt("string"), null);
-		assert.equal(formatZonePt({ x: "invalid", y: 10 }), null);
+		const invalids = [null, undefined, "string", { x: "invalid", y: 10 }];
+		for (const val of invalids) {
+			assert.equal(formatZonePt(val), null);
+		}
 	});
 });
 
@@ -149,29 +151,24 @@ describe("BoardGraphicsLayer contract checks", () => {
 
 describe("Locator substring collision root causes", () => {
 	it("demonstrates Line collisions on Board outline when using substring matching", () => {
-		const buttons = ["Board outline", "Line"];
-		const substringMatch = buttons.find((label) => /Line/i.test(label));
-		assert.equal(substringMatch, "Board outline");
-
-		const exactMatch = buttons.find((label) => label.toLowerCase() === "line");
-		assert.equal(exactMatch, "Line");
+		verifyCollision(
+			["Board outline", "Line"],
+			/Line/i,
+			"Line",
+			"Board outline",
+		);
 	});
 
 	it("demonstrates LED collisions on Filled zone when using substring matching", () => {
-		const buttons = ["Filled zone", "LED"];
-		const substringMatch = buttons.find((label) => /LED/i.test(label));
-		assert.equal(substringMatch, "Filled zone");
-
-		const exactMatch = buttons.find((label) => label === "LED");
-		assert.equal(exactMatch, "LED");
+		verifyCollision(["Filled zone", "LED"], /LED/i, "LED", "Filled zone");
 	});
 
 	it("demonstrates Rectangle collisions on Board outline (rectangle)", () => {
-		const buttons = ["Board outline (rectangle)", "Rectangle"];
-		const substringMatch = buttons.find((label) => /Rectangle/i.test(label));
-		assert.equal(substringMatch, "Board outline (rectangle)");
-
-		const exactMatch = buttons.find((label) => label === "Rectangle");
-		assert.equal(exactMatch, "Rectangle");
+		verifyCollision(
+			["Board outline (rectangle)", "Rectangle"],
+			/Rectangle/i,
+			"Rectangle",
+			"Board outline (rectangle)",
+		);
 	});
 });
