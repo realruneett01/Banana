@@ -56,6 +56,6 @@ export function createdProjectTarget(project) {
 	return null;
 }
 
-export function shouldShowProjectHome({ homeRequested, repoPath }) {
-	return Boolean(homeRequested || !repoPath);
+export function shouldShowProjectHome({ homeRequested }) {
+	return Boolean(homeRequested);
 }

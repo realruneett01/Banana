@@ -127,24 +127,28 @@ describe("createdProjectTarget", () => {
 });
 
 describe("shouldShowProjectHome", () => {
-	test("shows home when no repo is open", () => {
-		assert.equal(
-			shouldShowProjectHome({ homeRequested: false, repoPath: "" }),
-			true,
-		);
-	});
-
-	test("hides home once a repo is open", () => {
-		assert.equal(
-			shouldShowProjectHome({ homeRequested: false, repoPath: "/w" }),
-			false,
-		);
-	});
-
 	test("shows home when the user asks for it", () => {
 		assert.equal(
 			shouldShowProjectHome({ homeRequested: true, repoPath: "/w" }),
 			true,
+		);
+		assert.equal(
+			shouldShowProjectHome({ homeRequested: true, repoPath: "" }),
+			true,
+		);
+	});
+
+	test("hides home when not requested and no repo is open", () => {
+		assert.equal(
+			shouldShowProjectHome({ homeRequested: false, repoPath: "" }),
+			false,
+		);
+	});
+
+	test("hides home when not requested and a repo is open", () => {
+		assert.equal(
+			shouldShowProjectHome({ homeRequested: false, repoPath: "/w" }),
+			false,
 		);
 	});
 });
