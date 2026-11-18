@@ -27,180 +27,140 @@ async function loadDefaultNetFunction() {
 
 const getDefaultNetId = await loadDefaultNetFunction();
 
-const EMPTY_OR_INVALID_CASES = [
-	{ name: "undefined", input: undefined, expected: "" },
-	{ name: "null", input: null, expected: "" },
-	{ name: "empty array", input: [], expected: "" },
-	{ name: "not an array", input: "GND", expected: "" },
+const namedNet = (name) => ({ name });
+const idNet = (id, name) => (name ? { id, name } : { id });
+const withPins = (id, name, pins) => ({ id, name, pins });
+const withPads = (id, name, pads) => ({ id, name, pads });
+const namedGroup = (...names) => names.map(namedNet);
+
+const NET_TEST_SUITES = [
+	{
+		title: "getDefaultNetId - empty and invalid inputs",
+		formatTitle: (name) => `returns empty string for ${name}`,
+		cases: [
+			["undefined", undefined, ""],
+			["null", null, ""],
+			["empty array", [], ""],
+			["not an array", "GND", ""],
+		],
+	},
+	{
+		title: "getDefaultNetId - GND case-insensitive match",
+		formatTitle: (name) => `matches ${name}`,
+		cases: [
+			["uppercase GND name", [namedNet("GND")], "GND"],
+			["lowercase gnd name", [namedNet("gnd")], "gnd"],
+			["mixed case Gnd name", [namedNet("Gnd")], "Gnd"],
+			[
+				"net id is returned when id exists",
+				[idNet("net_gnd_1", "GND")],
+				"net_gnd_1",
+			],
+			["match by id when name is absent", [idNet("GND")], "GND"],
+		],
+	},
+	{
+		title: "getDefaultNetId - ground name priority",
+		cases: [
+			[
+				"GND takes precedence over GNDD, GNDA, and 0V",
+				namedGroup("0V", "GNDA", "GNDD", "GND"),
+				"GND",
+			],
+			[
+				"GNDD takes precedence over GNDA and 0V",
+				namedGroup("0V", "GNDA", "GNDD"),
+				"GNDD",
+			],
+			["GNDA takes precedence over 0V", namedGroup("0V", "GNDA"), "GNDA"],
+			[
+				"0V is selected when no other ground exists",
+				namedGroup("0V", "VCC"),
+				"0V",
+			],
+			[
+				"case-insensitive priority matching (gndd over 0v)",
+				namedGroup("0v", "gndd"),
+				"gndd",
+			],
+		],
+	},
+	{
+		title: "getDefaultNetId - pads fallback",
+		cases: [
+			[
+				"selects net with most pins when no GND net exists",
+				[
+					withPins("n1", "VCC", [1, 2]),
+					withPins("n2", "SDA", [1, 2, 3, 4]),
+					withPins("n3", "SCL", [1]),
+				],
+				"n2",
+			],
+			[
+				"selects net with most pads array",
+				[withPads("n1", "VCC", [1, 2, 3]), withPads("n2", "SIG", [1])],
+				"n1",
+			],
+			[
+				"tie in pad count selects first net",
+				[withPins("n1", "VCC", [1, 2]), withPins("n2", "VDD", [1, 2])],
+				"n1",
+			],
+			[
+				"GND net preferred even with fewer pads than another net",
+				[
+					withPins("gnd", "GND", [1]),
+					withPins("vcc", "VCC", [1, 2, 3, 4, 5, 6]),
+				],
+				"gnd",
+			],
+			[
+				"returns empty when no GND and all nets have 0 pads",
+				[withPins("n1", "VCC", []), withPins("n2", "SIG", [])],
+				"",
+			],
+			[
+				"returns empty when nets have no pins or pads properties",
+				[idNet("n1", "VCC"), idNet("n2", "SIG")],
+				"",
+			],
+		],
+	},
 ];
 
-const GND_MATCH_CASES = [
-	{
-		name: "uppercase GND name",
-		nets: [{ name: "GND" }],
-		expected: "GND",
-	},
-	{
-		name: "lowercase gnd name",
-		nets: [{ name: "gnd" }],
-		expected: "gnd",
-	},
-	{
-		name: "mixed case Gnd name",
-		nets: [{ name: "Gnd" }],
-		expected: "Gnd",
-	},
-	{
-		name: "net id is returned when id exists",
-		nets: [{ id: "net_gnd_1", name: "GND" }],
-		expected: "net_gnd_1",
-	},
-	{
-		name: "match by id when name is absent",
-		nets: [{ id: "GND" }],
-		expected: "GND",
-	},
-];
-
-const PRIORITY_CASES = [
-	{
-		name: "GND takes precedence over GNDD, GNDA, and 0V",
-		nets: [{ name: "0V" }, { name: "GNDA" }, { name: "GNDD" }, { name: "GND" }],
-		expected: "GND",
-	},
-	{
-		name: "GNDD takes precedence over GNDA and 0V",
-		nets: [{ name: "0V" }, { name: "GNDA" }, { name: "GNDD" }],
-		expected: "GNDD",
-	},
-	{
-		name: "GNDA takes precedence over 0V",
-		nets: [{ name: "0V" }, { name: "GNDA" }],
-		expected: "GNDA",
-	},
-	{
-		name: "0V is selected when no other ground exists",
-		nets: [{ name: "0V" }, { name: "VCC" }],
-		expected: "0V",
-	},
-	{
-		name: "case-insensitive priority matching (gndd over 0v)",
-		nets: [{ name: "0v" }, { name: "gndd" }],
-		expected: "gndd",
-	},
-];
-
-const PADS_FALLBACK_CASES = [
-	{
-		name: "selects net with most pins when no GND net exists",
-		nets: [
-			{ id: "n1", name: "VCC", pins: [1, 2] },
-			{ id: "n2", name: "SDA", pins: [1, 2, 3, 4] },
-			{ id: "n3", name: "SCL", pins: [1] },
-		],
-		expected: "n2",
-	},
-	{
-		name: "selects net with most pads array",
-		nets: [
-			{ id: "n1", name: "VCC", pads: [1, 2, 3] },
-			{ id: "n2", name: "SIG", pads: [1] },
-		],
-		expected: "n1",
-	},
-	{
-		name: "tie in pad count selects first net",
-		nets: [
-			{ id: "n1", name: "VCC", pins: [1, 2] },
-			{ id: "n2", name: "VDD", pins: [1, 2] },
-		],
-		expected: "n1",
-	},
-	{
-		name: "GND net preferred even with fewer pads than another net",
-		nets: [
-			{ id: "gnd", name: "GND", pins: [1] },
-			{ id: "vcc", name: "VCC", pins: [1, 2, 3, 4, 5, 6] },
-		],
-		expected: "gnd",
-	},
-	{
-		name: "returns empty when no GND and all nets have 0 pads",
-		nets: [
-			{ id: "n1", name: "VCC", pins: [] },
-			{ id: "n2", name: "SIG", pins: [] },
-		],
-		expected: "",
-	},
-	{
-		name: "returns empty when nets have no pins or pads properties",
-		nets: [
-			{ id: "n1", name: "VCC" },
-			{ id: "n2", name: "SIG" },
-		],
-		expected: "",
-	},
-];
+for (const suite of NET_TEST_SUITES) {
+	describe(suite.title, () => {
+		const format = suite.formatTitle ?? ((name) => name);
+		for (const [name, input, expected] of suite.cases) {
+			test(format(name), () => {
+				assert.equal(getDefaultNetId(input), expected);
+			});
+		}
+	});
+}
 
 const WIRING_CASES = [
-	{
-		name: "BoardTools exports getDefaultNetId",
-		pattern: /export\s+function\s+getDefaultNetId\b/,
-	},
-	{
-		name: "PourModal focuses the OK button",
-		pattern: /autoFocusButton="ok"/,
-	},
-	{
-		name: "PourModal passes autoFocus to okButtonProps",
-		pattern: /okButtonProps=\{\{\s*autoFocus:\s*true\s*\}\}/,
-	},
-	{
-		name: "useCopperPour resolves active copper layer or defaults to F.Cu",
-		pattern: /resolveActiveCopperLayer\(/,
-	},
-	{
-		name: "keeps keepout option in pour zone",
-		pattern: /keepout\s*:\s*pour\.keepout/,
-	},
+	[
+		"BoardTools exports getDefaultNetId",
+		/export\s+function\s+getDefaultNetId\b/,
+	],
+	["PourModal focuses the OK button", /autoFocusButton="ok"/],
+	[
+		"PourModal passes autoFocus to okButtonProps",
+		/okButtonProps=\{\{\s*autoFocus:\s*true\s*\}\}/,
+	],
+	[
+		"useCopperPour resolves active copper layer or defaults to F.Cu",
+		/resolveActiveCopperLayer\(/,
+	],
+	["keeps keepout option in pour zone", /keepout\s*:\s*pour\.keepout/],
 ];
 
-describe("getDefaultNetId - empty and invalid inputs", () => {
-	for (const tc of EMPTY_OR_INVALID_CASES) {
-		test(`returns empty string for ${tc.name}`, () => {
-			assert.equal(getDefaultNetId(tc.input), tc.expected);
-		});
-	}
-});
-
-describe("getDefaultNetId - GND case-insensitive match", () => {
-	for (const tc of GND_MATCH_CASES) {
-		test(`matches ${tc.name}`, () => {
-			assert.equal(getDefaultNetId(tc.nets), tc.expected);
-		});
-	}
-});
-
-describe("getDefaultNetId - ground name priority", () => {
-	for (const tc of PRIORITY_CASES) {
-		test(tc.name, () => {
-			assert.equal(getDefaultNetId(tc.nets), tc.expected);
-		});
-	}
-});
-
-describe("getDefaultNetId - pads fallback", () => {
-	for (const tc of PADS_FALLBACK_CASES) {
-		test(tc.name, () => {
-			assert.equal(getDefaultNetId(tc.nets), tc.expected);
-		});
-	}
-});
-
 describe("BoardTools wiring and dialog defaults", () => {
-	for (const tc of WIRING_CASES) {
-		test(tc.name, () => {
-			assert.match(boardToolsSrc, tc.pattern);
+	for (const [name, pattern] of WIRING_CASES) {
+		test(name, () => {
+			assert.match(boardToolsSrc, pattern);
 		});
 	}
 });
