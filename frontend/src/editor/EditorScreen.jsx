@@ -1,4 +1,5 @@
 import {
+	AppstoreOutlined,
 	DeleteOutlined,
 	DownloadOutlined,
 	DownOutlined,
@@ -10,6 +11,7 @@ import {
 	RotateRightOutlined,
 	SaveOutlined,
 	SwapOutlined,
+	TableOutlined,
 	UndoOutlined,
 } from "@ant-design/icons";
 import {
@@ -32,6 +34,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { emitCommitCreated } from "../designEvents.js";
+import AssignFootprints from "./AssignFootprints.jsx";
 import { annotate } from "./annotate.js";
 import BoardTools from "./BoardTools.jsx";
 import ChecksPanel from "./ChecksPanel.jsx";
@@ -52,6 +55,7 @@ import PcbCanvas from "./PcbCanvas.jsx";
 import PropertiesPanel from "./PropertiesPanel.jsx";
 import SaveCommitDialog from "./SaveCommitDialog.jsx";
 import SchematicCanvas from "./SchematicCanvas.jsx";
+import SymbolFieldsTable from "./SymbolFieldsTable.jsx";
 import {
 	breadcrumb,
 	createNavState,
@@ -643,6 +647,94 @@ function AnnotateAction({ onApply }) {
 	);
 }
 
+function EditSymbolFieldsButton({ onOpen }) {
+	return (
+		<ToolButton
+			title="Edit symbol fields"
+			icon={<TableOutlined />}
+			onClick={onOpen}
+			ariaLabel="Edit symbol fields"
+		/>
+	);
+}
+
+function AssignFootprintsButton({ onOpen }) {
+	return (
+		<ToolButton
+			title="Assign footprints"
+			icon={<AppstoreOutlined />}
+			onClick={onOpen}
+			ariaLabel="Assign footprints"
+		/>
+	);
+}
+
+function SymbolFieldsAction({ ir, onApply }) {
+	const [open, setOpen] = useState(false);
+	const close = useCallback(() => setOpen(false), []);
+	const openModal = useCallback(() => setOpen(true), []);
+	const handleApply = useCallback(
+		(cmd) => {
+			onApply?.(cmd);
+			close();
+		},
+		[onApply, close],
+	);
+	return (
+		<>
+			<EditSymbolFieldsButton onOpen={openModal} />
+			<SymbolFieldsTable
+				open={open}
+				ir={ir}
+				onApply={handleApply}
+				onClose={close}
+			/>
+		</>
+	);
+}
+
+function AssignFootprintsAction({ ir, onApply }) {
+	const [open, setOpen] = useState(false);
+	const close = useCallback(() => setOpen(false), []);
+	const openModal = useCallback(() => setOpen(true), []);
+	const handleApply = useCallback(
+		(cmd) => {
+			onApply?.(cmd);
+			close();
+		},
+		[onApply, close],
+	);
+	return (
+		<>
+			<AssignFootprintsButton onOpen={openModal} />
+			<AssignFootprints
+				open={open}
+				ir={ir}
+				onApply={handleApply}
+				onClose={close}
+			/>
+		</>
+	);
+}
+
+function SchematicTools({ state, actions, visible }) {
+	const style = {
+		display: visible ? "flex" : "none",
+		alignItems: "center",
+		gap: 4,
+	};
+	return (
+		<div style={style}>
+			<AnnotateAction onApply={actions.annotate} />
+			<SymbolFieldsAction ir={state.ir} onApply={actions.applyModelCommand} />
+			<AssignFootprintsAction
+				ir={state.ir}
+				onApply={actions.applyModelCommand}
+			/>
+		</div>
+	);
+}
+
 function ActionGroup({ state, actions }) {
 	return (
 		<>
@@ -710,9 +802,7 @@ function EditorToolbar({ state, actions }) {
 				save={actions.save}
 				openCommit={actions.openCommit}
 			/>
-			<div style={{ display: !isPcb ? "flex" : "none", alignItems: "center" }}>
-				<AnnotateAction onApply={actions.annotate} />
-			</div>
+			<SchematicTools state={state} actions={actions} visible={!isPcb} />
 			<div style={{ display: isPcb ? "flex" : "none", alignItems: "center" }}>
 				<BoardTools
 					ir={state.ir}
@@ -1530,6 +1620,22 @@ function EditorBody(props) {
 	);
 }
 
+function dispatchModelCommand(dispatch, command) {
+	if (!command) return false;
+	try {
+		const res = dispatch(command);
+		const errorMsg = res?.error || (res?.ok === false ? res?.message : null);
+		if (errorMsg) {
+			message.error(errorMsg);
+			return false;
+		}
+		return true;
+	} catch (err) {
+		message.error(err?.message || "Command failed");
+		return false;
+	}
+}
+
 function useScreenActions(docState, onSave, extra) {
 	const { doc, board, dispatch, undo, redo, markSaved } = docState;
 	const editActions = useEditorActions({
@@ -1540,7 +1646,18 @@ function useScreenActions(docState, onSave, extra) {
 		markSaved,
 	});
 	useSaveShortcut(editActions.save);
-	return { ...editActions, undo, redo, ...extra };
+	const applyModelCommand = useCallback(
+		(cmd) => dispatchModelCommand(dispatch, cmd),
+		[dispatch],
+	);
+	return {
+		...editActions,
+		undo,
+		redo,
+		applyModelCommand,
+		dispatchCommand: applyModelCommand,
+		...extra,
+	};
 }
 
 function useBoardToolsChange(docState) {
