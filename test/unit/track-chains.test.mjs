@@ -15,16 +15,8 @@ import {
 	matchTrackChainsPass,
 } from "../../backend/src/track-chains.js";
 
-function makeLineElement(opts) {
-	const {
-		x1,
-		y1,
-		x2,
-		y2,
-		geoKey = "",
-		isComponent = false,
-		isClosedPath = false,
-	} = opts;
+function makeLine([x1, y1, x2, y2], opts = {}) {
+	const { geoKey = "", isComponent = false, isClosedPath = false } = opts;
 	return {
 		tag: "line",
 		fullMatch: `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`,
@@ -34,23 +26,20 @@ function makeLineElement(opts) {
 	};
 }
 
-function makeLine([x1, y1, x2, y2], opts = {}) {
-	return makeLineElement({ x1, y1, x2, y2, ...opts });
-}
-
-function makeChain(opts) {
-	const { start, end, subSegments = [], bbox = null, totalLength = 0 } = opts;
-	const defaultBbox = {
-		minX: Math.min(start.x, end.x),
-		minY: Math.min(start.y, end.y),
-		maxX: Math.max(start.x, end.x),
-		maxY: Math.max(start.y, end.y),
-	};
+function makeTestChain([x1, y1, x2, y2], opts = {}) {
+	const { subSegments = [], bbox = null, totalLength = 0 } = opts;
+	const start = { x: x1, y: y1 };
+	const end = { x: x2, y: y2 };
 	return {
 		startAnchor: start,
 		endAnchor: end,
 		subSegments,
-		bbox: bbox ?? defaultBbox,
+		bbox: bbox ?? {
+			minX: Math.min(x1, x2),
+			minY: Math.min(y1, y2),
+			maxX: Math.max(x1, x2),
+			maxY: Math.max(y1, y2),
+		},
 		totalLength,
 	};
 }
@@ -72,21 +61,17 @@ function makeSegment(x1, y1, x2, y2) {
 	return { pts: { start: { x: x1, y: y1 }, end: { x: x2, y: y2 } } };
 }
 
-function makeTestChain([x1, y1, x2, y2], opts = {}) {
-	return makeChain({
-		start: { x: x1, y: y1 },
-		end: { x: x2, y: y2 },
-		...opts,
-	});
+function makeHorizontalPair() {
+	return [makeSegment(0, 0, 10, 0), makeSegment(10, 0, 20, 0)];
 }
 
 function makeNode(id) {
 	return { id, visited: false };
 }
 
-function assertClassificationRef(meta, diffIdx, layer) {
-	assert.equal(meta.diffIdx, diffIdx);
-	assert.equal(meta.layer, layer);
+function makeGraph(adjacencies) {
+	const map = new Map(adjacencies);
+	return (node) => map.get(node) || [];
 }
 
 function assertMatchResult(actual, expectedBase, expectedMinD) {
@@ -95,20 +80,46 @@ function assertMatchResult(actual, expectedBase, expectedMinD) {
 }
 
 function assertChainMetrics(comp, expectedLen, expectedBbox) {
-	const metrics = computeChainMetrics(comp);
-	assert.equal(metrics.totalLength, expectedLen);
-	assert.deepEqual(metrics.bbox, expectedBbox);
+	const { totalLength, bbox } = computeChainMetrics(comp);
+	assert.deepEqual(
+		{ totalLength, bbox },
+		{ totalLength: expectedLen, bbox: expectedBbox },
+	);
+}
+
+function assertChainProperties(chain, expected) {
+	assert.deepEqual(
+		{
+			subSegments: chain.subSegments.length,
+			totalLength: chain.totalLength,
+			start: chain.startAnchor,
+			end: chain.endAnchor,
+			bbox: chain.bbox,
+		},
+		expected,
+	);
 }
 
 function verifyAssembledChain(elements, layerFilename, expected) {
 	const chains = assembleTrackChains(elements, layerFilename);
 	assert.equal(chains.length, 1);
-	const [chain] = chains;
-	assert.equal(chain.subSegments.length, expected.subSegments);
-	assert.equal(chain.totalLength, expected.totalLength);
-	assert.deepEqual(chain.startAnchor, expected.start);
-	assert.deepEqual(chain.endAnchor, expected.end);
-	assert.deepEqual(chain.bbox, expected.bbox);
+	assertChainProperties(chains[0], expected);
+}
+
+function assertClassificationPair(ctx, bSeg, tSeg, expected) {
+	assert.ok(ctx.matchedBase.has(bSeg));
+	assert.ok(ctx.matchedTarget.has(tSeg));
+	assert.deepEqual(ctx.baseClassifications.get(bSeg), expected);
+	assert.deepEqual(ctx.targetClassifications.get(tSeg), expected);
+}
+
+function assertChangedMetadata(meta, { diffIdx, layer, displacement }) {
+	assert.equal(meta.diffClass, "diff-changed");
+	assert.equal(meta.displacement, displacement);
+	if (diffIdx !== undefined) {
+		assert.equal(meta.diffIdx, diffIdx);
+		assert.equal(meta.layer, layer);
+	}
 }
 
 function verifyLegacyChainClassification(bChain, tChain, bSeg) {
@@ -124,10 +135,10 @@ function verifyLegacyChainClassification(bChain, tChain, bSeg) {
 		legCtx.baseClassifications,
 		legCtx.targetClassifications,
 	);
-	assertClassificationRef(
-		legCtx.baseClassifications.get(bSeg),
-		99,
-		"board-B_Cu.svg",
+	const meta = legCtx.baseClassifications.get(bSeg);
+	assert.deepEqual(
+		{ diffIdx: meta.diffIdx, layer: meta.layer },
+		{ diffIdx: 99, layer: "board-B_Cu.svg" },
 	);
 }
 
@@ -242,16 +253,16 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 
 	test("findConnectedComponent traverses components, single nodes, and cycles", () => {
 		const [nodeA, nodeB, nodeC] = ["A", "B", "C"].map(makeNode);
-		const graph = new Map([
+		const getNeighbors = makeGraph([
 			[nodeA, [nodeB]],
 			[nodeB, [nodeC]],
 			[nodeC, []],
 		]);
-		const component = findConnectedComponent(
+		assert.deepEqual(findConnectedComponent(nodeA, getNeighbors), [
 			nodeA,
-			(curr) => graph.get(curr) || [],
-		);
-		assert.deepEqual(component, [nodeA, nodeB, nodeC]);
+			nodeB,
+			nodeC,
+		]);
 
 		const isolated = makeNode("iso");
 		assert.deepEqual(
@@ -260,20 +271,15 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 		);
 
 		const [cycleA, cycleB] = ["c1", "c2"].map(makeNode);
-		const cycleGraph = new Map([
+		const getCycleNeighbors = makeGraph([
 			[cycleA, [cycleB]],
 			[cycleB, [cycleA]],
 		]);
-		const cycleRes = findConnectedComponent(
-			cycleA,
-			(curr) => cycleGraph.get(curr) || [],
-		);
-		assert.equal(cycleRes.length, 2);
+		assert.equal(findConnectedComponent(cycleA, getCycleNeighbors).length, 2);
 	});
 
 	test("isPointConnectedToOther evaluates connection to other nodes with tolerance", () => {
-		const node1 = makeSegment(0, 0, 10, 0);
-		const node2 = makeSegment(10, 0, 20, 0);
+		const [node1, node2] = makeHorizontalPair();
 		const component = [node1, node2];
 
 		const cases = [
@@ -290,12 +296,11 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 	});
 
 	test("findTerminalAnchors finds open endpoints, handles empty components and loops", () => {
-		const seg1 = makeSegment(0, 0, 10, 0);
-		const seg2 = makeSegment(10, 0, 20, 0);
-		const linearAnchors = findTerminalAnchors([seg1, seg2], isClose);
-		assert.equal(linearAnchors.length, 2);
-		assert.deepEqual(linearAnchors[0], { x: 0, y: 0 });
-		assert.deepEqual(linearAnchors[1], { x: 20, y: 0 });
+		const linearAnchors = findTerminalAnchors(makeHorizontalPair(), isClose);
+		assert.deepEqual(linearAnchors, [
+			{ x: 0, y: 0 },
+			{ x: 20, y: 0 },
+		]);
 
 		const loop = [
 			makeSegment(0, 0, 10, 0),
@@ -431,12 +436,7 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 			"t1",
 		);
 		applyChainClassifications(bChain, tChain, { chainsIdentical: true }, ctx);
-
-		assert.ok(ctx.matchedBase.has(bSeg));
-		assert.ok(ctx.matchedTarget.has(tSeg));
-		const unchanged = { diffClass: "diff-unchanged" };
-		assert.deepEqual(ctx.baseClassifications.get(bSeg), unchanged);
-		assert.deepEqual(ctx.targetClassifications.get(tSeg), unchanged);
+		assertClassificationPair(ctx, bSeg, tSeg, { diffClass: "diff-unchanged" });
 	});
 
 	test("applyChainClassifications assigns diff-changed metadata and supports legacy arguments", () => {
@@ -459,11 +459,12 @@ describe("Copper Track Chain Assembly & Topological Matching", () => {
 
 		const bMeta = ctx.baseClassifications.get(bSeg);
 		const tMeta = ctx.targetClassifications.get(tSeg);
-		assert.equal(bMeta.diffClass, "diff-changed");
-		assertClassificationRef(bMeta, 42, "board-F_Cu.svg");
-		assert.equal(bMeta.displacement, 2);
-		assert.equal(tMeta.diffClass, "diff-changed");
-		assert.equal(tMeta.displacement, 2);
+		assertChangedMetadata(bMeta, {
+			diffIdx: 42,
+			layer: "board-F_Cu.svg",
+			displacement: 2,
+		});
+		assertChangedMetadata(tMeta, { displacement: 2 });
 
 		verifyLegacyChainClassification(bChain, tChain, bSeg);
 	});
