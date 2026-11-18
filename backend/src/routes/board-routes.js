@@ -7,8 +7,6 @@ import { downloadRepoFile } from "../github-service.js";
 import { parseKiCadBoard } from "../kicad-pcb-parser.js";
 import { exportBoardGlb } from "../kicad-renderer.js";
 
-const router = express.Router();
-
 const VALID_REF_PATTERNS = [
 	/^[0-9a-fA-F]{4,40}$/,
 	/^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/,
@@ -254,22 +252,52 @@ async function handlePadsExtraction(tempFilePath, res) {
 	res.json({ footprints: formatFootprints(board) });
 }
 
-async function handleGlbExport(tempFilePath, res) {
-	const { glbPath, cached, durationMs } = await exportBoardGlb(tempFilePath);
+async function handleGlbExport(tempFilePath, res, exportGlb = exportBoardGlb) {
+	const { glbPath, cached, durationMs } = await exportGlb(tempFilePath);
 	res.set("X-Banana-Glb-Cached", cached ? "1" : "0");
 	res.set("X-Banana-Glb-Ms", String(Math.round(durationMs)));
 	res.type("model/gltf-binary").sendFile(glbPath);
 }
 
+const MAX_PCB_SIZE_BYTES = 20 * 1024 * 1024;
+
+function isValidPcbContent(pcb) {
+	if (typeof pcb !== "string") {
+		return false;
+	}
+	if (!pcb.trim().startsWith("(kicad_pcb")) {
+		return false;
+	}
+	return Buffer.byteLength(pcb, "utf8") <= MAX_PCB_SIZE_BYTES;
+}
+
+async function executeGlbFromPcb(req, res, exportGlb) {
+	const pcb = req.body?.pcb;
+	if (!isValidPcbContent(pcb)) {
+		return res.status(400).json({ error: "Invalid PCB content" });
+	}
+	const temp = makeTempLocation("glb", "board.kicad_pcb");
+	try {
+		fs.mkdirSync(temp.dir, { recursive: true });
+		fs.writeFileSync(temp.filePath, pcb, "utf8");
+		await handleGlbExport(temp.filePath, res, exportGlb);
+	} catch (error) {
+		sendErrorResponse(res, error, "Unexpected error during 3D export");
+	} finally {
+		await waitForResponse(res);
+		cleanupTempDir(temp.dir);
+	}
+}
+
 async function executeBoardAction(req, res, endpoint) {
 	const boardReq = extractBoardRequest(req);
-	if (!enforceLocalRepoPolicy(req, boardReq, res)) {
-		return;
-	}
-
 	const validationMsg = findValidationError(boardReq);
 	if (validationMsg) {
 		return res.status(400).json({ error: validationMsg });
+	}
+
+	if (!enforceLocalRepoPolicy(req, boardReq, res)) {
+		return;
 	}
 
 	const temp = makeTempLocation(endpoint.prefix, boardReq.targetFile);
@@ -310,10 +338,36 @@ const BOARD_ENDPOINT_REGISTRATIONS = [
 	},
 ];
 
-for (const registration of BOARD_ENDPOINT_REGISTRATIONS) {
-	router.post(registration.endpointPath, (req, res) =>
-		executeBoardAction(req, res, registration),
-	);
+async function executeGlbAction(req, res, activeExport) {
+	if (req.body?.pcb !== undefined) {
+		return executeGlbFromPcb(req, res, activeExport);
+	}
+	const glbEndpoint = {
+		...BOARD_ENDPOINT_REGISTRATIONS[1],
+		handler: (tempPath, response) =>
+			handleGlbExport(tempPath, response, activeExport),
+	};
+	return executeBoardAction(req, res, glbEndpoint);
 }
 
-export default router;
+const PADS_ROUTES = ["/pads", "/board/pads", "/api/board/pads"];
+const GLB_ROUTES = ["/glb", "/board/glb", "/api/board/glb"];
+
+export function createBoardRouter(options = {}) {
+	const router = express.Router();
+	const exportGlb = options.exportBoardGlb ?? exportBoardGlb;
+
+	router.post(PADS_ROUTES, (req, res) =>
+		executeBoardAction(req, res, BOARD_ENDPOINT_REGISTRATIONS[0]),
+	);
+
+	router.post(GLB_ROUTES, (req, res) => {
+		const activeExport = req.app?.locals?.exportBoardGlb ?? exportGlb;
+		return executeGlbAction(req, res, activeExport);
+	});
+
+	return router;
+}
+
+const defaultRouter = createBoardRouter();
+export default defaultRouter;
