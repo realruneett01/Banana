@@ -12,11 +12,11 @@ import {
 } from "../../frontend/src/editor/clipboard.js";
 import { applyCommand } from "../../frontend/src/editor/editorModel.js";
 
-const makePart = (id, ref, value, xy) => ({
+const makePart = (id, ref, value, [x, y]) => ({
 	id,
 	ref,
 	value,
-	placement: { x: xy[0], y: xy[1], rot: 0, side: "F" },
+	placement: { x, y, rot: 0, side: "F" },
 });
 
 const makeNet = (id, name, pinPairs) => ({
@@ -37,26 +37,28 @@ const makeSheet = (id, name, [x, y, w, h], pinList) => ({
 });
 
 function makeDoc() {
+	const parts = [
+		makePart("p_u1", "U1", "NE555", [100, 100]),
+		makePart("p_r1", "R1", "10k", [150, 100]),
+		makePart("p_r2", "R2", "1k", [200, 120]),
+	];
+	const nets = [
+		makeNet("net_vcc", "VCC", [
+			["p_u1", "8"],
+			["p_r1", "1"],
+			["p_r2", "1"],
+		]),
+		makeNet("net_out", "OUT", [
+			["p_u1", "3"],
+			["p_r2", "2"],
+		]),
+	];
 	return {
 		ir: {
 			schemaVersion: 1,
 			name: "test-circuit",
-			parts: [
-				makePart("p_u1", "U1", "NE555", [100, 100]),
-				makePart("p_r1", "R1", "10k", [150, 100]),
-				makePart("p_r2", "R2", "1k", [200, 120]),
-			],
-			nets: [
-				makeNet("net_vcc", "VCC", [
-					["p_u1", "8"],
-					["p_r1", "1"],
-					["p_r2", "1"],
-				]),
-				makeNet("net_out", "OUT", [
-					["p_u1", "3"],
-					["p_r2", "2"],
-				]),
-			],
+			parts,
+			nets,
 			annotations: [
 				{ id: "ann_1", kind: "line", x: 100, y: 50, x2: 120, y2: 50 },
 			],
@@ -130,6 +132,12 @@ function pasteBoardFromSelection(board, ids, target = { x: 50, y: 50 }) {
 	return { clip, nextBoard: pasteBoard(board, clip, target) };
 }
 
+function assertPreservesInput(input, action) {
+	const snapshot = JSON.stringify(input);
+	action();
+	assert.equal(JSON.stringify(input), snapshot);
+}
+
 describe("selectAllIds", () => {
 	test("returns all selectable schematic IDs", () => {
 		const doc = makeDoc();
@@ -153,22 +161,11 @@ describe("copySchematic", () => {
 	test("deep copies selected parts, annotations, sheets and computes origin", () => {
 		const doc = makeDoc();
 		const clip = copySchematic(doc, ["p_u1", "p_r1", "ann_1"]);
-		assert.deepEqual(
-			{
-				kind: clip.kind,
-				parts: clip.parts.length,
-				annotations: clip.annotations.length,
-				sheets: clip.sheets.length,
-				origin: clip.origin,
-			},
-			{
-				kind: "schematic",
-				parts: 2,
-				annotations: 1,
-				sheets: 0,
-				origin: { x: 100, y: 50 },
-			},
-		);
+		assert.equal(clip.kind, "schematic");
+		assert.deepEqual(clip.origin, { x: 100, y: 50 });
+		assert.equal(clip.parts.length, 2);
+		assert.equal(clip.annotations.length, 1);
+		assert.equal(clip.sheets.length, 0);
 	});
 
 	test("keeps wires between copied parts and drops connections to non-copied parts", () => {
@@ -183,9 +180,7 @@ describe("copySchematic", () => {
 
 	test("does not mutate original doc", () => {
 		const doc = makeDoc();
-		const snapshot = JSON.stringify(doc);
-		copySchematic(doc, ["p_u1"]);
-		assert.equal(JSON.stringify(doc), snapshot);
+		assertPreservesInput(doc, () => copySchematic(doc, ["p_u1"]));
 	});
 });
 
@@ -219,26 +214,31 @@ describe("pasteSchematicCommands", () => {
 		);
 	});
 
-	test("renumbers references to next free number per prefix", () => {
-		const doc = makeDoc();
-		const { nextDoc } = applyPastedSchematic(doc, ["p_r1"], { x: 250, y: 250 });
-		const pasted = nextDoc.ir.parts.at(-1);
-		assert.deepEqual([pasted.ref, pasted.id !== "p_r1"], ["R3", true]);
-	});
-
-	test("handles R? style references like annotate.js", () => {
-		const doc = makeDoc();
-		const { nextDoc } = applyPastedSchematic(
-			doc,
-			["p_r1"],
-			{ x: 250, y: 250 },
-			(clip) => {
+	for (const { name, mutator, verify } of [
+		{
+			name: "renumbers references to next free number per prefix",
+			mutator: null,
+			verify: (p) => assert.deepEqual([p.ref, p.id !== "p_r1"], ["R3", true]),
+		},
+		{
+			name: "handles R? style references like annotate.js",
+			mutator: (clip) => {
 				clip.parts[0].ref = "R?";
 			},
-		);
-		const pasted = nextDoc.ir.parts.at(-1);
-		assert.equal(pasted.ref, "R3");
-	});
+			verify: (p) => assert.equal(p.ref, "R3"),
+		},
+	]) {
+		test(name, () => {
+			const doc = makeDoc();
+			const { nextDoc } = applyPastedSchematic(
+				doc,
+				["p_r1"],
+				{ x: 250, y: 250 },
+				mutator,
+			);
+			verify(nextDoc.ir.parts.at(-1));
+		});
+	}
 
 	test("makes sheet names and files unique", () => {
 		const doc = makeDoc();
@@ -304,20 +304,14 @@ describe("copyBoard / pasteBoard / duplicateBoard", () => {
 		const board = makeBoard();
 		const clip = copyBoard(board, ["t1", "v1", "gfx-1"]);
 		assert.deepEqual(
-			{
-				kind: clip.kind,
-				tracks: clip.tracks.length,
-				vias: clip.vias.length,
-				graphics: clip.graphics.length,
-				origin: clip.origin,
-			},
-			{
-				kind: "board",
-				tracks: 1,
-				vias: 1,
-				graphics: 1,
-				origin: { x: 5, y: 5 },
-			},
+			[
+				clip.kind,
+				clip.tracks.length,
+				clip.vias.length,
+				clip.graphics.length,
+				clip.origin,
+			],
+			["board", 1, 1, 1, { x: 5, y: 5 }],
 		);
 	});
 
@@ -361,13 +355,9 @@ describe("copyBoard / pasteBoard / duplicateBoard", () => {
 	test("pasteBoard keeps known nets and clears unknown nets", () => {
 		const board = makeBoard();
 		const { nextBoard } = pasteBoardFromSelection(board, ["t1", "t2", "v1"]);
-
-		const pastedT1 = nextBoard.tracks[2];
-		const pastedT2 = nextBoard.tracks[3];
-		const pastedV1 = nextBoard.vias[1];
-
+		const [trackA, trackB] = nextBoard.tracks.slice(2, 4);
 		assert.deepEqual(
-			[pastedT1.netId, pastedT2.netId, pastedV1.netId],
+			[trackA.netId, trackB.netId, nextBoard.vias[1].netId],
 			["GND", "", "VCC"],
 		);
 	});
@@ -382,10 +372,10 @@ describe("copyBoard / pasteBoard / duplicateBoard", () => {
 
 	test("inputs never mutated by board operations", () => {
 		const board = makeBoard();
-		const snapshot = JSON.stringify(board);
-		const clip = copyBoard(board, ["t1"]);
-		pasteBoard(board, clip, { x: 100, y: 100 });
-		duplicateBoard(board, ["t1"]);
-		assert.equal(JSON.stringify(board), snapshot);
+		assertPreservesInput(board, () => {
+			const clip = copyBoard(board, ["t1"]);
+			pasteBoard(board, clip, { x: 100, y: 100 });
+			duplicateBoard(board, ["t1"]);
+		});
 	});
 });
