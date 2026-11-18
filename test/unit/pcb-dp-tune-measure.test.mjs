@@ -7,25 +7,21 @@ const pcbCanvasSrc = readFileSync(
 	"utf8",
 );
 
-const startMarker = "// --- PCB DiffPair, Tune, Measure pure helpers ---";
-const endMarker = "// --- End PCB DiffPair, Tune, Measure pure helpers ---";
-const sliceStart = pcbCanvasSrc.indexOf(startMarker);
-const sliceEnd = pcbCanvasSrc.indexOf(endMarker);
-assert.ok(
-	sliceStart !== -1 && sliceEnd !== -1,
-	"Found pure helpers section in PcbCanvas.jsx",
-);
-const pureHelpersCode = pcbCanvasSrc.slice(sliceStart, sliceEnd);
-
-const viewportUrl = new URL(
-	"../../frontend/src/editor/viewport.js",
-	import.meta.url,
-).href;
-
-const dynamicModule = [
-	`import { formatCoord } from ${JSON.stringify(viewportUrl)};`,
-	pureHelpersCode,
-].join("\n");
+async function loadPureHelpers(sourceText) {
+	const marker = "// --- PCB DiffPair, Tune, Measure pure helpers ---";
+	const stop = "// --- End PCB DiffPair, Tune, Measure pure helpers ---";
+	const helperBlock = sourceText.split(marker)[1]?.split(stop)[0];
+	if (!helperBlock) {
+		throw new Error("PCB pure helpers section missing");
+	}
+	const vpUrl = new URL(
+		"../../frontend/src/editor/viewport.js",
+		import.meta.url,
+	).href;
+	const modSource = `import { formatCoord } from "${vpUrl}";\n${helperBlock}`;
+	const base64Code = Buffer.from(modSource).toString("base64");
+	return import(`data:text/javascript;base64,${base64Code}`);
+}
 
 const {
 	calcMeasureReadout,
@@ -33,37 +29,148 @@ const {
 	resolveDiffPairDimensions,
 	findPartnerPad,
 	replaceTrackWithPoints,
-} = await import(
-	`data:text/javascript;base64,${Buffer.from(dynamicModule).toString("base64")}`
-);
+} = await loadPureHelpers(pcbCanvasSrc);
+
+function assertObjectSubset(actual, expected) {
+	for (const [key, value] of Object.entries(expected)) {
+		assert.deepEqual(actual[key], value);
+	}
+}
+
+const partnerFixture = {
+	ir: {
+		nets: ["USB_D+", "USB_D-"].map((name, i) => ({
+			id: i === 0 ? "net_dp_p" : "net_dp_n",
+			name,
+			pins: [
+				{ partId: "U1", pin: String(i + 1) },
+				{ partId: "J1", pin: String(i + 2) },
+			],
+		})),
+	},
+	padPositions: {
+		U1: { 1: [10, 10], 2: [10, 12] },
+		J1: { 2: [50, 10], 3: [50, 12] },
+	},
+	pads: [],
+};
+
+const MEASURE_READOUT_CASES = [
+	{
+		title: "calculates distance, dx, dy, and angle for horizontal segment",
+		p1: [0, 0],
+		p2: [10, 0],
+		expected: {
+			distance: 10,
+			dx: 10,
+			dy: 0,
+			angle: 0,
+			distStr: "10.0000 mm",
+			dxStr: "10.0000 mm",
+			dyStr: "0.0000 mm",
+			angleStr: "0.0°",
+		},
+		textIncludes: "10.0000 mm",
+	},
+	{
+		title: "calculates distance, dx, dy, and angle for 3-4-5 triangle",
+		p1: { x: 0, y: 0 },
+		p2: { x: 3, y: 4 },
+		expected: {
+			distance: 5,
+			dx: 3,
+			dy: 4,
+			distStr: "5.0000 mm",
+			angleStr: "53.1°",
+		},
+	},
+];
+
+const LENGTH_TUNE_CASES = [
+	{
+		title: "prefills target length with +10% and standard amplitude/spacing",
+		len: 10,
+		expected: {
+			currentLength: 10,
+			targetLengthMm: 11,
+			amplitudeMm: 1.0,
+			spacingMm: 0.6,
+		},
+	},
+	{
+		title: "handles fractional lengths correctly",
+		len: 25.5,
+		expected: {
+			currentLength: 25.5,
+			targetLengthMm: 28.05,
+		},
+	},
+	{
+		title: "handles zero or non-numeric input",
+		len: 0,
+		expected: {
+			currentLength: 0,
+			targetLengthMm: 0,
+		},
+	},
+];
+
+const DIFF_PAIR_CASES = [
+	{
+		title: "returns default 0.2 mm width and 0.25 mm gap when setup is empty",
+		board: null,
+		dims: { widthMm: 0.2, gapMm: 0.25 },
+	},
+	{
+		title: "reads setup diffPairWidth and diffPairGap",
+		board: { setup: { diffPairWidth: 0.35, diffPairGap: 0.15 } },
+		dims: { widthMm: 0.35, gapMm: 0.15 },
+	},
+	{
+		title: "reads snake_case setup values",
+		board: { setup: { diff_pair_width: 0.18, diff_pair_gap: 0.22 } },
+		dims: { widthMm: 0.18, gapMm: 0.22 },
+	},
+];
+
+const PARTNER_PAD_CASES = [
+	{
+		title: "finds partner pad on the same part as start pad",
+		startPad: { partId: "U1", pinNum: "1", pos: [10, 10], netName: "USB_D+" },
+		partnerNet: "USB_D-",
+		expected: { partId: "U1", pinNum: "2", pos: [10, 12] },
+	},
+	{
+		title: "finds closest partner pad when no pad on same part exists",
+		startPad: { partId: "R1", pinNum: "1", pos: [48, 11], netName: "USB_D+" },
+		partnerNet: "USB_D-",
+		expected: { partId: "J1", pinNum: "3", pos: [50, 12] },
+	},
+	{
+		title: "returns null when partner net does not exist",
+		startPad: { partId: "U1", pinNum: "1", pos: [10, 10], netName: "USB_D+" },
+		partnerNet: "NONEXISTENT",
+		expected: null,
+	},
+];
 
 describe("calcMeasureReadout pure function", () => {
-	test("calculates distance, dx, dy, and angle for horizontal segment", () => {
-		const res = calcMeasureReadout([0, 0], [10, 0], "mm");
-		assert.equal(res.distance, 10);
-		assert.equal(res.dx, 10);
-		assert.equal(res.dy, 0);
-		assert.equal(res.angle, 0);
-		assert.equal(res.distStr, "10.0000 mm");
-		assert.equal(res.dxStr, "10.0000 mm");
-		assert.equal(res.dyStr, "0.0000 mm");
-		assert.equal(res.angleStr, "0.0°");
-		assert.ok(res.text.includes("10.0000 mm"));
-	});
-
-	test("calculates distance, dx, dy, and angle for 3-4-5 triangle", () => {
-		const res = calcMeasureReadout({ x: 0, y: 0 }, { x: 3, y: 4 }, "mm");
-		assert.equal(res.distance, 5);
-		assert.equal(res.dx, 3);
-		assert.equal(res.dy, 4);
-		assert.equal(res.distStr, "5.0000 mm");
-		assert.equal(res.angleStr, "53.1°");
-	});
+	for (const tc of MEASURE_READOUT_CASES) {
+		test(tc.title, () => {
+			const res = calcMeasureReadout(tc.p1, tc.p2, "mm");
+			assertObjectSubset(res, tc.expected);
+			if (tc.textIncludes) {
+				assert.ok(res.text.includes(tc.textIncludes));
+			}
+		});
+	}
 
 	test("respects inches and mils units", () => {
 		const inRes = calcMeasureReadout([0, 0], [25.4, 0], "in");
-		assert.equal(inRes.distStr, "1.0000 in");
-		assert.equal(inRes.dxStr, "1.0000 in");
+		assertObjectSubset(inRes, {
+			distStr: "1.0000 in",
+			dxStr: "1.0000 in",
+		});
 
 		const milRes = calcMeasureReadout([0, 0], [2.54, 0], "mil");
 		assert.equal(milRes.distStr, "100.0 mil");
@@ -71,153 +178,52 @@ describe("calcMeasureReadout pure function", () => {
 
 	test("handles zero distance without NaN", () => {
 		const res = calcMeasureReadout([5, 5], [5, 5], "mm");
-		assert.equal(res.distance, 0);
-		assert.equal(res.angle, 0);
-		assert.equal(res.distStr, "0.0000 mm");
+		assertObjectSubset(res, {
+			distance: 0,
+			angle: 0,
+			distStr: "0.0000 mm",
+		});
 	});
 });
 
 describe("calcLengthTuneDefaults pure function", () => {
-	test("prefills target length with +10% and standard amplitude/spacing", () => {
-		const defs = calcLengthTuneDefaults(10);
-		assert.equal(defs.currentLength, 10);
-		assert.equal(defs.targetLengthMm, 11);
-		assert.equal(defs.amplitudeMm, 1.0);
-		assert.equal(defs.spacingMm, 0.6);
-	});
-
-	test("handles fractional lengths correctly", () => {
-		const defs = calcLengthTuneDefaults(25.5);
-		assert.equal(defs.currentLength, 25.5);
-		assert.equal(defs.targetLengthMm, 28.05);
-	});
-
-	test("handles zero or non-numeric input", () => {
-		const defs = calcLengthTuneDefaults(0);
-		assert.equal(defs.currentLength, 0);
-		assert.equal(defs.targetLengthMm, 0);
-	});
+	for (const { title, len, expected } of LENGTH_TUNE_CASES) {
+		test(title, () => {
+			assertObjectSubset(calcLengthTuneDefaults(len), expected);
+		});
+	}
 });
 
 describe("resolveDiffPairDimensions pure function", () => {
-	test("returns default 0.2 mm width and 0.25 mm gap when setup is empty", () => {
-		const { widthMm, gapMm } = resolveDiffPairDimensions(null);
-		assert.equal(widthMm, 0.2);
-		assert.equal(gapMm, 0.25);
-	});
-
-	test("reads setup diffPairWidth and diffPairGap", () => {
-		const board = { setup: { diffPairWidth: 0.35, diffPairGap: 0.15 } };
-		const { widthMm, gapMm } = resolveDiffPairDimensions(board);
-		assert.equal(widthMm, 0.35);
-		assert.equal(gapMm, 0.15);
-	});
-
-	test("reads snake_case setup values", () => {
-		const board = { setup: { diff_pair_width: 0.18, diff_pair_gap: 0.22 } };
-		const { widthMm, gapMm } = resolveDiffPairDimensions(board);
-		assert.equal(widthMm, 0.18);
-		assert.equal(gapMm, 0.22);
-	});
+	for (const { title, board, dims } of DIFF_PAIR_CASES) {
+		test(title, () => {
+			assert.deepEqual(resolveDiffPairDimensions(board), dims);
+		});
+	}
 });
 
 describe("findPartnerPad pure function", () => {
-	const irFixture = {
-		nets: [
-			{
-				id: "net_dp_p",
-				name: "USB_D+",
-				pins: [
-					{ partId: "U1", pin: "1" },
-					{ partId: "J1", pin: "2" },
-				],
-			},
-			{
-				id: "net_dp_n",
-				name: "USB_D-",
-				pins: [
-					{ partId: "U1", pin: "2" },
-					{ partId: "J1", pin: "3" },
-				],
-			},
-		],
-	};
-
-	const padPositionsFixture = {
-		U1: {
-			1: [10, 10],
-			2: [10, 12],
-		},
-		J1: {
-			2: [50, 10],
-			3: [50, 12],
-		},
-	};
-
-	test("finds partner pad on the same part as start pad", () => {
-		const startPad = {
-			partId: "U1",
-			pinNum: "1",
-			pos: [10, 10],
-			netName: "USB_D+",
-		};
-		const partner = findPartnerPad(startPad, "USB_D-", {
-			ir: irFixture,
-			padPositions: padPositionsFixture,
-			pads: [],
+	for (const { title, startPad, partnerNet, expected } of PARTNER_PAD_CASES) {
+		test(title, () => {
+			const partner = findPartnerPad(startPad, partnerNet, partnerFixture);
+			if (expected === null) {
+				assert.equal(partner, null);
+			} else {
+				assert.ok(partner);
+				assertObjectSubset(partner, expected);
+			}
 		});
-		assert.ok(partner);
-		assert.equal(partner.partId, "U1");
-		assert.equal(partner.pinNum, "2");
-		assert.deepEqual(partner.pos, [10, 12]);
-	});
-
-	test("finds closest partner pad when no pad on same part exists", () => {
-		const startPad = {
-			partId: "R1",
-			pinNum: "1",
-			pos: [48, 11],
-			netName: "USB_D+",
-		};
-		const partner = findPartnerPad(startPad, "USB_D-", {
-			ir: irFixture,
-			padPositions: padPositionsFixture,
-			pads: [],
-		});
-		assert.ok(partner);
-		assert.equal(partner.partId, "J1");
-		assert.equal(partner.pinNum, "3");
-		assert.deepEqual(partner.pos, [50, 12]);
-	});
-
-	test("returns null when partner net does not exist", () => {
-		const startPad = {
-			partId: "U1",
-			pinNum: "1",
-			pos: [10, 10],
-			netName: "USB_D+",
-		};
-		const partner = findPartnerPad(startPad, "NONEXISTENT", {
-			ir: irFixture,
-			padPositions: padPositionsFixture,
-			pads: [],
-		});
-		assert.equal(partner, null);
-	});
+	}
 });
 
 describe("replaceTrackWithPoints pure function", () => {
 	test("replaces single track with multiple segments from meander output", () => {
-		const board = {
-			tracks: [
-				{
-					netId: "NET1",
-					layer: "F.Cu",
-					start: [0, 0],
-					end: [10, 0],
-					widthMm: 0.25,
-				},
-			],
+		const track = {
+			netId: "NET1",
+			layer: "F.Cu",
+			start: [0, 0],
+			end: [10, 0],
+			widthMm: 0.25,
 		};
 		const points = [
 			[0, 0],
@@ -227,29 +233,31 @@ describe("replaceTrackWithPoints pure function", () => {
 			[6, 0],
 			[10, 0],
 		];
-		const updated = replaceTrackWithPoints(board, 0, points);
+		const updated = replaceTrackWithPoints({ tracks: [track] }, 0, points);
 		assert.equal(updated.tracks.length, 5);
-		assert.deepEqual(updated.tracks[0].start, [0, 0]);
-		assert.deepEqual(updated.tracks[0].end, [4, 0]);
-		assert.equal(updated.tracks[0].netId, "NET1");
-		assert.equal(updated.tracks[0].layer, "F.Cu");
+		assertObjectSubset(updated.tracks[0], {
+			start: [0, 0],
+			end: [4, 0],
+			netId: "NET1",
+			layer: "F.Cu",
+		});
 	});
 });
 
 describe("PcbCanvas tool contracts", () => {
 	test("contains tool bus registrations for routeDiffPair, tuneLength, and measure", () => {
-		assert.ok(pcbCanvasSrc.includes("routeDiffPair:"));
-		assert.ok(pcbCanvasSrc.includes("tuneLength:"));
-		assert.ok(pcbCanvasSrc.includes("measure:"));
+		for (const name of ["routeDiffPair:", "tuneLength:", "measure:"]) {
+			assert.ok(pcbCanvasSrc.includes(name));
+		}
 	});
 
 	test("contains hotkey handling for 6, 7, and Ctrl+Shift+M", () => {
-		assert.ok(pcbCanvasSrc.includes('key === "6"'));
-		assert.ok(pcbCanvasSrc.includes('key === "7"'));
-		assert.ok(
-			pcbCanvasSrc.includes("ctrlKey") &&
-				pcbCanvasSrc.includes("shiftKey") &&
-				pcbCanvasSrc.includes('"m"'),
+		for (const key of ['key === "6"', 'key === "7"']) {
+			assert.ok(pcbCanvasSrc.includes(key));
+		}
+		const hasCombo = ["ctrlKey", "shiftKey", '"m"'].every((token) =>
+			pcbCanvasSrc.includes(token),
 		);
+		assert.ok(hasCombo);
 	});
 });
