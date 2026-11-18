@@ -593,6 +593,184 @@ async function checkStudio3D(page) {
 	}
 }
 
+function isGlbResponse(res) {
+	try {
+		return (
+			res.request().method() === "POST" && res.url().includes("/api/board/glb")
+		);
+	} catch (_err) {
+		return false;
+	}
+}
+
+function recordGlbResponse(res, glbState) {
+	glbState.response = res;
+	glbState.status = res.status();
+	const headers = res.headers();
+	glbState.contentType = headers["content-type"] || "";
+	if (
+		glbState.status === 200 &&
+		glbState.contentType.includes("model/gltf-binary")
+	) {
+		glbState.hasValidGlb = true;
+	}
+}
+
+function createHoloResponseTracker(glbState) {
+	return (res) => {
+		if (isGlbResponse(res)) {
+			recordGlbResponse(res, glbState);
+		}
+	};
+}
+
+function collectHoloFailures(glbState, canvasVisible) {
+	const failures = [];
+	if (!glbState.hasValidGlb) {
+		if (!glbState.response) {
+			failures.push("no response from /api/board/glb");
+		} else if (glbState.status !== 200) {
+			failures.push(`/api/board/glb status was ${glbState.status}`);
+		} else {
+			failures.push(
+				`glb content-type was not model/gltf-binary (${glbState.contentType || "empty"})`,
+			);
+		}
+	}
+	if (!canvasVisible) failures.push("canvas element not visible");
+	return failures.join(", ");
+}
+
+async function waitForHoloConditions(page, glbState, getPageError) {
+	const start = Date.now();
+	let canvasVisible = false;
+
+	while (Date.now() - start < 30000) {
+		assertNoError(getPageError);
+		canvasVisible = await checkCanvasVisible(page, canvasVisible);
+		if (canvasVisible && glbState.hasValidGlb) return;
+		await page.waitForTimeout(200);
+	}
+
+	assertNoError(getPageError);
+	const failure = collectHoloFailures(glbState, canvasVisible);
+	throw new Error(failure);
+}
+
+async function checkStudioHolo(page) {
+	const glbState = {
+		response: null,
+		status: null,
+		contentType: null,
+		hasValidGlb: false,
+	};
+	const errorRef = { current: null };
+	const onResponse = createHoloResponseTracker(glbState);
+	const onPageError = createPageErrorTracker(errorRef);
+
+	page.on("response", onResponse);
+	page.on("pageerror", onPageError);
+	try {
+		await prepareFreshEditor(page, "pcb");
+		await checkPcbPart(page);
+		await closeEditor(page);
+		await openStudio3D(page);
+		await waitAndClick(
+			page.getByRole("button", { name: "HOLO", exact: true }).first(),
+		);
+		await waitForHoloConditions(page, glbState, () => errorRef.current);
+	} finally {
+		page.off("response", onResponse);
+		page.off("pageerror", onPageError);
+	}
+}
+
+async function findLocalRepoControls(page) {
+	const controls = page
+		.locator("input[placeholder*='e.g. C:'], label:has-text('Local Repo Root')")
+		.first();
+	if (await controls.isVisible().catch(() => false)) return controls;
+
+	const projectsBtn = page
+		.getByRole("button", { name: "Projects", exact: true })
+		.first();
+	if (await projectsBtn.isVisible().catch(() => false)) {
+		await projectsBtn.click({ timeout: 2000 }).catch(() => {});
+	}
+	if (await controls.isVisible().catch(() => false)) return controls;
+
+	const openBtn = page
+		.getByRole("button", { name: "Open controls", exact: true })
+		.first();
+	if (await openBtn.isVisible().catch(() => false)) {
+		await openBtn.click({ timeout: 2000 }).catch(() => {});
+	}
+	await controls.waitFor({ state: "visible", timeout: 5000 });
+	return controls;
+}
+
+function assertDiffFolderLookupResult(hit, invalid) {
+	if (hit.status !== 200) {
+		throw new Error(
+			`GET name=Banana2.0 status was ${hit.status} (expected 200)`,
+		);
+	}
+	const matches = hit.data?.matches;
+	if (!Array.isArray(matches) || matches.length === 0) {
+		throw new Error(
+			`matches was ${JSON.stringify(matches)} (expected non-empty array)`,
+		);
+	}
+	const nonAbs = matches.filter(
+		(p) => typeof p !== "string" || !path.isAbsolute(p),
+	);
+	if (nonAbs.length > 0) {
+		throw new Error(
+			`matches contains non-absolute paths: ${JSON.stringify(nonAbs)}`,
+		);
+	}
+	if (invalid.status !== 400) {
+		throw new Error(`GET name=.. status was ${invalid.status} (expected 400)`);
+	}
+}
+
+async function checkDiffFolderLookup(page) {
+	await page.addInitScript(() => {
+		try {
+			if (!localStorage.getItem("banana:lastRepoPath")) {
+				localStorage.setItem("banana:lastRepoPath", "Banana2.0");
+			}
+		} catch (_err) {
+			// ponytail: ignore storage errors in init script
+		}
+	});
+
+	const baseUrl = process.env.BANANA_URL || "http://localhost:5173/";
+	await page.goto(baseUrl, { timeout: 5000 });
+	await findLocalRepoControls(page);
+
+	const apiBase = process.env.BANANA_API_URL || "http://127.0.0.1:5000";
+	const result = await page.evaluate(async (base) => {
+		const host = (base || "http://127.0.0.1:5000").replace(/\/+$/, "");
+		const queryRepo = async (name) => {
+			const url = `${host}/api/local-repos/find?name=${encodeURIComponent(name)}`;
+			const res = await fetch(url);
+			let data = null;
+			try {
+				data = await res.json();
+			} catch (_err) {
+				// ponytail: non-json response
+			}
+			return { status: res.status, data };
+		};
+		const hit = await queryRepo("Banana2.0");
+		const invalid = await queryRepo("..");
+		return { hit, invalid };
+	}, apiBase);
+
+	assertDiffFolderLookupResult(result.hit, result.invalid);
+}
+
 const CHECKS = [
 	{ id: "pcb_part", docType: "pcb", run: checkPcbPart },
 	{ id: "pcb_outline", docType: "pcb", run: checkPcbOutline },
@@ -608,6 +786,8 @@ const CHECKS = [
 	{ id: "nav_zoom", docType: "pcb", run: checkNavZoom },
 	{ id: "layout", docType: "pcb", run: checkLayout },
 	{ id: "studio_3d", run: checkStudio3D },
+	{ id: "studio_holo", run: checkStudioHolo },
+	{ id: "diff_folder_lookup", run: checkDiffFolderLookup },
 ];
 
 async function runCheck(check, page) {
