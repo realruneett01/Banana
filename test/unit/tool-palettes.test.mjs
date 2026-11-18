@@ -36,7 +36,7 @@ const EXPECTED_SCHEMATIC_TOOL_IDS = [
 	...SCHEMATIC_ANNOTATION_TOOLS,
 ];
 
-const UNREADY_SCHEMATIC_TOOL_IDS = ["highlightNet", "placeSheet"];
+const UNREADY_SCHEMATIC_TOOL_IDS = ["placeSheet"];
 
 const PCB_LAYOUT_TOOLS = ["placeFootprint", "routeTrack", "addVia", "addZone"];
 

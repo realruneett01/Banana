@@ -311,12 +311,26 @@ function testWireHitWithMap(nets, allPinPos, pt, wireTol = 1.27) {
 	return null;
 }
 
+function testJunctionHit(junctions, pt, tol = 1.27) {
+	if (!Array.isArray(junctions) || junctions.length === 0 || !pt) return null;
+	for (const j of junctions) {
+		const jx = j.x ?? j[0] ?? 0;
+		const jy = j.y ?? j[1] ?? 0;
+		if (Math.hypot(pt.x - jx, pt.y - jy) <= tol) {
+			return { kind: "junction", id: j.id ?? `junc-${jx}:${jy}`, x: jx, y: jy };
+		}
+	}
+	return null;
+}
+
 function schematicHitTest(doc, allPinPos, pt, zoom) {
 	const wireTol = wireHitTolerance(zoom);
 	const annHit = hitTestAnnotation(doc.ir?.annotations, pt, wireTol);
 	if (annHit) return { kind: "annotation", id: annHit };
 	const pinHit = testPinHitWithMap(allPinPos, pt);
 	if (pinHit) return pinHit;
+	const juncHit = testJunctionHit(doc.ir?.junctions, pt, wireTol);
+	if (juncHit) return juncHit;
 	const nets = doc.ir?.nets ?? [];
 	const wireHit = testWireHitWithMap(nets, allPinPos, pt, wireTol);
 	if (wireHit) return wireHit;
@@ -922,6 +936,7 @@ function resetToolMode(target) {
 	target.setAnnotationTool?.(null);
 	target.setLineStart?.(null);
 	target.setTextModal?.(null);
+	target.setHighlightMode?.(false);
 }
 
 function handleWireModeKey(ctx) {
@@ -1068,7 +1083,31 @@ const ACTION_KEY_HANDLERS = {
 	redo: (ctx) => ctx.handleRedo(),
 };
 
+function handleBackquoteKey(ctx) {
+	if (ctx.cursorWorld) {
+		const hit = schematicHitTest(
+			ctx.doc,
+			ctx.allPinPos,
+			ctx.cursorWorld,
+			ctx.vp.zoom,
+		);
+		const net = resolveNetForHit(hit, ctx.doc?.ir, ctx.allPinPos);
+		if (net) {
+			ctx.setHighlightNet?.(net);
+			return;
+		}
+	}
+	const nextMode = !ctx.highlightMode;
+	resetToolMode(ctx);
+	ctx.setHighlightMode?.(nextMode);
+}
+
 function handleKeyDown(e, ctx) {
+	if ((e.key === "`" || e.code === "Backquote") && !isTypingTarget(e.target)) {
+		e.preventDefault();
+		handleBackquoteKey(ctx);
+		return;
+	}
 	const handler = ACTION_KEY_HANDLERS[resolveSchematicAction(e)];
 	if (!handler) return;
 	e.preventDefault();
@@ -1105,7 +1144,7 @@ function connectPinsIfTouched(startPin, nextPin, dispatchCmd) {
 	});
 }
 
-function arePinsInSameNet(nets, partIdA, pinA, partIdB, pinB) {
+function arePinsInSameNet(nets, { partIdA, pinA, partIdB, pinB }) {
 	return (nets ?? []).some(
 		(n) =>
 			n.pins?.some((p) => p.partId === partIdA && p.pin === pinA) &&
@@ -1116,9 +1155,7 @@ function arePinsInSameNet(nets, partIdA, pinA, partIdB, pinB) {
 function syncConnectedWirePins(annotations, nets, allPinPos, dispatchCmd) {
 	const pairs = findPinsConnectedByWires(annotations, allPinPos, SCH_GRID);
 	for (const pair of pairs) {
-		if (
-			!arePinsInSameNet(nets, pair.partIdA, pair.pinA, pair.partIdB, pair.pinB)
-		) {
+		if (!arePinsInSameNet(nets, pair)) {
 			dispatchCmd({ type: "connect", ...pair });
 		}
 	}
@@ -1422,23 +1459,30 @@ function commitPartDrag(dragState, dragPos, dispatchCmd) {
 	}
 }
 
-function updateNetHighlight(hit, doc, hitCtx) {
+function updateNetHighlight(hit, doc, hitCtx, allPinPos) {
 	if (hitCtx.wireMode || hitCtx.armedPart || hitCtx.annotationTool) return;
+	if (hitCtx.highlightMode) {
+		const next = resolveNetForHit(hit, doc.ir, allPinPos);
+		hitCtx.setHighlightNet?.(next);
+		return;
+	}
 	const next = nextHighlight(hit, doc.ir);
 	if (next !== undefined) hitCtx.setHighlightNet?.(next);
 }
 
-function onPointerDownEvent(e, ctx) {
-	const { svgRef, vp, isSpaceDown, panDragRef, doc, allPinPos, hitCtx } = ctx;
-	if (!svgRef.current) return;
-	if (e.button === 0 && isSpaceDown) {
-		startPanDrag(e, vp, panDragRef);
-		return;
+function shouldIgnorePointerDown(e, ctx) {
+	if (!ctx.svgRef.current) return true;
+	if (e.button !== 0) return true;
+	if (ctx.isSpaceDown) {
+		startPanDrag(e, ctx.vp, ctx.panDragRef);
+		return true;
 	}
-	if (e.button !== 0 || ctx.keyboardMove) return;
-	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
-	const hit = schematicHitTest(doc, allPinPos, worldPt, vp.zoom);
-	updateNetHighlight(hit, doc, hitCtx);
+	return Boolean(ctx.keyboardMove);
+}
+
+function dispatchPointerDownTool(e, hit, ctx, worldPt) {
+	const { hitCtx, doc } = ctx;
+	if (hitCtx.highlightMode) return;
 	if (hitCtx.armedPart) {
 		handleArmedClick(hit, { ...hitCtx, doc, worldPt });
 		return;
@@ -1452,10 +1496,25 @@ function onPointerDownEvent(e, ctx) {
 	handlePointerDownHit(hit, { ...hitCtx, doc, worldPt, capturePointer });
 }
 
+function onPointerDownEvent(e, ctx) {
+	if (shouldIgnorePointerDown(e, ctx)) return;
+	const { svgRef, vp, doc, allPinPos, hitCtx } = ctx;
+	const worldPt = clientToWorld(e.clientX, e.clientY, svgRef.current, vp);
+	const hit = schematicHitTest(doc, allPinPos, worldPt, vp.zoom);
+	updateNetHighlight(hit, doc, hitCtx, allPinPos);
+	dispatchPointerDownTool(e, hit, ctx, worldPt);
+}
+
 function usePointerDown(svgRef, editorState, wireState, dragInit) {
 	const { vp, isSpaceDown, wireMode, allPinPos } = wireState;
-	const { doc, dispatchCmd, armedPart, setHighlightNet, annotationSession } =
-		editorState;
+	const {
+		doc,
+		dispatchCmd,
+		armedPart,
+		setHighlightNet,
+		highlightMode,
+		annotationSession,
+	} = editorState;
 	const { panDragRef, setDragState, setBoxDrag, keyboardMove } = dragInit;
 	const hitCtx = useMemo(
 		() => ({
@@ -1466,6 +1525,7 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 			setBoxDrag,
 			armedPart,
 			setHighlightNet,
+			highlightMode,
 			annotationTool: annotationSession?.annotationTool,
 			lineStart: annotationSession?.lineStart,
 			setLineStart: annotationSession?.setLineStart,
@@ -1479,6 +1539,7 @@ function usePointerDown(svgRef, editorState, wireState, dragInit) {
 			setBoxDrag,
 			armedPart,
 			setHighlightNet,
+			highlightMode,
 			annotationSession?.annotationTool,
 			annotationSession?.lineStart,
 			annotationSession?.setLineStart,
@@ -1640,6 +1701,8 @@ function handleBusTool(payload, setters) {
 	resetToolMode(setters);
 	if (tool === "placeWire") {
 		setters.setWireMode(true);
+	} else if (tool === "highlightNet") {
+		setters.setHighlightMode(true);
 	} else if (isPlaceTool(tool) && item) {
 		setters.setArmedPart({ tool, item });
 	} else if (isAnnotationTool(tool)) {
@@ -1647,9 +1710,11 @@ function handleBusTool(payload, setters) {
 	}
 }
 
-function reportActiveTool(wireMode, armedPart, annotationTool) {
+function reportActiveTool(wireMode, armedPart, annotationTool, highlightMode) {
 	if (wireMode) {
 		emitActiveTool({ tab: "schematic", tool: "placeWire", item: null });
+	} else if (highlightMode) {
+		emitActiveTool({ tab: "schematic", tool: "highlightNet", item: null });
 	} else if (armedPart) {
 		emitActiveTool({
 			tab: "schematic",
@@ -1703,6 +1768,8 @@ function useToolBus({
 	setWireStart,
 	containerRef,
 	annotationSession,
+	highlightMode,
+	setHighlightMode,
 }) {
 	const [armedPart, setArmedPart] = useState(null);
 	const { annotationTool, setAnnotationTool, setLineStart, setTextModal } =
@@ -1716,6 +1783,7 @@ function useToolBus({
 			setAnnotationTool,
 			setLineStart,
 			setTextModal,
+			setHighlightMode,
 		};
 		return onEditorTool((p) => {
 			focusCanvas(containerRef);
@@ -1728,11 +1796,12 @@ function useToolBus({
 		setAnnotationTool,
 		setLineStart,
 		setTextModal,
+		setHighlightMode,
 	]);
 
 	useEffect(() => {
-		reportActiveTool(wireMode, armedPart, annotationTool);
-	}, [wireMode, armedPart, annotationTool]);
+		reportActiveTool(wireMode, armedPart, annotationTool, highlightMode);
+	}, [wireMode, armedPart, annotationTool, highlightMode]);
 
 	return { armedPart, setArmedPart };
 }
@@ -1810,6 +1879,8 @@ function useKeyContext(ed, wire, ptr, view) {
 		allPinPos,
 		setArmedPart,
 		setHighlightNet,
+		highlightMode,
+		setHighlightMode,
 		annotationSession,
 	} = view;
 	return useMemo(
@@ -1830,6 +1901,8 @@ function useKeyContext(ed, wire, ptr, view) {
 			svgRef,
 			setArmedPart,
 			setHighlightNet,
+			highlightMode,
+			setHighlightMode,
 			annotationTool: annotationSession?.annotationTool,
 			setAnnotationTool: annotationSession?.setAnnotationTool,
 			lineStart: annotationSession?.lineStart,
@@ -1852,6 +1925,8 @@ function useKeyContext(ed, wire, ptr, view) {
 			svgRef,
 			setArmedPart,
 			setHighlightNet,
+			highlightMode,
+			setHighlightMode,
 			annotationSession?.annotationTool,
 			annotationSession?.setAnnotationTool,
 			annotationSession?.lineStart,
@@ -1880,10 +1955,17 @@ function useSchematicCanvasState({
 	const svgRef = useRef(null);
 	const [isSpaceDown, setIsSpaceDown] = useState(false);
 	const [highlightNet, setHighlightNet] = useState(null);
+	const [highlightMode, setHighlightMode] = useState(false);
 	const { view, setView, vp } = useCanvasViewport();
 	const wire = useWireSession();
 	const annotationSession = useAnnotationSession();
-	const busInit = { ...wire, containerRef, annotationSession };
+	const busInit = {
+		...wire,
+		containerRef,
+		annotationSession,
+		highlightMode,
+		setHighlightMode,
+	};
 	const { armedPart, setArmedPart } = useToolBus(busInit);
 	const { ed, symbolCache, allPinPos } = useEditorModel(
 		editor,
@@ -1899,9 +1981,18 @@ function useSchematicCanvasState({
 			symbolCache,
 			armedPart,
 			setHighlightNet,
+			highlightMode,
+			setHighlightMode,
 			annotationSession,
 		}),
-		[ed.doc, ed.dispatchCmd, symbolCache, armedPart, annotationSession],
+		[
+			ed.doc,
+			ed.dispatchCmd,
+			symbolCache,
+			armedPart,
+			highlightMode,
+			annotationSession,
+		],
 	);
 	const ptr = usePointerInteractions(svgRef, editorState, wireState);
 	const viewCtx = {
@@ -1910,6 +2001,8 @@ function useSchematicCanvasState({
 		allPinPos,
 		setArmedPart,
 		setHighlightNet,
+		highlightMode,
+		setHighlightMode,
 		annotationSession,
 	};
 	const keyCtx = useKeyContext(ed, wire, ptr, viewCtx);
@@ -1930,6 +2023,7 @@ function useSchematicCanvasState({
 		isSpaceDown,
 		setIsSpaceDown,
 		highlightNet,
+		highlightMode,
 	};
 }
 
@@ -2153,23 +2247,193 @@ function SchematicCrosshair({ cursorWorld, vp, theme }) {
 	);
 }
 
-function SchematicNetHighlightLayer({ highlightNet, allPinPos, theme }) {
-	const points = netRingPoints(highlightNet, allPinPos);
-	if (points.length === 0) return null;
-	const color = getSchematicColor(theme, "highlight") || "#facc15";
+function findNetByNameOrId(ir, identifier) {
+	if (!identifier || !ir?.nets) return null;
 	return (
-		<g style={{ pointerEvents: "none" }}>
-			{points.map((pt) => (
-				<circle
-					key={`${pt.x},${pt.y}`}
-					cx={pt.x}
-					cy={pt.y}
-					r={1.2}
-					fill="none"
+		ir.nets.find((n) => n.id === identifier || n.name === identifier) ?? null
+	);
+}
+
+function isNearPoint(p1, p2, tol) {
+	return Math.hypot(p1.x - p2.x, p1.y - p2.y) <= tol;
+}
+
+function resolveWireAnnNet(ann, ir, allPinPos, tol) {
+	const p1 = findPinNearPoint({ x: ann.x, y: ann.y }, allPinPos, tol);
+	if (p1) return netItemsAt(ir, p1);
+	const p2 = findPinNearPoint(
+		{ x: ann.x2 ?? ann.x, y: ann.y2 ?? ann.y },
+		allPinPos,
+		tol,
+	);
+	if (p2) return netItemsAt(ir, p2);
+	const wires = (ir?.annotations || []).filter((a) => a.kind === "wire");
+	if (wires.length > 0 && allPinPos) {
+		const find = createDisjointSet(wires);
+		const root = find(wirePtKey(ann.x, ann.y));
+		const groups = groupPinsByWireTree(allPinPos, wires, find, tol);
+		const pins = groups.get(root);
+		if (pins?.[0]) return netItemsAt(ir, pins[0]);
+	}
+	return null;
+}
+
+function resolveLabelAnnNet(ann, ir, allPinPos, tol) {
+	const net = findNetByNameOrId(ir, ann.text);
+	if (net) return netItemsAt(ir, { netId: net.id });
+	const pt = { x: ann.x, y: ann.y };
+	const pin = findPinNearPoint(pt, allPinPos, tol);
+	if (pin) return netItemsAt(ir, pin);
+	const wHit = testWireHitWithMap(ir?.nets || [], allPinPos, pt, tol);
+	if (wHit) return netItemsAt(ir, { netId: wHit.id });
+	return null;
+}
+
+function resolveJunctionNet(junc, ir, allPinPos, tol) {
+	const pt = { x: junc.x ?? junc[0] ?? 0, y: junc.y ?? junc[1] ?? 0 };
+	const pin = findPinNearPoint(pt, allPinPos, tol);
+	if (pin) return netItemsAt(ir, pin);
+	const wHit = testWireHitWithMap(ir?.nets || [], allPinPos, pt, tol);
+	if (wHit) return netItemsAt(ir, { netId: wHit.id });
+	const wireAnn = (ir?.annotations || []).find(
+		(a) =>
+			a.kind === "wire" &&
+			(isNearPoint(pt, a, tol) ||
+				isNearPoint(pt, { x: a.x2 ?? a.x, y: a.y2 ?? a.y }, tol)),
+	);
+	if (wireAnn) return resolveWireAnnNet(wireAnn, ir, allPinPos, tol);
+	return null;
+}
+
+function isTextAnnotationKind(kind) {
+	return kind === "label" || kind === "globalLabel" || kind === "hierLabel";
+}
+
+function resolveAnnotationNet(ann, ir, allPinPos, tol) {
+	if (!ann) return null;
+	if (ann.netId !== undefined) return netItemsAt(ir, { netId: ann.netId });
+	if (ann.kind === "wire") return resolveWireAnnNet(ann, ir, allPinPos, tol);
+	if (ann.kind === "junction")
+		return resolveJunctionNet(ann, ir, allPinPos, tol);
+	if (isTextAnnotationKind(ann.kind) || ann.kind === "text") {
+		return resolveLabelAnnNet(ann, ir, allPinPos, tol);
+	}
+	return null;
+}
+
+function resolvePinNet(hit, ir) {
+	if (!hit.pin) return null;
+	const partId = hit.id ?? hit.partId;
+	return netItemsAt(ir, { partId, pin: hit.pin });
+}
+
+function resolveWireNet(hit, ir) {
+	return hit.id ? netItemsAt(ir, { netId: hit.id }) : null;
+}
+
+function resolveAnnotationHitNet(hit, ir, allPinPos, tol) {
+	const ann = (ir.annotations || []).find((a) => a.id === hit.id);
+	return resolveAnnotationNet(ann, ir, allPinPos, tol);
+}
+
+const HIT_KIND_RESOLVERS = {
+	pin: (hit, ir) => resolvePinNet(hit, ir),
+	wire: (hit, ir) => resolveWireNet(hit, ir),
+	annotation: resolveAnnotationHitNet,
+	junction: resolveJunctionNet,
+};
+
+function resolveHitByKind(hit, ir, allPinPos, tol) {
+	const resolver = HIT_KIND_RESOLVERS[hit.kind];
+	return resolver ? resolver(hit, ir, allPinPos, tol) : null;
+}
+
+export function resolveNetForHit(hit, ir, allPinPos, tol = 1.27) {
+	if (!hit || !ir) return null;
+	if (hit.netId !== undefined) return netItemsAt(ir, { netId: hit.netId });
+	return resolveHitByKind(hit, ir, allPinPos, tol);
+}
+
+function findHighlightedWireAnnotations(annotations, netPins, allPinPos) {
+	if (!Array.isArray(annotations) || !Array.isArray(netPins) || !allPinPos) {
+		return [];
+	}
+	const pinPoints = new Set(
+		netPins
+			.map((p) => allPinPos.get(`${p.partId}:${p.pin}`))
+			.filter(Boolean)
+			.map((pos) => `${pos[0]},${pos[1]}`),
+	);
+	return annotations.filter(
+		(a) =>
+			a.kind === "wire" &&
+			(pinPoints.has(`${a.x},${a.y}`) ||
+				pinPoints.has(`${a.x2 ?? a.x},${a.y2 ?? a.y}`)),
+	);
+}
+
+function HighlightWires({ polylines, wireAnns, color }) {
+	return (
+		<>
+			{polylines.map((poly) => {
+				const pKey = `hl-${poly[0][0]}-${poly[0][1]}-${poly[poly.length - 1][0]}-${poly[poly.length - 1][1]}`;
+				return (
+					<polyline
+						key={pKey}
+						points={poly.map((pt) => `${pt[0]},${pt[1]}`).join(" ")}
+						fill="none"
+						stroke={color}
+						strokeWidth={0.6}
+					/>
+				);
+			})}
+			{wireAnns.map((a) => (
+				<line
+					key={`hl-ann-${a.id}`}
+					x1={a.x}
+					y1={a.y}
+					x2={a.x2 ?? a.x}
+					y2={a.y2 ?? a.y}
 					stroke={color}
-					strokeWidth={0.3}
+					strokeWidth={0.6}
 				/>
 			))}
+		</>
+	);
+}
+
+function HighlightPinRings({ points, color }) {
+	return points.map((pt) => (
+		<circle
+			key={`hl-pin-${pt.x},${pt.y}`}
+			cx={pt.x}
+			cy={pt.y}
+			r={1.2}
+			fill="none"
+			stroke={color}
+			strokeWidth={0.5}
+		/>
+	));
+}
+
+function SchematicNetHighlightLayer({ highlightNet, allPinPos, doc, theme }) {
+	if (!highlightNet) return null;
+	const points = netRingPoints(highlightNet, allPinPos);
+	const color = getSchematicColor(theme, "highlight") || "#facc15";
+	const net = (doc?.ir?.nets || []).find((n) => n.id === highlightNet.netId);
+	const polylines = net ? wireForNet(net, allPinPos) : [];
+	const wireAnns = findHighlightedWireAnnotations(
+		doc?.ir?.annotations,
+		highlightNet.pins,
+		allPinPos,
+	);
+	return (
+		<g
+			className="schematic-net-highlight-layer"
+			style={{ pointerEvents: "none" }}
+		>
+			<HighlightWires polylines={polylines} wireAnns={wireAnns} color={color} />
+			<HighlightPinRings points={points} color={color} />
 		</g>
 	);
 }
@@ -2182,37 +2446,41 @@ function nextHighlight(hit, ir) {
 }
 
 function SchematicSvgScene({ s, problems, theme, highlightNet }) {
+	const isDimmed = Boolean(highlightNet);
 	return (
 		<g transform={`translate(${s.vp.pan.x},${s.vp.pan.y}) scale(${s.vp.zoom})`}>
-			<SchematicGrid zoom={s.vp.zoom} theme={theme} />
-			<SchematicNetsLayer
-				nets={s.doc.ir?.nets}
-				allPinPos={s.allPinPos}
-				selection={s.doc.selection}
-				theme={theme}
-				annotations={s.doc.ir?.annotations}
-			/>
+			<g opacity={isDimmed ? 0.35 : 1}>
+				<SchematicGrid zoom={s.vp.zoom} theme={theme} />
+				<SchematicNetsLayer
+					nets={s.doc.ir?.nets}
+					allPinPos={s.allPinPos}
+					selection={s.doc.selection}
+					theme={theme}
+					annotations={s.doc.ir?.annotations}
+				/>
+				<SchematicPartsLayer
+					parts={s.doc.ir?.parts}
+					selection={s.doc.selection}
+					wire={s.wire}
+					symbolCache={s.symbolCache}
+					theme={theme}
+				/>
+				<SchAnnotationLayer
+					annotations={s.doc.ir?.annotations}
+					selection={s.doc.selection}
+					dragPos={s.wire.dragPos}
+					theme={theme}
+				/>
+				<SchematicGhostLayer s={s} theme={theme} />
+				<SchematicJunctionsLayer doc={s.doc} theme={theme} />
+				<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
+			</g>
 			<SchematicNetHighlightLayer
 				highlightNet={highlightNet}
 				allPinPos={s.allPinPos}
+				doc={s.doc}
 				theme={theme}
 			/>
-			<SchematicPartsLayer
-				parts={s.doc.ir?.parts}
-				selection={s.doc.selection}
-				wire={s.wire}
-				symbolCache={s.symbolCache}
-				theme={theme}
-			/>
-			<SchAnnotationLayer
-				annotations={s.doc.ir?.annotations}
-				selection={s.doc.selection}
-				dragPos={s.wire.dragPos}
-				theme={theme}
-			/>
-			<SchematicGhostLayer s={s} theme={theme} />
-			<SchematicJunctionsLayer doc={s.doc} theme={theme} />
-			<SchematicProblemsOverlay parts={s.doc.ir?.parts} problems={problems} />
 		</g>
 	);
 }
@@ -2352,7 +2620,11 @@ export default function SchematicCanvas({
 			tabIndex={0}
 			role="region"
 			aria-label="Schematic editor"
-			style={{ ...CANVAS_CONTAINER_STYLE, background: bg }}
+			style={{
+				...CANVAS_CONTAINER_STYLE,
+				background: bg,
+				cursor: s.highlightMode ? "crosshair" : "default",
+			}}
 			onKeyDown={(e) => handleCanvasKeyDown(e, s.setIsSpaceDown, s.keyCtx)}
 			onKeyUp={(e) => handleCanvasKeyUp(e, s.setIsSpaceDown)}
 			onDoubleClick={(e) => handleCanvasDoubleClick(e, s)}

@@ -33,7 +33,7 @@ function deepFreeze(obj) {
 
 const SCHEMATIC_TOOL_TEXT = `
 select|Select|esc|select|1
-highlightNet|Highlight net|backquote|net|0
+highlightNet|Highlight net|backquote|net|1
 placeSymbol|Add symbol|a|symbol|1
 placePower|Add power|p|power|1
 placeWire|Wire|w|wire|1
