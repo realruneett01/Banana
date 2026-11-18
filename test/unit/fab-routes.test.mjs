@@ -9,145 +9,219 @@ import { createFabRouter } from "../../backend/src/routes/fab-routes.js";
 
 const VALID_PCB = "(kicad_pcb (version 20240108) (generator test))";
 
-function writeExecOutputs(kind, args, tmpDir, extraFiles) {
-	const outArg = args[args.indexOf("--output") + 1];
-	if (outArg) {
-		const isDir = outArg.endsWith(path.sep) || outArg.endsWith("/");
-		const outPath = isDir ? path.join(outArg, `${kind}-out.dat`) : outArg;
-		fs.writeFileSync(outPath, `mock-${kind}`);
+function writeMockSideFiles(targetDir, fileList) {
+	if (!fileList || fileList.length === 0) {
+		return;
 	}
-	for (const rel of extraFiles) {
-		const target = path.join(tmpDir, rel);
-		fs.mkdirSync(path.dirname(target), { recursive: true });
-		fs.writeFileSync(target, "mock-extra");
-	}
+	const [head, ...tail] = fileList;
+	const fullPath = path.join(targetDir, head);
+	fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+	fs.writeFileSync(fullPath, "mock-extra");
+	writeMockSideFiles(targetDir, tail);
 }
 
-function makeFakeExec(options = {}) {
-	const {
-		failKind = null,
-		stderr = "mock kicad error",
-		extraFiles = [],
-	} = options;
-	let capturedTmpDir = null;
-	const calls = [];
+class MockKicadCli {
+	constructor(options = {}) {
+		this.failKind = options.failKind ?? null;
+		this.stderr = options.stderr ?? "mock kicad error";
+		this.extraFiles = options.extraFiles ?? [];
+		this.capturedTmpDir = null;
+		this.calls = [];
+	}
 
-	const execFileImpl = (_file, args, _opts, cb) => {
-		calls.push({ args });
+	getTmpDir() {
+		return this.capturedTmpDir;
+	}
+
+	exec(_file, args, _opts, callback) {
+		this.calls.push({ args });
 		const kind = args[2];
 		const pcbPath = args[args.length - 1];
-		capturedTmpDir = path.dirname(pcbPath);
-		writeExecOutputs(kind, args, capturedTmpDir, extraFiles);
-		if (failKind === kind || failKind === "all") {
-			return cb(new Error("exec failed"), "", stderr);
+		this.capturedTmpDir = path.dirname(pcbPath);
+		this.writeOutputArtifact(kind, args);
+		if (this.failKind === kind || this.failKind === "all") {
+			return callback(new Error("exec failed"), "", this.stderr);
 		}
-		return cb(null, "success", "");
-	};
+		return callback(null, "success", "");
+	}
 
-	return { execFileImpl, calls, getTmpDir: () => capturedTmpDir };
+	writeOutputArtifact(kind, args) {
+		const outIdx = args.indexOf("--output");
+		if (outIdx !== -1) {
+			const outTarget = args[outIdx + 1];
+			const isDir = outTarget.endsWith(path.sep) || outTarget.endsWith("/");
+			const targetFile = isDir
+				? path.join(outTarget, `${kind}-out.dat`)
+				: outTarget;
+			fs.writeFileSync(targetFile, `mock-${kind}`);
+		}
+		writeMockSideFiles(this.capturedTmpDir, this.extraFiles);
+	}
 }
 
-function startServer(app) {
-	const server = http.createServer(app);
+function launchHttpServer(app) {
 	return new Promise((resolve) => {
-		server.listen(0, "127.0.0.1", () => {
-			resolve({ server, port: server.address().port });
+		const s = http.createServer(app);
+		s.listen(0, "127.0.0.1", () => {
+			resolve({ server: s, port: s.address().port });
 		});
 	});
 }
 
-function stopServer(server) {
+function terminateHttpServer(server) {
 	return new Promise((resolve) => {
-		if (!server) return resolve();
+		if (!server) {
+			resolve();
+			return;
+		}
 		server.close(resolve);
 	});
 }
 
-async function postJson(port, urlPath, payload) {
+async function withEphemeralServer(config, testBlock) {
+	const app = config.customApp ?? express();
+	if (!config.customApp) {
+		app.use(express.json({ limit: "32mb" }));
+		app.use(
+			"/api",
+			createFabRouter({
+				execFileImpl: config.execFileImpl,
+				cliPath: config.cliPath ?? process.execPath,
+			}),
+		);
+	}
+	const { server, port } = await launchHttpServer(app);
+	try {
+		await testBlock(port);
+	} finally {
+		await terminateHttpServer(server);
+	}
+}
+
+async function initFabServer(cliMock) {
+	const app = express();
+	app.use(express.json({ limit: "32mb" }));
+	app.use(
+		"/api",
+		createFabRouter({
+			execFileImpl: (f, a, o, cb) => cliMock.exec(f, a, o, cb),
+			cliPath: process.execPath,
+		}),
+	);
+	return launchHttpServer(app);
+}
+
+async function requestExport(port, payload, urlPath = "/api/fab/export") {
 	const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(payload),
 	});
-	const text = await res.text();
-	let json = {};
+	const rawText = await res.text();
+	let parsedJson = {};
 	try {
-		json = JSON.parse(text);
-	} catch {
-		// Non-JSON response fallback
+		parsedJson = JSON.parse(rawText);
+	} catch (err) {
+		parsedJson = { unparsed: rawText, parseError: err.message };
 	}
-	return { status: res.status, json, text };
+	return { status: res.status, json: parsedJson, text: rawText };
+}
+
+function assertErrorResponse(res, expectedStatus, expectedSnippet) {
+	assert.equal(res.status, expectedStatus);
+	if (expectedSnippet) {
+		assert.ok(res.json.error.includes(expectedSnippet));
+	} else {
+		assert.equal(typeof res.json.error, "string");
+	}
+}
+
+function assertFileCount(res, count) {
+	assert.equal(res.status, 200);
+	assert.equal(res.json.files.length, count);
+}
+
+function assertExportFiles(res, expectedNames) {
+	assertFileCount(res, expectedNames.length);
+	const names = res.json.files.map((f) => f.name);
+	assert.deepEqual(names, expectedNames);
+}
+
+function assertExcludesSideFiles(names) {
+	const ignoredFiles = [
+		"board.kicad_prl",
+		"board.kicad_pro",
+		"board.lck",
+		"fp-info-cache",
+	];
+	const foundIgnored = names.some(
+		(name) => ignoredFiles.includes(name) || name.startsWith("backups"),
+	);
+	assert.equal(foundIgnored, false);
+}
+
+function assertTmpDirCleaned(mockCli) {
+	assert.equal(fs.existsSync(mockCli.getTmpDir()), false);
+}
+
+function assertDefaultExportSuccess(res, mockCli) {
+	assertFileCount(res, 5);
+	assert.equal(res.json.log.length, 5);
+	const names = res.json.files.map((f) => f.name);
+	const expected = [
+		"board-pos.csv",
+		"board.pdf",
+		"board.step",
+		"drill/drill-out.dat",
+		"gerbers/gerbers-out.dat",
+	];
+	assert.deepEqual(names.sort(), expected.sort());
+	const posEntry = res.json.files.find((f) => f.name === "board-pos.csv");
+	const posContent = Buffer.from(posEntry.base64, "base64").toString("utf8");
+	assert.equal(posContent, "mock-pos");
+	assertTmpDirCleaned(mockCli);
 }
 
 describe("fab-routes unit tests", () => {
 	let server;
 	let port;
-	let fake;
+	let mockCli;
 
 	before(async () => {
-		fake = makeFakeExec();
-		const app = express();
-		app.use(express.json({ limit: "32mb" }));
-		app.use(
-			"/api",
-			createFabRouter({
-				execFileImpl: fake.execFileImpl,
-				cliPath: process.execPath,
-			}),
-		);
-		const s = await startServer(app);
-		server = s.server;
-		port = s.port;
+		mockCli = new MockKicadCli();
+		const running = await initFabServer(mockCli);
+		server = running.server;
+		port = running.port;
 	});
 
 	after(async () => {
-		await stopServer(server);
+		await terminateHttpServer(server);
 	});
 
 	test("exports all outputs by default with 200", async () => {
-		const res = await postJson(port, "/api/fab/export", { pcb: VALID_PCB });
-		assert.equal(res.status, 200);
-		assert.equal(res.json.files.length, 5);
-		assert.equal(res.json.log.length, 5);
-		const names = res.json.files.map((f) => f.name);
-		assert.ok(names.includes("board-pos.csv"));
-		assert.ok(names.includes("board.pdf"));
-		assert.ok(names.includes("board.step"));
-		assert.ok(names.includes("drill/drill-out.dat"));
-		assert.ok(names.includes("gerbers/gerbers-out.dat"));
-
-		const posEntry = res.json.files.find((f) => f.name === "board-pos.csv");
-		assert.equal(
-			Buffer.from(posEntry.base64, "base64").toString("utf8"),
-			"mock-pos",
-		);
-		assert.equal(fs.existsSync(fake.getTmpDir()), false);
+		const res = await requestExport(port, { pcb: VALID_PCB });
+		assertDefaultExportSuccess(res, mockCli);
 	});
 
 	test("exports only requested subset of outputs", async () => {
-		const res = await postJson(port, "/api/fab/export", {
+		const res = await requestExport(port, {
 			pcb: VALID_PCB,
 			outputs: ["pos", "step"],
 		});
-		assert.equal(res.status, 200);
-		assert.equal(res.json.files.length, 2);
-		const names = res.json.files.map((f) => f.name);
-		assert.deepEqual(names, ["board-pos.csv", "board.step"]);
+		assertExportFiles(res, ["board-pos.csv", "board.step"]);
 	});
 
 	test("sanitizes base name and uses it for output files", async () => {
-		const res = await postJson(port, "/api/fab/export", {
+		const res = await requestExport(port, {
 			pcb: VALID_PCB,
 			name: "my#custom@board",
 			outputs: ["pos", "pdf"],
 		});
-		assert.equal(res.status, 200);
-		const names = res.json.files.map((f) => f.name);
-		assert.deepEqual(names, ["mycustomboard-pos.csv", "mycustomboard.pdf"]);
+		assertExportFiles(res, ["mycustomboard-pos.csv", "mycustomboard.pdf"]);
 	});
 
 	test("skips kicad side files and backups directory", async () => {
-		const sideFake = makeFakeExec({
+		const sideFake = new MockKicadCli({
 			extraFiles: [
 				"board.kicad_prl",
 				"board.kicad_pro",
@@ -156,116 +230,75 @@ describe("fab-routes unit tests", () => {
 				"backups/board-backup.kicad_pcb",
 			],
 		});
-		const app = express();
-		app.use(express.json());
-		app.use(
-			"/api",
-			createFabRouter({
-				execFileImpl: sideFake.execFileImpl,
-				cliPath: process.execPath,
-			}),
+		await withEphemeralServer(
+			{ execFileImpl: (f, a, o, cb) => sideFake.exec(f, a, o, cb) },
+			async (testPort) => {
+				const res = await requestExport(testPort, { pcb: VALID_PCB });
+				assertFileCount(res, 5);
+				const names = res.json.files.map((f) => f.name);
+				assertExcludesSideFiles(names);
+			},
 		);
-		const { server: testServer, port: testPort } = await startServer(app);
-		try {
-			const res = await postJson(testPort, "/api/fab/export", {
-				pcb: VALID_PCB,
-			});
-			assert.equal(res.status, 200);
-			assert.equal(res.json.files.length, 5);
-			const names = res.json.files.map((f) => f.name);
-			assert.ok(!names.includes("board.kicad_prl"));
-			assert.ok(!names.includes("board.kicad_pro"));
-			assert.ok(!names.includes("board.lck"));
-			assert.ok(!names.includes("fp-info-cache"));
-			assert.ok(!names.some((n) => n.startsWith("backups")));
-		} finally {
-			await stopServer(testServer);
-		}
 	});
 
 	const BAD_REQUEST_CASES = [
-		{ desc: "missing pcb", body: {} },
-		{ desc: "pcb not a string", body: { pcb: 12345 } },
-		{ desc: "invalid pcb header", body: { pcb: "(wrong_pcb (version 1))" } },
+		{ desc: "missing pcb", payload: {} },
+		{ desc: "pcb not a string", payload: { pcb: 12345 } },
+		{ desc: "invalid pcb header", payload: { pcb: "(wrong_pcb (version 1))" } },
 		{
 			desc: "unknown output",
-			body: { pcb: VALID_PCB, outputs: ["gerbers", "unknown"] },
+			payload: { pcb: VALID_PCB, outputs: ["gerbers", "unknown"] },
 		},
-		{ desc: "outputs not array", body: { pcb: VALID_PCB, outputs: "pos" } },
+		{ desc: "outputs not array", payload: { pcb: VALID_PCB, outputs: "pos" } },
 	];
 
 	for (const tc of BAD_REQUEST_CASES) {
 		test(`rejects 400 when ${tc.desc}`, async () => {
-			const res = await postJson(port, "/api/fab/export", tc.body);
-			assert.equal(res.status, 400);
-			assert.ok(typeof res.json.error === "string");
+			const res = await requestExport(port, tc.payload);
+			assertErrorResponse(res, 400);
 		});
 	}
 
 	test("rejects 400 when pcb exceeds 20 MB", async () => {
-		const largePcb = `${VALID_PCB} ${" ".repeat(20 * 1024 * 1024)}`;
-		const res = await postJson(port, "/api/fab/export", { pcb: largePcb });
-		assert.equal(res.status, 400);
-		assert.ok(res.json.error.includes("20 MB"));
+		const oversizedPcb = `${VALID_PCB} ${" ".repeat(20 * 1024 * 1024)}`;
+		const res = await requestExport(port, { pcb: oversizedPcb });
+		assertErrorResponse(res, 400, "20 MB");
 	});
 });
 
 describe("fab-routes failure and service status", () => {
 	test("returns 500 with stderr snippet when kicad-cli fails", async () => {
-		const failingFake = makeFakeExec({
+		const failingFake = new MockKicadCli({
 			failKind: "pos",
 			stderr: "syntax error: invalid track geometry at line 42",
 		});
-		const app = express();
-		app.use(express.json());
-		app.use(
-			"/api",
-			createFabRouter({
-				execFileImpl: failingFake.execFileImpl,
-				cliPath: process.execPath,
-			}),
+		await withEphemeralServer(
+			{ execFileImpl: (f, a, o, cb) => failingFake.exec(f, a, o, cb) },
+			async (testPort) => {
+				const res = await requestExport(testPort, {
+					pcb: VALID_PCB,
+					outputs: ["pos"],
+				});
+				assertErrorResponse(res, 500, "invalid track geometry");
+				assertTmpDirCleaned(failingFake);
+			},
 		);
-		const { server, port } = await startServer(app);
-		try {
-			const res = await postJson(port, "/api/fab/export", {
-				pcb: VALID_PCB,
-				outputs: ["pos"],
-			});
-			assert.equal(res.status, 500);
-			assert.ok(res.json.error.includes("invalid track geometry"));
-			assert.equal(fs.existsSync(failingFake.getTmpDir()), false);
-		} finally {
-			await stopServer(server);
-		}
 	});
 
 	test("returns 503 when KICAD_CLI_PATH is missing or not set", async () => {
-		const app = express();
-		app.use(express.json());
-		app.use(
-			"/api",
-			createFabRouter({
-				cliPath: "/nonexistent/path/to/kicad-cli",
-			}),
+		await withEphemeralServer(
+			{ cliPath: "/nonexistent/path/to/kicad-cli" },
+			async (testPort) => {
+				const res = await requestExport(testPort, { pcb: VALID_PCB });
+				assertErrorResponse(res, 503, "KiCad CLI");
+			},
 		);
-		const { server, port } = await startServer(app);
-		try {
-			const res = await postJson(port, "/api/fab/export", { pcb: VALID_PCB });
-			assert.equal(res.status, 503);
-			assert.ok(res.json.error.includes("KiCad CLI"));
-		} finally {
-			await stopServer(server);
-		}
 	});
 
 	test("integrates with createApp at /api/fab/export", async () => {
-		const app = createApp();
-		const { server, port } = await startServer(app);
-		try {
-			const res = await postJson(port, "/api/fab/export", {});
+		await withEphemeralServer({ customApp: createApp() }, async (testPort) => {
+			const res = await requestExport(testPort, {});
 			assert.equal(res.status, 400);
-		} finally {
-			await stopServer(server);
-		}
+		});
 	});
 });
