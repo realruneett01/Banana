@@ -1,5 +1,12 @@
 import { Input, Modal, message } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import BoardGraphicsLayer from "./BoardGraphicsLayer.jsx";
 import { setOutlineTool, useOutlineTool } from "./BoardTools.jsx";
 import {
@@ -14,7 +21,10 @@ import {
 	rectOutline,
 	roundedRectOutline,
 } from "./boardOutline.js";
-import { get as getEditorStatus } from "./editorStatus.js";
+import {
+	get as getEditorStatus,
+	subscribe as subscribeEditorStatus,
+} from "./editorStatus.js";
 import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
 import {
 	arcToSvgPath,
@@ -1334,7 +1344,10 @@ function dragDelta(drag, curPt) {
 
 function calcDropPos(drag, curPt) {
 	const [dx, dy] = dragDelta(drag, curPt);
-	return snapToGrid([drag.origPos[0] + dx, drag.origPos[1] + dy], 0.25);
+	return snapToGrid(
+		[drag.origPos[0] + dx, drag.origPos[1] + dy],
+		currentGrid(),
+	);
 }
 
 function createPartDrag(e, part, svgEl, view) {
@@ -1403,7 +1416,7 @@ function commitGraphicDrop(drag, e, { board, pushBoard, svgEl, view }) {
 	if (!drag?.moved) return false;
 	const curPt = screenToBoardCoords(e, svgEl, view);
 	const [rawDx, rawDy] = dragDelta(drag, curPt);
-	const grid = getEditorStatus()?.grid || 0.25;
+	const grid = currentGrid();
 	const dx = Math.round(rawDx / grid) * grid;
 	const dy = Math.round(rawDy / grid) * grid;
 	if (dx !== 0 || dy !== 0) {
@@ -1494,7 +1507,7 @@ function detectNetAtPoint(ir, board, pt, padPositions) {
 
 // Start snaps to a track end, pad or part centre; a later click snaps to a pad centre.
 function resolveRouteTarget(raw, hasPoints, snapCtx) {
-	const snapped = snapToGrid(raw, 0.25);
+	const snapped = snapToGrid(raw, currentGrid());
 	if (!hasPoints) return findSnapEndpoint(snapped, snapCtx);
 	return findPadSnap(snapCtx.ir?.parts, snapCtx.padPositions, raw) ?? snapped;
 }
@@ -1771,7 +1784,7 @@ function useRoutePointer({ session, svgRef, view }) {
 		(e) => {
 			if (!isRouting) return;
 			const raw = screenToBoardCoords(e, svgRef.current, view);
-			setCursorPos(snapToGrid(raw, 0.25));
+			setCursorPos(snapToGrid(raw, currentGrid()));
 		},
 		[isRouting, setCursorPos, svgRef, view],
 	);
@@ -2430,7 +2443,7 @@ function isLeftClick(e) {
 
 function calcSnappedBoardPoint(e, svgEl, view) {
 	const raw = screenToBoardCoords(e, svgEl, view);
-	const grid = getEditorStatus()?.grid || 0.25;
+	const grid = currentGrid();
 	const [x, y] = snapToGrid(raw, grid);
 	return { x, y };
 }
@@ -2902,13 +2915,13 @@ function useGraphicsCancelCallback(st, ctx) {
 	);
 }
 
-function useGraphicsTextCallback(
+function useGraphicsTextCallback({
 	textModal,
 	board,
 	activeLayer,
 	pushBoard,
 	setTextModal,
-) {
+}) {
 	return useCallback(
 		(text = "TEXT", targetPos = null) => {
 			const pos = targetPos ?? textModal.pos;
@@ -2938,13 +2951,13 @@ function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
 		pushBoard,
 		activeLayer,
 	});
-	const onTextSubmit = useGraphicsTextCallback(
-		st.textModal,
+	const onTextSubmit = useGraphicsTextCallback({
+		textModal: st.textModal,
 		board,
 		activeLayer,
 		pushBoard,
-		st.setTextModal,
-	);
+		setTextModal: st.setTextModal,
+	});
 	return { cancelGraphics, onTextSubmit };
 }
 
@@ -3335,14 +3348,15 @@ function useSceneClick(routeClick, armedPlacement, graphicsDrawing) {
 	);
 }
 
-function useScenePointer(ptrMove, armedPlacement, graphicsDrawing) {
+function useScenePointer(ptrMove, armedPlacement, graphicsDrawing, onHover) {
 	return useCallback(
 		(e) => {
 			ptrMove(e);
 			armedPlacement?.onPointerMove(e);
 			graphicsDrawing?.onPointerMove(e);
+			onHover?.(e);
 		},
-		[ptrMove, armedPlacement, graphicsDrawing],
+		[ptrMove, armedPlacement, graphicsDrawing, onHover],
 	);
 }
 
@@ -3452,19 +3466,261 @@ function useSceneDoubleClick(graphicsDrawing, routeDoubleClick) {
 	);
 }
 
-function PcbSvgScene({
-	svgRef,
-	view,
+// --- PCB Grid pure helpers ---
+
+export function currentGrid(status) {
+	const s = status !== undefined ? status : getEditorStatus();
+	const g = Number(s?.grid);
+	return Number.isFinite(g) && g > 0 ? g : 0.25;
+}
+
+export function adaptiveStepMultiple(gridPitch, zoom, minPx = 8) {
+	const pitch = Number(gridPitch);
+	const z = Number(zoom);
+	const spacing = pitch * z;
+	if (!Number.isFinite(spacing) || spacing <= 0 || spacing >= minPx) {
+		return 1;
+	}
+	const multipliers = [
+		2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000,
+	];
+	return multipliers.find((m) => m * spacing >= minPx) ?? 1;
+}
+
+function axisSpan(pan, size, zoom, step) {
+	const min = -pan / zoom + 0;
+	const max = (size - pan) / zoom + 0;
+	return {
+		min,
+		max,
+		start: Math.floor(min / step) * step + 0,
+		end: Math.ceil(max / step) * step + 0,
+	};
+}
+
+function gridDimension(val, fallback) {
+	return typeof val === "number" && val > 0 ? val : fallback;
+}
+
+function safeGridPitch(step) {
+	const n = Number(step);
+	return n > 0 ? n : 0.25;
+}
+
+function safePanCoord(val) {
+	return typeof val === "number" ? val : 0;
+}
+
+export function visibleGridRange(view, size, step = 0.25) {
+	const zoom = gridDimension(view?.zoom, 1);
+	const width = gridDimension(size?.width, 800);
+	const height = gridDimension(size?.height, 600);
+	const pan = view?.pan;
+	const s = safeGridPitch(step);
+	const x = axisSpan(safePanCoord(pan?.x), width, zoom, s);
+	const y = axisSpan(safePanCoord(pan?.y), height, zoom, s);
+	return {
+		minX: x.min,
+		maxX: x.max,
+		minY: y.min,
+		maxY: y.max,
+		startX: x.start,
+		endX: x.end,
+		startY: y.start,
+		endY: y.end,
+	};
+}
+
+export function getGridColors(theme = PCB_THEME) {
+	const dot = theme?.grid ?? "#3a3f4b";
+	const major = theme?.gridMajor ?? (theme?.grid ? "#a6a6a6" : "#4f5563");
+	return { dot, major };
+}
+
+// --- End PCB Grid pure helpers ---
+
+function PcbGridDefs(props) {
+	const { step, majorStep, dotR, majorR, dot, major } = props;
+	return (
+		<defs>
+			<pattern
+				id="pcb-grid-minor"
+				x={-step / 2}
+				y={-step / 2}
+				width={step}
+				height={step}
+				patternUnits="userSpaceOnUse"
+			>
+				<circle cx={step / 2} cy={step / 2} r={dotR} fill={dot} />
+			</pattern>
+			<pattern
+				id="pcb-grid-major"
+				x={-majorStep / 2}
+				y={-majorStep / 2}
+				width={majorStep}
+				height={majorStep}
+				patternUnits="userSpaceOnUse"
+			>
+				<circle cx={majorStep / 2} cy={majorStep / 2} r={majorR} fill={major} />
+			</pattern>
+		</defs>
+	);
+}
+
+function PcbGrid({ view, size, gridPitch, theme = PCB_THEME }) {
+	const zoom = view?.zoom || 1;
+	const step = gridPitch * adaptiveStepMultiple(gridPitch, zoom);
+	const majorStep = step * 10;
+	const { minX, maxX, minY, maxY } = visibleGridRange(view, size, step);
+	const { dot, major } = getGridColors(theme);
+	const w = Math.max(0, maxX - minX);
+	const h = Math.max(0, maxY - minY);
+	const defsProps = {
+		step,
+		majorStep,
+		dotR: Math.max(0.01, 0.75 / zoom),
+		majorR: Math.max(0.015, 1.0 / zoom),
+		dot,
+		major,
+	};
+	return (
+		<g
+			className="pcb-grid"
+			opacity={0.6}
+			pointerEvents="none"
+			style={{ pointerEvents: "none" }}
+		>
+			<PcbGridDefs {...defsProps} />
+			<rect
+				x={minX}
+				y={minY}
+				width={w}
+				height={h}
+				fill="url(#pcb-grid-minor)"
+			/>
+			<rect
+				x={minX}
+				y={minY}
+				width={w}
+				height={h}
+				fill="url(#pcb-grid-major)"
+			/>
+		</g>
+	);
+}
+
+function PcbCrosshair({ cursor, view, size, color = PCB_THEME.cursor }) {
+	if (!cursor) return null;
+	const cx = cursor.x ?? cursor[0];
+	const cy = cursor.y ?? cursor[1];
+	if (!Number.isFinite(cx) || !Number.isFinite(cy)) return null;
+	const zoom = view?.zoom || 1;
+	const bounds = visibleGridRange(view, size);
+	const strokeWidth = 1 / zoom;
+	return (
+		<g
+			className="pcb-crosshair"
+			pointerEvents="none"
+			style={{ pointerEvents: "none" }}
+		>
+			<line
+				x1={bounds.minX}
+				y1={cy}
+				x2={bounds.maxX}
+				y2={cy}
+				stroke={color || "#ffffff"}
+				strokeOpacity={0.4}
+				strokeWidth={strokeWidth}
+			/>
+			<line
+				x1={cx}
+				y1={bounds.minY}
+				x2={cx}
+				y2={bounds.maxY}
+				stroke={color || "#ffffff"}
+				strokeOpacity={0.4}
+				strokeWidth={strokeWidth}
+			/>
+		</g>
+	);
+}
+
+function useCanvasSize(ref) {
+	const [size, setSize] = useState({ width: 800, height: 600 });
+	useEffect(() => {
+		const el = ref?.current;
+		if (!el) return;
+		const update = () => {
+			const rect = el.getBoundingClientRect?.();
+			if (rect?.width > 0 && rect?.height > 0) {
+				setSize({ width: rect.width, height: rect.height });
+			}
+		};
+		update();
+		if (typeof ResizeObserver !== "undefined") {
+			const ro = new ResizeObserver(update);
+			ro.observe(el);
+			return () => ro.disconnect();
+		}
+		if (typeof window !== "undefined") {
+			window.addEventListener("resize", update);
+			return () => window.removeEventListener("resize", update);
+		}
+	}, [ref]);
+	return size;
+}
+
+function useSceneEvents({
 	route,
-	layerState,
-	sceneData,
-	drag,
-	markers,
-	outlineDrawing,
 	armedPlacement,
 	graphicsDrawing,
-	graphicDrag,
+	svgRef,
+	view,
+	ptr,
 }) {
+	const [cursorPoint, setCursorPoint] = useState(null);
+	const onPointerLeave = useCallback(() => setCursorPoint(null), []);
+	const onHover = useCallback(
+		(e) => setCursorPoint(calcSnappedBoardPoint(e, svgRef.current, view)),
+		[svgRef, view],
+	);
+	const onPointerMove = useScenePointer(
+		ptr.onPointerMove,
+		armedPlacement,
+		graphicsDrawing,
+		onHover,
+	);
+	const onClick = useSceneClick(
+		route.onCanvasClick,
+		armedPlacement,
+		graphicsDrawing,
+	);
+	const onDoubleClick = useSceneDoubleClick(
+		graphicsDrawing,
+		route.onCanvasDoubleClick,
+	);
+	return {
+		cursorPoint,
+		onPointerLeave,
+		onPointerMove,
+		onClick,
+		onDoubleClick,
+	};
+}
+
+function useSvgSceneState(props) {
+	const {
+		svgRef,
+		view,
+		route,
+		layerState,
+		sceneData,
+		drag,
+		outlineDrawing,
+		armedPlacement,
+		graphicsDrawing,
+		graphicDrag,
+	} = props;
 	const order = useMemo(() => drawOrder(layerState), [layerState]);
 	const showVias =
 		isVisible(layerState, "F.Cu") || isVisible(layerState, "B.Cu");
@@ -3475,54 +3731,75 @@ function PcbSvgScene({
 		sceneData,
 		outlineDrawing,
 	});
-	const onClick = useSceneClick(
-		route.onCanvasClick,
+	const ev = useSceneEvents({
+		route,
 		armedPlacement,
 		graphicsDrawing,
-	);
-	const onDoubleClick = useSceneDoubleClick(
-		graphicsDrawing,
-		route.onCanvasDoubleClick,
-	);
-	const onPointerMove = useScenePointer(
-		ptr.onPointerMove,
-		armedPlacement,
-		graphicsDrawing,
-	);
+		svgRef,
+		view,
+		ptr,
+	});
+	const canvasSize = useCanvasSize(svgRef);
+	return { order, showVias, ptr, ev, canvasSize };
+}
+
+function PcbSceneViewport({ view, size, gridPitch, cursor, contentProps }) {
 	const transform = `translate(${view.pan.x},${view.pan.y}) scale(${view.zoom})`;
+	return (
+		<g transform={transform}>
+			<PcbGrid view={view} size={size} gridPitch={gridPitch || currentGrid()} />
+			<PcbCrosshair cursor={cursor} view={view} size={size} />
+			<PcbSvgContent {...contentProps} />
+		</g>
+	);
+}
+
+function useSceneContentProps(props, s) {
 	const overlays = (
 		<PcbSvgOverlays
-			markers={markers}
-			zoom={view.zoom}
-			outlineDrawing={outlineDrawing}
-			graphicsDrawing={graphicsDrawing}
-			armedPlacement={armedPlacement}
-			activeLayer={layerState.active}
+			markers={props.markers}
+			zoom={props.view.zoom}
+			outlineDrawing={props.outlineDrawing}
+			graphicsDrawing={props.graphicsDrawing}
+			armedPlacement={props.armedPlacement}
+			activeLayer={props.layerState.active}
 		/>
 	);
+	return {
+		order: s.order,
+		sceneData: props.sceneData,
+		layerState: props.layerState,
+		drag: props.drag,
+		showVias: s.showVias,
+		route: props.route,
+		overlays,
+	};
+}
+
+function PcbSvgScene(props) {
+	const s = useSvgSceneState(props);
+	const { ptr, ev } = s;
+	const contentProps = useSceneContentProps(props, s);
 	return (
 		/* biome-ignore lint/a11y/useKeyWithClickEvents: Keyboard handled on parent region */
 		<svg
-			ref={svgRef}
+			ref={props.svgRef}
 			style={SVG_STYLE}
-			onClick={onClick}
-			onDoubleClick={onDoubleClick}
+			onClick={ev.onClick}
+			onDoubleClick={ev.onDoubleClick}
 			onPointerDown={ptr.onPointerDown}
-			onPointerMove={onPointerMove}
+			onPointerMove={ev.onPointerMove}
 			onPointerUp={ptr.onPointerUp}
+			onPointerLeave={ev.onPointerLeave}
 		>
 			<title>PCB Canvas</title>
-			<g transform={transform}>
-				<PcbSvgContent
-					order={order}
-					sceneData={sceneData}
-					layerState={layerState}
-					drag={drag}
-					showVias={showVias}
-					route={route}
-					overlays={overlays}
-				/>
-			</g>
+			<PcbSceneViewport
+				view={props.view}
+				size={s.canvasSize}
+				gridPitch={props.gridPitch}
+				cursor={ev.cursorPoint}
+				contentProps={contentProps}
+			/>
 		</svg>
 	);
 }
@@ -3588,6 +3865,7 @@ function usePcbCanvasState({
 	containerRef,
 }) {
 	const svgRef = useRef(null);
+	const gridPitch = useSyncExternalStore(subscribeEditorStatus, currentGrid);
 	const ir = editor?.state?.ir;
 	const { view } = useCanvasView(board, ir, containerRef);
 	const layers = useCanvasLayers(board);
@@ -3689,6 +3967,7 @@ function usePcbCanvasState({
 		armedPlacement,
 		graphicsDrawing,
 		graphicDrag,
+		gridPitch,
 	};
 }
 
@@ -3725,7 +4004,8 @@ export default function PcbCanvas({
 			aria-label="PCB editor"
 			onKeyDown={(e) => handleShortcuts(e, s.shortcuts)}
 			onPointerMove={(e) => {
-				const [x, y] = screenToBoardCoords(e, s.svgRef.current, s.view);
+				const raw = screenToBoardCoords(e, s.svgRef.current, s.view);
+				const [x, y] = snapToGrid(raw, s.gridPitch);
 				onCursorMove?.({ x, y, zoom: s.view.zoom });
 			}}
 		>
@@ -3751,6 +4031,7 @@ export default function PcbCanvas({
 				armedPlacement={s.armedPlacement}
 				graphicsDrawing={s.graphicsDrawing}
 				graphicDrag={s.graphicDrag}
+				gridPitch={s.gridPitch}
 			/>
 			<LayerListOverlay
 				layerState={s.layers.layerState}
