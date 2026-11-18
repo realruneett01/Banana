@@ -60,12 +60,7 @@ import {
 	togglePosture,
 } from "./trackPosture.js";
 import { useCanvasNav } from "./useCanvasNav.js";
-import {
-	bboxOfPoints,
-	fitToBounds,
-	screenToWorld,
-	snapPoint,
-} from "./viewport.js";
+import { bboxOfPoints, fitToBounds, screenToWorld } from "./viewport.js";
 
 const CONTAINER_STYLE = Object.freeze({
 	position: "relative",
@@ -2314,42 +2309,54 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 	));
 }
 
-function getDragBBox(start, current) {
-	return {
-		x: Math.min(start.x, current.x),
-		y: Math.min(start.y, current.y),
-		w: Math.abs(current.x - start.x),
-		h: Math.abs(current.y - start.y),
-	};
+function getPointCoord(pt) {
+	if (!pt) return null;
+	const x = typeof pt.x === "number" ? pt.x : pt[0];
+	const y = typeof pt.y === "number" ? pt.y : pt[1];
+	if (typeof x !== "number" || typeof y !== "number") return null;
+	if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+	return { x, y };
 }
 
-function createOutlineShapes(tool, start, current, radius) {
-	const { x, y, w, h } = getDragBBox(start, current);
+export function normalizeOutlineRect(start, current) {
+	const p1 = getPointCoord(start);
+	const p2 = getPointCoord(current);
+	if (!p1 || !p2) return null;
+	const w = Math.abs(p2.x - p1.x);
+	const h = Math.abs(p2.y - p1.y);
 	if (w === 0 || h === 0) return null;
+	return {
+		x: Math.min(p1.x, p2.x),
+		y: Math.min(p1.y, p2.y),
+		w,
+		h,
+	};
+}
+export const normalizeRect = normalizeOutlineRect;
+
+export function createOutlineShapes(tool, start, current, radius) {
+	const rect = normalizeOutlineRect(start, current);
+	if (!rect) return null;
+	const { x, y, w, h } = rect;
 	if (tool === "rounded_rect") {
 		return roundedRectOutline(x, y, w, h, radius ?? 1);
 	}
 	return rectOutline(x, y, w, h);
 }
 
-function commitOutline(drag, outlineTool, board, pushBoard) {
-	const shapes = createOutlineShapes(
-		outlineTool.activeTool,
-		drag.start,
-		drag.current,
-		outlineTool.radius,
-	);
-	if (!shapes) return;
+function commitOutline(shapes, board, pushBoard) {
 	const res = outlineToPolygon(shapes);
 	if (!res.ok) {
 		message.error(res.error || "Failed to create board outline");
-		return;
+		return false;
 	}
-	pushBoard({ ...board, outline: shapes });
+	pushBoard({ ...(board || {}), outline: shapes });
+	setOutlineTool({ activeTool: null });
+	return true;
 }
 
 function OutlinePreview({ drag, activeTool, radius }) {
-	if (!drag || !activeTool) return null;
+	if (!drag?.start || !drag?.current || !activeTool) return null;
 	const shapes = createOutlineShapes(
 		activeTool,
 		drag.start,
@@ -2372,83 +2379,6 @@ function OutlinePreview({ drag, activeTool, radius }) {
 	);
 }
 
-function useOutlinePointer({ activeTool, isDragging, svgRef, view, setDrag }) {
-	const onPointerDown = useCallback(
-		(e) => {
-			if (e.button !== 0 || !activeTool) return false;
-			const [rx, ry] = screenToBoardCoords(e, svgRef.current, view);
-			const grid = getEditorStatus()?.grid || 0.25;
-			const pt = snapPoint({ x: rx, y: ry }, grid);
-			setDrag({ start: pt, current: pt });
-			return true;
-		},
-		[activeTool, svgRef, view, setDrag],
-	);
-
-	const onPointerMove = useCallback(
-		(e) => {
-			if (!isDragging) return false;
-			const [rx, ry] = screenToBoardCoords(e, svgRef.current, view);
-			const grid = getEditorStatus()?.grid || 0.25;
-			const pt = snapPoint({ x: rx, y: ry }, grid);
-			setDrag((prev) => (prev ? { ...prev, current: pt } : null));
-			return true;
-		},
-		[isDragging, svgRef, view, setDrag],
-	);
-
-	return { onPointerDown, onPointerMove };
-}
-
-function useOutlineCommit({ drag, outlineTool, board, pushBoard, setDrag }) {
-	const onPointerUp = useCallback(() => {
-		if (!drag || !outlineTool.activeTool) return false;
-		commitOutline(drag, outlineTool, board, pushBoard);
-		setDrag(null);
-		return true;
-	}, [drag, outlineTool, board, pushBoard, setDrag]);
-
-	const cancelOutline = useCallback(() => {
-		if (drag) {
-			setDrag(null);
-			return true;
-		}
-		if (outlineTool.activeTool) {
-			setOutlineTool({ activeTool: null });
-			return true;
-		}
-		return false;
-	}, [drag, outlineTool.activeTool, setDrag]);
-
-	return { onPointerUp, cancelOutline };
-}
-
-function useOutlineDrawing({ board, pushBoard, svgRef, view }) {
-	const outlineTool = useOutlineTool();
-	const [drag, setDrag] = useState(null);
-	const ptr = useOutlinePointer({
-		activeTool: outlineTool.activeTool,
-		isDragging: Boolean(drag),
-		svgRef,
-		view,
-		setDrag,
-	});
-	const actions = useOutlineCommit({
-		drag,
-		outlineTool,
-		board,
-		pushBoard,
-		setDrag,
-	});
-	return {
-		drag,
-		activeTool: outlineTool.activeTool,
-		radius: outlineTool.radius,
-		...ptr,
-		...actions,
-	};
-}
-
 function isLeftClick(e) {
 	return e.button === undefined || e.button === 0;
 }
@@ -2458,6 +2388,146 @@ function calcSnappedBoardPoint(e, svgEl, view) {
 	const grid = getEditorStatus()?.grid || 0.25;
 	const [x, y] = snapToGrid(raw, grid);
 	return { x, y };
+}
+
+function useOutlinePointerDown({
+	outlineTool,
+	drag,
+	setDrag,
+	board,
+	pushBoard,
+	svgRef,
+	view,
+}) {
+	return useCallback(
+		(e) => {
+			if (e.button !== 0) return false;
+			if (!outlineTool.activeTool) return false;
+			const pt = calcSnappedBoardPoint(e, svgRef.current, view);
+			if (drag?.start) {
+				const shapes = createOutlineShapes(
+					outlineTool.activeTool,
+					drag.start,
+					pt,
+					outlineTool.radius,
+				);
+				if (shapes && commitOutline(shapes, board, pushBoard)) {
+					setDrag(null);
+					return true;
+				}
+			}
+			setDrag({ start: pt, current: pt });
+			return true;
+		},
+		[outlineTool, drag, board, pushBoard, svgRef, view, setDrag],
+	);
+}
+
+function useOutlinePointerMove({
+	activeTool,
+	isDrawing,
+	svgRef,
+	view,
+	setDrag,
+}) {
+	return useCallback(
+		(e) => {
+			if (!activeTool || !isDrawing) return false;
+			const pt = calcSnappedBoardPoint(e, svgRef.current, view);
+			setDrag((prev) => (prev ? { ...prev, current: pt } : null));
+			return true;
+		},
+		[activeTool, isDrawing, svgRef, view, setDrag],
+	);
+}
+
+function useOutlinePointerUp({
+	outlineTool,
+	drag,
+	setDrag,
+	board,
+	pushBoard,
+	svgRef,
+	view,
+}) {
+	return useCallback(
+		(e) => {
+			if (e.button !== 0) return false;
+			if (!outlineTool.activeTool || !drag?.start) return false;
+			const pt = calcSnappedBoardPoint(e, svgRef.current, view);
+			const shapes = createOutlineShapes(
+				outlineTool.activeTool,
+				drag.start,
+				pt,
+				outlineTool.radius,
+			);
+			if (shapes && commitOutline(shapes, board, pushBoard)) {
+				setDrag(null);
+				return true;
+			}
+			return true;
+		},
+		[outlineTool, drag, board, pushBoard, svgRef, view, setDrag],
+	);
+}
+
+function useOutlineCancel(drag, activeTool, setDrag) {
+	return useCallback(() => {
+		if (drag) {
+			setDrag(null);
+			return true;
+		}
+		if (activeTool) {
+			setOutlineTool({ activeTool: null });
+			return true;
+		}
+		return false;
+	}, [drag, activeTool, setDrag]);
+}
+
+function useOutlineDrawing({ board, pushBoard, svgRef, view }) {
+	const outlineTool = useOutlineTool();
+	const [drag, setDrag] = useState(null);
+	useEffect(() => {
+		if (!outlineTool.activeTool && drag) {
+			setDrag(null);
+		}
+	}, [outlineTool.activeTool, drag]);
+	const onPointerDown = useOutlinePointerDown({
+		outlineTool,
+		drag,
+		setDrag,
+		board,
+		pushBoard,
+		svgRef,
+		view,
+	});
+	const onPointerMove = useOutlinePointerMove({
+		activeTool: outlineTool.activeTool,
+		isDrawing: Boolean(drag?.start),
+		svgRef,
+		view,
+		setDrag,
+	});
+	const onPointerUp = useOutlinePointerUp({
+		outlineTool,
+		drag,
+		setDrag,
+		board,
+		pushBoard,
+		svgRef,
+		view,
+	});
+	const cancelOutline = useOutlineCancel(drag, outlineTool.activeTool, setDrag);
+	return {
+		drag,
+		activeTool: outlineTool.activeTool,
+		radius: outlineTool.radius,
+		onPointerDown,
+		onPointerMove,
+		onPointerUp,
+		cancelOutline,
+	};
 }
 
 function placeArmedPart({ item, editor, activeLayer, at }) {
