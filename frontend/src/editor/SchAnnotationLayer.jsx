@@ -136,7 +136,11 @@ function renderJunctionAnnotation(ann, isSelected, theme) {
 	);
 }
 
-function renderStrokeAnnotation(ann, color, width, dash) {
+function renderStrokeAnnotation(ann, color, width, options = {}) {
+	const dash = typeof options === "string" ? options : options?.dash;
+	const cls =
+		(typeof options === "object" ? options?.cls : null) ??
+		"schematic-annotation";
 	return (
 		<line
 			key={ann.id}
@@ -147,7 +151,7 @@ function renderStrokeAnnotation(ann, color, width, dash) {
 			stroke={color}
 			strokeWidth={width}
 			strokeDasharray={dash}
-			className="schematic-annotation"
+			className={cls}
 		/>
 	);
 }
@@ -161,7 +165,9 @@ function renderWireAnnotation(ann, isSelected, theme) {
 	const color = isSelected
 		? getSchematicColor(theme, "selection")
 		: getSchematicColor(theme, "wire");
-	return renderStrokeAnnotation(ann, color, isSelected ? 0.5 : 0.254);
+	return renderStrokeAnnotation(ann, color, isSelected ? 0.5 : 0.254, {
+		cls: "schematic-wire schematic-annotation",
+	});
 }
 
 function renderBusAnnotation(ann, isSelected, theme) {

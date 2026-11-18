@@ -104,6 +104,10 @@ function snapToGrid(pt) {
 	return snapPoint(pt, SCH_GRID);
 }
 
+export function isSchematicPart(part) {
+	return typeof part?.symbol === "string" && part.symbol.trim() !== "";
+}
+
 const LABEL_PREFIXES = Object.freeze({
 	label: "NET",
 	globalLabel: "G",
@@ -316,7 +320,10 @@ function schematicHitTest(doc, allPinPos, pt, zoom) {
 	const nets = doc.ir?.nets ?? [];
 	const wireHit = testWireHitWithMap(nets, allPinPos, pt, wireTol);
 	if (wireHit) return wireHit;
-	return hitTest(doc, [pt.x, pt.y], { wireTol });
+	const filteredDoc = doc?.ir?.parts
+		? { ...doc, ir: { ...doc.ir, parts: doc.ir.parts.filter(isSchematicPart) } }
+		: doc;
+	return hitTest(filteredDoc, [pt.x, pt.y], { wireTol });
 }
 
 function useSymbolCache(parts, fetchSymbol) {
@@ -325,7 +332,7 @@ function useSymbolCache(parts, fetchSymbol) {
 
 	useEffect(() => {
 		if (typeof fetchSymbol !== "function") return;
-		for (const part of parts) {
+		for (const part of (parts ?? []).filter(isSchematicPart)) {
 			const libId = part.symbol;
 			if (libId && !fetchedRef.current.has(libId)) {
 				fetchedRef.current.add(libId);
@@ -354,7 +361,7 @@ function collectPartPinPos(part, sym) {
 
 function buildAllPinMap(parts, symbolCache) {
 	const map = new Map();
-	for (const part of parts) {
+	for (const part of (parts ?? []).filter(isSchematicPart)) {
 		const sym = part.symbol ? symbolCache[part.symbol] : null;
 		for (const [pin, pos] of collectPartPinPos(part, sym)) {
 			map.set(`${part.id}:${pin}`, pos);
@@ -734,11 +741,12 @@ function WireSvg({ net, allPinPos, isSelected, theme, annotations }) {
 	const polylines = hasWireAnnotationForPins(annotations, net?.pins, allPinPos)
 		? []
 		: wireForNet(net, allPinPos);
+	const lbl = getNetLabelPos(polylines);
+	if (polylines.length === 0 && !lbl) return null;
 	const stroke = isSelected
 		? getSchematicColor(theme, "selection")
 		: getSchematicColor(theme, "wire");
 	const strokeWidth = isSelected ? 0.5 : 0.254;
-	const lbl = getNetLabelPos(polylines);
 
 	return (
 		<g className="schematic-wire">
@@ -913,6 +921,7 @@ function resetToolMode(target) {
 	target.setArmedPart?.(null);
 	target.setAnnotationTool?.(null);
 	target.setLineStart?.(null);
+	target.setTextModal?.(null);
 }
 
 function handleWireModeKey(ctx) {
@@ -980,7 +989,7 @@ function handleDeleteKey(ctx) {
 }
 
 function getSchematicBounds(doc) {
-	const parts = doc?.ir?.parts ?? [];
+	const parts = (doc?.ir?.parts ?? []).filter(isSchematicPart);
 	const points = parts.map((p) => ({
 		x: p.placement?.x ?? 0,
 		y: p.placement?.y ?? 0,
@@ -1005,7 +1014,9 @@ function handleMoveKey(ctx) {
 		});
 		return;
 	}
-	const part = ctx.doc.ir?.parts?.find((p) => p.id === selId);
+	const part = ctx.doc.ir?.parts
+		?.filter(isSchematicPart)
+		.find((p) => p.id === selId);
 	if (!part) return;
 	ctx.setDragState({
 		partId: part.id,
@@ -1113,9 +1124,38 @@ function syncConnectedWirePins(annotations, nets, allPinPos, dispatchCmd) {
 	}
 }
 
-function handleWirePointerDown(worldPt, wireState, dispatchCmd, doc) {
+function resolvePinOrSnap(hit, worldPt, allPinPos) {
+	if (hit?.kind === "pin" && hit.id && hit.pin) {
+		const pos = allPinPos?.get?.(`${hit.id}:${hit.pin}`);
+		if (pos) {
+			return {
+				x: pos[0],
+				y: pos[1],
+				pin: { partId: hit.id, pin: hit.pin },
+			};
+		}
+	}
+	return snapPointToPinOrGrid(worldPt, allPinPos, 2.0);
+}
+
+function updateWireEndState(snapped, startPin, setWireStart) {
+	if (snapped.pin) {
+		setWireStart(null);
+		return;
+	}
+	setWireStart({
+		x: snapped.x,
+		y: snapped.y,
+		partId: startPin?.partId,
+		pin: startPin?.pin,
+		startPin,
+	});
+}
+
+function handleWirePointerDown(hitCtx, hit) {
+	const { worldPt, wireState, dispatchCmd, doc } = hitCtx;
 	const { wireStart, setWireStart, allPinPos } = wireState;
-	const snapped = snapPointToPinOrGrid(worldPt, allPinPos, SCH_GRID);
+	const snapped = resolvePinOrSnap(hit, worldPt, allPinPos);
 	if (!wireStart) {
 		setWireStart({
 			x: snapped.x,
@@ -1136,17 +1176,7 @@ function handleWirePointerDown(worldPt, wireState, dispatchCmd, doc) {
 	connectPinsIfTouched(startPin, snapped.pin, dispatchCmd);
 	const allAnns = [...(doc?.ir?.annotations ?? []), ...newAnns];
 	syncConnectedWirePins(allAnns, doc?.ir?.nets, allPinPos, dispatchCmd);
-	if (snapped.pin) {
-		setWireStart(null);
-	} else {
-		setWireStart({
-			x: snapped.x,
-			y: snapped.y,
-			partId: startPin?.partId,
-			pin: startPin?.pin,
-			startPin,
-		});
-	}
+	updateWireEndState(snapped, startPin, setWireStart);
 }
 
 function handlePinConnect(hit, wireState, dispatchCmd) {
@@ -1282,7 +1312,7 @@ function handlePartSelect(hit, doc, worldPt, hitCtx) {
 function handlePointerDownHit(hit, hitCtx) {
 	const { wireMode, wireState, dispatchCmd, doc, worldPt } = hitCtx;
 	if (wireMode) {
-		handleWirePointerDown(worldPt, wireState, dispatchCmd, doc);
+		handleWirePointerDown(hitCtx, hit);
 		return;
 	}
 	if (hit?.kind === "annotation") {
@@ -1327,7 +1357,10 @@ function releasePointer(e) {
 function commitBoxSelect(boxDrag, editorState) {
 	if (!boxDrag) return;
 	const { doc, symbolCache, dispatchCmd } = editorState;
-	const items = partItems(doc.ir, symbolCache);
+	const filteredIr = doc?.ir?.parts
+		? { ...doc.ir, parts: doc.ir.parts.filter(isSchematicPart) }
+		: doc?.ir;
+	const items = partItems(filteredIr, symbolCache);
 	const ids = boxSelect(items, boxDrag.start, boxDrag.end);
 	dispatchCmd({ type: "select", ids });
 }
@@ -1588,8 +1621,22 @@ function isPlaceTool(tool) {
 	return tool === "placeSymbol" || tool === "placePower";
 }
 
+const TOOL_ALIASES = {
+	wire: "placeWire",
+	label: "placeLabel",
+	globalLabel: "placeGlobalLabel",
+	hierLabel: "placeHierLabel",
+	text: "placeText",
+	noConnect: "placeNoConnect",
+	junction: "placeJunction",
+	line: "placeLine",
+	bus: "placeBus",
+};
+
 function handleBusTool(payload, setters) {
-	const { tool, item } = payload ?? {};
+	const rawTool = payload?.tool;
+	const tool = TOOL_ALIASES[rawTool] ?? rawTool;
+	const item = payload?.item;
 	resetToolMode(setters);
 	if (tool === "placeWire") {
 		setters.setWireMode(true);
@@ -1658,7 +1705,8 @@ function useToolBus({
 	annotationSession,
 }) {
 	const [armedPart, setArmedPart] = useState(null);
-	const { annotationTool, setAnnotationTool, setLineStart } = annotationSession;
+	const { annotationTool, setAnnotationTool, setLineStart, setTextModal } =
+		annotationSession;
 
 	useEffect(() => {
 		const setters = {
@@ -1667,6 +1715,7 @@ function useToolBus({
 			setArmedPart,
 			setAnnotationTool,
 			setLineStart,
+			setTextModal,
 		};
 		return onEditorTool((p) => {
 			focusCanvas(containerRef);
@@ -1678,6 +1727,7 @@ function useToolBus({
 		containerRef,
 		setAnnotationTool,
 		setLineStart,
+		setTextModal,
 	]);
 
 	useEffect(() => {
@@ -1912,17 +1962,19 @@ function SchematicNetsLayer({
 }
 
 function SchematicPartsLayer({ parts, selection, wire, symbolCache, theme }) {
-	return (parts ?? []).map((part) => (
-		<PartSvg
-			key={part.id}
-			part={part}
-			isSelected={selection?.includes(part.id)}
-			dragPos={wire.dragPos?.partId === part.id ? wire.dragPos : null}
-			wireStart={wire.wireStart}
-			symbol={part.symbol ? symbolCache[part.symbol] : null}
-			theme={theme}
-		/>
-	));
+	return (parts ?? [])
+		.filter(isSchematicPart)
+		.map((part) => (
+			<PartSvg
+				key={part.id}
+				part={part}
+				isSelected={selection?.includes(part.id)}
+				dragPos={wire.dragPos?.partId === part.id ? wire.dragPos : null}
+				wireStart={wire.wireStart}
+				symbol={part.symbol ? symbolCache[part.symbol] : null}
+				theme={theme}
+			/>
+		));
 }
 
 function SchematicJunctionsLayer({ doc, theme }) {
@@ -2186,7 +2238,7 @@ function AnnotationTextModal({ textModal, onOk, onCancel }) {
 
 	return (
 		<Modal
-			open={Boolean(textModal)}
+			open={Boolean(textModal?.id)}
 			title={title}
 			okText="OK"
 			onOk={handleOk}
@@ -2205,29 +2257,17 @@ function AnnotationTextModal({ textModal, onOk, onCancel }) {
 }
 
 function handleTextModalOk(text, ctx) {
-	if (ctx.modalData && text) {
-		if (ctx.modalData.id) {
-			ctx.dispatchCmd({
-				type: "batch",
-				commands: [
-					{ type: "deleteAnnotation", id: ctx.modalData.id },
-					{
-						type: "addAnnotation",
-						annotation: { ...ctx.modalData, text },
-					},
-				],
-			});
-		} else {
-			ctx.dispatchCmd({
-				type: "addAnnotation",
-				annotation: {
-					kind: ctx.modalData.kind,
-					x: ctx.modalData.x,
-					y: ctx.modalData.y,
-					text,
+	if (ctx.modalData?.id && text) {
+		ctx.dispatchCmd({
+			type: "batch",
+			commands: [
+				{ type: "deleteAnnotation", id: ctx.modalData.id },
+				{
+					type: "addAnnotation",
+					annotation: { ...ctx.modalData, text },
 				},
-			});
-		}
+			],
+		});
 	}
 	ctx.setTextModal(null);
 	focusCanvas(ctx.containerRef);
