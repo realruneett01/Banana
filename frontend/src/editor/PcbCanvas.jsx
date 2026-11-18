@@ -10,12 +10,7 @@ import {
 } from "react";
 import BoardGraphicsLayer from "./BoardGraphicsLayer.jsx";
 import { setOutlineTool, useOutlineTool } from "./BoardTools.jsx";
-import {
-	addGraphic,
-	deleteGraphic,
-	hitTestGraphic,
-	moveGraphic,
-} from "./boardGraphics.js";
+import { addGraphic, hitTestGraphic, moveGraphic } from "./boardGraphics.js";
 import {
 	outlineToPolygon,
 	polygonBBox,
@@ -61,7 +56,6 @@ import { netItemsAt } from "./netHighlight.js";
 import { buildPlacedPart } from "./partPlacement.js";
 import {
 	addTrack,
-	deleteTrack,
 	footprintRect,
 	hitTest,
 	missingFootprintIds,
@@ -373,27 +367,40 @@ function handleRoutingKeys(e, key, ctx) {
 	return true;
 }
 
+const LAYER_KEY_ACTIONS = Object.freeze({
+	pageup: (ctx) => ctx.jumpCopper("top"),
+	pagedown: (ctx) => ctx.jumpCopper("bottom"),
+	"+": (ctx) => ctx.stepCopper(1),
+	"=": (ctx) => ctx.stepCopper(1),
+	"-": (ctx) => ctx.stepCopper(-1),
+});
+
 function handleLayerShortcuts(e, ctx) {
-	if (e.key === "PageUp") {
+	if (hasModifier(e)) return false;
+	const action = LAYER_KEY_ACTIONS[e.key?.toLowerCase()];
+	if (!action) return false;
+	e.preventDefault();
+	action(ctx);
+	return true;
+}
+
+function handleSelectionShortcuts(e, key, ctx) {
+	if (hasModifier(e) && key === "a") {
 		e.preventDefault();
-		ctx.jumpCopper("top");
+		ctx.selectAll?.();
 		return true;
 	}
-	if (e.key === "PageDown") {
+	if (!hasModifier(e) && key === "u") {
 		e.preventDefault();
-		ctx.jumpCopper("bottom");
+		ctx.selectConnected?.();
 		return true;
 	}
-	if (e.key === "+" || e.key === "=") {
-		e.preventDefault();
-		ctx.stepCopper(1);
-		return true;
-	}
-	if (e.key === "-") {
-		e.preventDefault();
-		ctx.stepCopper(-1);
-		return true;
-	}
+	return false;
+}
+
+function handleCanvasActionKeys(e, key, ctx) {
+	if (handleLayerShortcuts(e, ctx)) return true;
+	if (handleSelectionShortcuts(e, key, ctx)) return true;
 	return false;
 }
 
@@ -489,7 +496,7 @@ function handleShortcuts(e, ctx) {
 	if (handleMeasureShortcut(e, ctx)) return;
 	if (handleBackquoteShortcut(e, ctx)) return;
 	if (handleHistoryShortcuts(e, key, ctx)) return;
-	if (handleLayerShortcuts(e, ctx)) return;
+	if (handleCanvasActionKeys(e, key, ctx)) return;
 	handleToolKeys(e, key, ctx);
 }
 
@@ -615,27 +622,44 @@ function renderZonePolygon(zone, layer, idx, highlightNet) {
 	);
 }
 
-function ZonesLayer({ zones, layer, highlightNet }) {
+function ZonesLayer({ zones, layer, selectedIndices, highlightNet }) {
 	if (!Array.isArray(zones)) return null;
-	const filtered = zones.filter((z) => (z.layer ?? "F.Cu") === layer);
+	const filtered = zones
+		.map((zone, originalIndex) => ({ zone, index: originalIndex }))
+		.filter(({ zone }) => (zone.layer ?? "F.Cu") === layer);
 	if (filtered.length === 0) return null;
+	const selectedSet = new Set(selectedIndices ?? []);
 	return (
 		<g className="pcb-zones">
-			{filtered.map((z, i) => renderZonePolygon(z, layer, i, highlightNet))}
+			{filtered.map(({ zone, index }) =>
+				renderZonePolygon(
+					zone,
+					layer,
+					index,
+					selectedSet.has(index) ? { netId: zone.netId } : highlightNet,
+				),
+			)}
 		</g>
 	);
 }
 
-function TracksLayer({ tracks, layer, selectedIndex, highlightNet }) {
+function TracksLayer({
+	tracks,
+	layer,
+	selectedIndex,
+	selectedIndices,
+	highlightNet,
+}) {
 	if (!Array.isArray(tracks)) return null;
 	const filtered = tracks
 		.map((track, originalIndex) => ({ track, index: originalIndex }))
 		.filter(({ track }) => track.layer === layer);
 	if (filtered.length === 0) return null;
+	const selectedSet = new Set(selectedIndices ?? []);
 	return (
 		<g className="pcb-tracks">
 			{filtered.map(({ track, index }) => {
-				const isSelected = selectedIndex === index;
+				const isSelected = selectedIndex === index || selectedSet.has(index);
 				const isHl = isNetMatch(track.netId, highlightNet);
 				const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
 				const baseWidth = track.widthMm || 0.25;
@@ -662,34 +686,46 @@ function TracksLayer({ tracks, layer, selectedIndex, highlightNet }) {
 	);
 }
 
-function ViasLayer({ vias, highlightNet }) {
+function getViaVisuals(isSelected, isHl) {
+	if (isSelected) {
+		return {
+			stroke: "#fadb14",
+			width: 0.3,
+			filter: "drop-shadow(0 0 1px #fadb14)",
+		};
+	}
+	if (isHl) {
+		return {
+			stroke: "#facc15",
+			width: 0.25,
+			filter: "drop-shadow(0 0 0.8px #facc15)",
+		};
+	}
+	return { stroke: "#059669", width: 0.1, filter: undefined };
+}
+
+function ViasLayer({ vias, selectedIndices, highlightNet }) {
 	if (!Array.isArray(vias)) return null;
+	const selectedSet = new Set(selectedIndices ?? []);
 	return (
 		<g className="pcb-vias">
-			{vias.map((via) => {
+			{vias.map((via, i) => {
+				const isSelected = selectedSet.has(i);
 				const [x, y] = via.at ?? [0, 0];
 				const outerR = (via.sizeMm || 0.8) / 2;
 				const innerR = (via.drillMm || 0.4) / 2;
-				const key = `via_${x}_${y}`;
 				const isHl = isNetMatch(via.netId, highlightNet);
 				const opacity = getPcbCopperOpacity(isHl, Boolean(highlightNet));
-				const stroke = isHl ? "#facc15" : "#059669";
-				const strokeWidth = isHl ? 0.25 : 0.1;
+				const { stroke, width, filter } = getViaVisuals(isSelected, isHl);
 				return (
-					<g
-						key={key}
-						style={{
-							opacity,
-							filter: isHl ? "drop-shadow(0 0 0.8px #facc15)" : undefined,
-						}}
-					>
+					<g key={`via_${x}_${y}`} style={{ opacity, filter }}>
 						<circle
 							cx={x}
 							cy={y}
 							r={outerR}
 							fill={PCB_THEME.via}
 							stroke={stroke}
-							strokeWidth={strokeWidth}
+							strokeWidth={width}
 						/>
 						<circle cx={x} cy={y} r={innerR} fill={PCB_THEME.background} />
 					</g>
@@ -1199,10 +1235,17 @@ function PartItem({
 	);
 }
 
+function buildSelectedPartSet(selectedIds, selectedId) {
+	if (Array.isArray(selectedIds)) return new Set(selectedIds);
+	if (selectedId) return new Set([selectedId]);
+	return new Set();
+}
+
 function PartsLayer({
 	parts,
 	layer,
 	selectedId,
+	selectedIds,
 	layerState,
 	onSelectPart,
 	onStartDrag,
@@ -1219,13 +1262,14 @@ function PartsLayer({
 		return rect && (rect.side === "B" ? "B" : "F") === targetSide;
 	});
 	if (filtered.length === 0) return null;
+	const selectedSet = buildSelectedPartSet(selectedIds, selectedId);
 	return (
 		<g className={`pcb-parts-${layer}`}>
 			{filtered.map((p) => (
 				<PartItem
 					key={p.id}
 					part={p}
-					isSelected={selectedId === p.id}
+					isSelected={selectedSet.has(p.id)}
 					layerState={layerState}
 					onSelectPart={onSelectPart}
 					onStartDrag={onStartDrag}
@@ -2316,72 +2360,203 @@ function useRoutingState(props) {
 
 function deleteFromBoard(board, target) {
 	const {
-		selectedGraphicId,
-		selectedTrackIndex,
-		selectedPartId,
+		trackIndices = [],
+		viaIndices = [],
+		zoneIndices = [],
+		graphicIds = [],
+		partIds = [],
 		pushBoard,
 		editor,
 	} = target;
-	if (selectedGraphicId !== null) {
-		pushBoard(deleteGraphic(board, selectedGraphicId));
-	} else if (selectedTrackIndex !== null) {
-		pushBoard(deleteTrack(board, selectedTrackIndex));
-	} else if (selectedPartId) {
-		editor.dispatch({ type: "deletePart", partId: selectedPartId });
+
+	const hasBoardDeletes =
+		trackIndices.length > 0 ||
+		viaIndices.length > 0 ||
+		zoneIndices.length > 0 ||
+		graphicIds.length > 0;
+
+	if (hasBoardDeletes) {
+		const nextBoard = deleteItemsFromBoard(board, {
+			trackIndices,
+			viaIndices,
+			zoneIndices,
+			graphicIds,
+		});
+		pushBoard(nextBoard);
 	}
+
+	if (partIds.length === 1) {
+		editor.dispatch({ type: "deletePart", partId: partIds[0] });
+	} else if (partIds.length > 1) {
+		editor.dispatch({
+			type: "batch",
+			commands: partIds.map((partId) => ({ type: "deletePart", partId })),
+		});
+	}
+}
+
+const HIT_APPLIERS = {
+	track: (hit, s) => s.setSelectedTrackIndices([hit.index]),
+	via: (hit, s) => s.setSelectedViaIndices([hit.index]),
+	zone: (hit, s) => s.setSelectedZoneIndices([hit.index]),
+	graphic: (hit, s) => s.setSelectedGraphicIds([hit.id]),
+	pad: (hit, s) => s.setSelectedPad(hit.pad),
+};
+
+const PART_HIT_KINDS = new Set(["part", "pad"]);
+
+function clearCanvasSelection(setters) {
+	setters.setSelectedTrackIndices([]);
+	setters.setSelectedViaIndices([]);
+	setters.setSelectedZoneIndices([]);
+	setters.setSelectedGraphicIds([]);
+	setters.setSelectedPad(null);
 }
 
 function applySelectHit(hit, setters) {
-	const { editor, setSelectedTrackIndex, setSelectedGraphicId } = setters;
-	if (hit?.kind === "graphic") {
-		setSelectedGraphicId(hit.id);
-		setSelectedTrackIndex(null);
-		editor.dispatch({ type: "select", ids: [] });
-	} else if (hit?.kind === "part") {
-		editor.dispatch({ type: "select", ids: [hit.id] });
-		setSelectedTrackIndex(null);
-		setSelectedGraphicId(null);
-	} else if (hit?.kind === "track") {
-		setSelectedTrackIndex(hit.index);
-		setSelectedGraphicId(null);
-		editor.dispatch({ type: "select", ids: [] });
-	} else {
-		editor.dispatch({ type: "select", ids: [] });
-		setSelectedTrackIndex(null);
-		setSelectedGraphicId(null);
-	}
+	clearCanvasSelection(setters);
+	const kind = hit ? hit.kind : null;
+	const handler = HIT_APPLIERS[kind];
+	if (handler) handler(hit, setters);
+	const ids = PART_HIT_KINDS.has(kind) ? [hit.id] : [];
+	setters.editor.dispatch({ type: "select", ids });
 }
 
-function useCanvasSelection(editor, board, pushBoard, onChange) {
-	const [selectedTrackIndex, setSelectedTrackIndex] = useState(null);
-	const [selectedGraphicId, setSelectedGraphicId] = useState(null);
-	const selectedPartId = editor?.selection?.[0] ?? null;
+function resolveConnectedStart(ctx) {
+	if (ctx.selectedTrackIndices?.length > 0) {
+		return { trackIndices: ctx.selectedTrackIndices };
+	}
+	if (ctx.selectedViaIndices?.length > 0) {
+		return { viaIndices: ctx.selectedViaIndices };
+	}
+	if (ctx.selectedPad) {
+		return { pad: ctx.selectedPad };
+	}
+	if (ctx.selectedPartIds?.length > 0) {
+		const pad = ctx.pads?.find((p) => ctx.selectedPartIds.includes(p.partId));
+		if (pad) return { pad };
+	}
+	return null;
+}
 
-	const deleteSelected = useCallback(() => {
+function useDeleteSelected(ctx) {
+	const { board, pushBoard, editor, state, clearAllSelection } = ctx;
+	return useCallback(() => {
 		deleteFromBoard(board, {
-			selectedGraphicId,
-			selectedTrackIndex,
-			selectedPartId,
+			trackIndices: state.selectedTrackIndices,
+			viaIndices: state.selectedViaIndices,
+			zoneIndices: state.selectedZoneIndices,
+			graphicIds: state.selectedGraphicIds,
+			partIds: state.selectedPartIds,
 			pushBoard,
 			editor,
 		});
-		if (selectedGraphicId !== null) setSelectedGraphicId(null);
-		else if (selectedTrackIndex !== null) setSelectedTrackIndex(null);
-	}, [
-		selectedGraphicId,
-		selectedTrackIndex,
-		selectedPartId,
+		clearAllSelection();
+	}, [board, pushBoard, editor, state, clearAllSelection]);
+}
+
+function useSelectAll(ctx) {
+	const { editor, board, onChange, setters } = ctx;
+	return useCallback(() => {
+		const all = collectSelectAllIds({ ir: editor?.state?.ir, board });
+		setters.setTracks(all.trackIndices);
+		setters.setVias(all.viaIndices);
+		setters.setZones(all.zoneIndices);
+		setters.setGraphics(all.graphicIds);
+		setters.setPad(null);
+		editor.dispatch({ type: "select", ids: all.partIds });
+		onChange?.(editor.state);
+	}, [editor, board, onChange, setters]);
+}
+
+function useSelectConnected(ctx) {
+	const { editor, board, onChange, pads, state, setters } = ctx;
+	return useCallback(() => {
+		const start = resolveConnectedStart({
+			selectedTrackIndices: state.selectedTrackIndices,
+			selectedViaIndices: state.selectedViaIndices,
+			selectedPad: state.selectedPad,
+			selectedPartIds: state.selectedPartIds,
+			pads,
+		});
+		if (!start) return;
+		const res = walkConnectedTracksAndVias({
+			tracks: board?.tracks,
+			vias: board?.vias,
+			pads,
+			start,
+		});
+		setters.setTracks(res.trackIndices);
+		setters.setVias(res.viaIndices);
+		setters.setZones([]);
+		setters.setGraphics([]);
+		editor.dispatch({ type: "select", ids: [] });
+		onChange?.(editor.state);
+	}, [editor, board, onChange, pads, state, setters]);
+}
+
+function useCanvasSelection(options = {}) {
+	const { editor, board, pushBoard, onChange, pads } = options;
+	const [selectedTrackIndices, setTracks] = useState([]);
+	const [selectedViaIndices, setVias] = useState([]);
+	const [selectedZoneIndices, setZones] = useState([]);
+	const [selectedGraphicIds, setGraphics] = useState([]);
+	const [selectedPad, setPad] = useState(null);
+
+	const selectedPartIds = editor?.selection ?? [];
+	const state = {
+		selectedTrackIndex: selectedTrackIndices[0] ?? null,
+		selectedTrackIndices,
+		selectedViaIndex: selectedViaIndices[0] ?? null,
+		selectedViaIndices,
+		selectedZoneIndex: selectedZoneIndices[0] ?? null,
+		selectedZoneIndices,
+		selectedPartId: selectedPartIds[0] ?? null,
+		selectedPartIds,
+		selectedGraphicId: selectedGraphicIds[0] ?? null,
+		selectedGraphicIds,
+		selectedPad,
+	};
+	const setters = useMemo(
+		() => ({ setTracks, setVias, setZones, setGraphics, setPad }),
+		[],
+	);
+
+	const clearAllSelection = useCallback(() => {
+		setTracks([]);
+		setVias([]);
+		setZones([]);
+		setGraphics([]);
+		setPad(null);
+		editor.dispatch({ type: "select", ids: [] });
+	}, [editor]);
+
+	const deleteSelected = useDeleteSelected({
 		board,
 		pushBoard,
 		editor,
-	]);
+		state,
+		clearAllSelection,
+	});
+	const selectAll = useSelectAll({ editor, board, onChange, setters });
+	const selectConnected = useSelectConnected({
+		editor,
+		board,
+		onChange,
+		pads,
+		state,
+		setters,
+	});
 
 	const onSelectHit = useCallback(
 		(hit) => {
 			applySelectHit(hit, {
 				editor,
-				setSelectedTrackIndex,
-				setSelectedGraphicId,
+				setSelectedTrackIndices: setTracks,
+				setSelectedViaIndices: setVias,
+				setSelectedZoneIndices: setZones,
+				setSelectedGraphicIds: setGraphics,
+				setSelectedPad: setPad,
 			});
 			onChange?.(editor.state);
 		},
@@ -2389,10 +2564,10 @@ function useCanvasSelection(editor, board, pushBoard, onChange) {
 	);
 
 	return {
-		selectedTrackIndex,
-		selectedPartId,
-		selectedGraphicId,
+		...state,
 		deleteSelected,
+		selectAll,
+		selectConnected,
 		onSelectHit,
 	};
 }
@@ -2549,26 +2724,44 @@ function handlePointerDownHighlight(ctx, pt) {
 	return false;
 }
 
+function resolveSceneHit(pt, board, ir, pads) {
+	const padHit = findHitPadInfo(pt, { pads });
+	if (padHit) return { kind: "pad", pad: padHit, id: padHit.partId };
+	const graphicId = hitTestGraphic(board?.graphics, pt);
+	if (graphicId) return { kind: "graphic", id: graphicId };
+	const hit = hitTest(ir, board, pt);
+	if (hit) return hit;
+	const zoneIdx = board?.zones?.findIndex((z) => pointInZone(z, pt)) ?? -1;
+	if (zoneIdx >= 0) return { kind: "zone", index: zoneIdx };
+	return null;
+}
+
 function usePointerDownHandler(ctx) {
-	const { route, sel, ir, board, svgRef, view, isArmed, highlight } = ctx;
+	const { route, sel, ir, board, svgRef, view, isArmed, highlight, pads } = ctx;
 	return useCallback(
 		(e) => {
 			if (e.button !== 0 || route.isRouting) return;
 			const pt = screenToBoardCoords(e, svgRef.current, view);
 			if (handlePointerDownHighlight(ctx, pt)) return;
 			if (isArmed) return;
-			const graphicId = hitTestGraphic(board?.graphics, pt);
-			if (graphicId) {
-				sel.onSelectHit({ kind: "graphic", id: graphicId });
-				return;
-			}
-			const hit = hitTest(ir, board, pt);
+			const hit = resolveSceneHit(pt, board, ir, pads);
 			if (!hit && highlight?.highlightNet) {
 				highlight.setHighlightNet(null);
 			}
 			sel.onSelectHit(hit);
 		},
-		[ctx, route.isRouting, isArmed, ir, board, sel, svgRef, view, highlight],
+		[
+			ctx,
+			route.isRouting,
+			isArmed,
+			ir,
+			board,
+			sel,
+			svgRef,
+			view,
+			highlight,
+			pads,
+		],
 	);
 }
 
@@ -2620,6 +2813,8 @@ function buildShortcuts(ctx) {
 		armText: () => armToolShortcut(ctx, "placeText"),
 		isRouting: ctx.route.isRouting,
 		deleteSelected: ctx.sel.deleteSelected,
+		selectAll: ctx.sel.selectAll,
+		selectConnected: ctx.sel.selectConnected,
 		undoBoard: ctx.history.undoBoard,
 		redoBoard: ctx.history.redoBoard,
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
@@ -2640,8 +2835,15 @@ function buildSceneData(ctx) {
 		ir: ctx.ir,
 		rnLines: ctx.rnLines,
 		selectedPartId: ctx.sel.selectedPartId,
+		selectedPartIds: ctx.sel.selectedPartIds,
 		selectedTrackIndex: ctx.sel.selectedTrackIndex,
+		selectedTrackIndices: ctx.sel.selectedTrackIndices,
+		selectedViaIndex: ctx.sel.selectedViaIndex,
+		selectedViaIndices: ctx.sel.selectedViaIndices,
+		selectedZoneIndex: ctx.sel.selectedZoneIndex,
+		selectedZoneIndices: ctx.sel.selectedZoneIndices,
 		selectedGraphicId: ctx.sel.selectedGraphicId,
+		selectedGraphicIds: ctx.sel.selectedGraphicIds,
 		onSelectPart: (id) => ctx.editor.dispatch({ type: "select", ids: [id] }),
 		onPointerDown: ctx.onPointerDown,
 		fpLookup: ctx.fpLookup,
@@ -2772,12 +2974,14 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 			<ZonesLayer
 				zones={sceneData.board?.zones}
 				layer={layer}
+				selectedIndices={sceneData.selectedZoneIndices}
 				highlightNet={sceneData.highlightNet}
 			/>
 			<TracksLayer
 				tracks={sceneData.board?.tracks}
 				layer={layer}
 				selectedIndex={sceneData.selectedTrackIndex}
+				selectedIndices={sceneData.selectedTrackIndices}
 				highlightNet={sceneData.highlightNet}
 			/>
 			<BoardGraphicsLayer
@@ -2789,6 +2993,7 @@ function PcbLayerStack({ order, sceneData, layerState, drag }) {
 				parts={sceneData.ir?.parts}
 				layer={layer}
 				selectedId={sceneData.selectedPartId}
+				selectedIds={sceneData.selectedPartIds}
 				layerState={layerState}
 				onSelectPart={sceneData.onSelectPart}
 				onStartDrag={drag.onStartDrag}
@@ -4594,6 +4799,7 @@ function PcbSvgContent({
 			{showVias && (
 				<ViasLayer
 					vias={sceneData.board?.vias}
+					selectedIndices={sceneData.selectedViaIndices}
 					highlightNet={sceneData.highlightNet}
 				/>
 			)}
@@ -4694,6 +4900,188 @@ export function getGridColors(theme = PCB_THEME) {
 }
 
 // --- End PCB Grid pure helpers ---
+
+// --- PCB Select and Layer pure helpers ---
+
+const CONNECTED_TOLERANCE_MM = 0.01;
+
+function isPointNear(p1, p2, tol = CONNECTED_TOLERANCE_MM) {
+	if (!p1 || !p2) return false;
+	const x1 = p1.x ?? p1[0] ?? 0;
+	const y1 = p1.y ?? p1[1] ?? 0;
+	const x2 = p2.x ?? p2[0] ?? 0;
+	const y2 = p2.y ?? p2[1] ?? 0;
+	return Math.hypot(x1 - x2, y1 - y2) <= tol + 1e-9;
+}
+
+function isSameNet(netA, netB) {
+	if (!netA && !netB) return true;
+	if (!netA || !netB) return false;
+	return String(netA) === String(netB);
+}
+
+export function collectSelectAllIds({ ir, board } = {}) {
+	const partIds = (ir?.parts ?? []).map((p) => p.id);
+	const trackIndices = (board?.tracks ?? []).map((_, i) => i);
+	const viaIndices = (board?.vias ?? []).map((_, i) => i);
+	const zoneIndices = (board?.zones ?? []).map((_, i) => i);
+	const graphicIds = (board?.graphics ?? []).map((g) => g.id);
+	return {
+		partIds,
+		trackIndices,
+		viaIndices,
+		zoneIndices,
+		graphicIds,
+	};
+}
+
+function resolveStartNet(start, tracks, vias) {
+	if (start?.netId) return start.netId;
+	if (typeof start?.trackIndex === "number") {
+		return tracks[start.trackIndex]?.netId ?? null;
+	}
+	if (typeof start?.viaIndex === "number") {
+		return vias[start.viaIndex]?.netId ?? null;
+	}
+	if (start?.pad?.netId) return start.pad.netId;
+	if (typeof start === "number") return tracks[start]?.netId ?? null;
+	return null;
+}
+
+function seedTracks(start, tracks, visited) {
+	const queue = [];
+	const indices = Array.isArray(start?.trackIndices)
+		? start.trackIndices
+		: typeof start === "number"
+			? [start]
+			: typeof start?.trackIndex === "number"
+				? [start.trackIndex]
+				: [];
+	for (const i of indices) {
+		const t = tracks[i];
+		if (t) {
+			visited.tracks.add(i);
+			queue.push(t.start, t.end);
+		}
+	}
+	return queue;
+}
+
+function seedViaOrPad(start, vias, visited) {
+	const queue = [];
+	const vIdx = start?.viaIndex;
+	if (typeof vIdx === "number" && vias[vIdx]) {
+		visited.vias.add(vIdx);
+		queue.push(vias[vIdx].at);
+	}
+	if (start?.pad) {
+		const pt = start.pad.center || start.pad.pos || start.pad;
+		queue.push(pt);
+	}
+	return queue;
+}
+
+function seedStartQueue(start, tracks, vias, visited) {
+	return [
+		...seedTracks(start, tracks, visited),
+		...seedViaOrPad(start, vias, visited),
+	];
+}
+
+function expandTrackConnections(currPt, tracks, targetNet, visited) {
+	const newPoints = [];
+	for (let i = 0; i < tracks.length; i++) {
+		if (visited.tracks.has(i)) continue;
+		const t = tracks[i];
+		if (!isSameNet(t.netId, targetNet)) continue;
+		if (isPointNear(currPt, t.start) || isPointNear(currPt, t.end)) {
+			visited.tracks.add(i);
+			newPoints.push(t.start, t.end);
+		}
+	}
+	return newPoints;
+}
+
+function expandViaConnections(currPt, vias, targetNet, visited) {
+	const newPoints = [];
+	for (let j = 0; j < vias.length; j++) {
+		if (visited.vias.has(j)) continue;
+		const v = vias[j];
+		if (!isSameNet(v.netId, targetNet)) continue;
+		if (isPointNear(currPt, v.at)) {
+			visited.vias.add(j);
+			newPoints.push(v.at);
+		}
+	}
+	return newPoints;
+}
+
+export function walkConnectedTracksAndVias(options = {}) {
+	const tracks = options.tracks ?? [];
+	const vias = options.vias ?? [];
+	const start = options.start;
+	if (!start && typeof start !== "number") {
+		return { trackIndices: [], viaIndices: [] };
+	}
+	const targetNet = resolveStartNet(start, tracks, vias);
+	const visited = { tracks: new Set(), vias: new Set() };
+	const queue = seedStartQueue(start, tracks, vias, visited);
+
+	while (queue.length > 0) {
+		const currPt = queue.shift();
+		const trackPts = expandTrackConnections(currPt, tracks, targetNet, visited);
+		const viaPts = expandViaConnections(currPt, vias, targetNet, visited);
+		queue.push(...trackPts, ...viaPts);
+	}
+
+	return {
+		trackIndices: [...visited.tracks].sort((a, b) => a - b),
+		viaIndices: [...visited.vias].sort((a, b) => a - b),
+	};
+}
+export const findConnectedTracksAndVias = walkConnectedTracksAndVias;
+
+export function cycleCopperLayer(layerState, dir) {
+	return stepCopper(layerState, dir);
+}
+
+export function jumpCopperLayer(layerState, which) {
+	return jumpCopper(layerState, which);
+}
+
+export function deleteItemsFromBoard(board, target = {}) {
+	const trackSet = new Set(target.trackIndices ?? []);
+	if (typeof target.selectedTrackIndex === "number") {
+		trackSet.add(target.selectedTrackIndex);
+	}
+	const viaSet = new Set(target.viaIndices ?? []);
+	if (typeof target.selectedViaIndex === "number") {
+		viaSet.add(target.selectedViaIndex);
+	}
+	const zoneSet = new Set(target.zoneIndices ?? []);
+	if (typeof target.selectedZoneIndex === "number") {
+		zoneSet.add(target.selectedZoneIndex);
+	}
+	const graphicSet = new Set(target.graphicIds ?? []);
+	if (target.selectedGraphicId) {
+		graphicSet.add(target.selectedGraphicId);
+	}
+
+	const tracks = (board?.tracks ?? []).filter((_, i) => !trackSet.has(i));
+	const vias = (board?.vias ?? []).filter((_, i) => !viaSet.has(i));
+	const zones = (board?.zones ?? []).filter((_, i) => !zoneSet.has(i));
+	const graphics = (board?.graphics ?? []).filter((g) => !graphicSet.has(g.id));
+
+	return {
+		...(board ?? {}),
+		tracks,
+		vias,
+		zones,
+		graphics,
+	};
+}
+
+// --- End PCB Select and Layer pure helpers ---
 
 function PcbGridDefs(props) {
 	const { step, majorStep, dotR, majorR, dot, major } = props;
@@ -5065,7 +5453,13 @@ function usePcbCanvasState({
 	);
 	const netNames = useMemo(() => netNameMap(ir?.nets), [ir]);
 	const history = useBoardHistory(board, onBoardChange);
-	const sel = useCanvasSelection(editor, board, history.pushBoard, onChange);
+	const sel = useCanvasSelection({
+		editor,
+		board,
+		pushBoard: history.pushBoard,
+		onChange,
+		pads,
+	});
 	const drag = usePartDrag(editor, svgRef, view);
 	const route = useRoutingState({
 		board,
