@@ -548,7 +548,14 @@ function SymbolPinName({ name, pos, color }) {
 	);
 }
 
-function SymbolPin({ pin, activePart, wireStart, strokeWidth, theme }) {
+function SymbolPin({
+	pin,
+	activePart,
+	wireStart,
+	strokeWidth,
+	theme,
+	isGhost = false,
+}) {
 	const isStart =
 		wireStart?.partId === activePart.id && wireStart?.pin === pin.number;
 	const pinColor = getSchematicColor(theme, "pin");
@@ -562,14 +569,16 @@ function SymbolPin({ pin, activePart, wireStart, strokeWidth, theme }) {
 				stroke={pinColor}
 				strokeWidth={strokeWidth}
 			/>
-			<circle
-				cx={pin.x}
-				cy={pin.y}
-				r={0.65}
-				fill={isStart ? getSchematicColor(theme, "selection") : pinColor}
-				stroke={getSchematicColor(theme, "background")}
-				strokeWidth={0.2}
-			/>
+			{!isGhost && (
+				<circle
+					cx={pin.x}
+					cy={pin.y}
+					r={0.65}
+					fill={isStart ? getSchematicColor(theme, "selection") : pinColor}
+					stroke={getSchematicColor(theme, "background")}
+					strokeWidth={0.2}
+				/>
+			)}
 			<text
 				x={pin.numberPos[0]}
 				y={pin.numberPos[1]}
@@ -614,7 +623,14 @@ function PartTextLabels({ x, yRef, yVal, refText, valueText, theme }) {
 	);
 }
 
-function SymbolPartSvg({ activePart, isSelected, wireStart, symbol, theme }) {
+function SymbolPartSvg({
+	activePart,
+	isSelected,
+	wireStart,
+	symbol,
+	theme,
+	isGhost = false,
+}) {
 	const pl = activePart.placement ?? {};
 	const placement = {
 		x: pl.x ?? 0,
@@ -637,7 +653,7 @@ function SymbolPartSvg({ activePart, isSelected, wireStart, symbol, theme }) {
 	};
 
 	return (
-		<g className="schematic-part">
+		<g className={isGhost ? "schematic-ghost-part" : "schematic-part"}>
 			{prims.map((prim, i) =>
 				prim.type === "pin" ? (
 					<SymbolPin
@@ -647,6 +663,7 @@ function SymbolPartSvg({ activePart, isSelected, wireStart, symbol, theme }) {
 						wireStart={wireStart}
 						strokeWidth={0.254}
 						theme={theme}
+						isGhost={isGhost}
 					/>
 				) : (
 					<SymbolPrimitive
@@ -668,7 +685,15 @@ function SymbolPartSvg({ activePart, isSelected, wireStart, symbol, theme }) {
 	);
 }
 
-function BoxPartPins({ pinList, pins, wireStart, activePart, theme }) {
+function BoxPartPins({
+	pinList,
+	pins,
+	wireStart,
+	activePart,
+	theme,
+	isGhost = false,
+}) {
+	if (isGhost) return null;
 	return pinList.map((p) => {
 		const pos = pins.get(p);
 		if (!pos) return null;
@@ -686,7 +711,13 @@ function BoxPartPins({ pinList, pins, wireStart, activePart, theme }) {
 	});
 }
 
-function BoxPartSvg({ activePart, isSelected, wireStart, theme }) {
+function BoxPartSvg({
+	activePart,
+	isSelected,
+	wireStart,
+	theme,
+	isGhost = false,
+}) {
 	const box = partBox(activePart);
 	const pins = pinPositions(activePart);
 	const stroke = isSelected
@@ -699,7 +730,10 @@ function BoxPartSvg({ activePart, isSelected, wireStart, theme }) {
 	const pinList = Array.isArray(activePart.pins) ? activePart.pins : ["1", "2"];
 
 	return (
-		<g className="schematic-part" transform={rot}>
+		<g
+			className={isGhost ? "schematic-ghost-part" : "schematic-part"}
+			transform={rot}
+		>
 			<rect
 				x={box.x}
 				y={box.y}
@@ -725,12 +759,21 @@ function BoxPartSvg({ activePart, isSelected, wireStart, theme }) {
 				wireStart={wireStart}
 				activePart={activePart}
 				theme={theme}
+				isGhost={isGhost}
 			/>
 		</g>
 	);
 }
 
-function PartSvg({ part, isSelected, dragPos, wireStart, symbol, theme }) {
+function PartSvg({
+	part,
+	isSelected,
+	dragPos,
+	wireStart,
+	symbol,
+	theme,
+	isGhost = false,
+}) {
 	const activePart = dragPos
 		? { ...part, placement: { ...part.placement, x: dragPos.x, y: dragPos.y } }
 		: part;
@@ -742,6 +785,7 @@ function PartSvg({ part, isSelected, dragPos, wireStart, symbol, theme }) {
 				wireStart={wireStart}
 				symbol={symbol}
 				theme={theme}
+				isGhost={isGhost}
 			/>
 		);
 	}
@@ -751,6 +795,7 @@ function PartSvg({ part, isSelected, dragPos, wireStart, symbol, theme }) {
 			isSelected={isSelected}
 			wireStart={wireStart}
 			theme={theme}
+			isGhost={isGhost}
 		/>
 	);
 }
@@ -904,6 +949,7 @@ function ArmedGhostMarker({ armedPart, cursorWorld, symbolCache, theme }) {
 					wireStart={null}
 					symbol={geom.symbol}
 					theme={theme}
+					isGhost={true}
 				/>
 			) : (
 				<GhostBox
@@ -936,6 +982,25 @@ function RubberbandAnnotationLine({ lineStart, cursorWorld, tool, theme }) {
 	);
 }
 
+function WireHoverMarker({ wireMode, cursorWorld, allPinPos, theme }) {
+	if (!wireMode || !cursorWorld) return null;
+	const pinHit = findPinNearPoint(cursorWorld, allPinPos, 2.0);
+	if (!pinHit) return null;
+	const color = getSchematicColor(theme, "selection") || "#00ffff";
+	return (
+		<circle
+			className="schematic-pin-hover"
+			cx={pinHit.x}
+			cy={pinHit.y}
+			r={1.2}
+			fill="none"
+			stroke={color}
+			strokeWidth={0.4}
+			pointerEvents="none"
+		/>
+	);
+}
+
 function SchematicGhostLayer({ s, theme }) {
 	return (
 		<>
@@ -943,6 +1008,12 @@ function SchematicGhostLayer({ s, theme }) {
 				wireStart={s.wire.wireStart}
 				allPinPos={s.allPinPos}
 				cursorWorld={s.ptr.cursorWorld}
+				theme={theme}
+			/>
+			<WireHoverMarker
+				wireMode={s.wire.wireMode}
+				cursorWorld={s.ptr.cursorWorld}
+				allPinPos={s.allPinPos}
 				theme={theme}
 			/>
 			<RubberbandAnnotationLine
@@ -1364,9 +1435,15 @@ function handleWirePointerDown(hitCtx, hit) {
 }
 
 function handlePinConnect(hit, wireState, dispatchCmd) {
-	const { wireStart, setWireStart } = wireState;
+	const { wireStart, setWireStart, allPinPos } = wireState;
 	if (!wireStart) {
-		setWireStart({ partId: hit.id, pin: hit.pin });
+		const pos = allPinPos?.get?.(`${hit.id}:${hit.pin}`);
+		setWireStart({
+			partId: hit.id,
+			pin: hit.pin,
+			x: pos ? pos[0] : 0,
+			y: pos ? pos[1] : 0,
+		});
 		return;
 	}
 	if (wireStart.partId !== hit.id || wireStart.pin !== hit.pin) {
