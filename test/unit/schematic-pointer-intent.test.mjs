@@ -5,41 +5,61 @@ import {
 	pointerDownTarget,
 } from "../../frontend/src/editor/pointerIntent.js";
 
-const assertTarget = (target, wireMode, expected) => {
-	assert.equal(pointerDownTarget(target, wireMode), expected);
-};
-
 describe("pointerDownTarget", () => {
-	test("a pin click in select mode selects the part, never starts a wire", () => {
-		assertTarget("pin", false, "part");
-	});
+	const targetCases = [
+		[
+			"a pin click in select mode selects the part, never starts a wire",
+			() => assert.equal(pointerDownTarget("pin", false), "part"),
+		],
+		[
+			"a pin click in wire mode starts or finishes a wire",
+			() => assert.equal(pointerDownTarget("pin", true), "connect"),
+		],
+		[
+			"other hits ignore wire mode; a miss is an empty-canvas click",
+			() => {
+				for (const wireMode of [false, true]) {
+					for (const [target, expected] of [
+						["part", "part"],
+						["wire", "wire"],
+						[undefined, "empty"],
+					]) {
+						assert.equal(pointerDownTarget(target, wireMode), expected);
+					}
+				}
+			},
+		],
+	];
 
-	test("a pin click in wire mode starts or finishes a wire", () => {
-		assertTarget("pin", true, "connect");
-	});
-
-	test("other hits ignore wire mode; a miss is an empty-canvas click", () => {
-		for (const wireMode of [false, true]) {
-			assertTarget("part", wireMode, "part");
-			assertTarget("wire", wireMode, "wire");
-			assertTarget(undefined, wireMode, "empty");
-		}
-	});
+	for (const [name, execute] of targetCases) {
+		test(name, execute);
+	}
 });
 
 describe("isPanPointer", () => {
-	test("middle button pans with or without Space", () => {
-		for (const space of [false, true]) {
-			assert.equal(isPanPointer(1, space), true);
-		}
-	});
+	const panMatrix = [
+		[
+			"middle button pans with or without Space",
+			[
+				[1, false, true],
+				[1, true, true],
+			],
+		],
+		[
+			"left button pans only while Space is held",
+			[
+				[0, true, true],
+				[0, false, false],
+			],
+		],
+		["right button never pans", [[2, true, false]]],
+	];
 
-	test("left button pans only while Space is held", () => {
-		assert.equal(isPanPointer(0, true), true);
-		assert.equal(isPanPointer(0, false), false);
-	});
-
-	test("right button never pans", () => {
-		assert.equal(isPanPointer(2, true), false);
-	});
+	for (const [name, matrix] of panMatrix) {
+		test(name, () => {
+			for (const [button, space, expected] of matrix) {
+				assert.equal(isPanPointer(button, space), expected);
+			}
+		});
+	}
 });
