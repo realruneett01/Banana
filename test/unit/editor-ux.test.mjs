@@ -85,4 +85,34 @@ describe("editor UX wiring", () => {
 		const editor = src("editor/EditorScreen.jsx");
 		assert.match(editor, /flexShrink:\s*0/);
 	});
+
+	test("Update PCB and Add copper pour buttons are icon-only with full aria-labels", () => {
+		const bt = src("editor/BoardTools.jsx");
+		assert.match(bt, /ariaLabel="Update PCB from schematic"/);
+		assert.match(bt, /ariaLabel="Add copper pour"/);
+		assert.doesNotMatch(bt, /text="Update PCB from schematic"/);
+		assert.doesNotMatch(bt, /text="Add copper pour"/);
+	});
+
+	test("Board outline control is a compact dropdown labelled Board outline", () => {
+		const bt = src("editor/BoardTools.jsx");
+		assert.match(bt, /<Dropdown/);
+		assert.match(bt, /function OutlineDropdown/);
+		assert.match(bt, /Board outline/);
+	});
+
+	test("Board outline radius input is conditionally visible only when rounded is chosen", () => {
+		const bt = src("editor/BoardTools.jsx");
+		assert.match(
+			bt,
+			/activeTool === "rounded_rect"\s*&&\s*\(\s*<OutlineRadiusInput/,
+		);
+	});
+
+	test("Rotate and Flip sit in one horizontal row", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /function TransformButtons/);
+		assert.match(editor, /Rotate 90°/);
+		assert.match(editor, /Flip Side/);
+	});
 });

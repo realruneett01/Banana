@@ -1,7 +1,8 @@
-import { BorderOutlined, SyncOutlined } from "@ant-design/icons";
+import { BorderOutlined, DownOutlined, SyncOutlined } from "@ant-design/icons";
 import {
 	Button,
 	Checkbox,
+	Dropdown,
 	InputNumber,
 	Modal,
 	message,
@@ -457,7 +458,6 @@ function SyncAction({ disabled, sync }) {
 				disabled={disabled}
 				onClick={sync.onUpdate}
 				ariaLabel="Update PCB from schematic"
-				text="Update PCB from schematic"
 			/>
 			<SyncModal
 				open={sync.open}
@@ -491,7 +491,6 @@ function PourAction({ disabled, pour, board, ir }) {
 				disabled={disabled || !canPour}
 				onClick={pour.onOpen}
 				ariaLabel="Add copper pour"
-				text="Add copper pour"
 			/>
 			<PourModal
 				open={pour.open}
@@ -511,37 +510,10 @@ function PourAction({ disabled, pour, board, ir }) {
 	);
 }
 
-function OutlineRectButton({ disabled, active, onClick }) {
-	return (
-		<Tooltip title="Draw rectangle board outline">
-			<Button
-				size="small"
-				type={active ? "primary" : "default"}
-				disabled={disabled}
-				onClick={onClick}
-				aria-label="Rectangle board outline"
-			>
-				Rectangle
-			</Button>
-		</Tooltip>
-	);
-}
-
-function OutlineRoundedButton({ disabled, active, onClick }) {
-	return (
-		<Tooltip title="Draw rounded rectangle board outline">
-			<Button
-				size="small"
-				type={active ? "primary" : "default"}
-				disabled={disabled}
-				onClick={onClick}
-				aria-label="Rounded rectangle board outline"
-			>
-				Rounded rectangle
-			</Button>
-		</Tooltip>
-	);
-}
+const OUTLINE_MENU_ITEMS = [
+	{ key: "rect", label: "Rectangle" },
+	{ key: "rounded_rect", label: "Rounded rectangle" },
+];
 
 function OutlineRadiusInput({ disabled, value, onChange }) {
 	return (
@@ -560,18 +532,35 @@ function OutlineRadiusInput({ disabled, value, onChange }) {
 	);
 }
 
+function OutlineDropdown({ disabled, activeTool, onSelect }) {
+	return (
+		<Dropdown
+			menu={{
+				items: OUTLINE_MENU_ITEMS,
+				onClick: onSelect,
+				selectedKeys: activeTool ? [activeTool] : [],
+			}}
+			disabled={disabled}
+		>
+			<Tooltip title="Board outline shape">
+				<Button
+					size="small"
+					type={activeTool ? "primary" : "default"}
+					aria-label="Board outline"
+				>
+					Board outline <DownOutlined />
+				</Button>
+			</Tooltip>
+		</Dropdown>
+	);
+}
+
 function OutlineToolGroup({ disabled, toolState }) {
 	const { activeTool, radius } = toolState;
-	const toggleRect = useCallback(() => {
+	const handleMenuClick = useCallback(({ key }) => {
 		setOutlineTool((s) => ({
 			...s,
-			activeTool: s.activeTool === "rect" ? null : "rect",
-		}));
-	}, []);
-	const toggleRounded = useCallback(() => {
-		setOutlineTool((s) => ({
-			...s,
-			activeTool: s.activeTool === "rounded_rect" ? null : "rounded_rect",
+			activeTool: s.activeTool === key ? null : key,
 		}));
 	}, []);
 	const handleRadiusChange = useCallback((val) => {
@@ -580,22 +569,18 @@ function OutlineToolGroup({ disabled, toolState }) {
 
 	return (
 		<Space size={4} aria-label="Board outline">
-			<span style={{ fontSize: "12px", color: "#8a91a3" }}>Board outline:</span>
-			<OutlineRectButton
+			<OutlineDropdown
 				disabled={disabled}
-				active={activeTool === "rect"}
-				onClick={toggleRect}
+				activeTool={activeTool}
+				onSelect={handleMenuClick}
 			/>
-			<OutlineRoundedButton
-				disabled={disabled}
-				active={activeTool === "rounded_rect"}
-				onClick={toggleRounded}
-			/>
-			<OutlineRadiusInput
-				disabled={disabled}
-				value={radius}
-				onChange={handleRadiusChange}
-			/>
+			{activeTool === "rounded_rect" && (
+				<OutlineRadiusInput
+					disabled={disabled}
+					value={radius}
+					onChange={handleRadiusChange}
+				/>
+			)}
 		</Space>
 	);
 }

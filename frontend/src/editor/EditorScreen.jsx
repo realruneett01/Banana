@@ -332,28 +332,23 @@ function HistoryButtons({ canUndo, canRedo, undo, redo }) {
 }
 
 function TransformButtons({ hasSelection, rotate, flip }) {
-	const items = [
-		{
-			title: "Rotate 90° (R)",
-			icon: <RotateRightOutlined />,
-			disabled: !hasSelection,
-			onClick: rotate,
-			ariaLabel: "Rotate",
-		},
-		{
-			title: "Flip Side (F)",
-			icon: <SwapOutlined />,
-			disabled: !hasSelection,
-			onClick: flip,
-			ariaLabel: "Flip",
-		},
-	];
 	return (
-		<>
-			{items.map((it) => (
-				<ToolButton key={it.title} {...it} />
-			))}
-		</>
+		<Space size={4} style={{ display: "inline-flex" }}>
+			<ToolButton
+				title="Rotate 90° (R)"
+				icon={<RotateRightOutlined />}
+				disabled={!hasSelection}
+				onClick={rotate}
+				ariaLabel="Rotate"
+			/>
+			<ToolButton
+				title="Flip Side (F)"
+				icon={<SwapOutlined />}
+				disabled={!hasSelection}
+				onClick={flip}
+				ariaLabel="Flip"
+			/>
+		</Space>
 	);
 }
 
