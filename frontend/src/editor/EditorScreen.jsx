@@ -3,6 +3,7 @@ import {
 	DownloadOutlined,
 	DownOutlined,
 	LeftOutlined,
+	PlayCircleOutlined,
 	PlusOutlined,
 	RedoOutlined,
 	RightOutlined,
@@ -30,10 +31,11 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import IssuesPanel from "../components/IssuesPanel.jsx";
 import { emitCommitCreated } from "../designEvents.js";
 import { annotate } from "./annotate.js";
 import BoardTools from "./BoardTools.jsx";
+import ChecksPanel from "./ChecksPanel.jsx";
+import { countViolations, runDrc, runErc } from "./checksApi.js";
 import {
 	get,
 	setCursor,
@@ -600,6 +602,39 @@ function ActionGroup({ state, actions }) {
 	);
 }
 
+function RunDrcButton({ loading, onRun }) {
+	return (
+		<ToolButton
+			title="Check the board for manufacturing problems"
+			icon={<PlayCircleOutlined />}
+			disabled={loading}
+			loading={loading}
+			onClick={onRun}
+			ariaLabel="Run DRC"
+		/>
+	);
+}
+
+function RunErcButton({ loading, onRun }) {
+	return (
+		<ToolButton
+			title="Check the schematic for wiring mistakes"
+			icon={<PlayCircleOutlined />}
+			disabled={loading}
+			loading={loading}
+			onClick={onRun}
+			ariaLabel="Run ERC"
+		/>
+	);
+}
+
+function ChecksAction({ activeTab, loading, onRun }) {
+	if (activeTab === "pcb") {
+		return <RunDrcButton loading={loading} onRun={onRun} />;
+	}
+	return <RunErcButton loading={loading} onRun={onRun} />;
+}
+
 function EditorToolbar({ state, actions }) {
 	const isPcb = state.activeTab === "pcb";
 	return (
@@ -625,6 +660,11 @@ function EditorToolbar({ state, actions }) {
 					disabled={!isPcb}
 				/>
 			</div>
+			<ChecksAction
+				activeTab={state.activeTab}
+				loading={state.checksLoading}
+				onRun={actions.runChecks}
+			/>
 			<ExportDropdown state={state} actions={actions} />
 		</div>
 	);
@@ -867,21 +907,27 @@ function useExportAction({ api, ir, board }) {
 	return { exportKiCad, exporting };
 }
 
-async function exportPcbText(api, ir, board) {
+async function exportDesignFile(api, ir, board, ext, fileLabel) {
 	if (typeof api?.editorExport !== "function") {
 		throw new Error("KiCad export is not available");
 	}
 	const res = await api.editorExport({ ir, board, title: ir?.name });
 	if (!res?.ok || !res?.data?.files) {
-		throw new Error(res?.error || "Failed to generate KiCad PCB");
+		throw new Error(res?.error || `Failed to generate KiCad ${fileLabel}`);
 	}
-	const entry = Object.entries(res.data.files).find(([k]) =>
-		k.endsWith(".kicad_pcb"),
-	);
+	const entry = Object.entries(res.data.files).find(([k]) => k.endsWith(ext));
 	if (!entry) {
-		throw new Error("No .kicad_pcb file found in export");
+		throw new Error(`No ${ext} file found in export`);
 	}
 	return entry[1];
+}
+
+async function exportPcbText(api, ir, board) {
+	return exportDesignFile(api, ir, board, ".kicad_pcb", "PCB");
+}
+
+async function exportSchText(api, ir, board) {
+	return exportDesignFile(api, ir, board, ".kicad_sch", "schematic");
 }
 
 function resolveFabOutputs(outputs) {
@@ -941,6 +987,92 @@ function useDesignExports({ api, ir, board }) {
 		netlistLoading: dl.netlistLoading,
 		exportFab: fab.exportFab,
 		fabLoading: fab.fabLoading,
+	};
+}
+
+async function executePcbDrc(api, ir, board) {
+	const pcbText = await exportPcbText(api, ir, board);
+	return await runDrc({ pcbText, name: ir?.name || "board" });
+}
+
+async function executeSchErc(api, ir, board) {
+	const schText = await exportSchText(api, ir, board);
+	return await runErc({ schText, name: ir?.name || "schematic" });
+}
+
+async function executeTabCheck(targetTab, { api, ir, board }) {
+	if (targetTab === "pcb") {
+		return await executePcbDrc(api, ir, board);
+	}
+	return await executeSchErc(api, ir, board);
+}
+
+const INITIAL_CHECKS_STATE = Object.freeze({
+	pcb: Object.freeze({ result: null, loading: false }),
+	schematic: Object.freeze({ result: null, loading: false }),
+});
+
+function getResultProblemCount(result) {
+	if (!result) return null;
+	const counts = result.counts ?? countViolations(result.violations);
+	return (counts?.error ?? 0) + (counts?.warning ?? 0);
+}
+
+function updateTabChecksState(prev, tab, updates) {
+	return {
+		...prev,
+		[tab]: { ...prev[tab], ...updates },
+	};
+}
+
+function resolveProblemCount(result, fallbackIssues) {
+	const count = getResultProblemCount(result);
+	return count ?? fallbackIssues?.length ?? 0;
+}
+
+function useTabChecks({ api, ir, board, activeTab, issues }) {
+	const [checksState, setChecksState] = useState(INITIAL_CHECKS_STATE);
+	const [checksOpen, setChecksOpen] = useState(false);
+	const toggleChecks = useCallback(() => setChecksOpen((p) => !p), []);
+	const handleFocus = useCallback(() => {}, []);
+
+	const runChecks = useCallback(
+		async (target) => {
+			const targetTab = typeof target === "string" ? target : activeTab;
+			setChecksOpen(true);
+			setChecksState((prev) =>
+				updateTabChecksState(prev, targetTab, { loading: true }),
+			);
+			try {
+				const result = await executeTabCheck(targetTab, { api, ir, board });
+				setChecksState((prev) =>
+					updateTabChecksState(prev, targetTab, { result, loading: false }),
+				);
+			} catch (err) {
+				setChecksState((prev) =>
+					updateTabChecksState(prev, targetTab, { loading: false }),
+				);
+				message.error(err?.message || "Check failed");
+			}
+		},
+		[activeTab, api, ir, board],
+	);
+
+	const activeState = checksState[activeTab] ?? checksState.schematic;
+	const problemCount = resolveProblemCount(activeState.result, issues);
+	const problems = {
+		count: problemCount,
+		open: checksOpen,
+		toggle: toggleChecks,
+	};
+
+	return {
+		checksState,
+		checksOpen,
+		runChecks,
+		problems,
+		handleFocus,
+		activeState,
 	};
 }
 
@@ -1157,7 +1289,12 @@ function EditorHeader({ activeTab, onTabChange, toolState, actions }) {
 	);
 }
 
-function buildToolState(docState, activeTab, exports = {}) {
+function buildToolState(
+	docState,
+	activeTab,
+	exports = {},
+	checksLoading = false,
+) {
 	return {
 		canUndo: docState.canUndo,
 		canRedo: docState.canRedo,
@@ -1168,6 +1305,7 @@ function buildToolState(docState, activeTab, exports = {}) {
 		bomLoading: exports.bomLoading,
 		netlistLoading: exports.netlistLoading,
 		fabLoading: exports.fabLoading,
+		checksLoading,
 		ir: docState.ir,
 		board: docState.board,
 	};
@@ -1226,59 +1364,67 @@ function useBoardToolsChange(docState) {
 	);
 }
 
-function useScreenController({
-	ir,
-	board,
-	onSave,
-	api,
-	openCommit,
-	symbols,
-	activeTab,
-}) {
+function useScreenController(props) {
+	const { ir, board, onSave, api, openCommit, symbols, activeTab } = props;
 	const docState = useEditorDocument({ ir, board });
 	const lib = useLibraryState();
 	const fetchers = useCanvasFetchers(api, symbols);
 	const { doc, board: curBoard, dispatch } = docState;
-	const onPlace = usePlacePartCallback(activeTab);
-	const onSelectIssue = useIssueSelector(dispatch);
 	const exports = useDesignExports({ api, ir: doc.ir, board: curBoard });
 	const annotate = useAnnotateAction({ ir: doc.ir, dispatch });
 	const liveChecks = useLiveChecks({ api, ir: doc.ir, board: curBoard });
 	const onBoardToolsChange = useBoardToolsChange(docState);
+	const checks = useTabChecks({
+		api,
+		ir: doc.ir,
+		board: curBoard,
+		activeTab,
+		issues: liveChecks.issues,
+	});
 	const actions = useScreenActions(docState, onSave, {
 		openLibrary: lib.openLibrary,
-		exportKiCad: exports.exportKiCad,
-		exportBom: exports.exportBom,
-		exportNetlist: exports.exportNetlist,
-		exportFab: exports.exportFab,
+		...exports,
 		annotate,
 		onBoardToolsChange,
 		openCommit,
+		runChecks: checks.runChecks,
 	});
 	return {
 		docState,
 		curBoard,
 		fetchers,
 		lib,
-		onPlace,
-		onSelectIssue,
+		onPlace: usePlacePartCallback(activeTab),
+		onSelectIssue: useIssueSelector(dispatch),
 		actions,
 		exports,
 		liveChecks,
+		checks,
 	};
 }
 
-function EditorPanels({ problemsOpen, ctrl, api }) {
+function DockedChecksPanel({ checks, activeTab }) {
+	if (!checks?.checksOpen) return null;
+	const isPcb = activeTab === "pcb";
+	const state = checks.activeState;
+	return (
+		<div style={PROBLEMS_PANEL_STYLE}>
+			<ChecksPanel
+				result={state?.result}
+				loading={state?.loading ?? false}
+				onRun={() => checks.runChecks(activeTab)}
+				onFocus={checks.handleFocus}
+				kind={isPcb ? "drc" : "erc"}
+			/>
+		</div>
+	);
+}
+
+function EditorPanels(props) {
+	const { checks, activeTab, ctrl, api } = props;
 	return (
 		<>
-			{problemsOpen && (
-				<section style={PROBLEMS_PANEL_STYLE} aria-label="Problems panel">
-					<IssuesPanel
-						issues={ctrl.liveChecks.issues}
-						onSelectItem={ctrl.onSelectIssue}
-					/>
-				</section>
-			)}
+			<DockedChecksPanel checks={checks} activeTab={activeTab} />
 			<LibraryBrowser
 				api={api}
 				open={ctrl.lib.libraryOpen}
@@ -1356,13 +1502,6 @@ function useScreenCommit(saveFn, repo, activeTab) {
 	}));
 }
 
-function useProblemsState(issues) {
-	const [problemsOpen, setProblemsOpen] = useState(false);
-	const toggle = useCallback(() => setProblemsOpen((p) => !p), []);
-	const problems = { count: issues?.length ?? 0, open: problemsOpen, toggle };
-	return { problemsOpen, problems };
-}
-
 function useEditorScreen(props) {
 	const [activeTab, setActiveTab] = useState(
 		props.initialTab === "pcb" ? "pcb" : "schematic",
@@ -1378,16 +1517,18 @@ function useEditorScreen(props) {
 		activeTab,
 	});
 	useFocusItem(props.focusItemId, ctrl.onSelectIssue);
-	const toolState = buildToolState(ctrl.docState, activeTab, ctrl.exports);
-	const { problemsOpen, problems } = useProblemsState(ctrl.liveChecks.issues);
+	const toolState = buildToolState(
+		ctrl.docState,
+		activeTab,
+		ctrl.exports,
+		ctrl.checks.activeState?.loading,
+	);
 	const panel = useCollapsiblePanel(ctrl.docState.doc?.selection);
 	return {
 		activeTab,
 		setActiveTab,
-		problemsOpen,
 		ctrl,
 		toolState,
-		problems,
 		commit,
 		panel,
 	};
@@ -1404,7 +1545,12 @@ function EditorView({ s, ir, board, api, repo }) {
 				panelOpen={s.panel.panelOpen}
 				onTogglePanel={s.panel.togglePanel}
 			/>
-			<EditorPanels problemsOpen={s.problemsOpen} ctrl={s.ctrl} api={api} />
+			<EditorPanels
+				checks={s.ctrl.checks}
+				activeTab={s.activeTab}
+				ctrl={s.ctrl}
+				api={api}
+			/>
 			<CommitDialog
 				commit={s.commit}
 				ir={ir}
@@ -1418,7 +1564,7 @@ function EditorView({ s, ir, board, api, repo }) {
 				doc={s.ctrl.docState.doc}
 				activeTab={s.activeTab}
 				dirty={s.ctrl.docState.dirty}
-				problems={s.problems}
+				problems={s.ctrl.checks.problems}
 			/>
 		</main>
 	);

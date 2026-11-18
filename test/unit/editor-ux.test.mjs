@@ -115,4 +115,20 @@ describe("editor UX wiring", () => {
 		assert.match(editor, /Rotate 90°/);
 		assert.match(editor, /Flip Side/);
 	});
+
+	test("Run DRC and Run ERC buttons provide plain meaning tooltips", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /Check the board for manufacturing problems/);
+		assert.match(editor, /Check the schematic for wiring mistakes/);
+		assert.match(editor, /ariaLabel="Run DRC"/);
+		assert.match(editor, /ariaLabel="Run ERC"/);
+	});
+
+	test("ChecksPanel is mounted docked with runDrc and runErc", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /import ChecksPanel from "\.\/ChecksPanel\.jsx"/);
+		assert.match(editor, /runDrc/);
+		assert.match(editor, /runErc/);
+		assert.match(editor, /<ChecksPanel/);
+	});
 });
