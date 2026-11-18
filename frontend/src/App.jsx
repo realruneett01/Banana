@@ -25,6 +25,7 @@ import EditorScreen from "./editor/EditorScreen.jsx";
 import { useKicadFileFeed } from "./kicad/useKicadSaves.js";
 import { shouldShowProjectHome } from "./projects/openProject.js";
 import ProjectHome from "./projects/ProjectHome.jsx";
+import IdeApp from "./shell/IdeApp.jsx";
 import { THEME_CONFIG } from "./theme/antdTheme.js";
 import { useDesignLoop } from "./useDesignLoop.js";
 import { useWorkspaceState } from "./useWorkspaceState.js";
@@ -470,6 +471,16 @@ function AppLayout({ ws, compact }) {
 	);
 }
 
+function IdeLayout({ ws, compact }) {
+	const loop = useDesignLoop();
+	return <IdeApp ws={ws} loop={loop} compact={compact} />;
+}
+
+function isClassicMode() {
+	if (typeof window === "undefined") return false;
+	return new URLSearchParams(window.location.search).get("classic") === "1";
+}
+
 export default function App() {
 	const ws = useWorkspaceState();
 	const screens = Grid.useBreakpoint();
@@ -479,10 +490,16 @@ export default function App() {
 	useAutoCollapse(compact, setLeftCollapsed, setRightCollapsed);
 	useKicadFileFeed();
 
+	const [isClassic] = useState(isClassicMode);
+
 	return (
 		<ConfigProvider theme={THEME_CONFIG}>
 			<AntApp>
-				<AppLayout ws={ws} compact={compact} />
+				{isClassic ? (
+					<AppLayout ws={ws} compact={compact} />
+				) : (
+					<IdeLayout ws={ws} compact={compact} />
+				)}
 			</AntApp>
 		</ConfigProvider>
 	);

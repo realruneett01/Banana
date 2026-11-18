@@ -163,7 +163,21 @@ async function saveFailureScreenshot(page, id) {
 	}
 }
 
+async function setCleanIdeLayout(page) {
+	await page.addInitScript(() => {
+		try {
+			localStorage.setItem(
+				"banana:ide-layout",
+				JSON.stringify({ sidebarOpen: false, auxOpen: false }),
+			);
+		} catch (_err) {
+			// ponytail: ignore storage errors in init script
+		}
+	});
+}
+
 async function prepareFreshEditor(page, docType) {
+	await setCleanIdeLayout(page);
 	const baseUrl = process.env.BANANA_URL || "http://localhost:5173/";
 	await page.goto(baseUrl, { timeout: 5000 });
 	await waitAndClick(
@@ -490,25 +504,16 @@ function isWasmUrl(url) {
 }
 
 async function closeEditor(page) {
-	const closeBtn = page.getByRole("button", { name: "Close" }).first();
-	if (await closeBtn.isVisible().catch(() => false)) {
-		await closeBtn.click({ timeout: 5000 });
-	} else {
-		const headerBtn = page
-			.locator(".ant-drawer-header button, .ant-drawer-close")
-			.first();
-		await headerBtn.click({ timeout: 5000 });
-	}
-	await page
-		.locator(".ant-drawer-open")
-		.waitFor({ state: "hidden", timeout: 5000 })
-		.catch(() => {}); // ponytail: ignore timeout if drawer already hidden
+	// ponytail: in IDE tabbed layout, save editor state before switching tabs
+	await page.keyboard.press("Control+s").catch(() => {});
 }
 
 async function openStudio3D(page) {
-	await waitAndClick(
-		page.getByRole("button", { name: "3D Studio", exact: true }),
-	);
+	const studioBtn = page
+		.getByRole("button", { name: "3D Studio", exact: true })
+		.or(page.getByRole("tab", { name: "3D Studio", exact: true }))
+		.first();
+	await waitAndClick(studioBtn);
 }
 
 function collectStudioFailures({ canvasVisible, hasModel200, hasWasm200 }) {
@@ -689,6 +694,15 @@ async function findLocalRepoControls(page) {
 	const controls = page
 		.locator("input[placeholder*='e.g. C:'], label:has-text('Local Repo Root')")
 		.first();
+	if (await controls.isVisible().catch(() => false)) return controls;
+
+	const scmBtn = page
+		.getByRole("button", { name: "Source Control", exact: true })
+		.or(page.locator("[aria-label='Source Control']"))
+		.first();
+	if (await scmBtn.isVisible().catch(() => false)) {
+		await scmBtn.click({ timeout: 2000 }).catch(() => {});
+	}
 	if (await controls.isVisible().catch(() => false)) return controls;
 
 	const projectsBtn = page
