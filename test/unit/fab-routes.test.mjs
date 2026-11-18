@@ -1,304 +1,265 @@
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import http from "node:http";
-import path from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { dirname, join, sep } from "node:path";
 import { after, before, describe, test } from "node:test";
 import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import { createFabRouter } from "../../backend/src/routes/fab-routes.js";
 
-const VALID_PCB = "(kicad_pcb (version 20240108) (generator test))";
+const VALID_BOARD_SEXPR =
+	"(kicad_pcb (version 20240108) (generator fab_fixture))";
 
-function writeMockSideFiles(targetDir, fileList) {
-	if (!fileList || fileList.length === 0) {
-		return;
-	}
-	const [head, ...tail] = fileList;
-	const fullPath = path.join(targetDir, head);
-	fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-	fs.writeFileSync(fullPath, "mock-extra");
-	writeMockSideFiles(targetDir, tail);
-}
-
-class MockKicadCli {
+class FabTestRig {
 	constructor(options = {}) {
-		this.failKind = options.failKind ?? null;
-		this.stderr = options.stderr ?? "mock kicad error";
+		this.failingOperation = options.failKind ?? null;
+		this.simulatedStderr = options.stderr ?? "mock kicad error";
 		this.extraFiles = options.extraFiles ?? [];
-		this.capturedTmpDir = null;
-		this.calls = [];
+		this.cliBinary = options.cliPath ?? process.execPath;
+		this.customApp = options.customApp ?? null;
+		this.capturedDirectory = null;
+		this.recordedInvocations = [];
+		this.httpInstance = null;
+		this.baseUrl = "";
 	}
 
-	getTmpDir() {
-		return this.capturedTmpDir;
-	}
-
-	exec(_file, args, _opts, callback) {
-		this.calls.push({ args });
-		const kind = args[2];
-		const pcbPath = args[args.length - 1];
-		this.capturedTmpDir = path.dirname(pcbPath);
-		this.writeOutputArtifact(kind, args);
-		if (this.failKind === kind || this.failKind === "all") {
-			return callback(new Error("exec failed"), "", this.stderr);
-		}
-		return callback(null, "success", "");
-	}
-
-	writeOutputArtifact(kind, args) {
-		const outIdx = args.indexOf("--output");
-		if (outIdx !== -1) {
-			const outTarget = args[outIdx + 1];
-			const isDir = outTarget.endsWith(path.sep) || outTarget.endsWith("/");
-			const targetFile = isDir
-				? path.join(outTarget, `${kind}-out.dat`)
-				: outTarget;
-			fs.writeFileSync(targetFile, `mock-${kind}`);
-		}
-		writeMockSideFiles(this.capturedTmpDir, this.extraFiles);
-	}
-}
-
-function launchHttpServer(app) {
-	return new Promise((resolve) => {
-		const s = http.createServer(app);
-		s.listen(0, "127.0.0.1", () => {
-			resolve({ server: s, port: s.address().port });
-		});
-	});
-}
-
-function terminateHttpServer(server) {
-	return new Promise((resolve) => {
-		if (!server) {
-			resolve();
+	execStub(_bin, argv, _options, done) {
+		this.recordedInvocations.push(argv);
+		const targetOp = argv[2];
+		this.capturedDirectory = dirname(argv.at(-1));
+		this.materializeFiles(targetOp, argv);
+		const shouldFail =
+			this.failingOperation === targetOp || this.failingOperation === "all";
+		if (shouldFail) {
+			done(new Error("exec failed"), "", this.simulatedStderr);
 			return;
 		}
-		server.close(resolve);
-	});
-}
+		done(null, "success", "");
+	}
 
-async function withEphemeralServer(config, testBlock) {
-	const app = config.customApp ?? express();
-	if (!config.customApp) {
+	materializeFiles(op, argv) {
+		const outIndex = argv.indexOf("--output");
+		if (outIndex !== -1) {
+			const destination = argv[outIndex + 1];
+			const isDir = destination.endsWith(sep) || destination.endsWith("/");
+			const targetPath = isDir
+				? join(destination, `${op}-out.dat`)
+				: destination;
+			writeFileSync(targetPath, `mock-${op}`);
+		}
+		for (const relativePath of this.extraFiles) {
+			const filePath = join(this.capturedDirectory, relativePath);
+			mkdirSync(dirname(filePath), { recursive: true });
+			writeFileSync(filePath, "mock-extra");
+		}
+	}
+
+	async listen() {
+		const app = this.customApp ?? this.createDefaultApp();
+		this.httpInstance = createServer(app);
+		await new Promise((resolve) =>
+			this.httpInstance.listen(0, "127.0.0.1", resolve),
+		);
+		const { port } = this.httpInstance.address();
+		this.baseUrl = `http://127.0.0.1:${port}`;
+		return this;
+	}
+
+	createDefaultApp() {
+		const app = express();
 		app.use(express.json({ limit: "32mb" }));
 		app.use(
 			"/api",
 			createFabRouter({
-				execFileImpl: config.execFileImpl,
-				cliPath: config.cliPath ?? process.execPath,
+				execFileImpl: (b, a, o, cb) => this.execStub(b, a, o, cb),
+				cliPath: this.cliBinary,
 			}),
 		);
+		return app;
 	}
-	const { server, port } = await launchHttpServer(app);
+
+	async close() {
+		if (!this.httpInstance) {
+			return;
+		}
+		await new Promise((resolve) => this.httpInstance.close(resolve));
+	}
+
+	async postExport(payload, endpoint = "/api/fab/export") {
+		const response = await fetch(`${this.baseUrl}${endpoint}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		const json = await response.json();
+		return { status: response.status, json };
+	}
+}
+
+async function withRig(options, fn) {
+	const rig = new FabTestRig(options);
+	await rig.listen();
 	try {
-		await testBlock(port);
+		await fn(rig);
 	} finally {
-		await terminateHttpServer(server);
+		await rig.close();
 	}
 }
 
-async function initFabServer(cliMock) {
-	const app = express();
-	app.use(express.json({ limit: "32mb" }));
-	app.use(
-		"/api",
-		createFabRouter({
-			execFileImpl: (f, a, o, cb) => cliMock.exec(f, a, o, cb),
-			cliPath: process.execPath,
-		}),
-	);
-	return launchHttpServer(app);
-}
-
-async function requestExport(port, payload, urlPath = "/api/fab/export") {
-	const res = await fetch(`http://127.0.0.1:${port}${urlPath}`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(payload),
+async function runExportScenario(config, payload) {
+	let reply;
+	let capturedDir;
+	await withRig(config, async (rig) => {
+		reply = await rig.postExport(payload);
+		capturedDir = rig.capturedDirectory;
 	});
-	const rawText = await res.text();
-	let parsedJson = {};
-	try {
-		parsedJson = JSON.parse(rawText);
-	} catch (err) {
-		parsedJson = { unparsed: rawText, parseError: err.message };
-	}
-	return { status: res.status, json: parsedJson, text: rawText };
+	return { reply, capturedDir };
 }
 
-function assertErrorResponse(res, expectedStatus, expectedSnippet) {
-	assert.equal(res.status, expectedStatus);
-	if (expectedSnippet) {
-		assert.ok(res.json.error.includes(expectedSnippet));
-	} else {
-		assert.equal(typeof res.json.error, "string");
-	}
-}
-
-function assertFileCount(res, count) {
+function assertExportedFileNames(res, expectedNames) {
 	assert.equal(res.status, 200);
-	assert.equal(res.json.files.length, count);
-}
-
-function assertExportFiles(res, expectedNames) {
-	assertFileCount(res, expectedNames.length);
-	const names = res.json.files.map((f) => f.name);
-	assert.deepEqual(names, expectedNames);
-}
-
-function assertExcludesSideFiles(names) {
-	const ignoredFiles = [
-		"board.kicad_prl",
-		"board.kicad_pro",
-		"board.lck",
-		"fp-info-cache",
-	];
-	const foundIgnored = names.some(
-		(name) => ignoredFiles.includes(name) || name.startsWith("backups"),
+	assert.equal(res.json.files.length, expectedNames.length);
+	assert.deepEqual(
+		res.json.files.map((f) => f.name),
+		expectedNames,
 	);
-	assert.equal(foundIgnored, false);
-}
-
-function assertTmpDirCleaned(mockCli) {
-	assert.equal(fs.existsSync(mockCli.getTmpDir()), false);
-}
-
-function assertDefaultExportSuccess(res, mockCli) {
-	assertFileCount(res, 5);
-	assert.equal(res.json.log.length, 5);
-	const names = res.json.files.map((f) => f.name);
-	const expected = [
-		"board-pos.csv",
-		"board.pdf",
-		"board.step",
-		"drill/drill-out.dat",
-		"gerbers/gerbers-out.dat",
-	];
-	assert.deepEqual(names.sort(), expected.sort());
-	const posEntry = res.json.files.find((f) => f.name === "board-pos.csv");
-	const posContent = Buffer.from(posEntry.base64, "base64").toString("utf8");
-	assert.equal(posContent, "mock-pos");
-	assertTmpDirCleaned(mockCli);
 }
 
 describe("fab-routes unit tests", () => {
-	let server;
-	let port;
-	let mockCli;
+	let sharedRig;
 
 	before(async () => {
-		mockCli = new MockKicadCli();
-		const running = await initFabServer(mockCli);
-		server = running.server;
-		port = running.port;
+		sharedRig = new FabTestRig();
+		await sharedRig.listen();
 	});
 
 	after(async () => {
-		await terminateHttpServer(server);
+		await sharedRig?.close();
 	});
 
 	test("exports all outputs by default with 200", async () => {
-		const res = await requestExport(port, { pcb: VALID_PCB });
-		assertDefaultExportSuccess(res, mockCli);
+		const res = await sharedRig.postExport({ pcb: VALID_BOARD_SEXPR });
+		assert.equal(res.status, 200);
+		assert.equal(res.json.files.length, 5);
+		assert.equal(res.json.log.length, 5);
+		const producedNames = res.json.files.map((entry) => entry.name).sort();
+		const expectedArtifacts = [
+			"board-pos.csv",
+			"board.pdf",
+			"board.step",
+			"drill/drill-out.dat",
+			"gerbers/gerbers-out.dat",
+		].sort();
+		assert.deepEqual(producedNames, expectedArtifacts);
+		const posItem = res.json.files.find((f) => f.name === "board-pos.csv");
+		const decodedPos = Buffer.from(posItem.base64, "base64").toString("utf8");
+		assert.equal(decodedPos, "mock-pos");
+		assert.equal(existsSync(sharedRig.capturedDirectory), false);
 	});
 
 	test("exports only requested subset of outputs", async () => {
-		const res = await requestExport(port, {
-			pcb: VALID_PCB,
+		const res = await sharedRig.postExport({
+			pcb: VALID_BOARD_SEXPR,
 			outputs: ["pos", "step"],
 		});
-		assertExportFiles(res, ["board-pos.csv", "board.step"]);
+		assertExportedFileNames(res, ["board-pos.csv", "board.step"]);
 	});
 
 	test("sanitizes base name and uses it for output files", async () => {
-		const res = await requestExport(port, {
-			pcb: VALID_PCB,
+		const res = await sharedRig.postExport({
+			pcb: VALID_BOARD_SEXPR,
 			name: "my#custom@board",
 			outputs: ["pos", "pdf"],
 		});
-		assertExportFiles(res, ["mycustomboard-pos.csv", "mycustomboard.pdf"]);
+		assertExportedFileNames(res, [
+			"mycustomboard-pos.csv",
+			"mycustomboard.pdf",
+		]);
 	});
 
 	test("skips kicad side files and backups directory", async () => {
-		const sideFake = new MockKicadCli({
-			extraFiles: [
-				"board.kicad_prl",
-				"board.kicad_pro",
-				"board.lck",
-				"fp-info-cache",
-				"backups/board-backup.kicad_pcb",
-			],
-		});
-		await withEphemeralServer(
-			{ execFileImpl: (f, a, o, cb) => sideFake.exec(f, a, o, cb) },
-			async (testPort) => {
-				const res = await requestExport(testPort, { pcb: VALID_PCB });
-				assertFileCount(res, 5);
-				const names = res.json.files.map((f) => f.name);
-				assertExcludesSideFiles(names);
-			},
+		const sideFiles = [
+			"board.kicad_prl",
+			"board.kicad_pro",
+			"board.lck",
+			"fp-info-cache",
+			"backups/board-backup.kicad_pcb",
+		];
+		const { reply } = await runExportScenario(
+			{ extraFiles: sideFiles },
+			{ pcb: VALID_BOARD_SEXPR },
 		);
+		assert.equal(reply.status, 200);
+		assert.equal(reply.json.files.length, 5);
+		const names = reply.json.files.map((f) => f.name);
+		const ignored = [
+			"board.kicad_prl",
+			"board.kicad_pro",
+			"board.lck",
+			"fp-info-cache",
+		];
+		const hasIgnored = names.some(
+			(name) => ignored.includes(name) || name.startsWith("backups"),
+		);
+		assert.equal(hasIgnored, false);
 	});
 
-	const BAD_REQUEST_CASES = [
-		{ desc: "missing pcb", payload: {} },
-		{ desc: "pcb not a string", payload: { pcb: 12345 } },
-		{ desc: "invalid pcb header", payload: { pcb: "(wrong_pcb (version 1))" } },
+	const INVALID_PAYLOAD_SCENARIOS = [
+		{ description: "missing pcb", body: {} },
+		{ description: "pcb not a string", body: { pcb: 12345 } },
 		{
-			desc: "unknown output",
-			payload: { pcb: VALID_PCB, outputs: ["gerbers", "unknown"] },
+			description: "invalid pcb header",
+			body: { pcb: "(wrong_pcb (version 1))" },
 		},
-		{ desc: "outputs not array", payload: { pcb: VALID_PCB, outputs: "pos" } },
+		{
+			description: "unknown output",
+			body: { pcb: VALID_BOARD_SEXPR, outputs: ["gerbers", "unknown"] },
+		},
+		{
+			description: "outputs not array",
+			body: { pcb: VALID_BOARD_SEXPR, outputs: "pos" },
+		},
 	];
 
-	for (const tc of BAD_REQUEST_CASES) {
-		test(`rejects 400 when ${tc.desc}`, async () => {
-			const res = await requestExport(port, tc.payload);
-			assertErrorResponse(res, 400);
+	for (const { description, body } of INVALID_PAYLOAD_SCENARIOS) {
+		test(`rejects 400 when ${description}`, async () => {
+			const reply = await sharedRig.postExport(body);
+			assert.equal(reply.status, 400);
+			assert.equal(typeof reply.json.error, "string");
 		});
 	}
 
 	test("rejects 400 when pcb exceeds 20 MB", async () => {
-		const oversizedPcb = `${VALID_PCB} ${" ".repeat(20 * 1024 * 1024)}`;
-		const res = await requestExport(port, { pcb: oversizedPcb });
-		assertErrorResponse(res, 400, "20 MB");
+		const hugeContent = `${VALID_BOARD_SEXPR} ${" ".repeat(20 * 1024 * 1024)}`;
+		const reply = await sharedRig.postExport({ pcb: hugeContent });
+		assert.equal(reply.status, 400);
+		assert.ok(reply.json.error.includes("20 MB"));
 	});
 });
 
 describe("fab-routes failure and service status", () => {
 	test("returns 500 with stderr snippet when kicad-cli fails", async () => {
-		const failingFake = new MockKicadCli({
-			failKind: "pos",
-			stderr: "syntax error: invalid track geometry at line 42",
-		});
-		await withEphemeralServer(
-			{ execFileImpl: (f, a, o, cb) => failingFake.exec(f, a, o, cb) },
-			async (testPort) => {
-				const res = await requestExport(testPort, {
-					pcb: VALID_PCB,
-					outputs: ["pos"],
-				});
-				assertErrorResponse(res, 500, "invalid track geometry");
-				assertTmpDirCleaned(failingFake);
-			},
+		const failureStderr = "syntax error: invalid track geometry at line 42";
+		const { reply, capturedDir } = await runExportScenario(
+			{ failKind: "pos", stderr: failureStderr },
+			{ pcb: VALID_BOARD_SEXPR, outputs: ["pos"] },
 		);
+		assert.equal(reply.status, 500);
+		assert.ok(reply.json.error.includes("invalid track geometry"));
+		assert.equal(existsSync(capturedDir), false);
 	});
 
 	test("returns 503 when KICAD_CLI_PATH is missing or not set", async () => {
-		await withEphemeralServer(
+		const { reply } = await runExportScenario(
 			{ cliPath: "/nonexistent/path/to/kicad-cli" },
-			async (testPort) => {
-				const res = await requestExport(testPort, { pcb: VALID_PCB });
-				assertErrorResponse(res, 503, "KiCad CLI");
-			},
+			{ pcb: VALID_BOARD_SEXPR },
 		);
+		assert.equal(reply.status, 503);
+		assert.ok(reply.json.error.includes("KiCad CLI"));
 	});
 
 	test("integrates with createApp at /api/fab/export", async () => {
-		await withEphemeralServer({ customApp: createApp() }, async (testPort) => {
-			const res = await requestExport(testPort, {});
-			assert.equal(res.status, 400);
-		});
+		const { reply } = await runExportScenario({ customApp: createApp() }, {});
+		assert.equal(reply.status, 400);
 	});
 });
