@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import express from "express";
-import { config } from "../config.js";
+import { config, KICAD_FOOTPRINT_DIR, KICAD_SYMBOL_DIR } from "../config.js";
 import { createSimEngine } from "../engine/spice/sim-engine.js";
 
 const router = express.Router();
@@ -22,9 +22,10 @@ async function checkSimulator() {
 	}
 }
 
-function checkKicadLibraries() {
-	const symDir = process.env.KICAD_SYMBOL_DIR;
-	const fpDir = process.env.KICAD_FOOTPRINT_DIR;
+export function checkKicadLibraries(
+	symDir = KICAD_SYMBOL_DIR,
+	fpDir = KICAD_FOOTPRINT_DIR,
+) {
 	if (!symDir || !fpDir) return false;
 	try {
 		return fs.existsSync(symDir) && fs.existsSync(fpDir);
