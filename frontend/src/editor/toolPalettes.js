@@ -43,7 +43,7 @@ placeJunction|Junction|j|junction|1
 placeLabel|Net label|l|label|1
 placeGlobalLabel|Global label|ctrl+l|glabel|1
 placeHierLabel|Hierarchical label|h|hlabel|1
-placeSheet|Sheet|s|sheet|0
+placeSheet|Sheet|s|sheet|1
 placeText|Text|t|text|1
 placeLine|Graphic line||line|1
 `;
@@ -53,7 +53,10 @@ select|Select|esc|select|1
 highlightNet|Highlight net|backquote|net|1
 placeFootprint|Add footprint|a|footprint|1
 routeTrack|Route track|x|route|1
+routeDiffPair|Differential pair|6|route|1
+tuneLength|Tune length|7|route|1
 addVia|Via|v|via|1
+measure|Measure|ctrl+shift+m|dimension|1
 addZone|Filled zone|ctrl+shift+z|zone|1
 outlineRect|Board outline (rectangle)||outline|1
 outlineRounded|Board outline (rounded)||outlineRounded|1

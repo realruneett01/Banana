@@ -46,6 +46,7 @@ routeTrack x
 routeDiffPair 6
 tuneLength 7
 addVia v
+measure ctrl+shift+m
 drag d
 selectConnected u
 flip f

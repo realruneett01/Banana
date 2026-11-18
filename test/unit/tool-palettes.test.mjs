@@ -37,9 +37,17 @@ const EXPECTED_SCHEMATIC_TOOL_IDS = [
 	...SCHEMATIC_ANNOTATION_TOOLS,
 ];
 
-const UNREADY_SCHEMATIC_TOOL_IDS = ["placeSheet"];
+const UNREADY_SCHEMATIC_TOOL_IDS = [];
 
-const PCB_LAYOUT_TOOLS = ["placeFootprint", "routeTrack", "addVia", "addZone"];
+const PCB_LAYOUT_TOOLS = [
+	"placeFootprint",
+	"routeTrack",
+	"routeDiffPair",
+	"tuneLength",
+	"addVia",
+	"measure",
+	"addZone",
+];
 
 const PCB_GRAPHIC_TOOLS = [
 	"outlineRect",
