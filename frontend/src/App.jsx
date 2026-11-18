@@ -8,10 +8,10 @@ import {
 	Layout,
 	message,
 	Space,
-	theme,
 } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import "./harness.css";
+import "./styles/tokens.css";
 import ChatbotDrawer from "./ChatbotDrawer";
 import AgentDesignPanel from "./components/AgentDesignPanel.jsx";
 import { DiffViewport } from "./components/DiffViewport";
@@ -25,40 +25,12 @@ import EditorScreen from "./editor/EditorScreen.jsx";
 import { useKicadFileFeed } from "./kicad/useKicadSaves.js";
 import { shouldShowProjectHome } from "./projects/openProject.js";
 import ProjectHome from "./projects/ProjectHome.jsx";
+import { THEME_CONFIG } from "./theme/antdTheme.js";
 import { useDesignLoop } from "./useDesignLoop.js";
 import { useWorkspaceState } from "./useWorkspaceState.js";
 import WorkspaceShell from "./WorkspaceShell";
 
 const { Content } = Layout;
-
-// Mirrors the --bn-* tokens in index.css so antd components match the shell.
-const RAW_THEME_TOKENS =
-	"colorPrimary:#f5c542|colorBgBase:#0b0d12|colorBgContainer:#181c25|colorBgElevated:#1f2430|colorBorder:#2f3546|colorBorderSecondary:#232836|colorText:#e6e8ee|colorTextSecondary:#8a91a3|colorTextTertiary:#5d6476|colorSuccess:#3dd68c|colorError:#f0606a|colorInfo:#5b9dff|colorTextLightSolid:#1a1400";
-
-const THEME_TOKEN = {
-	borderRadius: 8,
-	fontFamily:
-		"'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif",
-};
-for (const pair of RAW_THEME_TOKENS.split("|")) {
-	const [k, v] = pair.split(":");
-	THEME_TOKEN[k] = v;
-}
-
-const THEME_CONFIG = {
-	algorithm: theme.darkAlgorithm,
-	token: THEME_TOKEN,
-	components: {
-		Layout: { bodyBg: "#0b0d12", siderBg: "#12151c", headerBg: "#12151c" },
-		Segmented: {
-			trackBg: "#0b0d12",
-			itemSelectedBg: "#262c3a",
-			itemSelectedColor: "#f5c542",
-		},
-		Button: { primaryShadow: "none", defaultShadow: "none" },
-		Input: { activeShadow: "0 0 0 2px rgba(245, 197, 66, 0.15)" },
-	},
-};
 
 const BASE_CONTENT_STYLE = {
 	display: "flex",

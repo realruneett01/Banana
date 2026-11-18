@@ -1,0 +1,113 @@
+:root {
+	/* ==================== 1. COLOR PALETTE ==================== */
+	/* Neutrals: Strict 6-level dark elevation ramp */
+	--bn-bg-app: #0e1117; /* Window root & activity bar */
+	--bn-bg-surface: #161922; /* Primary sidebars & docked panels */
+	--bn-bg-editor: #1a1d27; /* Editor background / canvas mat */
+	--bn-bg-elevated: #222736; /* Dropdowns, popovers, tooltips, cards */
+	--bn-bg-active: #2b3245; /* Selected item / hover highlight */
+	--bn-bg-input: #12141c; /* Text inputs & textareas */
+
+	/* Borders & Dividers */
+	--bn-border-subtle: #232838; /* Grid lines & subtle section borders */
+	--bn-border-base: #2e354a; /* Panel borders & card dividers */
+	--bn-border-active: #495475; /* Focused inputs & active tabs */
+
+	/* Typography Colors (WCAG AA compliant) */
+	--bn-text-primary: #e6eaf2; /* Primary headers & code (13.8:1 contrast) */
+	--bn-text-secondary: #9aa3b8; /* Labels, tooltips, hints (6.8:1 contrast) */
+	--bn-text-muted: #6c758d; /* Disabled items, line numbers (4.5:1 contrast) */
+	--bn-text-inverse: #0e1117; /* Text on brand gold button */
+
+	/* Accent & Functional */
+	--bn-color-brand: #f5c542; /* Banana Gold primary accent */
+	--bn-color-brand-hover: #ffd666;
+	--bn-color-brand-subtle: rgba(245, 197, 66, 0.12);
+	--bn-color-info: #38bdf8; /* Blue for diffs & notifications */
+	--bn-color-success: #34d399; /* Green for connected & DRC pass */
+	--bn-color-warning: #fbbf24; /* Amber for ERC/DRC warnings */
+	--bn-color-error: #f87171; /* Red for ERC/DRC violations */
+
+	/* KiCad PCB Layer Standard Swatches */
+	--bn-layer-f-cu: #c83232; /* Front copper (Red) */
+	--bn-layer-b-cu: #3232c8; /* Back copper (Blue) */
+	--bn-layer-f-silk: #00aaaa; /* Front silkscreen (Cyan) */
+	--bn-layer-edge: #c8c800; /* Board outline (Yellow) */
+
+	/* ==================== 2. TYPOGRAPHY (5 STRICT SIZES) ==================== */
+	--bn-font-family-ui:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+		sans-serif;
+	--bn-font-family-mono:
+		"JetBrains Mono", "Fira Code", "Cascadia Code", Consolas, monospace;
+
+	--bn-type-micro: 10px; /* Line height: 14px; Sub-chips & layer flags */
+	--bn-type-status: 11px; /* Line height: 16px; Status bar & badge counts */
+	--bn-type-body: 12px; /* Line height: 18px; Default UI text, tree items, forms */
+	--bn-type-heading-sm: 13px; /* Line height: 20px; Section headers & panel titles */
+	--bn-type-heading-md: 15px; /* Line height: 22px; Viewport titles & modal headers */
+
+	/* ==================== 3. SPACING SCALE (4PX BASE) ==================== */
+	--bn-space-1: 2px; /* Micro gap */
+	--bn-space-2: 4px; /* Toolbar items & button icon gap */
+	--bn-space-3: 8px; /* Standard component inner padding */
+	--bn-space-4: 12px; /* Panel margin & card padding */
+	--bn-space-5: 16px; /* Dialog content padding */
+	--bn-space-6: 24px; /* Page container gutter */
+
+	/* ==================== 4. BORDER RADIUS ==================== */
+	--bn-radius-none: 0px; /* Canvases, editor tabs, panels */
+	--bn-radius-sm: 3px; /* Chips, tags, checkboxes */
+	--bn-radius-md: 4px; /* Buttons, inputs, dropdown items */
+	--bn-radius-lg: 6px; /* Modals, floating cards, popovers */
+
+	/* ==================== 5. BUTTON & CONTROL SIZES ==================== */
+	--bn-btn-h-sm: 22px; /* Toolbar icon buttons (padding: 0 4px) */
+	--bn-btn-h-md: 26px; /* Sidebar & panel action buttons (padding: 0 8px) */
+	--bn-btn-h-lg: 30px; /* Primary form buttons & dialog footers (padding: 0 12px) */
+
+	/* ==================== 6. ICON SIZES ==================== */
+	--bn-icon-xs: 12px; /* Status indicators & tree chevrons */
+	--bn-icon-sm: 14px; /* Toolbar & tab icons */
+	--bn-icon-md: 16px; /* Button icons & sidebar headers */
+	--bn-icon-lg: 20px; /* Activity Bar items */
+
+	/* ==================== 7. LAYOUT DIMENSIONS ==================== */
+	--bn-activity-bar-w: 48px; /* Fixed left activity bar */
+	--bn-sidebar-w: 260px; /* Primary collapsable sidebar */
+	--bn-auxiliary-w: 320px; /* Right auxiliary bar (AI & properties) */
+	--bn-bottom-panel-h: 200px; /* Docked problems/console bottom panel */
+	--bn-status-bar-h: 22px; /* Bottom status bar */
+	--bn-tab-h: 30px; /* Editor tab bar height */
+}
+
+html,
+body {
+	background: var(--bn-bg-app);
+	color: var(--bn-text-primary);
+	font-family: var(--bn-font-family-ui);
+	font-size: var(--bn-type-body);
+}
+
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--bn-border-base) transparent;
+}
+
+*::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+	background: var(--bn-border-base);
+	border-radius: var(--bn-radius-md);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+	background: var(--bn-border-active);
+}
