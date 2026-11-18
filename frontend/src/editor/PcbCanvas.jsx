@@ -23,6 +23,7 @@ import {
 	calcArcCenter,
 	footprintIdsToFetch,
 	footprintToPrimitives,
+	padHitTest,
 	padOutline,
 	placementFor,
 	refLabelPlacement,
@@ -312,7 +313,7 @@ function handlePartKeys(e, key, ctx) {
 function handleRoutingAction(key, ctx) {
 	if (key === "v") {
 		if (ctx.isRouting) ctx.placeVia();
-		else ctx.toggleLayer();
+		else ctx.armVia?.();
 		return true;
 	}
 	const actions = {
@@ -2138,6 +2139,11 @@ function buildShortcuts(ctx) {
 		togglePosture: ctx.route.togglePostureMode,
 		cycleWidthPreset: ctx.route.cycleWidthPreset,
 		placeVia: ctx.route.placeViaAndSwitchLayer,
+		armVia: () => {
+			if (ctx.route.isRouting) ctx.route.cancelRoute();
+			ctx.armedPlacement?.disarm();
+			ctx.graphicsDrawing?.arm("placeVia");
+		},
 		isRouting: ctx.route.isRouting,
 		deleteSelected: ctx.sel.deleteSelected,
 		undoBoard: ctx.history.undoBoard,
@@ -2551,13 +2557,95 @@ function handleArcClick({
 	return true;
 }
 
+export function chooseViaNet(pads, pt) {
+	if (!Array.isArray(pads) || !pt) return "";
+	const coords = Array.isArray(pt) ? pt : [pt.x, pt.y];
+	for (const pad of pads) {
+		if (padHitTest([pad], coords) !== null) {
+			return pad.netId ?? "";
+		}
+	}
+	return "";
+}
+
+export function buildDefaultTextGraphic(pos, layer, text = "TEXT") {
+	const x = Array.isArray(pos) ? pos[0] : (pos?.x ?? 0);
+	const y = Array.isArray(pos) ? pos[1] : (pos?.y ?? 0);
+	return {
+		kind: "text",
+		layer: layer ?? "F.SilkS",
+		x,
+		y,
+		text: text ?? "TEXT",
+	};
+}
+
+export function commitTextGraphic(board, opts = {}) {
+	const { pos, layer, text = "TEXT", graphicId = null } = opts;
+	if (graphicId) {
+		const existing = Array.isArray(board?.graphics) ? board.graphics : [];
+		return {
+			...(board ?? {}),
+			graphics: existing.map((g) => (g.id === graphicId ? { ...g, text } : g)),
+		};
+	}
+	return addGraphic(board, buildDefaultTextGraphic(pos, layer, text));
+}
+
+function isPointInText(g, px, py, tol) {
+	if (Math.hypot(px - g.x, py - g.y) <= tol) return true;
+	const w = Math.max(1, (g.text?.length ?? 4) * 0.8);
+	return (
+		px >= g.x - tol &&
+		px <= g.x + w + tol &&
+		py >= g.y - 1.2 - tol &&
+		py <= g.y + tol
+	);
+}
+
+export function findTextGraphicAt(graphics, pt, tol = 1.0) {
+	if (!Array.isArray(graphics) || !pt) return null;
+	const [px, py] = Array.isArray(pt) ? pt : [pt.x, pt.y];
+	for (const g of graphics) {
+		if (g.kind === "text" && isPointInText(g, px, py, tol)) {
+			return g;
+		}
+	}
+	return null;
+}
+
+function handleViaClick(pt, { pads, board, pushBoard }) {
+	const netId = chooseViaNet(pads, pt);
+	pushBoard(
+		addVia(board, {
+			at: [pt.x, pt.y],
+			netId,
+			drillMm: 0.3,
+			sizeMm: 0.6,
+		}),
+	);
+	return true;
+}
+
 function handleGraphicsClick(e, opts) {
-	const { activeTool, points, activeLayer, board, pushBoard, st, svgEl, view } =
-		opts;
+	const {
+		activeTool,
+		points,
+		activeLayer,
+		board,
+		pushBoard,
+		st,
+		svgEl,
+		view,
+		pads,
+	} = opts;
 	if (!activeTool || !isLeftClick(e)) return false;
 	const pt = calcSnappedBoardPoint(e, svgEl, view);
+	if (activeTool === "placeVia") {
+		return handleViaClick(pt, { pads, board, pushBoard });
+	}
 	if (activeTool === "placeText") {
-		st.setTextModal({ open: true, pos: pt });
+		st.onTextSubmit?.("TEXT", pt);
 		return true;
 	}
 	if (activeTool === "drawArc") {
@@ -2586,22 +2674,29 @@ function handleGraphicsClick(e, opts) {
 	return true;
 }
 
+const EMPTY_TEXT_MODAL = Object.freeze({
+	open: false,
+	pos: null,
+	initialText: "",
+	graphicId: null,
+});
+
 function useGraphicsToolState() {
 	const [activeTool, setActiveTool] = useState(null);
 	const [points, setPoints] = useState([]);
 	const [cursor, setCursor] = useState(null);
-	const [textModal, setTextModal] = useState({ open: false, pos: null });
+	const [textModal, setTextModal] = useState(EMPTY_TEXT_MODAL);
 	const reset = useCallback(() => {
 		setActiveTool(null);
 		setPoints([]);
 		setCursor(null);
-		setTextModal({ open: false, pos: null });
+		setTextModal(EMPTY_TEXT_MODAL);
 	}, []);
 	const armTool = useCallback((tool) => {
 		setActiveTool(tool);
 		setPoints([]);
 		setCursor(null);
-		setTextModal({ open: false, pos: null });
+		setTextModal(EMPTY_TEXT_MODAL);
 	}, []);
 	return {
 		activeTool,
@@ -2620,7 +2715,7 @@ function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
 	const { activeTool, points, textModal, setTextModal } = st;
 	const cancelGraphics = useCallback(() => {
 		if (textModal.open) {
-			setTextModal({ open: false, pos: null });
+			setTextModal(EMPTY_TEXT_MODAL);
 			return true;
 		}
 		if (points.length > 0) {
@@ -2642,30 +2737,36 @@ function useGraphicsActions(st, { board, pushBoard, activeLayer }) {
 	]);
 
 	const onTextSubmit = useCallback(
-		(text) => {
-			if (textModal.pos && text) {
+		(text = "TEXT", targetPos = null) => {
+			const pos = targetPos ?? textModal.pos;
+			if (textModal.graphicId || (pos && text)) {
 				pushBoard(
-					addGraphic(board, {
-						kind: "text",
+					commitTextGraphic(board, {
+						pos,
 						layer: activeLayer,
-						x: textModal.pos.x,
-						y: textModal.pos.y,
 						text,
+						graphicId: textModal.graphicId,
 					}),
 				);
 			}
-			setTextModal({ open: false, pos: null });
+			setTextModal(EMPTY_TEXT_MODAL);
 		},
-		[textModal.pos, board, activeLayer, pushBoard, setTextModal],
+		[textModal, board, activeLayer, pushBoard, setTextModal],
 	);
 
 	return { cancelGraphics, onTextSubmit };
 }
 
-function useGraphicsDrawing({ board, pushBoard, activeLayer, svgRef, view }) {
-	const st = useGraphicsToolState();
-	const acts = useGraphicsActions(st, { board, pushBoard, activeLayer });
-	const arm = useCallback((tool) => st.armTool(tool), [st.armTool]);
+function useGraphicsEvents({
+	st,
+	acts,
+	board,
+	pushBoard,
+	activeLayer,
+	pads,
+	svgRef,
+	view,
+}) {
 	const onPointerMove = useCallback(
 		(e) => {
 			if (st.activeTool) {
@@ -2682,12 +2783,47 @@ function useGraphicsDrawing({ board, pushBoard, activeLayer, svgRef, view }) {
 				activeLayer,
 				board,
 				pushBoard,
-				st,
+				st: { ...st, onTextSubmit: acts.onTextSubmit },
 				svgEl: svgRef.current,
 				view,
+				pads,
 			}),
-		[st, activeLayer, board, pushBoard, svgRef, view],
+		[st, acts.onTextSubmit, activeLayer, board, pushBoard, pads, svgRef, view],
 	);
+	const onDoubleClick = useCallback(
+		(e) => {
+			const pt = screenToBoardCoords(e, svgRef.current, view);
+			const target = findTextGraphicAt(board?.graphics, pt);
+			if (!target) return false;
+			e.preventDefault();
+			st.setTextModal({
+				open: true,
+				pos: { x: target.x, y: target.y },
+				initialText: target.text ?? "",
+				graphicId: target.id,
+			});
+			return true;
+		},
+		[board?.graphics, svgRef, view, st.setTextModal],
+	);
+	return { onPointerMove, onCanvasClick, onDoubleClick };
+}
+
+function useGraphicsDrawing(opts) {
+	const { board, pushBoard, activeLayer, pads, svgRef, view } = opts;
+	const st = useGraphicsToolState();
+	const acts = useGraphicsActions(st, { board, pushBoard, activeLayer });
+	const evts = useGraphicsEvents({
+		st,
+		acts,
+		board,
+		pushBoard,
+		activeLayer,
+		pads,
+		svgRef,
+		view,
+	});
+	const arm = useCallback((tool) => st.armTool(tool), [st.armTool]);
 	return {
 		activeTool: st.activeTool,
 		points: st.points,
@@ -2695,25 +2831,24 @@ function useGraphicsDrawing({ board, pushBoard, activeLayer, svgRef, view }) {
 		textModal: st.textModal,
 		arm,
 		disarm: st.reset,
-		onPointerMove,
-		onCanvasClick,
 		...acts,
-		onTextCancel: () => st.setTextModal({ open: false, pos: null }),
+		...evts,
+		onTextCancel: () => st.setTextModal(EMPTY_TEXT_MODAL),
 	};
 }
 
-function TextGraphicModal({ open, onSubmit, onCancel }) {
-	const [text, setText] = useState("");
+function TextGraphicModal({ open, initialText = "", onSubmit, onCancel }) {
+	const [text, setText] = useState(initialText);
 	useEffect(() => {
-		if (open) setText("");
-	}, [open]);
+		if (open) setText(initialText || "");
+	}, [open, initialText]);
 	const handleOk = () => {
 		if (text.trim().length > 0) onSubmit(text);
 		else onCancel();
 	};
 	return (
 		<Modal
-			title="Add Text"
+			title={initialText ? "Edit Text" : "Add Text"}
 			open={open}
 			onOk={handleOk}
 			onCancel={onCancel}
@@ -2864,6 +2999,35 @@ function GraphicsPreview({ activeTool, points, cursor, activeLayer }) {
 	);
 }
 
+function handleViaTool(route, armGfx) {
+	if (route.isRouting) route.placeViaAndSwitchLayer();
+	else armGfx("placeVia");
+}
+
+function handleSelectTool(route, armedPlacement, graphicsDrawing) {
+	if (route.isRouting) route.cancelRoute();
+	armedPlacement.disarm();
+	graphicsDrawing.disarm();
+}
+
+function handleRouteTrack(route, armedPlacement, graphicsDrawing) {
+	armedPlacement.disarm();
+	graphicsDrawing.disarm();
+	if (!route.isRouting) route.toggleRoute();
+}
+
+function handlePlaceFootprint(item, route, armedPlacement, graphicsDrawing) {
+	if (route.isRouting) route.cancelRoute();
+	graphicsDrawing.disarm();
+	if (item) armedPlacement.setArmed(item);
+}
+
+function handleSetLayer(item, layers) {
+	if (typeof item?.layer === "string") {
+		layers.onSetActive(item.layer);
+	}
+}
+
 function createToolBusHandlers({
 	route,
 	layers,
@@ -2875,43 +3039,29 @@ function createToolBusHandlers({
 		armedPlacement.disarm();
 		graphicsDrawing.arm(tool);
 	};
+	const onVia = () => handleViaTool(route, armGfx);
 	return {
-		select: () => {
-			if (route.isRouting) route.cancelRoute();
-			armedPlacement.disarm();
-			graphicsDrawing.disarm();
-		},
+		select: () => handleSelectTool(route, armedPlacement, graphicsDrawing),
 		drawLine: () => armGfx("drawLine"),
 		drawRect: () => armGfx("drawRect"),
 		drawCircle: () => armGfx("drawCircle"),
 		placeDimension: () => armGfx("placeDimension"),
 		drawArc: () => armGfx("drawArc"),
 		placeText: () => armGfx("placeText"),
-		routeTrack: () => {
-			armedPlacement.disarm();
-			graphicsDrawing.disarm();
-			if (!route.isRouting) route.toggleRoute();
-		},
-		addVia: () => {
-			if (route.isRouting) route.placeViaAndSwitchLayer();
-			else layers.toggleLayer();
-		},
-		setLayer: (item) => {
-			if (typeof item?.layer === "string") {
-				layers.onSetActive(item.layer);
-			}
-		},
-		placeFootprint: (item) => {
-			if (route.isRouting) route.cancelRoute();
-			graphicsDrawing.disarm();
-			if (item) armedPlacement.setArmed(item);
-		},
+		routeTrack: () => handleRouteTrack(route, armedPlacement, graphicsDrawing),
+		addVia: onVia,
+		placeVia: onVia,
+		setLayer: (item) => handleSetLayer(item, layers),
+		placeFootprint: (item) =>
+			handlePlaceFootprint(item, route, armedPlacement, graphicsDrawing),
 	};
 }
 
 function reportActiveTool(isRouting, armedFootprint, activeGraphicsTool) {
 	if (activeGraphicsTool) {
-		emitActiveTool({ tab: "pcb", tool: activeGraphicsTool, item: null });
+		const tool =
+			activeGraphicsTool === "placeVia" ? "addVia" : activeGraphicsTool;
+		emitActiveTool({ tab: "pcb", tool, item: null });
 		return;
 	}
 	if (isRouting) {
@@ -3079,6 +3229,16 @@ function PcbSvgContent({
 	);
 }
 
+function useSceneDoubleClick(graphicsDrawing, routeDoubleClick) {
+	return useCallback(
+		(e) => {
+			if (graphicsDrawing?.onDoubleClick?.(e)) return;
+			routeDoubleClick?.(e);
+		},
+		[graphicsDrawing, routeDoubleClick],
+	);
+}
+
 function PcbSvgScene({
 	svgRef,
 	view,
@@ -3107,6 +3267,10 @@ function PcbSvgScene({
 		armedPlacement,
 		graphicsDrawing,
 	);
+	const onDoubleClick = useSceneDoubleClick(
+		graphicsDrawing,
+		route.onCanvasDoubleClick,
+	);
 	const onPointerMove = useScenePointer(
 		ptr.onPointerMove,
 		armedPlacement,
@@ -3129,7 +3293,7 @@ function PcbSvgScene({
 			ref={svgRef}
 			style={SVG_STYLE}
 			onClick={onClick}
-			onDoubleClick={route.onCanvasDoubleClick}
+			onDoubleClick={onDoubleClick}
 			onPointerDown={ptr.onPointerDown}
 			onPointerMove={onPointerMove}
 			onPointerUp={ptr.onPointerUp}
@@ -3172,11 +3336,13 @@ function useCanvasGraphicsTools({
 	armedPlacement,
 	route,
 	containerRef,
+	pads,
 }) {
 	const graphicsDrawing = useGraphicsDrawing({
 		board,
 		pushBoard: history.pushBoard,
 		activeLayer: layers.layerState.active,
+		pads,
 		svgRef,
 		view,
 	});
@@ -3255,6 +3421,7 @@ function usePcbCanvasState({
 		armedPlacement,
 		route,
 		containerRef,
+		pads,
 	});
 	const rnLines = useMemo(
 		() =>
@@ -3386,6 +3553,7 @@ export default function PcbCanvas({
 			/>
 			<TextGraphicModal
 				open={s.graphicsDrawing.textModal.open}
+				initialText={s.graphicsDrawing.textModal.initialText}
 				onSubmit={s.graphicsDrawing.onTextSubmit}
 				onCancel={s.graphicsDrawing.onTextCancel}
 			/>
