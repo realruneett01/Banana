@@ -3,105 +3,141 @@ import fs from "node:fs";
 import { describe, test } from "node:test";
 import { snapPoint } from "../../frontend/src/editor/viewport.js";
 
-function loadSchematicPureFunctions() {
-	const src = fs.readFileSync(
-		new URL("../../frontend/src/editor/SchematicCanvas.jsx", import.meta.url),
-		"utf8",
-	);
-	const start = src.indexOf("const SCH_GRID = 1.27;");
-	const end = src.indexOf("function distToSeg(");
-	const code = src.slice(start, end).replaceAll("export ", "");
-	const fn = new Function(
-		"snapPoint",
-		`
-		${code}
-		return { isSchematicPart, nextFreeLabelName, buildWireSegments, snapPointToPinOrGrid };
-	`,
-	);
-	return fn(snapPoint);
-}
+const readRelative = (relPath) =>
+	fs.readFileSync(new URL(relPath, import.meta.url), "utf8");
 
+const makeSchematicContext = () => {
+	const canvasText = readRelative(
+		"../../frontend/src/editor/SchematicCanvas.jsx",
+	);
+	const startIdx = canvasText.indexOf("const SCH_GRID = 1.27;");
+	const stopIdx = canvasText.indexOf("function distToSeg(");
+	const stripped = canvasText
+		.slice(startIdx, stopIdx)
+		.replaceAll("export ", "");
+	const factory = new Function(
+		"snapPoint",
+		[
+			stripped,
+			"return { isSchematicPart, nextFreeLabelName, buildWireSegments, snapPointToPinOrGrid };",
+		].join("\n"),
+	);
+	return {
+		canvasText,
+		pure: factory(snapPoint),
+	};
+};
+
+const { canvasText: schSrc, pure } = makeSchematicContext();
 const {
 	isSchematicPart,
 	nextFreeLabelName,
 	buildWireSegments,
 	snapPointToPinOrGrid,
-} = loadSchematicPureFunctions();
+} = pure;
+const annSrc = readRelative("../../frontend/src/editor/SchAnnotationLayer.jsx");
+
+const checkIsSchematicPart = (items, expected) => {
+	for (const item of items) {
+		assert.equal(isSchematicPart(item), expected);
+	}
+};
 
 describe("isSchematicPart pure function", () => {
 	test("returns true for part with non-empty symbol string", () => {
-		assert.equal(isSchematicPart({ id: "p1", symbol: "Device:R" }), true);
-		assert.equal(isSchematicPart({ id: "p2", symbol: "R" }), true);
-		assert.equal(isSchematicPart({ id: "p3", symbol: "LED" }), true);
+		checkIsSchematicPart(
+			[
+				{ id: "p1", symbol: "Device:R" },
+				{ id: "p2", symbol: "R" },
+				{ id: "p3", symbol: "LED" },
+			],
+			true,
+		);
 	});
 
 	test("returns false for part with empty or whitespace symbol string", () => {
-		assert.equal(isSchematicPart({ id: "p1", symbol: "" }), false);
-		assert.equal(isSchematicPart({ id: "p2", symbol: "   " }), false);
-		assert.equal(isSchematicPart({ id: "p3", symbol: "\t\n" }), false);
+		checkIsSchematicPart(
+			[
+				{ id: "p1", symbol: "" },
+				{ id: "p2", symbol: "   " },
+				{ id: "p3", symbol: "\t\n" },
+			],
+			false,
+		);
 	});
 
 	test("returns false for part without symbol or with non-string symbol", () => {
-		assert.equal(isSchematicPart({ id: "p1" }), false);
-		assert.equal(isSchematicPart({ id: "p2", symbol: null }), false);
-		assert.equal(isSchematicPart({ id: "p3", symbol: undefined }), false);
-		assert.equal(isSchematicPart({ id: "p4", symbol: 123 }), false);
-		assert.equal(isSchematicPart({ id: "p5", symbol: {} }), false);
+		checkIsSchematicPart(
+			[
+				{ id: "p1" },
+				{ id: "p2", symbol: null },
+				{ id: "p3", symbol: undefined },
+				{ id: "p4", symbol: 123 },
+				{ id: "p5", symbol: {} },
+			],
+			false,
+		);
 	});
 
 	test("returns false for null or undefined part", () => {
-		assert.equal(isSchematicPart(null), false);
-		assert.equal(isSchematicPart(undefined), false);
+		checkIsSchematicPart([null, undefined], false);
 	});
 });
 
 describe("label auto-naming for immediate placement", () => {
 	test("auto names NET1 and TEXT without opening dialog", () => {
-		assert.equal(nextFreeLabelName("label", [], []), "NET1");
-		assert.equal(nextFreeLabelName("text", [], []), "TEXT");
-		assert.equal(nextFreeLabelName("globalLabel", [], []), "G1");
+		const baselineLabels = [
+			["label", "NET1"],
+			["text", "TEXT"],
+			["globalLabel", "G1"],
+		];
+		for (const [kind, expected] of baselineLabels) {
+			assert.equal(nextFreeLabelName(kind, [], []), expected);
+		}
 	});
 
 	test("increments past existing net and label names", () => {
-		const annotations = [
-			{ kind: "label", text: "NET1" },
-			{ kind: "label", text: "NET2" },
-		];
-		const nets = [{ name: "NET3" }];
-		assert.equal(nextFreeLabelName("label", annotations, nets), "NET4");
+		const existingAnns = ["NET1", "NET2"].map((text) => ({
+			kind: "label",
+			text,
+		}));
+		const assignedNets = [{ name: "NET3" }];
+		assert.equal(
+			nextFreeLabelName("label", existingAnns, assignedNets),
+			"NET4",
+		);
 	});
 });
 
 describe("wire segment construction and snapping", () => {
 	test("buildWireSegments builds orthogonal segments", () => {
-		const segs = buildWireSegments({ x: 0, y: 0 }, { x: 10, y: 20 });
+		const origin = { x: 0, y: 0 };
+		const target = { x: 10, y: 20 };
+		const segs = buildWireSegments(origin, target);
 		assert.equal(segs.length, 2);
-		assert.deepEqual(segs[0], { x: 0, y: 0, x2: 10, y2: 0 });
-		assert.deepEqual(segs[1], { x: 10, y: 0, x2: 10, y2: 20 });
+		const expectedPairs = [
+			{ x: 0, y: 0, x2: 10, y2: 0 },
+			{ x: 10, y: 0, x2: 10, y2: 20 },
+		];
+		expectedPairs.forEach((targetSeg, index) => {
+			assert.deepEqual(segs[index], targetSeg);
+		});
 	});
 
 	test("snapPointToPinOrGrid snaps to nearby pin within tolerance", () => {
 		const pinMap = new Map([["R1:1", [10, 20]]]);
 		const res = snapPointToPinOrGrid({ x: 10.5, y: 20.2 }, pinMap, 1.27);
-		assert.equal(res.x, 10);
-		assert.equal(res.y, 20);
+		for (const [key, expected] of [
+			["x", 10],
+			["y", 20],
+		]) {
+			assert.equal(res[key], expected);
+		}
 		assert.deepEqual(res.pin, { partId: "R1", pin: "1" });
 	});
 });
 
 describe("Schematic Canvas UX source inspection", () => {
-	const schSrc = fs.readFileSync(
-		new URL("../../frontend/src/editor/SchematicCanvas.jsx", import.meta.url),
-		"utf8",
-	);
-	const annSrc = fs.readFileSync(
-		new URL(
-			"../../frontend/src/editor/SchAnnotationLayer.jsx",
-			import.meta.url,
-		),
-		"utf8",
-	);
-
 	test("AnnotationTextModal only opens when textModal.id is set (editing existing)", () => {
 		assert.match(schSrc, /open=\{Boolean\(textModal\?\.id\)\}/);
 	});
