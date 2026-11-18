@@ -9,31 +9,30 @@ import {
 
 const DEFAULT_PART_ID = "part_00000000-0000-0000-0000-000000000001";
 
-function buildTestSheets() {
-	return [
-		{
-			id: "sheet-1",
-			name: "Sheet1",
-			file: "Sheet1.kicad_sch",
-			x: 10,
-			y: 20,
-			w: 40,
-			h: 30,
-			pins: [
-				{
-					id: "pin-1",
-					name: "CLK",
-					type: "input",
-					side: "left",
-					offset: 5,
-				},
-			],
-		},
-	];
+function createSheetFixture(overrides = {}) {
+	return {
+		id: "sheet-1",
+		name: "Sheet1",
+		file: "Sheet1.kicad_sch",
+		x: 10,
+		y: 20,
+		w: 40,
+		h: 30,
+		pins: [
+			{
+				id: "pin-1",
+				name: "CLK",
+				type: "input",
+				side: "left",
+				offset: 5,
+			},
+		],
+		...overrides,
+	};
 }
 
-function buildBaseIr(withSheets = true) {
-	return {
+function buildCircuitFixture(sheetsOption = [createSheetFixture()]) {
+	const ir = {
 		schemaVersion: 1,
 		name: "test-sheets-circuit",
 		parts: [
@@ -48,56 +47,62 @@ function buildBaseIr(withSheets = true) {
 		],
 		nets: [],
 		constraints: [],
-		...(withSheets ? { sheets: buildTestSheets() } : {}),
 	};
+	if (Array.isArray(sheetsOption)) {
+		ir.sheets = sheetsOption;
+	} else if (sheetsOption === true) {
+		ir.sheets = [createSheetFixture()];
+	}
+	return ir;
 }
 
-function createDoc(ir = buildBaseIr()) {
+function makeEditorDoc(circuit = buildCircuitFixture()) {
 	return {
-		ir,
+		ir: circuit,
 		selection: [],
 		history: { past: [], future: [] },
 	};
 }
 
-function verifyUndoRedoCycle(editor, baseIr) {
-	const initialEqual =
-		JSON.stringify(editor.state.ir) === JSON.stringify(baseIr);
-	editor.undo();
-	const undoneEqual =
-		JSON.stringify(editor.state.ir) === JSON.stringify(baseIr);
-	editor.redo();
-	const redoneEqual =
-		JSON.stringify(editor.state.ir) === JSON.stringify(baseIr);
-	editor.undo();
-	const finalEqual = JSON.stringify(editor.state.ir) === JSON.stringify(baseIr);
+function executeAndFindSheet(cmd, doc = makeEditorDoc(), sheetId = "sheet-1") {
+	const res = applyCommand(doc, cmd);
+	return { res, sheet: res.ir.sheets.find((s) => s.id === sheetId) };
+}
+
+function assertSuccess(result, actualFields, expectedFields) {
 	assert.deepEqual(
-		{ initialEqual, undoneEqual, redoneEqual, finalEqual },
-		{
-			initialEqual: false,
-			undoneEqual: true,
-			redoneEqual: false,
-			finalEqual: true,
-		},
+		{ error: result.error, ...actualFields },
+		{ error: undefined, ...expectedFields },
 	);
 }
 
-function verifyPureInvertCycle(baseIr, command) {
-	const initialDoc = createDoc(baseIr);
-	const inverse = invertCommand(initialDoc, command);
-	assert.ok(inverse, "inverse must exist");
-	const applied = applyCommand(initialDoc, command);
-	const restored = applyCommand(applied, inverse);
+function checkUndoRedoCycle(editor, referenceIr) {
+	const baselineJson = JSON.stringify(referenceIr);
+	const matchesBase = () => JSON.stringify(editor.state.ir) === baselineJson;
+	const states = [matchesBase()];
+	for (const action of ["undo", "redo", "undo"]) {
+		editor[action]();
+		states.push(matchesBase());
+	}
+	assert.deepEqual(states, [false, true, false, true]);
+}
+
+function checkCommandInversion(circuit, command) {
+	const startDoc = makeEditorDoc(circuit);
+	const rev = invertCommand(startDoc, command);
+	assert.ok(rev, "inverse must exist");
+	const nextDoc = applyCommand(startDoc, command);
+	const resetDoc = applyCommand(nextDoc, rev);
 	assert.deepEqual(
-		{ appliedErr: applied.error, restoredErr: restored.error, ir: restored.ir },
-		{ appliedErr: undefined, restoredErr: undefined, ir: baseIr },
+		{ appliedErr: nextDoc.error, restoredErr: resetDoc.error, ir: resetDoc.ir },
+		{ appliedErr: undefined, restoredErr: undefined, ir: circuit },
 	);
 }
 
-const ROUND_TRIP_CASES = [
-	[
-		"addSheet with explicit sheet",
-		{
+const ROUND_TRIP_STEPS = [
+	{
+		title: "addSheet with explicit sheet",
+		cmd: {
 			type: "addSheet",
 			sheet: {
 				id: "sheet-2",
@@ -110,23 +115,26 @@ const ROUND_TRIP_CASES = [
 				pins: [],
 			},
 		},
-	],
-	["deleteSheet existing sheet", { type: "deleteSheet", sheetId: "sheet-1" }],
-	[
-		"moveSheet coordinates",
-		{ type: "moveSheet", sheetId: "sheet-1", dx: 15, dy: -5 },
-	],
-	[
-		"resizeSheet dimensions",
-		{ type: "resizeSheet", sheetId: "sheet-1", w: 60, h: 50 },
-	],
-	[
-		"renameSheet following filename",
-		{ type: "renameSheet", sheetId: "sheet-1", name: "AudioLogic" },
-	],
-	[
-		"addSheetPin to sheet",
-		{
+	},
+	{
+		title: "deleteSheet existing sheet",
+		cmd: { type: "deleteSheet", sheetId: "sheet-1" },
+	},
+	{
+		title: "moveSheet coordinates",
+		cmd: { type: "moveSheet", sheetId: "sheet-1", dx: 15, dy: -5 },
+	},
+	{
+		title: "resizeSheet dimensions",
+		cmd: { type: "resizeSheet", sheetId: "sheet-1", w: 60, h: 50 },
+	},
+	{
+		title: "renameSheet following filename",
+		cmd: { type: "renameSheet", sheetId: "sheet-1", name: "AudioLogic" },
+	},
+	{
+		title: "addSheetPin to sheet",
+		cmd: {
 			type: "addSheetPin",
 			sheetId: "sheet-1",
 			pin: {
@@ -137,36 +145,35 @@ const ROUND_TRIP_CASES = [
 				offset: 10,
 			},
 		},
-	],
-	[
-		"deleteSheetPin from sheet",
-		{ type: "deleteSheetPin", sheetId: "sheet-1", pinId: "pin-1" },
-	],
+	},
+	{
+		title: "deleteSheetPin from sheet",
+		cmd: { type: "deleteSheetPin", sheetId: "sheet-1", pinId: "pin-1" },
+	},
 ];
 
 describe("round-trip editor undo and redo for sheets", () => {
-	for (const [title, cmd] of ROUND_TRIP_CASES) {
+	for (const { title, cmd } of ROUND_TRIP_STEPS) {
 		test(`editor undo/redo round-trip: ${title}`, () => {
-			const baseIr = buildBaseIr();
-			const editor = createEditor(baseIr);
-			editor.dispatch(cmd);
-			assert.equal(editor.state.error, undefined);
-			verifyUndoRedoCycle(editor, baseIr);
+			const circuit = buildCircuitFixture();
+			const ed = createEditor(circuit);
+			ed.dispatch(cmd);
+			assert.equal(ed.state.error, undefined);
+			checkUndoRedoCycle(ed, circuit);
 		});
 
 		test(`pure applyCommand / invertCommand round-trip: ${title}`, () => {
-			verifyPureInvertCycle(buildBaseIr(), cmd);
+			checkCommandInversion(buildCircuitFixture(), cmd);
 		});
 	}
 });
 
 describe("addSheet auto naming and id generation", () => {
 	test("assigns sequential Sheet1 and sheet-1 when empty", () => {
-		const doc = createDoc(buildBaseIr(false));
+		const doc = makeEditorDoc(buildCircuitFixture(false));
 		const res1 = applyCommand(doc, { type: "addSheet", sheet: {} });
 		const res2 = applyCommand(res1, { type: "addSheet", sheet: {} });
-		const s1 = res1.ir.sheets[0];
-		const s2 = res2.ir.sheets[1];
+		const [s1, s2] = [res1.ir.sheets[0], res2.ir.sheets[1]];
 		assert.deepEqual(
 			{
 				err1: res1.error,
@@ -192,18 +199,15 @@ describe("addSheet auto naming and id generation", () => {
 	});
 
 	test("auto name finds next unused sheet name and sanitizes filename", () => {
-		const baseIr = {
-			...buildBaseIr(false),
-			sheets: [
-				{ id: "sheet-1", name: "Sheet2", file: "Sheet2.kicad_sch" },
-				{ id: "sheet-2", name: "Sheet3", file: "Sheet3.kicad_sch" },
-			],
-		};
-		const res = applyCommand(createDoc(baseIr), {
+		const seededCircuit = buildCircuitFixture([
+			{ id: "sheet-1", name: "Sheet2", file: "Sheet2.kicad_sch" },
+			{ id: "sheet-2", name: "Sheet3", file: "Sheet3.kicad_sch" },
+		]);
+		const res = applyCommand(makeEditorDoc(seededCircuit), {
 			type: "addSheet",
 			sheet: {},
 		});
-		const resSan = applyCommand(createDoc(buildBaseIr(false)), {
+		const resSan = applyCommand(makeEditorDoc(buildCircuitFixture(false)), {
 			type: "addSheet",
 			sheet: { name: "Power/Sub?Sheet*1" },
 		});
@@ -235,16 +239,16 @@ describe("resizeSheet min size clamp", () => {
 	];
 	for (const { w, h, expectedW, expectedH } of resizeCases) {
 		test(`clamps or accepts size w=${w}, h=${h}`, () => {
-			const res = applyCommand(createDoc(), {
+			const { res, sheet } = executeAndFindSheet({
 				type: "resizeSheet",
 				sheetId: "sheet-1",
 				w,
 				h,
 			});
-			const sheet = res.ir.sheets.find((s) => s.id === "sheet-1");
-			assert.deepEqual(
-				{ error: res.error, w: sheet.w, h: sheet.h },
-				{ error: undefined, w: expectedW, h: expectedH },
+			assertSuccess(
+				res,
+				{ w: sheet.w, h: sheet.h },
+				{ w: expectedW, h: expectedH },
 			);
 		});
 	}
@@ -254,24 +258,21 @@ describe("renameSheet file following behavior", () => {
 	const renameCases = [
 		{
 			title: "file follows name when file was not set explicitly",
-			ir: buildBaseIr(true),
+			circuit: buildCircuitFixture(true),
 			sheetId: "sheet-1",
 			name: "MotorControl",
 			expectedFile: "MotorControl.kicad_sch",
 		},
 		{
 			title: "file stays unchanged when file was set explicitly",
-			ir: {
-				...buildBaseIr(false),
-				sheets: [
-					{
-						id: "sheet-custom",
-						name: "Sensors",
-						file: "custom_sensors.kicad_sch",
-						explicitFile: true,
-					},
-				],
-			},
+			circuit: buildCircuitFixture([
+				{
+					id: "sheet-custom",
+					name: "Sensors",
+					file: "custom_sensors.kicad_sch",
+					explicitFile: true,
+				},
+			]),
 			sheetId: "sheet-custom",
 			name: "AnalogSensors",
 			expectedFile: "custom_sensors.kicad_sch",
@@ -279,15 +280,15 @@ describe("renameSheet file following behavior", () => {
 	];
 	for (const tc of renameCases) {
 		test(tc.title, () => {
-			const res = applyCommand(createDoc(tc.ir), {
-				type: "renameSheet",
-				sheetId: tc.sheetId,
-				name: tc.name,
-			});
-			const sheet = res.ir.sheets.find((s) => s.id === tc.sheetId);
-			assert.deepEqual(
-				{ error: res.error, name: sheet.name, file: sheet.file },
-				{ error: undefined, name: tc.name, file: tc.expectedFile },
+			const { res, sheet } = executeAndFindSheet(
+				{ type: "renameSheet", sheetId: tc.sheetId, name: tc.name },
+				makeEditorDoc(tc.circuit),
+				tc.sheetId,
+			);
+			assertSuccess(
+				res,
+				{ name: sheet.name, file: sheet.file },
+				{ name: tc.name, file: tc.expectedFile },
 			);
 		});
 	}
@@ -310,16 +311,16 @@ describe("addSheetPin behavior", () => {
 	];
 	for (const tc of pinCases) {
 		test(tc.title, () => {
-			const res = applyCommand(createDoc(), {
+			const { res, sheet } = executeAndFindSheet({
 				type: "addSheetPin",
 				sheetId: "sheet-1",
 				pin: tc.pinInput,
 			});
-			const sheet = res.ir.sheets.find((s) => s.id === "sheet-1");
 			const pin = sheet.pins.find((p) => p.name === tc.expectedName);
-			assert.deepEqual(
-				{ error: res.error, name: pin?.name, type: pin?.type },
-				{ error: undefined, name: tc.expectedName, type: tc.expectedType },
+			assertSuccess(
+				res,
+				{ name: pin?.name, type: pin?.type },
+				{ name: tc.expectedName, type: tc.expectedType },
 			);
 		});
 	}
@@ -327,10 +328,9 @@ describe("addSheetPin behavior", () => {
 
 describe("CIRCUIT_IR_SCHEMA sheets validation", () => {
 	test("schema accepts a doc with sheets and rejects a sheet without id", () => {
-		const validRes = validateCircuitIR(buildBaseIr(true));
-		const invalidRes = validateCircuitIR({
-			...buildBaseIr(false),
-			sheets: [
+		const validRes = validateCircuitIR(buildCircuitFixture(true));
+		const invalidRes = validateCircuitIR(
+			buildCircuitFixture([
 				{
 					name: "NoIdSheet",
 					file: "NoIdSheet.kicad_sch",
@@ -339,8 +339,8 @@ describe("CIRCUIT_IR_SCHEMA sheets validation", () => {
 					w: 20,
 					h: 20,
 				},
-			],
-		});
+			]),
+		);
 		assert.deepEqual(
 			{
 				validOk: validRes.ok,
@@ -354,20 +354,19 @@ describe("CIRCUIT_IR_SCHEMA sheets validation", () => {
 
 describe("setPartField allows datasheet", () => {
 	test("sets datasheet on part and inverts cleanly", () => {
-		const doc = createDoc();
+		const doc = makeEditorDoc();
 		const cmd = {
 			type: "setPartField",
 			partId: DEFAULT_PART_ID,
 			field: "datasheet",
 			value: "https://example.com/ne555.pdf",
 		};
-		const res = applyCommand(doc, cmd);
-		const part = res.ir.parts.find((p) => p.id === DEFAULT_PART_ID);
-		const inv = invertCommand(doc, cmd);
-		const restored = applyCommand(res, inv);
+		const applied = applyCommand(doc, cmd);
+		const part = applied.ir.parts.find((p) => p.id === DEFAULT_PART_ID);
+		const restored = applyCommand(applied, invertCommand(doc, cmd));
 		assert.deepEqual(
 			{
-				setErr: res.error,
+				setErr: applied.error,
 				datasheet: part.datasheet,
 				restoredErr: restored.error,
 				ir: restored.ir,
