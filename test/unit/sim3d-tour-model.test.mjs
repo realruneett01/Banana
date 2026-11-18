@@ -18,6 +18,13 @@ function verifyHealthyStepFields(step) {
 	assert.ok(step.question);
 }
 
+function verifyStepDetails(step, expectedTitle, expectedIntro) {
+	assert.deepEqual(
+		[step.title, step.intro, step.question.length > 0],
+		[expectedTitle, expectedIntro, true],
+	);
+}
+
 function verifyVerdict(res, expectedVerdict, pattern) {
 	assert.equal(res.verdict, expectedVerdict);
 	if (pattern) {
@@ -33,6 +40,14 @@ function verifySummary(summary, expectedScore, tipVerifier) {
 		return;
 	}
 	assert.ok(summary.tips.some((tip) => tipVerifier.test(tip)));
+}
+
+function buildTestFault(kind, id, info = null) {
+	return info ? { kind, id, info } : { kind, id };
+}
+
+function buildVerdict(id, verdict) {
+	return { id, verdict };
 }
 
 const EXPECTED_SEVERITY_ORDER = [
@@ -58,14 +73,14 @@ describe("tourModel - buildTour", () => {
 
 	test("orders faults strictly by severity with healthy step first", () => {
 		const inputFaults = [
-			{ kind: "value_drift", id: "f-drift" },
-			{ kind: "open_trace", id: "f-open-trace" },
-			{ kind: "short_nets", id: "f-short-nets" },
-			{ kind: "missing_ground", id: "f-ground" },
-			{ kind: "overvoltage", id: "f-overvolt" },
-			{ kind: "part_open", id: "f-part-open" },
-			{ kind: "reverse_polarity", id: "f-rev-pol" },
-			{ kind: "part_short", id: "f-part-short" },
+			buildTestFault("value_drift", "f-drift"),
+			buildTestFault("open_trace", "f-open-trace"),
+			buildTestFault("short_nets", "f-short-nets"),
+			buildTestFault("missing_ground", "f-ground"),
+			buildTestFault("overvoltage", "f-overvolt"),
+			buildTestFault("part_open", "f-part-open"),
+			buildTestFault("reverse_polarity", "f-rev-pol"),
+			buildTestFault("part_short", "f-part-short"),
 		];
 
 		const steps = buildTour(inputFaults);
@@ -77,30 +92,30 @@ describe("tourModel - buildTour", () => {
 
 	test("uses info label and plainEnglish when provided on fault", () => {
 		const faults = [
-			{
-				kind: "short_nets",
-				id: "f1",
-				info: {
-					label: "Short Circuit",
-					plainEnglish: "Two copper tracks are touching.",
-				},
-			},
+			buildTestFault("short_nets", "f1", {
+				label: "Short Circuit",
+				plainEnglish: "Two copper tracks are touching.",
+			}),
 		];
 		const steps = buildTour(faults);
-		assert.equal(steps[1].title, "Short Circuit");
-		assert.equal(steps[1].intro, "Two copper tracks are touching.");
-		assert.ok(steps[1].question.length > 0);
+		verifyStepDetails(
+			steps[1],
+			"Short Circuit",
+			"Two copper tracks are touching.",
+		);
 	});
 
 	test("puts unknown fault kinds at the end", () => {
 		const faults = [
-			{ kind: "unknown_custom", id: "f-custom" },
-			{ kind: "short_nets", id: "f-short" },
+			buildTestFault("unknown_custom", "f-custom"),
+			buildTestFault("short_nets", "f-short"),
 		];
 		const steps = buildTour(faults);
 		assert.equal(steps[0].id, "healthy");
-		assert.equal(steps[1].fault.kind, "short_nets");
-		assert.equal(steps[2].fault.kind, "unknown_custom");
+		assert.deepEqual(
+			[steps[1].fault.kind, steps[2].fault.kind],
+			["short_nets", "unknown_custom"],
+		);
 	});
 });
 
@@ -195,10 +210,10 @@ describe("tourModel - tourSummary", () => {
 		{
 			name: "formats score as 'x of y problems your board handles'",
 			verdicts: [
-				{ id: "healthy", verdict: "survives" },
-				{ id: "f1", verdict: "survives" },
-				{ id: "f2", verdict: "gets damaged" },
-				{ id: "f3", verdict: "survives" },
+				buildVerdict("healthy", "survives"),
+				buildVerdict("f1", "survives"),
+				buildVerdict("f2", "gets damaged"),
+				buildVerdict("f3", "survives"),
 			],
 			score: "2 of 3 problems your board handles",
 			verifier: (tips) => Array.isArray(tips) && tips.length > 0,
