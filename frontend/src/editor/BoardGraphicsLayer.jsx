@@ -5,9 +5,9 @@ const HIGHLIGHT_COLOR = "#fadb14";
 const DEFAULT_WIDTH = 0.15;
 const EDGE_CUTS_WIDTH = 0.1;
 
-function resolveWidth(g) {
-	if (typeof g.width === "number") return g.width;
-	return g.layer === "Edge.Cuts" ? EDGE_CUTS_WIDTH : DEFAULT_WIDTH;
+export function resolveWidth(g) {
+	if (typeof g?.width === "number") return g.width;
+	return g?.layer === "Edge.Cuts" ? EDGE_CUTS_WIDTH : DEFAULT_WIDTH;
 }
 
 function renderLine(g, color, width) {
@@ -100,14 +100,14 @@ function renderText(g, color) {
 	);
 }
 
-function dimensionGeometry(g) {
+export function dimensionGeometry(g) {
 	const x2 = g.x2 ?? g.x;
 	const y2 = g.y2 ?? g.y;
 	const dx = x2 - g.x;
 	const dy = y2 - g.y;
 	const len = Math.hypot(dx, dy);
-	const nx = len > 0 ? -dy / len : 0;
-	const ny = len > 0 ? dx / len : 1;
+	const nx = len > 0 && dy !== 0 ? -dy / len : 0;
+	const ny = len > 0 ? (dx === 0 ? 0 : dx / len) : 1;
 	return { x2, y2, len, nx, ny };
 }
 
@@ -178,9 +178,11 @@ function renderGraphicItem(g, selectedId) {
 
 export function BoardGraphicsLayer({ graphics, layer, selectedId }) {
 	if (!Array.isArray(graphics) || graphics.length === 0) return null;
-	const items = layer ? graphics.filter((g) => g.layer === layer) : graphics;
+	const items = layer
+		? graphics.filter((g) => (g.layer ?? "F.SilkS") === layer)
+		: graphics;
 	if (items.length === 0) return null;
-	const cls = layer ? `pcb-graphics-${layer}` : "pcb-graphics";
+	const cls = layer ? `pcb-graphics pcb-graphics-${layer}` : "pcb-graphics";
 	return (
 		<g className={cls}>{items.map((g) => renderGraphicItem(g, selectedId))}</g>
 	);

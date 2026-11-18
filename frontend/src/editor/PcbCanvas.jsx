@@ -2642,7 +2642,7 @@ function commitTwoClickGraphic({
 	pushBoard(
 		addGraphic(board, {
 			kind,
-			layer: activeLayer,
+			layer: activeLayer ?? "F.SilkS",
 			x: p1.x,
 			y: p1.y,
 			x2: p2.x,
@@ -2854,7 +2854,7 @@ function tryCommitZone(st, ctx) {
 		pushBoard(
 			addZone(board, {
 				netId: "",
-				layer: activeLayer,
+				layer: activeLayer ?? "F.Cu",
 				points: coords,
 			}),
 		);
