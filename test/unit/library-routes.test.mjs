@@ -5,13 +5,19 @@ import express from "express";
 import { createApp } from "../../backend/src/app.js";
 import { createLibraryRouter } from "../../backend/src/routes/library-routes.js";
 
+const createSample = (meta, elementKey, element) => ({
+	libId: meta.libId,
+	name: meta.name,
+	description: meta.desc,
+	keywords: meta.kw,
+	graphics: [],
+	[elementKey]: [element],
+});
+
 const SAMPLE_SYMBOL = {
-	libId: "Device:R",
-	name: "R",
-	description: "Resistor",
-	keywords: "R res",
-	properties: { Reference: "R", Value: "R" },
-	pins: [
+	...createSample(
+		{ libId: "Device:R", name: "R", desc: "Resistor", kw: "R res" },
+		"pins",
 		{
 			number: "1",
 			name: "~",
@@ -19,51 +25,59 @@ const SAMPLE_SYMBOL = {
 			at: [0, 0, 0],
 			length: 1.27,
 		},
-	],
-	graphics: [],
+	),
+	properties: { Reference: "R", Value: "R" },
 };
 
-const SAMPLE_FOOTPRINT = {
-	libId: "Resistor_SMD:R_0805",
-	name: "R_0805",
-	description: "Resistor SMD",
-	keywords: "resistor",
-	pads: [
-		{
-			number: "1",
-			type: "smd",
-			shape: "roundrect",
-			at: [0, 0, 0],
-			size: [1, 1],
-			layers: ["F.Cu"],
-		},
-	],
-	graphics: [],
-};
+const SAMPLE_FOOTPRINT = createSample(
+	{
+		libId: "Resistor_SMD:R_0805",
+		name: "R_0805",
+		desc: "Resistor SMD",
+		kw: "resistor",
+	},
+	"pads",
+	{
+		number: "1",
+		type: "smd",
+		shape: "roundrect",
+		at: [0, 0, 0],
+		size: [1, 1],
+		layers: ["F.Cu"],
+	},
+);
 
 function createFakeLibrary(overrides = {}) {
 	let isAvailable = overrides.available ?? true;
 	let lastListArgs = null;
+	const itemsByKind = {
+		symbols: { lib: "Device", id: "Device:R", sample: SAMPLE_SYMBOL },
+		footprints: {
+			lib: "Resistor_SMD",
+			id: "Resistor_SMD:R_0805",
+			sample: SAMPLE_FOOTPRINT,
+		},
+	};
+
 	return {
 		setAvailable(val) {
 			isAvailable = val;
 		},
 		available: async () => isAvailable,
-		searchSymbols: async (_q, _opt) => [SAMPLE_SYMBOL],
-		getSymbol: async (libId) => (libId === "Device:R" ? SAMPLE_SYMBOL : null),
-		searchFootprints: async (_q, _opt) => [SAMPLE_FOOTPRINT],
-		getFootprint: async (libId) =>
-			libId === "Resistor_SMD:R_0805" ? SAMPLE_FOOTPRINT : null,
-		listLibraries: async (kind) => [
-			{ name: kind === "symbols" ? "Device" : "Resistor_SMD", count: 1 },
-		],
+		searchSymbols: async () => [SAMPLE_SYMBOL],
+		getSymbol: async (id) =>
+			id === itemsByKind.symbols.id ? SAMPLE_SYMBOL : null,
+		searchFootprints: async () => [SAMPLE_FOOTPRINT],
+		getFootprint: async (id) =>
+			id === itemsByKind.footprints.id ? SAMPLE_FOOTPRINT : null,
+		listLibraries: async (kind) => [{ name: itemsByKind[kind]?.lib, count: 1 }],
 		listLibraryItems: async (kind, libName, opt = {}) => {
 			lastListArgs = { kind, libName, ...opt };
-			const isSym = kind === "symbols";
-			if (libName !== (isSym ? "Device" : "Resistor_SMD")) {
+			const config = itemsByKind[kind];
+			if (libName !== config?.lib) {
 				return { items: [], total: 0 };
 			}
-			return { items: [isSym ? SAMPLE_SYMBOL : SAMPLE_FOOTPRINT], total: 1 };
+			return { items: [config.sample], total: 1 };
 		},
 		getLastListLibraryItemsArgs: () => lastListArgs,
 		...overrides,
@@ -85,6 +99,17 @@ function shutdownServer(server) {
 	});
 }
 
+function setupTestServer(createAppInstance) {
+	let server;
+	let port;
+	before(async () => {
+		const app = createAppInstance();
+		({ server, port } = await bootServer(app));
+	});
+	after(() => shutdownServer(server));
+	return () => port;
+}
+
 async function requestGet(port, path) {
 	const res = await fetch(`http://127.0.0.1:${port}${path}`);
 	const body = await res.json().catch(() => ({}));
@@ -99,12 +124,6 @@ async function requestWithAvailability(port, fakeLib, available, path) {
 	fakeLib.setAvailable(available);
 	return requestGet(port, path);
 }
-
-const queryAvailable = (port, fakeLib, path) =>
-	requestWithAvailability(port, fakeLib, true, path);
-
-const queryUnavailable = (port, fakeLib, path) =>
-	requestWithAvailability(port, fakeLib, false, path);
 
 function assertSuccess(res) {
 	assert.equal(res.status, 200);
@@ -140,14 +159,12 @@ function assertGetMatch(res, { key, expectedId }) {
 
 const assertNotFound = (res) => assertErrorResponse(res, 404);
 const assertBadRequest = (res) => assertErrorResponse(res, 400);
-
-function assertUnavailable(res) {
-	assert.equal(res.status, 503);
-	assert.equal(
-		res.json.error,
+const assertUnavailable = (res) =>
+	assertErrorResponse(
+		res,
+		503,
 		"KiCad libraries are not installed on this server",
 	);
-}
 
 function assertDualCase(res, tc) {
 	if (tc.isArray) {
@@ -176,108 +193,104 @@ function runTestCases(cases, queryFn, assertFn) {
 	}
 }
 
-// Turns [name, path, ...extra] rows into case objects keyed by `columns`.
-const toCases = (rows, columns = ["name", "path"]) =>
-	rows.map((row) => Object.fromEntries(columns.map((col, i) => [col, row[i]])));
+const caseItem = (name, path) => ({ name, path });
 
-const SEARCH_COLUMNS = ["name", "path", "key", "expectedId"];
+const makeSearchCase = (kind, desc, query, expectedId) => ({
+	name: `GET /api/library/${kind} ${desc}`,
+	path: `/api/library/${kind}?${query}`,
+	key: kind,
+	expectedId,
+});
 
-const SEARCH_CASES = toCases(
-	[
-		[
-			"GET /api/library/symbols with q",
-			"/api/library/symbols?q=res",
-			"symbols",
-			"Device:R",
-		],
-		[
-			"GET /api/library/symbols with q and limit",
-			"/api/library/symbols?q=res&limit=10",
-			"symbols",
-			"Device:R",
-		],
-		[
-			"GET /api/library/footprints with q",
-			"/api/library/footprints?q=0805",
-			"footprints",
-			"Resistor_SMD:R_0805",
-		],
-		[
-			"GET /api/library/footprints with q and limit",
-			"/api/library/footprints?q=0805&limit=25",
-			"footprints",
-			"Resistor_SMD:R_0805",
-		],
-	],
-	SEARCH_COLUMNS,
-);
+const SEARCH_CASES = [
+	makeSearchCase("symbols", "with q", "q=res", "Device:R"),
+	makeSearchCase("symbols", "with q and limit", "q=res&limit=10", "Device:R"),
+	makeSearchCase("footprints", "with q", "q=0805", "Resistor_SMD:R_0805"),
+	makeSearchCase(
+		"footprints",
+		"with q and limit",
+		"q=0805&limit=25",
+		"Resistor_SMD:R_0805",
+	),
+];
 
-const GET_CASES = toCases(
-	[
-		[
-			"GET /api/library/symbols/:libId",
-			"/api/library/symbols/Device:R",
-			"symbol",
-			"Device:R",
-		],
-		[
-			"GET /api/library/footprints/:libId",
-			"/api/library/footprints/Resistor_SMD:R_0805",
-			"footprint",
-			"Resistor_SMD:R_0805",
-		],
-	],
-	SEARCH_COLUMNS,
-);
+const makeGetCase = (kind, singular, id) => ({
+	name: `GET /api/library/${kind}/:libId`,
+	path: `/api/library/${kind}/${id}`,
+	key: singular,
+	expectedId: id,
+});
 
-const NOT_FOUND_CASES = toCases([
-	["GET missing symbol returns 404", "/api/library/symbols/Device:NotFound"],
-	[
+const GET_CASES = [
+	makeGetCase("symbols", "symbol", "Device:R"),
+	makeGetCase("footprints", "footprint", "Resistor_SMD:R_0805"),
+];
+
+const NOT_FOUND_CASES = [
+	caseItem(
+		"GET missing symbol returns 404",
+		"/api/library/symbols/Device:NotFound",
+	),
+	caseItem(
 		"GET missing footprint returns 404",
 		"/api/library/footprints/Package_SO:NotFound",
-	],
-]);
+	),
+];
 
-const VALIDATION_CASES = toCases([
-	["symbols missing q", "/api/library/symbols"],
-	["symbols empty q", "/api/library/symbols?q="],
-	["symbols whitespace q", "/api/library/symbols?q=%20%20"],
-	["symbols q too long", `/api/library/symbols?q=${"a".repeat(101)}`],
-	["symbols invalid limit non-numeric", "/api/library/symbols?q=res&limit=abc"],
-	["symbols invalid limit zero", "/api/library/symbols?q=res&limit=0"],
-	["symbols invalid limit negative", "/api/library/symbols?q=res&limit=-5"],
-	["symbols invalid limit above 100", "/api/library/symbols?q=res&limit=101"],
-	["symbols invalid limit float", "/api/library/symbols?q=res&limit=1.5"],
-	["footprints missing q", "/api/library/footprints"],
-	["symbol invalid libId missing colon", "/api/library/symbols/InvalidLibId"],
-	[
+const INVALID_LIMITS = [
+	["non-numeric", "abc"],
+	["zero", "0"],
+	["negative", "-5"],
+	["above 100", "101"],
+	["float", "1.5"],
+];
+
+const VALIDATION_CASES = [
+	caseItem("symbols missing q", "/api/library/symbols"),
+	caseItem("symbols empty q", "/api/library/symbols?q="),
+	caseItem("symbols whitespace q", "/api/library/symbols?q=%20%20"),
+	caseItem("symbols q too long", `/api/library/symbols?q=${"a".repeat(101)}`),
+	...INVALID_LIMITS.map(([desc, val]) =>
+		caseItem(
+			`symbols invalid limit ${desc}`,
+			`/api/library/symbols?q=res&limit=${val}`,
+		),
+	),
+	caseItem("footprints missing q", "/api/library/footprints"),
+	caseItem(
+		"symbol invalid libId missing colon",
+		"/api/library/symbols/InvalidLibId",
+	),
+	caseItem(
 		"footprint invalid libId missing colon",
 		"/api/library/footprints/InvalidLibId",
-	],
-]);
+	),
+];
 
-const BROWSE_VALIDATION_CASES = toCases([
-	["invalid lib name traversal", "/api/library/symbols/libraries/..%2F.."],
-	["invalid lib name spaces", "/api/library/symbols/libraries/a%20b"],
-	["bad offset negative", "/api/library/symbols/libraries/Device?offset=-1"],
-	[
-		"bad offset non-numeric",
-		"/api/library/symbols/libraries/Device?offset=abc",
-	],
-	["limit 501 above max", "/api/library/symbols/libraries/Device?limit=501"],
-]);
+const libItemPath = (sub) => `/api/library/symbols/libraries/${sub}`;
 
-const CORE_ENDPOINTS = toCases(
-	[
-		["symbols search", "/api/library/symbols?q=res"],
-		["symbol get", "/api/library/symbols/Device:R"],
-		["footprints search", "/api/library/footprints?q=0805"],
-		["footprint get", "/api/library/footprints/Resistor_SMD:R_0805"],
-		["symbols libraries", "/api/library/symbols/libraries"],
-		["symbols library items", "/api/library/symbols/libraries/Device"],
-	],
-	["label", "path"],
-);
+const BROWSE_VALIDATION_CASES = [
+	caseItem("invalid lib name traversal", libItemPath("..%2F..")),
+	caseItem("invalid lib name spaces", libItemPath("a%20b")),
+	caseItem("bad offset negative", libItemPath("Device?offset=-1")),
+	caseItem("bad offset non-numeric", libItemPath("Device?offset=abc")),
+	caseItem("limit 501 above max", libItemPath("Device?limit=501")),
+];
+
+const CORE_ENDPOINTS = [
+	{ label: "symbols search", path: "/api/library/symbols?q=res" },
+	{ label: "symbol get", path: "/api/library/symbols/Device:R" },
+	{ label: "footprints search", path: "/api/library/footprints?q=0805" },
+	{
+		label: "footprint get",
+		path: "/api/library/footprints/Resistor_SMD:R_0805",
+	},
+	{ label: "symbols libraries", path: "/api/library/symbols/libraries" },
+	{
+		label: "symbols library items",
+		path: "/api/library/symbols/libraries/Device",
+	},
+];
 
 const endpointCases = (suffix) =>
 	CORE_ENDPOINTS.map(({ label, path }) => ({
@@ -313,21 +326,22 @@ const firstLibraryIs = (name) => (json) =>
 	assert.equal(json.libraries[0].name, name);
 
 const BROWSE_LIST_CASES = [
-	["symbols", "returns 200 with libraries list", firstLibraryIs("Device")],
-	[
-		"footprints",
-		"returns 200 with libraries list",
-		firstLibraryIs("Resistor_SMD"),
-	],
-	[
-		"symbols",
-		"is not treated as a libId",
-		(json) => assert.equal(json.error, undefined),
-	],
-].map(([kind, what, check]) => {
-	const path = `/api/library/${kind}/libraries`;
-	return { name: `GET ${path} ${what}`, path, check };
-});
+	{
+		name: "GET /api/library/symbols/libraries returns 200 with libraries list",
+		path: "/api/library/symbols/libraries",
+		check: firstLibraryIs("Device"),
+	},
+	{
+		name: "GET /api/library/footprints/libraries returns 200 with libraries list",
+		path: "/api/library/footprints/libraries",
+		check: firstLibraryIs("Resistor_SMD"),
+	},
+	{
+		name: "GET /api/library/symbols/libraries is not treated as a libId",
+		path: "/api/library/symbols/libraries",
+		check: (json) => assert.equal(json.error, undefined),
+	},
+];
 
 const DUAL_BASE = [
 	["/library/status", "available", { expected: true }],
@@ -347,25 +361,20 @@ const DUAL_CASES = DUAL_BASE.flatMap(([basePath, key, extra]) => [
 ]);
 
 describe("library-routes", () => {
-	let server;
-	let port;
 	let fakeLibrary;
 
-	before(async () => {
+	const getPort = setupTestServer(() => {
 		const app = createApp();
 		app.locals.allowLocalRepos = true;
 		fakeLibrary = createFakeLibrary();
 		app.locals.kicadLibrary = fakeLibrary;
-
-		({ server, port } = await bootServer(app));
+		return app;
 	});
 
-	after(async () => {
-		await shutdownServer(server);
-	});
-
-	const query = (path) => queryAvailable(port, fakeLibrary, path);
-	const queryUnavail = (path) => queryUnavailable(port, fakeLibrary, path);
+	const query = (path) =>
+		requestWithAvailability(getPort(), fakeLibrary, true, path);
+	const queryUnavail = (path) =>
+		requestWithAvailability(getPort(), fakeLibrary, false, path);
 
 	describe("GET /library/status", () => {
 		for (const tc of STATUS_CASES) {
@@ -378,7 +387,6 @@ describe("library-routes", () => {
 		}
 	});
 
-	// [describe title, cases, query fn, assert fn]
 	const describeSuites = (suites) => {
 		for (const [title, cases, queryFn, assertFn] of suites) {
 			describe(title, () => runTestCases(cases, queryFn, assertFn));
@@ -432,24 +440,16 @@ describe("library-routes", () => {
 	]);
 
 	describe("dual /x and /api/x router mounting", () => {
-		let directServer;
-		let directPort;
-
-		before(async () => {
+		const getDirectPort = setupTestServer(() => {
 			const directApp = express();
 			directApp.locals.kicadLibrary = createFakeLibrary();
 			directApp.use(createLibraryRouter());
-			({ server: directServer, port: directPort } =
-				await bootServer(directApp));
-		});
-
-		after(async () => {
-			await shutdownServer(directServer);
+			return directApp;
 		});
 
 		runTestCases(
 			DUAL_CASES,
-			(path) => requestGet(directPort, path),
+			(path) => requestGet(getDirectPort(), path),
 			assertDualCase,
 		);
 	});
