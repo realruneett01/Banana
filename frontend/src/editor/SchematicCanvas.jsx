@@ -1,6 +1,13 @@
 import { Input, Modal } from "antd";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { boxSelect, normalizeBox } from "./boxSelect.js";
+import {
+	copySchematic,
+	cutSchematicCommands,
+	duplicateSchematicCommands,
+	pasteSchematicCommands,
+	selectAllIds,
+} from "./clipboard.js";
 import { applyCommand } from "./editorModel.js";
 import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
 import { isTypingTarget, resolveSchematicAction } from "./hotkeys.js";
@@ -1101,6 +1108,90 @@ function handleEditKey(ctx) {
 	}
 }
 
+let schematicClipboard = null;
+
+function writeSystemClipboard(clip) {
+	try {
+		if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(JSON.stringify(clip)).catch(() => {});
+		}
+	} catch {
+		// ignore clipboard failures
+	}
+}
+
+export function resolvePastePosition(
+	cursorWorld,
+	grid = SCH_GRID,
+	fallback = { x: 0, y: 0 },
+) {
+	if (
+		!cursorWorld ||
+		typeof cursorWorld.x !== "number" ||
+		typeof cursorWorld.y !== "number"
+	) {
+		return snapPoint(fallback ?? { x: 0, y: 0 }, grid);
+	}
+	return snapPoint(cursorWorld, grid);
+}
+
+export function extractPastedIds(batchCmd) {
+	if (!batchCmd || !Array.isArray(batchCmd.commands)) return [];
+	const ids = [];
+	for (const cmd of batchCmd.commands) {
+		const id = cmd.part?.id ?? cmd.sheet?.id ?? cmd.annotation?.id;
+		if (id) ids.push(id);
+	}
+	return ids;
+}
+
+function handleCopyKey(ctx) {
+	if (!ctx.doc?.selection?.length) return;
+	const clip = copySchematic(ctx.doc, ctx.doc.selection);
+	if (!clip.parts.length && !clip.annotations.length && !clip.sheets.length) {
+		return;
+	}
+	schematicClipboard = clip;
+	writeSystemClipboard(schematicClipboard);
+}
+
+function handlePasteKey(ctx) {
+	if (!schematicClipboard || !ctx.doc) return;
+	const at = resolvePastePosition(ctx.cursorWorld, SCH_GRID);
+	const batch = pasteSchematicCommands(ctx.doc, schematicClipboard, at);
+	if (!batch?.commands?.length) return;
+	ctx.dispatchCmd(batch);
+	const ids = extractPastedIds(batch);
+	if (ids.length > 0) {
+		ctx.dispatchCmd({ type: "select", ids });
+	}
+}
+
+function handleCutKey(ctx) {
+	if (!ctx.doc?.selection?.length) return;
+	const { clip, command } = cutSchematicCommands(ctx.doc, ctx.doc.selection);
+	if (clip.parts.length || clip.annotations.length || clip.sheets.length) {
+		schematicClipboard = clip;
+		writeSystemClipboard(schematicClipboard);
+	}
+	if (command?.commands?.length) {
+		ctx.dispatchCmd(command);
+	}
+}
+
+function handleDuplicateKey(ctx) {
+	if (!ctx.doc?.selection?.length) return;
+	const cmd = duplicateSchematicCommands(ctx.doc, ctx.doc.selection);
+	if (cmd?.commands?.length) {
+		ctx.dispatchCmd(cmd);
+	}
+}
+
+function handleSelectAllKey(ctx) {
+	const ids = selectAllIds(ctx.doc);
+	ctx.dispatchCmd({ type: "select", ids });
+}
+
 const ACTION_KEY_HANDLERS = {
 	placeWire: handleWireModeKey,
 	placeSheet: handleSheetToolKey,
@@ -1121,6 +1212,11 @@ const ACTION_KEY_HANDLERS = {
 	delete: handleDeleteKey,
 	undo: (ctx) => ctx.handleUndo(),
 	redo: (ctx) => ctx.handleRedo(),
+	copy: handleCopyKey,
+	paste: handlePasteKey,
+	cut: handleCutKey,
+	duplicate: handleDuplicateKey,
+	selectAll: handleSelectAllKey,
 };
 
 function handleBackquoteKey(ctx) {
