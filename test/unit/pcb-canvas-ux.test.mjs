@@ -3,39 +3,62 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { fitToBounds } from "../../frontend/src/editor/viewport.js";
 
-function makeImportHeader() {
-	const toHref = (rel) => new URL(rel, import.meta.url).href;
-	const geom = JSON.stringify(
-		toHref("../../frontend/src/editor/pcbGeometry.js"),
-	);
-	const outl = JSON.stringify(
-		toHref("../../frontend/src/editor/boardOutline.js"),
-	);
-	const view = JSON.stringify(toHref("../../frontend/src/editor/viewport.js"));
-	return [
-		`import { footprintRect } from ${geom};`,
-		`import { outlineToPolygon, polygonBBox } from ${outl};`,
-		`import { bboxOfPoints } from ${view};`,
-	].join("\n");
+function readSourceFile(relativePath) {
+	const fileUrl = new URL(relativePath, import.meta.url);
+	return readFileSync(fileUrl, "utf-8");
 }
 
-async function loadHelpers() {
-	const src = readFileSync(
-		new URL("../../frontend/src/editor/PcbCanvas.jsx", import.meta.url),
-		"utf8",
+function assembleHelperModule(rawSource) {
+	const depUrl = (path) => JSON.stringify(new URL(path, import.meta.url).href);
+	const imports = [
+		`import { footprintRect } from ${depUrl("../../frontend/src/editor/pcbGeometry.js")};`,
+		`import { outlineToPolygon, polygonBBox } from ${depUrl("../../frontend/src/editor/boardOutline.js")};`,
+		`import { bboxOfPoints } from ${depUrl("../../frontend/src/editor/viewport.js")};`,
+	];
+	const [fromMark, toMark] = [
+		"function isValidOutline",
+		"function outlinePoints",
+	];
+	const section = rawSource.substring(
+		rawSource.indexOf(fromMark),
+		rawSource.indexOf(toMark),
 	);
-	const body = src.slice(
-		src.indexOf("function isValidOutline"),
-		src.indexOf("function outlinePoints"),
-	);
-	const fullCode = `${makeImportHeader()}\n${body}`;
-	const mod = await import(
-		`data:text/javascript;base64,${Buffer.from(fullCode).toString("base64")}`
-	);
-	return { src, mod };
+	const moduleSource = [...imports, section].join("\n");
+	const base64Data = Buffer.from(moduleSource, "utf-8").toString("base64");
+	return import(`data:text/javascript;base64,${base64Data}`);
 }
 
-const { src: pcbCanvasSrc, mod: pcbHelpers } = await loadHelpers();
+function makeBoardWithOutline(
+	coords = [
+		[-25, -15],
+		[25, -15],
+		[25, 15],
+		[-25, 15],
+	],
+) {
+	return { outline: coords };
+}
+
+function makeDesignWithParts(placements = [{ x: 100, y: 100 }]) {
+	return {
+		parts: placements.map((placement) => ({ placement })),
+	};
+}
+
+function verifyProperties(target, expectations) {
+	for (const [key, value] of Object.entries(expectations)) {
+		assert.equal(target[key], value);
+	}
+}
+
+function verifyPatterns(source, regexes) {
+	for (const pattern of regexes) {
+		assert.match(source, pattern);
+	}
+}
+
+const pcbCanvasSrc = readSourceFile("../../frontend/src/editor/PcbCanvas.jsx");
+const pcbHelpers = await assembleHelperModule(pcbCanvasSrc);
 const {
 	DEFAULT_WORK_AREA,
 	defaultWorkAreaBounds,
@@ -47,19 +70,20 @@ const {
 
 describe("PcbCanvas default work area", () => {
 	it("defines 100 x 80 mm bounds centered at origin", () => {
-		assert.equal(DEFAULT_WORK_AREA.minX, -50);
-		assert.equal(DEFAULT_WORK_AREA.maxX, 50);
-		assert.equal(DEFAULT_WORK_AREA.minY, -40);
-		assert.equal(DEFAULT_WORK_AREA.maxY, 40);
+		verifyProperties(DEFAULT_WORK_AREA, {
+			minX: -50,
+			maxX: 50,
+			minY: -40,
+			maxY: 40,
+		});
 		assert.deepEqual(defaultWorkAreaBounds(), DEFAULT_WORK_AREA);
 	});
 
 	it("fits view to work area on empty scene instead of zoom=4 fallback", () => {
 		const bounds = getSceneBounds({}, {});
 		const view = fitToBounds(bounds, { width: 800, height: 600 });
-		assert.equal(view.zoom, 6.75);
-		assert.equal(view.pan.x, 400);
-		assert.equal(view.pan.y, 300);
+		verifyProperties(view, { zoom: 6.75 });
+		verifyProperties(view.pan, { x: 400, y: 300 });
 	});
 });
 
@@ -70,12 +94,10 @@ describe("PcbCanvas scene bounds fallback", () => {
 	});
 
 	it("falls back to parts bounding box when parts are present", () => {
-		const ir = {
-			parts: [
-				{ placement: { x: -10, y: -20 } },
-				{ placement: { x: 30, y: 40 } },
-			],
-		};
+		const ir = makeDesignWithParts([
+			{ x: -10, y: -20 },
+			{ x: 30, y: 40 },
+		]);
 		const fallback = sceneBoundsFallback({}, ir);
 		assert.deepEqual(fallback, {
 			minX: -12.5,
@@ -88,17 +110,8 @@ describe("PcbCanvas scene bounds fallback", () => {
 
 describe("PcbCanvas getSceneBounds", () => {
 	it("prefers valid board outline over parts or default area", () => {
-		const board = {
-			outline: [
-				[-25, -15],
-				[25, -15],
-				[25, 15],
-				[-25, 15],
-			],
-		};
-		const ir = {
-			parts: [{ placement: { x: 100, y: 100 } }],
-		};
+		const board = makeBoardWithOutline();
+		const ir = makeDesignWithParts();
 		const bounds = getSceneBounds(board, ir);
 		assert.deepEqual(bounds, {
 			minX: -25,
@@ -115,29 +128,43 @@ describe("PcbCanvas getSceneBounds", () => {
 
 describe("PcbCanvas zone points and formatting", () => {
 	it("extracts points from zone polygon or points array", () => {
-		const fromPolygon = getZonePoints({
-			polygon: [
-				[0, 0],
-				[10, 0],
-				[10, 10],
-			],
-		});
-		assert.equal(fromPolygon.length, 3);
-		const fromPoints = getZonePoints({
-			points: [
-				[1, 1],
-				[2, 2],
-				[3, 3],
-			],
-		});
-		assert.equal(fromPoints.length, 3);
+		const fixtureCases = [
+			{
+				input: {
+					polygon: [
+						[0, 0],
+						[10, 0],
+						[10, 10],
+					],
+				},
+				expectedLength: 3,
+			},
+			{
+				input: {
+					points: [
+						[1, 1],
+						[2, 2],
+						[3, 3],
+					],
+				},
+				expectedLength: 3,
+			},
+		];
+		for (const { input, expectedLength } of fixtureCases) {
+			assert.equal(getZonePoints(input).length, expectedLength);
+		}
 		assert.deepEqual(getZonePoints({}), []);
 	});
 
 	it("formats zone points for arrays and objects", () => {
-		assert.equal(formatZonePt([12.5, 34.2]), "12.5,34.2");
-		assert.equal(formatZonePt({ x: 5, y: -8 }), "5,-8");
-		assert.equal(formatZonePt(null), null);
+		const mappingCases = [
+			[[12.5, 34.2], "12.5,34.2"],
+			[{ x: 5, y: -8 }, "5,-8"],
+			[null, null],
+		];
+		for (const [coord, expected] of mappingCases) {
+			assert.equal(formatZonePt(coord), expected);
+		}
 	});
 });
 
@@ -150,27 +177,19 @@ describe("PcbCanvas text modal and placement routing", () => {
 	});
 
 	it("routes text tool clicks directly to onTextSubmit with default text", () => {
-		assert.match(
-			pcbCanvasSrc,
+		verifyPatterns(pcbCanvasSrc, [
 			/if\s*\(activeTool === "placeText"\)\s*\{\s*st\.onTextSubmit\?\.?\("TEXT", pt\);/,
-		);
-		assert.match(
-			pcbCanvasSrc,
 			/if\s*\(activeTool === "text" \|\| activeTool === "drawText"\)\s*\{\s*st\.onTextSubmit\?\.?\("TEXT", pt\);/,
-		);
+		]);
 	});
 
 	it("maps tool bus events for text and zone drawing", () => {
-		assert.match(
-			pcbCanvasSrc,
+		verifyPatterns(pcbCanvasSrc, [
 			/placeText:\s*\(\)\s*=>\s*armGfx\("placeText"\)/,
-		);
-		assert.match(pcbCanvasSrc, /drawText:\s*\(\)\s*=>\s*armGfx\("placeText"\)/);
-		assert.match(pcbCanvasSrc, /text:\s*\(\)\s*=>\s*armGfx\("placeText"\)/);
-		assert.match(
-			pcbCanvasSrc,
+			/drawText:\s*\(\)\s*=>\s*armGfx\("placeText"\)/,
+			/text:\s*\(\)\s*=>\s*armGfx\("placeText"\)/,
 			/addZone:\s*\(item\)\s*=>\s*armGfx\("addZone",\s*item\)/,
-		);
+		]);
 	});
 
 	it("commits zone on escape when at least 3 points collected", () => {
