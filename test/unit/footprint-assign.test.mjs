@@ -6,93 +6,72 @@ import {
 	suggestFootprintQuery,
 } from "../../frontend/src/editor/footprintAssign.js";
 
+const pins = (n) => Array(n).fill({});
+const partVal = (ref, value) => ({ ref, value });
+const partSym = (ref, symbol) => ({ ref, symbol });
+const partPins = (ref, count, value) => ({
+	ref,
+	...(value ? { value } : {}),
+	pins: pins(count),
+});
+
+const fpCmd = (partId, value) => ({
+	type: "setPartField",
+	partId,
+	field: "footprint",
+	value,
+});
+
+const mockFetch = ({ ok = true, status = 200, data = {}, onCall } = {}) => {
+	return async (url) => {
+		onCall?.(url);
+		return {
+			ok,
+			status,
+			json: async () => data,
+		};
+	};
+};
+
 const SUGGESTION_CASES = [
-	{
-		label: "Resistor by ref prefix R",
-		part: { ref: "R1", value: "10k" },
-		expected: "R_0805",
-	},
-	{
-		label: "Resistor by symbol name",
-		part: { ref: "X1", symbol: "Device:R" },
-		expected: "R_0805",
-	},
-	{
-		label: "Capacitor by ref prefix C",
-		part: { ref: "C1", value: "100nF" },
-		expected: "C_0805",
-	},
-	{
-		label: "Capacitor by symbol name",
-		part: { ref: "X1", symbol: "Device:C" },
-		expected: "C_0805",
-	},
-	{
-		label: "LED by ref prefix LED",
-		part: { ref: "LED1", value: "Red" },
-		expected: "LED_0805",
-	},
-	{
-		label: "LED by symbol name",
-		part: { ref: "D1", symbol: "Device:LED" },
-		expected: "LED_0805",
-	},
-	{
-		label: "Diode by ref prefix D",
-		part: { ref: "D1", value: "1N4148" },
-		expected: "D_SOD-123",
-	},
-	{
-		label: "Generic IC default 8-pin SOIC",
-		part: { ref: "U1", value: "NE555", pins: Array(8).fill({}) },
-		expected: "SOIC-8",
-	},
-	{
-		label: "Generic IC 16-pin SOIC",
-		part: { ref: "U2", pins: Array(16).fill({}) },
-		expected: "SOIC-16",
-	},
-	{
-		label: "Generic IC with DIP in value",
-		part: { ref: "U3", value: "LM358_DIP", pins: Array(8).fill({}) },
-		expected: "DIP-8",
-	},
-	{
-		label: "Connector 2-pin header",
-		part: { ref: "J1", pins: Array(2).fill({}) },
-		expected: "PinHeader_1x02",
-	},
-	{
-		label: "Connector 4-pin header from value",
-		part: { ref: "J2", value: "Conn_01x04", pins: Array(4).fill({}) },
-		expected: "PinHeader_1x04",
-	},
-	{
-		label: "Symbol footprint filter overrides rule",
-		part: {
+	["Resistor by ref prefix R", partVal("R1", "10k"), "R_0805"],
+	["Resistor by symbol name", partSym("X1", "Device:R"), "R_0805"],
+	["Capacitor by ref prefix C", partVal("C1", "100nF"), "C_0805"],
+	["Capacitor by symbol name", partSym("X1", "Device:C"), "C_0805"],
+	["LED by ref prefix LED", partVal("LED1", "Red"), "LED_0805"],
+	["LED by symbol name", partSym("D1", "Device:LED"), "LED_0805"],
+	["Diode by ref prefix D", partVal("D1", "1N4148"), "D_SOD-123"],
+	["Generic IC default 8-pin SOIC", partPins("U1", 8, "NE555"), "SOIC-8"],
+	["Generic IC 16-pin SOIC", partPins("U2", 16), "SOIC-16"],
+	["Generic IC with DIP in value", partPins("U3", 8, "LM358_DIP"), "DIP-8"],
+	["Connector 2-pin header", partPins("J1", 2), "PinHeader_1x02"],
+	[
+		"Connector 4-pin header from value",
+		partPins("J2", 4, "Conn_01x04"),
+		"PinHeader_1x04",
+	],
+	[
+		"Symbol footprint filter overrides rule",
+		{
 			ref: "R1",
 			value: "10k",
 			props: { ki_fp_filters: "R_0603* Resistor_*" },
 		},
-		expected: "R_0603",
-	},
-	{
-		label: "Symbol Footprint Filter property overrides rule",
-		part: {
+		"R_0603",
+	],
+	[
+		"Symbol Footprint Filter property overrides rule",
+		{
 			ref: "U1",
 			props: { "Footprint Filter": "SOIC-14*" },
 		},
-		expected: "SOIC-14",
-	},
-	{
-		label: "Empty or invalid part yields empty string",
-		part: null,
-		expected: "",
-	},
+		"SOIC-14",
+	],
+	["Empty or invalid part yields empty string", null, ""],
 ];
 
 describe("suggestFootprintQuery", () => {
-	for (const { label, part, expected } of SUGGESTION_CASES) {
+	for (const [label, part, expected] of SUGGESTION_CASES) {
 		test(label, () => {
 			assert.equal(suggestFootprintQuery(part), expected);
 		});
@@ -100,45 +79,35 @@ describe("suggestFootprintQuery", () => {
 });
 
 describe("assignmentsToCommand", () => {
+	const expectBatch = (input, expectedCmds) => {
+		assert.deepEqual(assignmentsToCommand(input), {
+			type: "batch",
+			commands: expectedCmds,
+		});
+	};
+
 	test("converts dictionary of assignments to a batch command", () => {
-		const assignments = {
-			part_r1: "Resistor_SMD:R_0805",
-			part_c1: "Capacitor_SMD:C_0805",
-		};
-		const cmd = assignmentsToCommand(assignments);
-		assert.equal(cmd.type, "batch");
-		assert.equal(cmd.commands.length, 2);
-		assert.deepEqual(cmd.commands[0], {
-			type: "setPartField",
-			partId: "part_r1",
-			field: "footprint",
-			value: "Resistor_SMD:R_0805",
-		});
-		assert.deepEqual(cmd.commands[1], {
-			type: "setPartField",
-			partId: "part_c1",
-			field: "footprint",
-			value: "Capacitor_SMD:C_0805",
-		});
+		expectBatch(
+			{
+				part_r1: "Resistor_SMD:R_0805",
+				part_c1: "Capacitor_SMD:C_0805",
+			},
+			[
+				fpCmd("part_r1", "Resistor_SMD:R_0805"),
+				fpCmd("part_c1", "Capacitor_SMD:C_0805"),
+			],
+		);
 	});
 
 	test("converts array of assignments to a batch command", () => {
-		const assignments = [{ partId: "part_u1", footprint: "Package_SO:SOIC-8" }];
-		const cmd = assignmentsToCommand(assignments);
-		assert.equal(cmd.type, "batch");
-		assert.deepEqual(cmd.commands, [
-			{
-				type: "setPartField",
-				partId: "part_u1",
-				field: "footprint",
-				value: "Package_SO:SOIC-8",
-			},
-		]);
+		expectBatch(
+			[{ partId: "part_u1", footprint: "Package_SO:SOIC-8" }],
+			[fpCmd("part_u1", "Package_SO:SOIC-8")],
+		);
 	});
 
 	test("empty assignments produce empty batch", () => {
-		const cmd = assignmentsToCommand({});
-		assert.deepEqual(cmd, { type: "batch", commands: [] });
+		expectBatch({}, []);
 	});
 });
 
@@ -149,17 +118,14 @@ describe("searchFootprints", () => {
 			{ libId: "Resistor_SMD:R_0805_2012Metric", name: "R_0805_2012Metric" },
 		];
 		let fetchedUrl = "";
-		const fakeFetch = async (url) => {
-			fetchedUrl = url;
-			return {
-				ok: true,
-				status: 200,
-				json: async () => ({ footprints: fakeResults }),
-			};
-		};
 		const items = await searchFootprints("R_0805", {
 			baseUrl: "http://test-server:5000",
-			fetchImpl: fakeFetch,
+			fetchImpl: mockFetch({
+				data: { footprints: fakeResults },
+				onCall: (url) => {
+					fetchedUrl = url;
+				},
+			}),
 		});
 		assert.equal(
 			fetchedUrl,
@@ -171,28 +137,27 @@ describe("searchFootprints", () => {
 
 	test("returns empty array immediately when query is blank", async () => {
 		let called = false;
-		const fakeFetch = async () => {
-			called = true;
-			return { ok: true, json: async () => ({ footprints: [] }) };
-		};
-		const items = await searchFootprints("   ", { fetchImpl: fakeFetch });
+		const items = await searchFootprints("   ", {
+			fetchImpl: () => {
+				called = true;
+			},
+		});
 		assert.equal(called, false);
 		assert.deepEqual(items, []);
 	});
 
 	test("rejects when endpoint returns error status", async () => {
-		const fakeFetch = async () => ({
-			ok: false,
-			status: 503,
-			json: async () => ({
-				error: "KiCad libraries are not installed on this server",
-			}),
-		});
 		await assert.rejects(
 			() =>
 				searchFootprints("SOIC-8", {
 					baseUrl: "http://test-server:5000",
-					fetchImpl: fakeFetch,
+					fetchImpl: mockFetch({
+						ok: false,
+						status: 503,
+						data: {
+							error: "KiCad libraries are not installed on this server",
+						},
+					}),
 				}),
 			/KiCad libraries are not installed/,
 		);
