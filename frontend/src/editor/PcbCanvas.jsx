@@ -3,6 +3,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useReducer,
 	useRef,
 	useState,
 	useSyncExternalStore,
@@ -21,6 +22,12 @@ import {
 	rectOutline,
 	roundedRectOutline,
 } from "./boardOutline.js";
+import {
+	isDiffPairName,
+	partnerNetName,
+	pathLength,
+	proposeDiffPair,
+} from "./diffPair.js";
 import {
 	get as getEditorStatus,
 	subscribe as subscribeEditorStatus,
@@ -48,6 +55,7 @@ import {
 	stepCopper,
 	toggleVisible,
 } from "./layers.js";
+import { meander } from "./lengthTune.js";
 import { markerGlyphs } from "./markerRender.js";
 import { netItemsAt } from "./netHighlight.js";
 import { buildPlacedPart } from "./partPlacement.js";
@@ -71,7 +79,12 @@ import {
 	togglePosture,
 } from "./trackPosture.js";
 import { useCanvasNav } from "./useCanvasNav.js";
-import { bboxOfPoints, fitToBounds, screenToWorld } from "./viewport.js";
+import {
+	bboxOfPoints,
+	fitToBounds,
+	formatCoord,
+	screenToWorld,
+} from "./viewport.js";
 import { addZone, pointInZone } from "./zoneModel.js";
 
 const CONTAINER_STYLE = Object.freeze({
@@ -327,6 +340,14 @@ function handleRoutingAction(key, ctx) {
 		ctx.armText?.();
 		return true;
 	}
+	if (key === "6") {
+		ctx.toggleDiffPair?.();
+		return true;
+	}
+	if (key === "7") {
+		ctx.toggleTuneLength?.();
+		return true;
+	}
 	const actions = {
 		w: ctx.cycleWidthPreset,
 		"/": ctx.toggleRouteMode,
@@ -406,12 +427,17 @@ function cancelHighlight(ctx) {
 // Escape: outline, graphics, armed footprint, route, or net highlight.
 function handleEscape(e, key, ctx) {
 	if (key !== "escape") return false;
-	const cancelled =
-		ctx.cancelOutline?.() ||
-		ctx.cancelGraphics?.() ||
-		ctx.disarmFootprint?.() ||
-		cancelRouting(ctx) ||
-		cancelHighlight(ctx);
+	const cancelFns = [
+		ctx.cancelOutline,
+		ctx.cancelGraphics,
+		ctx.disarmFootprint,
+		() => cancelRouting(ctx),
+		() => cancelHighlight(ctx),
+		ctx.cancelDiffPair,
+		ctx.cancelTuneLength,
+		ctx.cancelMeasure,
+	];
+	const cancelled = cancelFns.some((fn) => Boolean(fn?.()));
 	if (cancelled) {
 		e.preventDefault();
 		return true;
@@ -447,10 +473,20 @@ function handleBackquoteShortcut(e, ctx) {
 	return true;
 }
 
+function handleMeasureShortcut(e, ctx) {
+	if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "m") {
+		e.preventDefault();
+		ctx.toggleMeasure?.();
+		return true;
+	}
+	return false;
+}
+
 function handleShortcuts(e, ctx) {
 	if (isTextInput(e.target)) return;
 	const key = e.key.toLowerCase();
 	if (handleEscape(e, key, ctx)) return;
+	if (handleMeasureShortcut(e, ctx)) return;
 	if (handleBackquoteShortcut(e, ctx)) return;
 	if (handleHistoryShortcuts(e, key, ctx)) return;
 	if (handleLayerShortcuts(e, ctx)) return;
@@ -1411,13 +1447,36 @@ function PcbToolbar({
 	);
 }
 
-function PcbStatusBar({
-	isRouting,
-	widthPreset,
-	routeMode,
-	posture,
-	highlightNet,
-}) {
+function renderStatusBarMessage(opts) {
+	const { statusHint, measuringText, isDiffPair, highlightNet, isRouting } =
+		opts;
+	if (statusHint) {
+		return <strong style={{ color: "#f87171" }}>{statusHint}</strong>;
+	}
+	if (measuringText) {
+		return <strong style={{ color: "#38bdf8" }}>{measuringText}</strong>;
+	}
+	if (isDiffPair) {
+		return "Diff Pair: Click on diff pair pad, double-click to end";
+	}
+	if (highlightNet) {
+		return (
+			<>
+				Net:{" "}
+				<strong style={{ color: "#facc15" }}>
+					{highlightNet.netName || highlightNet.netId}
+				</strong>
+			</>
+		);
+	}
+	if (isRouting) {
+		return "Routing: Click to route (Shift to bypass DRC), V for via, Double-click to end";
+	}
+	return "Ready: Press X to route, V to toggle layer";
+}
+
+function PcbStatusBar(props) {
+	const { widthPreset, routeMode, posture } = props;
 	return (
 		<div style={STATUS_BAR_STYLE}>
 			<span>
@@ -1429,20 +1488,7 @@ function PcbStatusBar({
 				</strong>{" "}
 				[/, Ctrl+/]
 			</span>
-			<span>
-				{highlightNet ? (
-					<>
-						Net:{" "}
-						<strong style={{ color: "#facc15" }}>
-							{highlightNet.netName || highlightNet.netId}
-						</strong>
-					</>
-				) : isRouting ? (
-					"Routing: Click to route (Shift to bypass DRC), V for via, Double-click to end"
-				) : (
-					"Ready: Press X to route, V to toggle layer"
-				)}
-			</span>
+			<span>{renderStatusBarMessage(props)}</span>
 		</div>
 	);
 }
@@ -1674,6 +1720,173 @@ export function resolvePcbNetAtPoint(ctx) {
 	return net ? netItemsAt(ctx.ir, { netId: net.id }) : null;
 }
 // --- End PCB Net Highlight pure helpers ---
+
+// --- PCB DiffPair, Tune, Measure pure helpers ---
+export function calcMeasureReadout(start, end, units = "mm") {
+	const x0 = Array.isArray(start) ? start[0] : (start?.x ?? 0);
+	const y0 = Array.isArray(start) ? start[1] : (start?.y ?? 0);
+	const x1 = Array.isArray(end) ? end[0] : (end?.x ?? 0);
+	const y1 = Array.isArray(end) ? end[1] : (end?.y ?? 0);
+	const dx = x1 - x0;
+	const dy = y1 - y0;
+	const distance = Math.hypot(dx, dy);
+	let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+	if (Object.is(angle, -0)) angle = 0;
+	const u = units || "mm";
+	const distStr = `${formatCoord(distance, u)} ${u}`;
+	const dxStr = `${formatCoord(dx, u)} ${u}`;
+	const dyStr = `${formatCoord(dy, u)} ${u}`;
+	const angleStr = `${angle.toFixed(1)}°`;
+	const text = `Dist: ${distStr} | dx: ${dxStr} | dy: ${dyStr} | ∠ ${angleStr}`;
+	return {
+		distance,
+		dx,
+		dy,
+		angle,
+		distStr,
+		dxStr,
+		dyStr,
+		angleStr,
+		text,
+	};
+}
+
+export function calcLengthTuneDefaults(currentLength) {
+	const len = Number(currentLength) || 0;
+	const targetLengthMm = Math.round(len * 1.1 * 100) / 100;
+	return {
+		currentLength: len,
+		targetLengthMm,
+		amplitudeMm: 1.0,
+		spacingMm: 0.6,
+	};
+}
+
+export function resolveDiffPairDimensions(board) {
+	const setup = board?.setup ?? {};
+	const widthMm = Number(
+		setup.diffPairWidth ??
+			setup.diff_pair_width ??
+			setup.diffPair?.width ??
+			0.2,
+	);
+	const gapMm = Number(
+		setup.diffPairGap ?? setup.diff_pair_gap ?? setup.diffPair?.gap ?? 0.25,
+	);
+	return { widthMm, gapMm };
+}
+
+function findCandidatePinPos(pin, padPositions, pads) {
+	const fromPos =
+		padPositions?.[pin.partId]?.[pin.pin] ??
+		padPositions?.[pin.partId]?.[String(pin.pin)];
+	if (fromPos) return fromPos;
+	const match = pads?.find(
+		(p) => p.partId === pin.partId && String(p.number) === String(pin.pin),
+	);
+	return match?.center ?? null;
+}
+
+function selectClosestCandidate(candidates, startPos) {
+	const sx = startPos?.[0] ?? startPos?.x ?? 0;
+	const sy = startPos?.[1] ?? startPos?.y ?? 0;
+	let best = candidates[0];
+	let bestDist = Infinity;
+	for (const c of candidates) {
+		const cx = c.pos[0] ?? c.pos.x ?? 0;
+		const cy = c.pos[1] ?? c.pos.y ?? 0;
+		const d = Math.hypot(cx - sx, cy - sy);
+		if (d < bestDist) {
+			bestDist = d;
+			best = c;
+		}
+	}
+	return best;
+}
+
+export function findPartnerPad(startPad, partnerNetName, ctx = {}) {
+	if (!startPad || !partnerNetName) return null;
+	const { ir, pads, padPositions } = ctx;
+	const net = (ir?.nets ?? []).find(
+		(n) => n.name === partnerNetName || n.id === partnerNetName,
+	);
+	const pins = net?.pins ?? [];
+	const candidates = [];
+	for (const pin of pins) {
+		const pos = findCandidatePinPos(pin, padPositions, pads);
+		if (pos) {
+			candidates.push({
+				partId: pin.partId,
+				pinNum: String(pin.pin),
+				pos,
+				netId: net.id,
+				netName: net.name ?? net.id,
+			});
+		}
+	}
+	if (candidates.length === 0) return null;
+	const samePart = candidates.find((c) => c.partId === startPad.partId);
+	return samePart ?? selectClosestCandidate(candidates, startPad.pos);
+}
+
+export function replaceTrackWithPoints(board, trackIndex, points) {
+	const tracks = Array.isArray(board?.tracks) ? [...board.tracks] : [];
+	const orig = tracks[trackIndex];
+	if (!orig || !Array.isArray(points) || points.length < 2) return board;
+	const newSegments = [];
+	for (let i = 0; i < points.length - 1; i++) {
+		newSegments.push({
+			netId: orig.netId ?? "",
+			layer: orig.layer ?? "F.Cu",
+			start: points[i],
+			end: points[i + 1],
+			widthMm: orig.widthMm ?? 0.25,
+			points,
+		});
+	}
+	tracks.splice(trackIndex, 1, ...newSegments);
+	return { ...board, tracks };
+}
+
+function resolvePadNetName(ir, netNames, netId) {
+	const net = findNetInIr(ir, netId);
+	return net?.name || netNames?.[netId] || netId || "";
+}
+
+function findNearPadInfo(pt, ctx) {
+	const near = findNearPad(ctx.ir?.parts, ctx.padPositions, pt, 2.0);
+	if (!near) return null;
+	const netId = findPinNet(ctx.ir?.nets, near.partId, near.pinNum);
+	return {
+		partId: near.partId,
+		pinNum: String(near.pinNum),
+		pos: near.pos,
+		netId,
+		netName: resolvePadNetName(ctx.ir, ctx.netNames, netId),
+	};
+}
+
+function findHitPadInfo(pt, ctx) {
+	const coords = [pt.x ?? pt[0], pt.y ?? pt[1]];
+	for (const pad of ctx.pads ?? []) {
+		if (padHitTest([pad], coords) !== null) {
+			return {
+				partId: pad.partId,
+				pinNum: String(pad.number),
+				pos: pad.center,
+				netId: pad.netId,
+				netName: resolvePadNetName(ctx.ir, ctx.netNames, pad.netId),
+			};
+		}
+	}
+	return null;
+}
+
+export function findPadInfoAtPoint(pt, ctx = {}) {
+	if (!pt) return null;
+	return findNearPadInfo(pt, ctx) || findHitPadInfo(pt, ctx);
+}
+// --- End PCB DiffPair, Tune, Measure pure helpers ---
 
 // Start snaps to a track end, pad or part centre; a later click snaps to a pad centre.
 function resolveRouteTarget(raw, hasPoints, snapCtx) {
@@ -2412,6 +2625,12 @@ function buildShortcuts(ctx) {
 		cancelOutline: ctx.outlineDrawing?.cancelOutline,
 		cancelGraphics: ctx.graphicsDrawing?.cancelGraphics,
 		disarmFootprint: ctx.armedPlacement?.disarm,
+		toggleDiffPair: ctx.extraTools?.diffPair?.toggle,
+		cancelDiffPair: ctx.extraTools?.diffPair?.cancel,
+		toggleTuneLength: ctx.extraTools?.tuneLength?.toggle,
+		cancelTuneLength: ctx.extraTools?.tuneLength?.cancel,
+		toggleMeasure: ctx.extraTools?.measure?.toggle,
+		cancelMeasure: ctx.extraTools?.measure?.cancel,
 	};
 }
 
@@ -3448,15 +3667,41 @@ function disarmTools({ route, armedPlacement, graphicsDrawing, highlight }) {
 	highlight?.setHighlightMode(false);
 }
 
+function cancelExtraTools(tools) {
+	tools.extraTools?.diffPair?.cancel();
+	tools.extraTools?.tuneLength?.cancel();
+	tools.extraTools?.measure?.cancel();
+}
+
 function handleSelectTool(tools) {
 	disarmTools(tools);
+	cancelExtraTools(tools);
 }
 
 function handleRouteTrack(tools) {
 	tools.armedPlacement.disarm();
 	tools.graphicsDrawing.disarm();
 	tools.highlight?.setHighlightMode(false);
+	cancelExtraTools(tools);
 	if (!tools.route.isRouting) tools.route.toggleRoute();
+}
+
+function handleRouteDiffPair(tools) {
+	disarmTools(tools);
+	cancelExtraTools(tools);
+	tools.extraTools?.diffPair?.arm();
+}
+
+function handleTuneLength(tools) {
+	disarmTools(tools);
+	cancelExtraTools(tools);
+	tools.extraTools?.tuneLength?.arm();
+}
+
+function handleMeasure(tools) {
+	disarmTools(tools);
+	cancelExtraTools(tools);
+	tools.extraTools?.measure?.arm();
 }
 
 function handlePlaceFootprint(item, tools) {
@@ -3483,10 +3728,20 @@ function createToolBusHandlers({
 	armedPlacement,
 	graphicsDrawing,
 	highlight,
+	extraTools,
 }) {
-	const tools = { route, armedPlacement, graphicsDrawing, highlight };
+	const tools = {
+		route,
+		armedPlacement,
+		graphicsDrawing,
+		highlight,
+		extraTools,
+	};
 	const armGfx = (tool) => {
 		if (route.isRouting) route.cancelRoute();
+		extraTools?.diffPair?.cancel();
+		extraTools?.tuneLength?.cancel();
+		extraTools?.measure?.cancel();
 		armedPlacement.disarm();
 		graphicsDrawing.arm(tool);
 		highlight?.setHighlightMode(false);
@@ -3505,6 +3760,9 @@ function createToolBusHandlers({
 		text: () => armGfx("placeText"),
 		addZone: () => armGfx("addZone"),
 		routeTrack: () => handleRouteTrack(tools),
+		routeDiffPair: () => handleRouteDiffPair(tools),
+		tuneLength: () => handleTuneLength(tools),
+		measure: () => handleMeasure(tools),
 		addVia: onVia,
 		placeVia: onVia,
 		setLayer: (item) => handleSetLayer(item, layers),
@@ -3516,10 +3774,10 @@ function reportActiveTool(
 	isRouting,
 	armedFootprint,
 	activeGraphicsTool,
-	highlightMode,
+	activeToolOverride,
 ) {
-	if (highlightMode) {
-		emitActiveTool({ tab: "pcb", tool: "highlightNet", item: null });
+	if (activeToolOverride) {
+		emitActiveTool({ tab: "pcb", tool: activeToolOverride, item: null });
 		return;
 	}
 	if (activeGraphicsTool) {
@@ -3550,6 +3808,7 @@ function useToolBus({
 	graphicsDrawing,
 	containerRef,
 	highlight,
+	extraTools,
 }) {
 	const handlersRef = useRef({});
 	handlersRef.current = createToolBusHandlers({
@@ -3558,20 +3817,28 @@ function useToolBus({
 		armedPlacement,
 		graphicsDrawing,
 		highlight,
+		extraTools,
 	});
+
+	const activeExtra =
+		(extraTools?.diffPair?.active && "routeDiffPair") ||
+		(extraTools?.tuneLength?.active && "tuneLength") ||
+		(extraTools?.measure?.measure?.active && "measure") ||
+		null;
 
 	useEffect(() => {
 		reportActiveTool(
 			route.isRouting,
 			armedPlacement.armed,
 			graphicsDrawing.activeTool,
-			highlight?.highlightMode,
+			highlight?.highlightMode ? "highlightNet" : activeExtra,
 		);
 	}, [
 		route.isRouting,
 		armedPlacement.armed,
 		graphicsDrawing.activeTool,
 		highlight?.highlightMode,
+		activeExtra,
 	]);
 
 	useEffect(() => {
@@ -3583,26 +3850,59 @@ function useToolBus({
 	}, [containerRef]);
 }
 
-function useSceneClick(routeClick, armedPlacement, graphicsDrawing) {
+function handleExtraSceneClick(e, ctx) {
+	if (!ctx?.extraTools) return false;
+	const { extraTools, board, svgRef, view } = ctx;
+	const pt = screenToBoardCoords(e, svgRef?.current, view);
+	if (extraTools.measure?.measure?.active) {
+		extraTools.measure.onCanvasClick(pt);
+		return true;
+	}
+	if (extraTools.diffPair?.active && extraTools.diffPair.onCanvasClick(pt)) {
+		return true;
+	}
+	if (extraTools.tuneLength?.active) {
+		const hit = hitTest({ parts: [] }, board, pt);
+		if (hit?.kind === "track") {
+			extraTools.tuneLength.onTrackClick(hit.index, pt);
+			return true;
+		}
+	}
+	return false;
+}
+
+function handleExtraPointerMove(e, ctx) {
+	const { extraTools, svgRef, view } = ctx ?? {};
+	if (!extraTools?.diffPair?.active && !extraTools?.measure?.measure?.active) {
+		return;
+	}
+	const pt = screenToBoardCoords(e, svgRef?.current, view);
+	if (extraTools.diffPair?.active) extraTools.diffPair.onPointerMove(pt);
+	if (extraTools.measure?.measure?.active) extraTools.measure.onPointerMove(pt);
+}
+
+function useSceneClick(routeClick, armedPlacement, graphicsDrawing, sceneCtx) {
 	return useCallback(
 		(e) => {
 			if (graphicsDrawing?.onCanvasClick(e)) return;
 			if (armedPlacement?.onCanvasClick(e)) return;
+			if (handleExtraSceneClick(e, sceneCtx)) return;
 			routeClick(e);
 		},
-		[routeClick, armedPlacement, graphicsDrawing],
+		[routeClick, armedPlacement, graphicsDrawing, sceneCtx],
 	);
 }
 
-function useScenePointer(ptrMove, armedPlacement, graphicsDrawing, onHover) {
+function useScenePointer(ptrMove, armedPlacement, graphicsDrawing, sceneCtx) {
 	return useCallback(
 		(e) => {
 			ptrMove(e);
 			armedPlacement?.onPointerMove(e);
 			graphicsDrawing?.onPointerMove(e);
-			onHover?.(e);
+			sceneCtx?.onHover?.(e);
+			handleExtraPointerMove(e, sceneCtx);
 		},
-		[ptrMove, armedPlacement, graphicsDrawing, onHover],
+		[ptrMove, armedPlacement, graphicsDrawing, sceneCtx],
 	);
 }
 
@@ -3641,6 +3941,599 @@ function useSvgPointerHandlers({
 	return { onPointerDown, onPointerMove, onPointerUp };
 }
 
+function MeasureBadge({ midX, midY, text }) {
+	return (
+		<>
+			<rect
+				x={midX - 14}
+				y={midY - 3.5}
+				width={28}
+				height={4}
+				rx={0.8}
+				fill="rgba(15, 23, 42, 0.88)"
+				stroke="#38bdf8"
+				strokeWidth={0.15}
+			/>
+			<text
+				x={midX}
+				y={midY - 1}
+				fill="#f0f9ff"
+				fontSize={1.3}
+				textAnchor="middle"
+				fontFamily="monospace"
+			>
+				{text}
+			</text>
+		</>
+	);
+}
+
+function MeasurePreview({ measure, readout }) {
+	if (!measure?.start || !measure?.end || !readout) return null;
+	const { start, end } = measure;
+	const x1 = Array.isArray(start) ? start[0] : start.x;
+	const y1 = Array.isArray(start) ? start[1] : start.y;
+	const x2 = Array.isArray(end) ? end[0] : end.x;
+	const y2 = Array.isArray(end) ? end[1] : end.y;
+	return (
+		<g className="pcb-measure-preview" style={{ pointerEvents: "none" }}>
+			<line
+				x1={x1}
+				y1={y1}
+				x2={x2}
+				y2={y2}
+				stroke="#38bdf8"
+				strokeWidth={0.25}
+				strokeDasharray="0.8,0.8"
+			/>
+			<circle cx={x1} cy={y1} r={0.3} fill="#38bdf8" />
+			<circle cx={x2} cy={y2} r={0.3} fill="#38bdf8" />
+			<MeasureBadge
+				midX={(x1 + x2) / 2}
+				midY={(y1 + y2) / 2}
+				text={readout.text}
+			/>
+		</g>
+	);
+}
+
+function DiffPairPreview({ proposedPair, activeLayer, widthMm = 0.2 }) {
+	if (!proposedPair?.p || !proposedPair?.n) return null;
+	const color = getLayerColor(PCB_THEME, activeLayer);
+	const ptsToStr = (pts) => pts.map((p) => `${p[0]},${p[1]}`).join(" ");
+	return (
+		<g className="pcb-diffpair-preview" style={{ pointerEvents: "none" }}>
+			<polyline
+				points={ptsToStr(proposedPair.p)}
+				stroke={color}
+				strokeWidth={widthMm}
+				fill="none"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+			/>
+			<polyline
+				points={ptsToStr(proposedPair.n)}
+				stroke={color}
+				strokeWidth={widthMm}
+				fill="none"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+			/>
+		</g>
+	);
+}
+
+function TuneField({ label, value, onChange }) {
+	return (
+		<label
+			style={{
+				display: "flex",
+				justifyContent: "space-between",
+				gap: "8px",
+			}}
+		>
+			{label}
+			<input
+				type="number"
+				step="0.1"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				style={{
+					width: "70px",
+					background: "#1f293d",
+					border: "1px solid #334155",
+					color: "#f1f5f9",
+					borderRadius: "3px",
+					padding: "1px 4px",
+				}}
+			/>
+		</label>
+	);
+}
+
+const TUNE_POPOVER_STYLE = {
+	position: "absolute",
+	bottom: "40px",
+	left: "12px",
+	background: "#161b2b",
+	border: "1px solid #334155",
+	borderRadius: "6px",
+	padding: "10px 14px",
+	color: "#f1f5f9",
+	fontSize: "12px",
+	zIndex: 25,
+	display: "flex",
+	flexDirection: "column",
+	gap: "6px",
+	boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
+};
+
+function LengthTuneHeader({ onClose }) {
+	return (
+		<div
+			style={{
+				display: "flex",
+				justifyContent: "space-between",
+				alignItems: "center",
+			}}
+		>
+			<strong>Tune Track Length</strong>
+			<button
+				type="button"
+				onClick={onClose}
+				style={{
+					background: "transparent",
+					border: "none",
+					color: "#94a3b8",
+					cursor: "pointer",
+					fontSize: "14px",
+				}}
+			>
+				×
+			</button>
+		</div>
+	);
+}
+
+const TUNE_APPLY_STYLE = {
+	background: "#3b82f6",
+	border: "none",
+	color: "#fff",
+	padding: "4px 10px",
+	borderRadius: "4px",
+	cursor: "pointer",
+	fontWeight: "bold",
+};
+
+function LengthTuneFooter({ statusText, onApply }) {
+	const statusColor = statusText?.includes("not") ? "#f87171" : "#4ade80";
+	return (
+		<div
+			style={{
+				display: "flex",
+				justifyContent: "space-between",
+				alignItems: "center",
+				marginTop: "4px",
+			}}
+		>
+			<button type="button" onClick={onApply} style={TUNE_APPLY_STYLE}>
+				Apply
+			</button>
+			{statusText && (
+				<span style={{ color: statusColor, fontWeight: "500" }}>
+					{statusText}
+				</span>
+			)}
+		</div>
+	);
+}
+
+function LengthTuneCard({ popover, onApply, onClose }) {
+	const [target, setTarget] = useState(popover.targetLengthMm);
+	const [amp, setAmp] = useState(popover.amplitudeMm);
+	const [spc, setSpc] = useState(popover.spacingMm);
+	return (
+		<div style={TUNE_POPOVER_STYLE}>
+			<LengthTuneHeader onClose={onClose} />
+			<div>Current length: {popover.currentLength.toFixed(2)} mm</div>
+			<TuneField label="Target (mm):" value={target} onChange={setTarget} />
+			<TuneField label="Amplitude (mm):" value={amp} onChange={setAmp} />
+			<TuneField label="Spacing (mm):" value={spc} onChange={setSpc} />
+			<LengthTuneFooter
+				statusText={popover.statusText}
+				onApply={() =>
+					onApply({
+						targetLengthMm: target,
+						amplitudeMm: amp,
+						spacingMm: spc,
+					})
+				}
+			/>
+		</div>
+	);
+}
+
+function LengthTunePopover({ popover, onApply, onClose }) {
+	if (!popover) return null;
+	return (
+		<LengthTuneCard popover={popover} onApply={onApply} onClose={onClose} />
+	);
+}
+
+const MEASURE_TRANSITIONS = {
+	arm: () => ({ active: true, start: null, end: null, frozen: false }),
+	cancel: () => ({ active: false, start: null, end: null, frozen: false }),
+	toggle: (m) => ({ active: !m.active, start: null, end: null, frozen: false }),
+	click: (m, { pt }) => {
+		if (!m.active) return m;
+		const startNew = !m.start || m.frozen;
+		return startNew
+			? { active: true, start: pt, end: pt, frozen: false }
+			: { ...m, end: pt, frozen: true };
+	},
+	move: (m, { pt }) => {
+		const tracking = m.active && m.start && !m.frozen;
+		return tracking ? { ...m, end: pt } : m;
+	},
+};
+
+function measureReducer(m, action) {
+	const handler = MEASURE_TRANSITIONS[action.type];
+	return handler ? handler(m, action) : m;
+}
+
+function useMeasureTool(statusUnits) {
+	const [measure, dispatch] = useReducer(measureReducer, {
+		active: false,
+		start: null,
+		end: null,
+		frozen: false,
+	});
+	const arm = useCallback(() => dispatch({ type: "arm" }), []);
+	const cancel = useCallback(() => dispatch({ type: "cancel" }), []);
+	const toggle = useCallback(() => dispatch({ type: "toggle" }), []);
+	const onCanvasClick = useCallback(
+		(pt) => dispatch({ type: "click", pt }),
+		[],
+	);
+	const onPointerMove = useCallback((pt) => dispatch({ type: "move", pt }), []);
+	const readout = useMemo(() => {
+		if (!measure.start || !measure.end) return null;
+		return calcMeasureReadout(measure.start, measure.end, statusUnits);
+	}, [measure.start, measure.end, statusUnits]);
+	return {
+		measure,
+		readout,
+		arm,
+		cancel,
+		toggle,
+		onCanvasClick,
+		onPointerMove,
+	};
+}
+
+function buildTrackPopoverState(track, trackIndex, pt) {
+	if (!track) return null;
+	const pts =
+		Array.isArray(track.points) && track.points.length >= 2
+			? track.points
+			: [track.start, track.end];
+	const len = pathLength(pts);
+	return {
+		trackIndex,
+		points: pts,
+		currentLength: len,
+		...calcLengthTuneDefaults(len),
+		pos: pt,
+		statusText: "",
+	};
+}
+
+function applyMeanderToTrack({ popover, opts, board, pushBoard }) {
+	const res = meander({
+		points: popover.points,
+		targetLengthMm: Number(opts.targetLengthMm),
+		amplitudeMm: Number(opts.amplitudeMm),
+		spacingMm: Number(opts.spacingMm),
+	});
+	pushBoard(replaceTrackWithPoints(board, popover.trackIndex, res.points));
+	return {
+		...popover,
+		points: res.points,
+		currentLength: res.lengthMm,
+		statusText: res.reached ? "reached" : "not reached",
+	};
+}
+
+function useTuneLengthTool({ board, pushBoard }) {
+	const [active, setActive] = useState(false);
+	const [popover, setPopover] = useState(null);
+	const closePopover = useCallback(() => setPopover(null), []);
+	const setArmed = useCallback((val) => {
+		setActive(val);
+		setPopover(null);
+	}, []);
+	const arm = useCallback(() => setArmed(true), [setArmed]);
+	const cancel = useCallback(() => setArmed(false), [setArmed]);
+	const toggle = useCallback(() => {
+		setActive((a) => !a);
+		setPopover(null);
+	}, []);
+
+	const onTrackClick = useCallback(
+		(idx, pt) => {
+			const next = buildTrackPopoverState(board?.tracks?.[idx], idx, pt);
+			if (next) setPopover(next);
+		},
+		[board],
+	);
+
+	const apply = useCallback(
+		(opts) => {
+			if (!popover) return;
+			setPopover((p) =>
+				p ? applyMeanderToTrack({ popover: p, opts, board, pushBoard }) : null,
+			);
+		},
+		[popover, board, pushBoard],
+	);
+
+	return {
+		active,
+		popover,
+		arm,
+		cancel,
+		toggle,
+		closePopover,
+		onTrackClick,
+		apply,
+	};
+}
+
+function resolveDiffPairNetAssignment(session, pStart, nStart) {
+	const sx = session.startPad?.pos?.[0] ?? 0;
+	const sy = session.startPad?.pos?.[1] ?? 0;
+	const pDist = Math.hypot(pStart[0] - sx, pStart[1] - sy);
+	const nDist = Math.hypot(nStart[0] - sx, nStart[1] - sy);
+	return pDist <= nDist
+		? { pNet: session.startNet, nNet: session.partnerNet }
+		: { pNet: session.partnerNet, nNet: session.startNet };
+}
+
+function commitDiffPairTracks(session, board, activeLayer, pushBoard) {
+	if (session.centerline.length < 1) return false;
+	const dims = resolveDiffPairDimensions(board);
+	const { p, n } = proposeDiffPair({
+		centerline: session.centerline,
+		widthMm: dims.widthMm,
+		gapMm: dims.gapMm,
+	});
+	if (p.length < 2 || n.length < 2) return false;
+	const { pNet, nNet } = resolveDiffPairNetAssignment(session, p[0], n[0]);
+	const b1 = addTrack(board, {
+		netId: pNet,
+		layer: activeLayer,
+		points: p,
+		widthMm: dims.widthMm,
+	});
+	const b2 = addTrack(b1, {
+		netId: nNet,
+		layer: activeLayer,
+		points: n,
+		widthMm: dims.widthMm,
+	});
+	pushBoard(b2);
+	return true;
+}
+
+function calcProposedDiffPair(centerline, cursorPos, posture, board) {
+	if (centerline.length === 0 || !cursorPos) return null;
+	const last = centerline[centerline.length - 1];
+	const legs = legPoints(last, cursorPos, "45", posture);
+	const dims = resolveDiffPairDimensions(board);
+	return proposeDiffPair({
+		centerline: [...centerline, ...legs],
+		widthMm: dims.widthMm,
+		gapMm: dims.gapMm,
+	});
+}
+
+function startDiffPairRoute(pt, ctx, setSession, setStatusHint) {
+	const padInfo = findPadInfoAtPoint(pt, ctx);
+	if (!padInfo || !isDiffPairName(padInfo.netName)) {
+		setStatusHint("Not a differential pair net");
+		return false;
+	}
+	setStatusHint("");
+	const partnerName = partnerNetName(padInfo.netName);
+	const partnerPad = findPartnerPad(padInfo, partnerName, ctx);
+	const p1 = padInfo.pos;
+	const p2 = partnerPad?.pos ?? padInfo.pos;
+	const centerStart = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+	setSession({
+		startPad: padInfo,
+		partnerPad,
+		startNet: padInfo.netId || padInfo.netName,
+		partnerNet: partnerPad?.netId || partnerName,
+		centerline: [centerStart],
+		cursorPos: pt,
+	});
+	return true;
+}
+
+const EMPTY_DP_SESSION = Object.freeze({
+	startPad: null,
+	partnerPad: null,
+	startNet: "",
+	partnerNet: "",
+	centerline: [],
+	cursorPos: null,
+});
+
+function extendDiffPairCenterline(session, pt, posture) {
+	const last = session.centerline[session.centerline.length - 1];
+	return {
+		...session,
+		centerline: [...session.centerline, ...legPoints(last, pt, "45", posture)],
+	};
+}
+
+function handleDiffPairCanvasClick({
+	active,
+	session,
+	setSession,
+	setStatusHint,
+	props,
+	pt,
+}) {
+	if (!active) return false;
+	if (session.centerline.length === 0) {
+		const { ir, padPositions, pads, netNames } = props;
+		return startDiffPairRoute(
+			pt,
+			{ ir, padPositions, pads, netNames },
+			setSession,
+			setStatusHint,
+		);
+	}
+	setSession((s) => extendDiffPairCenterline(s, pt, props.posture));
+	return true;
+}
+
+function handleDiffPairDoubleClick({
+	active,
+	session,
+	setSession,
+	board,
+	activeLayer,
+	pushBoard,
+	e,
+}) {
+	if (!active || session.centerline.length < 1) return false;
+	e?.preventDefault?.();
+	const committed = commitDiffPairTracks(
+		session,
+		board,
+		activeLayer,
+		pushBoard,
+	);
+	if (committed) setSession(EMPTY_DP_SESSION);
+	return committed;
+}
+
+function useDiffPairLifecycle(setStatusHint) {
+	const [active, setActive] = useState(false);
+	const [session, setSession] = useState(EMPTY_DP_SESSION);
+	const arm = useCallback(() => {
+		setActive(true);
+		setSession(EMPTY_DP_SESSION);
+	}, []);
+	const cancel = useCallback(() => {
+		setActive(false);
+		setSession(EMPTY_DP_SESSION);
+		setStatusHint("");
+	}, [setStatusHint]);
+	const toggle = useCallback(() => {
+		setActive((a) => !a);
+		setSession(EMPTY_DP_SESSION);
+	}, []);
+	return { active, session, setSession, arm, cancel, toggle };
+}
+
+function useDiffPairTool(props) {
+	const { board, activeLayer, posture, pushBoard, setStatusHint } = props;
+	const { active, session, setSession, arm, cancel, toggle } =
+		useDiffPairLifecycle(setStatusHint);
+
+	const onCanvasClick = useCallback(
+		(pt) =>
+			handleDiffPairCanvasClick({
+				active,
+				session,
+				setSession,
+				setStatusHint,
+				props,
+				pt,
+			}),
+		[active, session, setSession, props, setStatusHint],
+	);
+
+	const onDoubleClick = useCallback(
+		(e) =>
+			handleDiffPairDoubleClick({
+				active,
+				session,
+				setSession,
+				board,
+				activeLayer,
+				pushBoard,
+				e,
+			}),
+		[active, session, setSession, board, activeLayer, pushBoard],
+	);
+
+	const onPointerMove = useCallback(
+		(pt) => {
+			if (active && session.centerline.length > 0) {
+				setSession((s) => ({ ...s, cursorPos: pt }));
+			}
+		},
+		[active, session.centerline.length, setSession],
+	);
+
+	const proposedPair = useMemo(
+		() =>
+			calcProposedDiffPair(
+				session.centerline,
+				session.cursorPos,
+				posture,
+				board,
+			),
+		[session.centerline, session.cursorPos, posture, board],
+	);
+
+	return {
+		active,
+		isRouting: session.centerline.length > 0,
+		proposedPair,
+		arm,
+		cancel,
+		toggle,
+		onCanvasClick,
+		onDoubleClick,
+		onPointerMove,
+	};
+}
+
+function useExtraPcbTools(options) {
+	const {
+		board,
+		pushBoard,
+		ir,
+		padPositions,
+		pads,
+		netNames,
+		activeLayer,
+		posture,
+		statusUnits,
+		setStatusHint,
+	} = options;
+	const measure = useMeasureTool(statusUnits);
+	const tuneLength = useTuneLengthTool({ board, pushBoard });
+	const diffPair = useDiffPairTool({
+		board,
+		ir,
+		padPositions,
+		pads,
+		netNames,
+		activeLayer,
+		posture,
+		pushBoard,
+		setStatusHint,
+	});
+	return { measure, tuneLength, diffPair };
+}
+
 function PcbSvgOverlays({
 	markers,
 	zoom,
@@ -3648,6 +4541,7 @@ function PcbSvgOverlays({
 	graphicsDrawing,
 	armedPlacement,
 	activeLayer,
+	extraTools,
 }) {
 	return (
 		<>
@@ -3667,6 +4561,14 @@ function PcbSvgOverlays({
 				item={armedPlacement?.armed}
 				cursor={armedPlacement?.cursor}
 				activeLayer={activeLayer}
+			/>
+			<DiffPairPreview
+				proposedPair={extraTools?.diffPair?.proposedPair}
+				activeLayer={activeLayer}
+			/>
+			<MeasurePreview
+				measure={extraTools?.measure?.measure}
+				readout={extraTools?.measure?.readout}
 			/>
 		</>
 	);
@@ -3928,6 +4830,8 @@ function useSceneEvents({
 	route,
 	armedPlacement,
 	graphicsDrawing,
+	extraTools,
+	board,
 	svgRef,
 	view,
 	ptr,
@@ -3942,16 +4846,18 @@ function useSceneEvents({
 		ptr.onPointerMove,
 		armedPlacement,
 		graphicsDrawing,
-		onHover,
+		{ onHover, extraTools, svgRef, view },
 	);
 	const onClick = useSceneClick(
 		route.onCanvasClick,
 		armedPlacement,
 		graphicsDrawing,
+		{ extraTools, board, svgRef, view },
 	);
 	const onDoubleClick = useSceneDoubleClick(
 		graphicsDrawing,
 		route.onCanvasDoubleClick,
+		extraTools?.diffPair?.onDoubleClick,
 	);
 	return {
 		cursorPoint,
@@ -3974,6 +4880,7 @@ function useSvgSceneState(props) {
 		armedPlacement,
 		graphicsDrawing,
 		graphicDrag,
+		extraTools,
 	} = props;
 	const order = useMemo(() => drawOrder(layerState), [layerState]);
 	const showVias =
@@ -3989,6 +4896,8 @@ function useSvgSceneState(props) {
 		route,
 		armedPlacement,
 		graphicsDrawing,
+		extraTools,
+		board: sceneData.board,
 		svgRef,
 		view,
 		ptr,
@@ -4017,6 +4926,7 @@ function useSceneContentProps(props, s) {
 			graphicsDrawing={props.graphicsDrawing}
 			armedPlacement={props.armedPlacement}
 			activeLayer={props.layerState.active}
+			extraTools={props.extraTools}
 		/>
 	);
 	return {
@@ -4082,6 +4992,7 @@ function useCanvasGraphicsTools({
 	containerRef,
 	pads,
 	highlight,
+	extraTools,
 }) {
 	const graphicsDrawing = useGraphicsDrawing({
 		board,
@@ -4109,6 +5020,7 @@ function useCanvasGraphicsTools({
 		graphicsDrawing,
 		containerRef,
 		highlight,
+		extraTools,
 	});
 	return { graphicsDrawing, graphicDrag };
 }
@@ -4179,6 +5091,23 @@ function usePcbCanvasState({
 		svgRef,
 		view,
 	});
+	const [statusHint, setStatusHint] = useState("");
+	const statusUnits = useSyncExternalStore(
+		subscribeEditorStatus,
+		() => getEditorStatus()?.units ?? "mm",
+	);
+	const extraTools = useExtraPcbTools({
+		board,
+		pushBoard: history.pushBoard,
+		ir,
+		padPositions,
+		pads,
+		netNames,
+		activeLayer: layers.layerState.active,
+		posture: route.posture,
+		statusUnits,
+		setStatusHint,
+	});
 	const { graphicsDrawing, graphicDrag } = useCanvasGraphicsTools({
 		board,
 		history,
@@ -4190,6 +5119,7 @@ function usePcbCanvasState({
 		containerRef,
 		pads,
 		highlight,
+		extraTools,
 	});
 	const rnLines = useMemo(
 		() =>
@@ -4227,6 +5157,7 @@ function usePcbCanvasState({
 		pads,
 		padPositions,
 		cursorWorldRef,
+		extraTools,
 	});
 	const sceneData = buildSceneData({
 		editor,
@@ -4257,6 +5188,8 @@ function usePcbCanvasState({
 		gridPitch,
 		highlight,
 		cursorWorldRef,
+		statusHint,
+		extraTools,
 	};
 }
 
@@ -4325,6 +5258,7 @@ export default function PcbCanvas({
 				graphicsDrawing={s.graphicsDrawing}
 				graphicDrag={s.graphicDrag}
 				gridPitch={s.gridPitch}
+				extraTools={s.extraTools}
 			/>
 			<LayerListOverlay
 				layerState={s.layers.layerState}
@@ -4338,6 +5272,14 @@ export default function PcbCanvas({
 				routeMode={s.route.routeMode}
 				posture={s.route.posture}
 				highlightNet={s.highlight.highlightNet}
+				statusHint={s.statusHint}
+				isDiffPair={s.extraTools.diffPair.active}
+				measuringText={s.extraTools.measure.readout?.text}
+			/>
+			<LengthTunePopover
+				popover={s.extraTools.tuneLength.popover}
+				onApply={s.extraTools.tuneLength.apply}
+				onClose={s.extraTools.tuneLength.closePopover}
 			/>
 			<TextGraphicModal
 				open={Boolean(
