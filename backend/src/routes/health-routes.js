@@ -11,11 +11,25 @@ let cachedCapabilities = null;
 let cacheExpiresAt = 0;
 let pendingCapabilitiesPromise = null;
 
-async function checkSimulator() {
+let simEngine = null;
+
+export function getSimEngine() {
+	return simEngine;
+}
+
+export function setSimEngine(engine) {
+	simEngine = engine;
+}
+
+export async function checkSimulator(engine = null) {
 	try {
-		const engine = createSimEngine();
-		const available = Boolean(await engine.available());
-		return { available, simulatorKind: engine.kind() };
+		if (engine) {
+			simEngine = engine;
+		} else {
+			simEngine ??= createSimEngine();
+		}
+		const available = Boolean(await simEngine.available());
+		return { available, simulatorKind: simEngine.kind() };
 	} catch {
 		// Suppress failure and report simulator unavailable
 		return { available: false, simulatorKind: "none" };

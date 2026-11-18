@@ -59,31 +59,47 @@ export function findNgspiceLibrary({
 	return null;
 }
 
+const PROTO_CACHE = new WeakMap();
+
+function getOrCreatePrototypes(koffiImpl) {
+	let protos = PROTO_CACHE.get(koffiImpl);
+	if (!protos) {
+		protos = {
+			sc: koffiImpl.proto("int SendChar(char*, int, void*)"),
+			ss: koffiImpl.proto("int SendStat(char*, int, void*)"),
+			ce: koffiImpl.proto("int ControlledExit(int, bool, bool, int, void*)"),
+			sd: koffiImpl.proto("int SendData(void*, int, int, void*)"),
+			si: koffiImpl.proto("int SendInitData(void*, int, void*)"),
+			bg: koffiImpl.proto("int BGThreadRunning(bool, int, void*)"),
+		};
+		PROTO_CACHE.set(koffiImpl, protos);
+	}
+	return protos;
+}
+
 function createRegisteredCallbacks(koffiImpl, raw) {
 	if (
-		typeof koffiImpl.proto !== "function" ||
-		typeof koffiImpl.register !== "function"
+		typeof koffiImpl?.proto !== "function" ||
+		typeof koffiImpl?.register !== "function"
 	) {
 		return raw;
 	}
-	const sc = koffiImpl.proto("int SendChar(char*, int, void*)");
-	const ss = koffiImpl.proto("int SendStat(char*, int, void*)");
-	const ce = koffiImpl.proto("int ControlledExit(int, bool, bool, int, void*)");
-	const sd = koffiImpl.proto("int SendData(void*, int, int, void*)");
-	const si = koffiImpl.proto("int SendInitData(void*, int, void*)");
-	const bg = koffiImpl.proto("int BGThreadRunning(bool, int, void*)");
+	const protos = getOrCreatePrototypes(koffiImpl);
 	return {
-		sendChar: koffiImpl.register(raw.sendChar, koffiImpl.pointer(sc)),
-		sendStat: koffiImpl.register(raw.sendStat, koffiImpl.pointer(ss)),
+		sendChar: koffiImpl.register(raw.sendChar, koffiImpl.pointer(protos.sc)),
+		sendStat: koffiImpl.register(raw.sendStat, koffiImpl.pointer(protos.ss)),
 		controlledExit: koffiImpl.register(
 			raw.controlledExit,
-			koffiImpl.pointer(ce),
+			koffiImpl.pointer(protos.ce),
 		),
-		sendData: koffiImpl.register(raw.sendData, koffiImpl.pointer(sd)),
-		sendInitData: koffiImpl.register(raw.sendInitData, koffiImpl.pointer(si)),
+		sendData: koffiImpl.register(raw.sendData, koffiImpl.pointer(protos.sd)),
+		sendInitData: koffiImpl.register(
+			raw.sendInitData,
+			koffiImpl.pointer(protos.si),
+		),
 		bgThreadRunning: koffiImpl.register(
 			raw.bgThreadRunning,
-			koffiImpl.pointer(bg),
+			koffiImpl.pointer(protos.bg),
 		),
 	};
 }
