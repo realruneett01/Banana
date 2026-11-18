@@ -6,36 +6,37 @@ import {
 	parseSiValue,
 } from "../../backend/src/engine/spice/ir-to-spice.js";
 
-const makePart = (ref, value, overrides = {}) => ({
-	id: newId("part"),
-	ref,
-	value,
-	symbol: overrides.symbol ?? `Device:${ref.replace(/\d+$/, "")}`,
-	footprint: overrides.footprint ?? "Resistor_SMD:R_0603_1608Metric",
-	props: overrides.props ?? {},
-	...overrides,
-});
+function buildTestPart(ref, value, overrides = {}) {
+	const symbol = overrides.symbol ?? `Device:${ref.replace(/\d+$/, "")}`;
+	const footprint = overrides.footprint ?? "Resistor_SMD:R_0603_1608Metric";
+	return {
+		id: newId("part"),
+		ref,
+		value,
+		symbol,
+		footprint,
+		props: overrides.props ?? {},
+		...overrides,
+	};
+}
 
-const makePin = (part, pin) => ({ partId: part.id, pin });
-const connect = (name, ...pins) => ({ id: newId("net"), name, pins });
+function buildNet(name, ...pins) {
+	return { id: newId("net"), name, pins };
+}
 
-const makeIR = (parts, nets, name = "TestCircuit") => ({
-	schemaVersion: 1,
-	name,
-	parts,
-	nets,
-	constraints: [],
-});
+function buildCircuit(parts, nets, name = "TestCircuit") {
+	return { schemaVersion: 1, name, parts, nets, constraints: [] };
+}
 
-function makeTwoPinIR(
+function buildTwoPinCircuit(
 	part,
-	net1Name = "in",
-	net2Name = "GND",
+	inNet = "in",
+	outNet = "GND",
 	title = "TestCircuit",
 ) {
-	const net1 = connect(net1Name, makePin(part, "1"));
-	const net2 = connect(net2Name, makePin(part, "2"));
-	return { ir: makeIR([part], [net1, net2], title), net1, net2 };
+	const net1 = buildNet(inNet, { partId: part.id, pin: "1" });
+	const net2 = buildNet(outNet, { partId: part.id, pin: "2" });
+	return { ir: buildCircuit([part], [net1, net2], title), net1, net2 };
 }
 
 function assertCircuitResult(
@@ -51,8 +52,29 @@ function assertCircuitResult(
 	}
 }
 
+function assertCircuitWarning(res, ...terms) {
+	assert.strictEqual(res.ok, true);
+	const matched = res.warnings?.some((w) => terms.every((t) => w.includes(t)));
+	assert.strictEqual(Boolean(matched), true);
+}
+
+function assertInvalidIRResult(res, checkErrors = false) {
+	assert.strictEqual(res?.ok, false);
+	if (checkErrors) {
+		assert.strictEqual(
+			Array.isArray(res?.errors) && res.errors.length > 0,
+			true,
+		);
+	}
+}
+
+function assertValidSiValue(input, expected) {
+	const actual = parseSiValue(input);
+	assert.strictEqual(Math.abs(actual - expected) < 1e-12, true);
+}
+
 describe("parseSiValue", () => {
-	const validCases = [
+	const validCases = new Map([
 		["10k", 10000],
 		["4.7u", 4.7e-6],
 		["100n", 100e-9],
@@ -73,16 +95,15 @@ describe("parseSiValue", () => {
 		["1.5m", 0.0015],
 		["1G", 1e9],
 		["100pF", 100e-12],
-	];
+	]);
 
 	for (const [input, expected] of validCases) {
 		test(`parses valid SI value: ${input}`, () => {
-			const actual = parseSiValue(input);
-			assert.strictEqual(Math.abs(actual - expected) < 1e-12, true);
+			assertValidSiValue(input, expected);
 		});
 	}
 
-	const invalidCases = [
+	const invalidCases = new Set([
 		"",
 		"   ",
 		"abc",
@@ -93,7 +114,7 @@ describe("parseSiValue", () => {
 		{},
 		[],
 		"k10",
-	];
+	]);
 
 	for (const input of invalidCases) {
 		test(`returns NaN for invalid input: ${String(input)}`, () => {
@@ -103,13 +124,29 @@ describe("parseSiValue", () => {
 });
 
 function makeVoltageDivider() {
-	const v1 = makePart("V1", "5V", { props: { voltage: "5V" } });
-	const r1 = makePart("R1", "10k");
-	const r2 = makePart("R2", "10k");
-	const netIn = connect("in", makePin(v1, "1"), makePin(r1, "1"));
-	const netOut = connect("out", makePin(r1, "2"), makePin(r2, "1"));
-	const netGnd = connect("GND", makePin(v1, "2"), makePin(r2, "2"));
-	const ir = makeIR([v1, r1, r2], [netIn, netOut, netGnd], "VoltageDivider");
+	const v1 = buildTestPart("V1", "5V", { props: { voltage: "5V" } });
+	const r1 = buildTestPart("R1", "10k");
+	const r2 = buildTestPart("R2", "10k");
+	const netIn = buildNet(
+		"in",
+		{ partId: v1.id, pin: "1" },
+		{ partId: r1.id, pin: "1" },
+	);
+	const netOut = buildNet(
+		"out",
+		{ partId: r1.id, pin: "2" },
+		{ partId: r2.id, pin: "1" },
+	);
+	const netGnd = buildNet(
+		"GND",
+		{ partId: v1.id, pin: "2" },
+		{ partId: r2.id, pin: "2" },
+	);
+	const ir = buildCircuit(
+		[v1, r1, r2],
+		[netIn, netOut, netGnd],
+		"VoltageDivider",
+	);
 	return { v1, r1, r2, netIn, netOut, netGnd, ir };
 }
 
@@ -119,21 +156,14 @@ describe("irToSpice - voltage divider", () => {
 		const res = irToSpice(ir);
 
 		assert.strictEqual(res.ok, true);
-		for (const [net, expected] of [
-			[netGnd, "0"],
-			[netIn, "n_in"],
-			[netOut, "n_out"],
-		]) {
-			assert.strictEqual(res.nodeMap[net.id], expected);
-		}
-
-		for (const [part, expected] of [
-			[v1, "V1"],
-			[r1, "R1"],
-			[r2, "R2"],
-		]) {
-			assert.strictEqual(res.elementMap[part.id], expected);
-		}
+		assert.deepStrictEqual(
+			[res.nodeMap[netGnd.id], res.nodeMap[netIn.id], res.nodeMap[netOut.id]],
+			["0", "n_in", "n_out"],
+		);
+		assert.deepStrictEqual(
+			[res.elementMap[v1.id], res.elementMap[r1.id], res.elementMap[r2.id]],
+			["V1", "R1", "R2"],
+		);
 
 		const lines = res.netlist.split("\n");
 		assert.strictEqual(lines[0], "* VoltageDivider");
@@ -154,15 +184,19 @@ describe("irToSpice - voltage divider", () => {
 
 describe("irToSpice - LED, diode, and resistor", () => {
 	test("generates diode lines with models and pin mapping", () => {
-		const led = makePart("LED1", "Red", { symbol: "Device:LED" });
-		const r1 = makePart("R1", "330");
-		const v1 = makePart("V1", "5V");
+		const led = buildTestPart("LED1", "Red", { symbol: "Device:LED" });
+		const r1 = buildTestPart("R1", "330");
+		const v1 = buildTestPart("V1", "5V");
 		const nets = [
-			connect("in", makePin(v1, "1"), makePin(r1, "1")),
-			connect("mid", makePin(r1, "2"), makePin(led, "A")),
-			connect("0", makePin(led, "K"), makePin(v1, "2")),
+			buildNet("in", { partId: v1.id, pin: "1" }, { partId: r1.id, pin: "1" }),
+			buildNet(
+				"mid",
+				{ partId: r1.id, pin: "2" },
+				{ partId: led.id, pin: "A" },
+			),
+			buildNet("0", { partId: led.id, pin: "K" }, { partId: v1.id, pin: "2" }),
 		];
-		const res = irToSpice(makeIR([v1, r1, led], nets, "LedCircuit"));
+		const res = irToSpice(buildCircuit([v1, r1, led], nets, "LedCircuit"));
 		assertCircuitResult(res, {
 			elementId: led.id,
 			expectedElem: "DLED1",
@@ -171,8 +205,8 @@ describe("irToSpice - LED, diode, and resistor", () => {
 	});
 
 	test("generates generic diode line with D model", () => {
-		const d1 = makePart("D1", "1N4148", { symbol: "Device:D" });
-		const { ir } = makeTwoPinIR(d1, "in", "GND");
+		const d1 = buildTestPart("D1", "1N4148", { symbol: "Device:D" });
+		const { ir } = buildTwoPinCircuit(d1, "in", "GND");
 		assertCircuitResult(irToSpice(ir), {
 			elementId: d1.id,
 			expectedElem: "D1",
@@ -181,51 +215,52 @@ describe("irToSpice - LED, diode, and resistor", () => {
 	});
 });
 
-const SWITCH_AND_FUSE_CASES = [
-	{
-		name: "models closed switch as 1 mOhm resistor",
-		ref: "SW1",
-		val: "Switch",
-		overrides: { props: { closed: true } },
-		expectedElem: "RSW1",
-		expectedLine: "RSW1 n_in n_out 0.001",
-	},
-	{
-		name: "models open switch as 1 GOhm resistor",
-		ref: "S1",
-		val: "Switch",
-		overrides: { props: { closed: false } },
-		expectedElem: "RS1",
-		expectedLine: "RS1 n_in n_out 1000000000",
-	},
-	{
-		name: "models fuse as 10 mOhm resistor",
-		ref: "F1",
-		val: "500mA",
-		overrides: {},
-		expectedElem: "RF1",
-		expectedLine: "RF1 n_in n_out 0.01",
-	},
-];
+function testTwoPinSpiceModel(tc) {
+	const part = buildTestPart(tc.ref, tc.val, tc.overrides);
+	const { ir } = buildTwoPinCircuit(part, "in", "out");
+	assertCircuitResult(irToSpice(ir), {
+		elementId: part.id,
+		expectedElem: tc.expectedElem,
+		netlistLines: [tc.expectedLine],
+	});
+}
 
 describe("irToSpice - switch and fuse", () => {
-	for (const tc of SWITCH_AND_FUSE_CASES) {
-		test(tc.name, () => {
-			const part = makePart(tc.ref, tc.val, tc.overrides);
-			const { ir } = makeTwoPinIR(part, "in", "out");
-			assertCircuitResult(irToSpice(ir), {
-				elementId: part.id,
-				expectedElem: tc.expectedElem,
-				netlistLines: [tc.expectedLine],
-			});
+	test("models closed switch as 1 mOhm resistor", () => {
+		testTwoPinSpiceModel({
+			ref: "SW1",
+			val: "Switch",
+			overrides: { props: { closed: true } },
+			expectedElem: "RSW1",
+			expectedLine: "RSW1 n_in n_out 0.001",
 		});
-	}
+	});
+
+	test("models open switch as 1 GOhm resistor", () => {
+		testTwoPinSpiceModel({
+			ref: "S1",
+			val: "Switch",
+			overrides: { props: { closed: false } },
+			expectedElem: "RS1",
+			expectedLine: "RS1 n_in n_out 1000000000",
+		});
+	});
+
+	test("models fuse as 10 mOhm resistor", () => {
+		testTwoPinSpiceModel({
+			ref: "F1",
+			val: "500mA",
+			overrides: {},
+			expectedElem: "RF1",
+			expectedLine: "RF1 n_in n_out 0.01",
+		});
+	});
 });
 
 describe("irToSpice - IC and warnings", () => {
 	test("skips IC with warning and does not include in netlist", () => {
-		const u1 = makePart("U1", "STM32F103", { symbol: "MCU:STM32F103" });
-		const { ir } = makeTwoPinIR(u1, "VCC", "GND");
+		const u1 = buildTestPart("U1", "STM32F103", { symbol: "MCU:STM32F103" });
+		const { ir } = buildTwoPinCircuit(u1, "VCC", "GND");
 		const res = irToSpice(ir);
 
 		assertCircuitResult(res, {
@@ -233,38 +268,28 @@ describe("irToSpice - IC and warnings", () => {
 			expectedElem: undefined,
 		});
 		assert.strictEqual(res.netlist.includes("U1"), false);
-		assert.strictEqual(
-			res.warnings.some((w) => w.includes("U1") && w.includes("black box")),
-			true,
-		);
+		assertCircuitWarning(res, "U1", "black box");
 	});
 
 	test("emits warning for parts with unconnected pins", () => {
-		const r1 = makePart("R1", "10k");
-		const res = irToSpice(makeIR([r1], [connect("in", makePin(r1, "1"))]));
-
-		assert.strictEqual(res.ok, true);
-		assert.strictEqual(
-			res.warnings.some((w) => w.includes("R1") && w.includes("unconnected")),
-			true,
+		const r1 = buildTestPart("R1", "10k");
+		const res = irToSpice(
+			buildCircuit([r1], [buildNet("in", { partId: r1.id, pin: "1" })]),
 		);
+
+		assertCircuitWarning(res, "R1", "unconnected");
 	});
 });
 
 describe("irToSpice - validation and analysis options", () => {
 	test("returns ok:false on invalid IR", () => {
-		const resNull = irToSpice(null);
-		assert.strictEqual(resNull.ok, false);
-		assert.strictEqual(Array.isArray(resNull.errors), true);
-		assert.strictEqual(resNull.errors.length > 0, true);
-
-		const resBad = irToSpice({ schemaVersion: 2 });
-		assert.strictEqual(resBad.ok, false);
+		assertInvalidIRResult(irToSpice(null), true);
+		assertInvalidIRResult(irToSpice({ schemaVersion: 2 }), false);
 	});
 
 	test("supports transient analysis configuration", () => {
-		const r1 = makePart("R1", "1k");
-		const { ir } = makeTwoPinIR(r1, "in", "GND");
+		const r1 = buildTestPart("R1", "1k");
+		const { ir } = buildTwoPinCircuit(r1, "in", "GND");
 		const res = irToSpice(ir, {
 			analysis: { type: "tran", stepS: "1u", stopS: "10m" },
 		});
@@ -311,53 +336,68 @@ describe("irToSpice - security and injection prevention", () => {
 	}
 
 	function runInjectionCircuit(part, netName = "in", title = "TestCircuit") {
-		const { ir, net1 } = makeTwoPinIR(part, netName, "GND", title);
+		const { ir, net1 } = buildTwoPinCircuit(part, netName, "GND", title);
 		const res = irToSpice(ir);
 		assert.strictEqual(res.ok, true);
 		assertSafeNetlist(res.netlist);
 		return { res, net1 };
 	}
 
+	function testInjectionRef(payload) {
+		const part = buildTestPart(payload, "10k");
+		const { res } = runInjectionCircuit(part);
+		const elementName = res.elementMap[part.id];
+		if (elementName) {
+			assert.strictEqual(/^[A-Za-z0-9_]{1,32}$/.test(elementName), true);
+		}
+	}
+
+	function testInjectionNet(payload) {
+		const { res, net1 } = runInjectionCircuit(
+			buildTestPart("R1", "10k"),
+			payload,
+		);
+		assert.strictEqual(/^[A-Za-z0-9_]+$/.test(res.nodeMap[net1.id]), true);
+	}
+
 	for (const payload of maliciousPayloads) {
 		test(`prevents injection via part.ref: ${JSON.stringify(payload)}`, () => {
-			const part = makePart(payload, "10k");
-			const { res } = runInjectionCircuit(part);
-			const elementName = res.elementMap[part.id];
-			if (elementName) {
-				assert.strictEqual(/^[A-Za-z0-9_]{1,32}$/.test(elementName), true);
-			}
+			testInjectionRef(payload);
 		});
 
 		test(`prevents injection via net.name: ${JSON.stringify(payload)}`, () => {
-			const { res, net1 } = runInjectionCircuit(makePart("R1", "10k"), payload);
-			assert.strictEqual(/^[A-Za-z0-9_]+$/.test(res.nodeMap[net1.id]), true);
+			testInjectionNet(payload);
 		});
 
 		test(`prevents injection via part.value: ${JSON.stringify(payload)}`, () => {
-			runInjectionCircuit(makePart("R1", payload));
+			runInjectionCircuit(buildTestPart("R1", payload));
 		});
 
 		test(`prevents injection via circuit title: ${JSON.stringify(payload)}`, () => {
-			runInjectionCircuit(makePart("R1", "10k"), "in", payload);
+			runInjectionCircuit(buildTestPart("R1", "10k"), "in", payload);
 		});
 	}
 
 	test("de-duplicates when two parts sanitize to the same name and preserves max 32 chars", () => {
-		const r1 = makePart("R1", "10k");
-		const r2 = makePart("R-1", "10k");
-		const r3 = makePart(`R${"A".repeat(40)}`, "10k");
+		const r1 = buildTestPart("R1", "10k");
+		const r2 = buildTestPart("R-1", "10k");
+		const r3 = buildTestPart(`R${"A".repeat(40)}`, "10k");
 		const parts = [r1, r2, r3];
-		const net1 = connect("in", ...parts.map((p) => makePin(p, "1")));
-		const net2 = connect("GND", ...parts.map((p) => makePin(p, "2")));
-		const res = irToSpice(makeIR(parts, [net1, net2]));
+		const net1 = buildNet(
+			"in",
+			...parts.map((p) => ({ partId: p.id, pin: "1" })),
+		);
+		const net2 = buildNet(
+			"GND",
+			...parts.map((p) => ({ partId: p.id, pin: "2" })),
+		);
+		const res = irToSpice(buildCircuit(parts, [net1, net2]));
 
 		assert.strictEqual(res.ok, true);
-		for (const [part, expected] of [
-			[r1, "R1"],
-			[r2, "R1_2"],
-		]) {
-			assert.strictEqual(res.elementMap[part.id], expected);
-		}
+		assert.deepStrictEqual(
+			[res.elementMap[r1.id], res.elementMap[r2.id]],
+			["R1", "R1_2"],
+		);
 		assert.strictEqual(res.elementMap[r3.id].length <= 32, true);
 		assertSafeNetlist(res.netlist);
 	});
