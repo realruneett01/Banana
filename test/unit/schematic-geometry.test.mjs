@@ -14,11 +14,6 @@ function assertPair(actual, [expectedX, expectedY], messages = []) {
 	assert.equal(actual[1], expectedY, messages[1]);
 }
 
-function assertBoxSize(box, width, height) {
-	assert.equal(box.width, width);
-	assert.equal(box.height, height);
-}
-
 function makePart(opts = {}) {
 	const {
 		id = "part_u1",
@@ -42,7 +37,7 @@ function makeDoc(parts, nets = []) {
 
 describe("snapToGrid", () => {
 	test("snaps numbers to default 1.27 mm grid", () => {
-		const cases = [
+		const defaultGridCases = [
 			[0, 0],
 			[1.27, 1.27],
 			[2.54, 2.54],
@@ -51,35 +46,47 @@ describe("snapToGrid", () => {
 			[-1.27, -1.27],
 			[-1.3, -1.27],
 		];
-		for (const [input, expected] of cases) {
+		for (const [input, expected] of defaultGridCases) {
 			assert.equal(snapToGrid(input), expected);
 		}
 	});
 
 	test("snaps numbers to custom grid", () => {
-		const cases = [
-			[2.5, 2.54, 2.54],
-			[5.0, 2.54, 5.08],
+		const customCases = [
+			{ val: 2.5, grid: 2.54, expected: 2.54 },
+			{ val: 5.0, grid: 2.54, expected: 5.08 },
 		];
-		for (const [val, grid, expected] of cases) {
+		for (const { val, grid, expected } of customCases) {
 			assert.equal(snapToGrid(val, grid), expected);
 		}
 	});
 
 	test("snaps coordinate arrays and objects", () => {
-		assert.deepEqual(snapToGrid([1.3, 2.5]), [1.27, 2.54]);
-		assert.deepEqual(snapToGrid({ x: 1.3, y: 2.5 }), { x: 1.27, y: 2.54 });
+		const coordCases = [
+			{ actual: snapToGrid([1.3, 2.5]), expected: [1.27, 2.54] },
+			{
+				actual: snapToGrid({ x: 1.3, y: 2.5 }),
+				expected: { x: 1.27, y: 2.54 },
+			},
+		];
+		for (const { actual, expected } of coordCases) {
+			assert.deepEqual(actual, expected);
+		}
 	});
 });
 
 describe("partBox", () => {
 	test("calculates box dimensions from pin count", () => {
 		const part = makePart();
-		const box2 = partBox(part, 2);
-		assertBoxSize(box2, 15.24, 5.08);
+		const checkDimensions = (pinCount, expectedWidth, expectedHeight) => {
+			const box = partBox(part, pinCount);
+			assert.equal(box.width, expectedWidth);
+			assert.equal(box.height, expectedHeight);
+			return box;
+		};
 
-		const box8 = partBox(part, 8);
-		assertBoxSize(box8, 15.24, 12.7);
+		checkDimensions(2, 15.24, 5.08);
+		const box8 = checkDimensions(8, 15.24, 12.7);
 		assert.equal(box8.x, 50 - 15.24 / 2);
 		assert.equal(box8.y, 50 - 12.7 / 2);
 	});
@@ -87,6 +94,10 @@ describe("partBox", () => {
 
 describe("pinPositions", () => {
 	const basePart = makePart({ x: 100, y: 100 });
+	const placeBasePart = (placement) => ({
+		...basePart,
+		placement: { ...basePart.placement, ...placement },
+	});
 
 	test("rot = 0, side = F: odd pins left, even pins right", () => {
 		const pos = pinPositions(basePart, [1, 2, 3, 4]);
@@ -126,10 +137,7 @@ describe("pinPositions", () => {
 
 	for (const tc of ROTATION_CASES) {
 		test(tc.name, () => {
-			const rotatedPart = {
-				...basePart,
-				placement: { ...basePart.placement, rot: tc.rot },
-			};
+			const rotatedPart = placeBasePart({ rot: tc.rot });
 			const p0 = pinPositions(basePart, [1]).get(1);
 			const pRot = pinPositions(rotatedPart, [1]).get(1);
 			const dx0 = p0[0] - 100;
@@ -139,10 +147,7 @@ describe("pinPositions", () => {
 	}
 
 	test("side = B: flips horizontally", () => {
-		const partB = {
-			...basePart,
-			placement: { ...basePart.placement, side: "B" },
-		};
+		const partB = placeBasePart({ side: "B" });
 		const posF = pinPositions(basePart, [1, 2]);
 		const posB = pinPositions(partB, [1, 2]);
 
@@ -188,27 +193,39 @@ describe("wireForNet", () => {
 		return { net, pinPos };
 	}
 
-	test("2-pin net produces Manhattan polyline", () => {
-		const { net, pinPos } = createNetSetup("net_clk", "CLK", [
-			["part_u1", "1", [10, 20]],
-			["part_u2", "2", [50, 80]],
-		]);
+	function verifyNetWires(netId, netName, pinEntries, expectedWireCount) {
+		const { net, pinPos } = createNetSetup(netId, netName, pinEntries);
 		const polylines = wireForNet(net, pinPos);
-		assert.equal(polylines.length, 1);
+		assert.equal(polylines.length, expectedWireCount);
 		verifyManhattan(polylines);
+		return polylines;
+	}
+
+	test("2-pin net produces Manhattan polyline", () => {
+		const polylines = verifyNetWires(
+			"net_clk",
+			"CLK",
+			[
+				["part_u1", "1", [10, 20]],
+				["part_u2", "2", [50, 80]],
+			],
+			1,
+		);
 		assert.deepEqual(polylines[0][0], [10, 20]);
 		assert.deepEqual(polylines[0][polylines[0].length - 1], [50, 80]);
 	});
 
 	test("3-pin net produces spanning tree connecting all pins", () => {
-		const { net, pinPos } = createNetSetup("net_vcc", "VCC", [
-			["part_u1", "1", [0, 0]],
-			["part_u2", "1", [20, 20]],
-			["part_u3", "1", [40, 0]],
-		]);
-		const polylines = wireForNet(net, pinPos);
-		assert.equal(polylines.length, 2);
-		verifyManhattan(polylines);
+		verifyNetWires(
+			"net_vcc",
+			"VCC",
+			[
+				["part_u1", "1", [0, 0]],
+				["part_u2", "1", [20, 20]],
+				["part_u3", "1", [40, 0]],
+			],
+			2,
+		);
 	});
 
 	test("empty or single-pin net produces no wires", () => {
@@ -274,13 +291,23 @@ describe("hitTest priorities", () => {
 });
 
 describe("wireHitTolerance", () => {
+	const verifyToleranceTable = (entries) => {
+		for (const [zoom, expected] of entries) {
+			assert.equal(wireHitTolerance(zoom), expected);
+		}
+	};
+
 	test("is a fixed screen distance converted to world units", () => {
-		assert.equal(wireHitTolerance(4), 1);
-		assert.equal(wireHitTolerance(40), 0.1);
+		verifyToleranceTable([
+			[4, 1],
+			[40, 0.1],
+		]);
 	});
 
 	test("falls back to zoom 1 for a missing or bad zoom", () => {
-		assert.equal(wireHitTolerance(0), 4);
-		assert.equal(wireHitTolerance(undefined), 4);
+		verifyToleranceTable([
+			[0, 4],
+			[undefined, 4],
+		]);
 	});
 });
