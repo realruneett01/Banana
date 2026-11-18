@@ -55,13 +55,15 @@ async function clickCanvas(svg, dx = 0, dy = 0, options = {}) {
 	});
 }
 
+function getToolPalette(page) {
+	return page.locator(
+		"aside[aria-label='PCB tools'], aside[aria-label='Schematic tools']",
+	);
+}
+
 async function clickToolButton(page, name) {
-	const btn = page
-		.getByRole("button", { name, exact: true })
-		.or(page.locator(`button[aria-label='${name}']`))
-		.or(page.locator(`button[aria-label*='${name}' i]`))
-		.or(page.locator(`button[title*='${name}' i]`))
-		.first();
+	const palette = getToolPalette(page);
+	const btn = palette.getByRole("button", { name, exact: true }).first();
 	await btn.waitFor({ state: "visible", timeout: 5000 });
 	await btn.click({ timeout: 5000 });
 }
@@ -81,22 +83,22 @@ async function assertNoUnexpectedDialog(page) {
 
 async function handlePourModalIfOpen(page) {
 	const modal = getAntdModal(page).last();
+	await modal.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
 	const isOpen = await modal.isVisible().catch(() => false);
 	if (!isOpen) return;
 	const okBtn = modal.getByRole("button", { name: "OK", exact: true }).first();
 	const hasOk = await okBtn.isVisible().catch(() => false);
 	if (hasOk && !(await okBtn.isDisabled())) {
 		await okBtn.click({ timeout: 5000 });
-		return;
+	} else {
+		await page.keyboard.press("Enter");
 	}
-	await page.keyboard.press("Enter");
+	await modal.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
 }
 
 async function tryExpandPanel(page) {
 	const toggle = page
-		.locator(
-			"button[aria-label*='Summary' i], button[aria-label*='Panel' i], button[title*='Summary' i], button[title*='Panel' i]",
-		)
+		.getByRole("button", { name: "Toggle board summary", exact: true })
 		.first();
 	if (await toggle.isVisible().catch(() => false)) {
 		await toggle.click({ timeout: 2000 }).catch(() => {});
@@ -264,20 +266,12 @@ async function checkPcbText(page) {
 }
 
 async function clickZoneTool(page) {
-	const zoneBtn = page
-		.locator(
-			"button[aria-label*='zone' i], button[title*='zone' i], button[data-tool*='zone' i]",
-		)
-		.first();
-	if (await zoneBtn.isVisible().catch(() => false)) {
-		await zoneBtn.click({ timeout: 5000 });
-		return;
-	}
 	await clickToolButton(page, "Filled zone");
 }
 
 async function checkPcbZone(page) {
 	await clickZoneTool(page);
+	await handlePourModalIfOpen(page);
 	const svg = await getMainCanvas(page);
 	const corners = [
 		[-50, -50],
@@ -289,7 +283,6 @@ async function checkPcbZone(page) {
 		await clickCanvas(svg, x, y);
 	}
 	await page.keyboard.press("Escape");
-	await handlePourModalIfOpen(page);
 	const zone = svg.locator(".pcb-zones polygon, polygon[points]");
 	await zone.first().waitFor({ state: "visible", timeout: 5000 });
 }
