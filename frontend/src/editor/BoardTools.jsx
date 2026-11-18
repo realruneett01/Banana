@@ -1,4 +1,9 @@
-import { BorderOutlined, DownOutlined, SyncOutlined } from "@ant-design/icons";
+import {
+	BorderOutlined,
+	DownOutlined,
+	SettingOutlined,
+	SyncOutlined,
+} from "@ant-design/icons";
 import {
 	Button,
 	Checkbox,
@@ -18,6 +23,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
+import BoardSetupDialog from "./BoardSetupDialog.jsx";
 import { outlineToPolygon, polygonBBox } from "./boardOutline.js";
 import { createStore } from "./editorStatus.js";
 import { emitActiveTool, onEditorTool } from "./editorToolBus.js";
@@ -449,6 +455,43 @@ function useCopperPour({ board, ir, onChange, activeLayer }) {
 	};
 }
 
+function useBoardSetup(onChange) {
+	const [open, setOpen] = useState(false);
+	const onOpen = useCallback(() => setOpen(true), []);
+	const close = useCallback(() => setOpen(false), []);
+	const save = useCallback(
+		(nextBoard) => {
+			onChange?.({ board: nextBoard });
+			close();
+		},
+		[onChange, close],
+	);
+	return { open, onOpen, close, save };
+}
+
+const SETUP_TOOLTIP =
+	"Board setup: thickness, layers, design rules and net classes";
+
+function BoardSetupAction({ disabled, setup, board }) {
+	return (
+		<>
+			<ToolButton
+				title={SETUP_TOOLTIP}
+				icon={<SettingOutlined />}
+				disabled={disabled}
+				onClick={setup.onOpen}
+				ariaLabel={SETUP_TOOLTIP}
+			/>
+			<BoardSetupDialog
+				open={setup.open}
+				board={board}
+				onSave={setup.save}
+				onCancel={setup.close}
+			/>
+		</>
+	);
+}
+
 function SyncAction({ disabled, sync }) {
 	return (
 		<>
@@ -642,6 +685,14 @@ export function useBoardToolBus({ disabled, onPour, pour, activeTool } = {}) {
 	}, [disabled, handlePour]);
 }
 
+function useOutlineToolReset(disabled, activeTool) {
+	useEffect(() => {
+		if (disabled && activeTool) {
+			setOutlineTool({ activeTool: null });
+		}
+	}, [disabled, activeTool]);
+}
+
 export default function BoardTools({
 	ir,
 	board,
@@ -651,6 +702,7 @@ export default function BoardTools({
 }) {
 	const sync = useBoardSync({ ir, board, onChange });
 	const pour = useCopperPour({ board, ir, onChange, activeLayer });
+	const setup = useBoardSetup(onChange);
 	const toolState = useOutlineTool();
 
 	useBoardToolBus({
@@ -658,15 +710,11 @@ export default function BoardTools({
 		onPour: pour.onOpen,
 		activeTool: toolState.activeTool,
 	});
-
-	useEffect(() => {
-		if (disabled && toolState.activeTool) {
-			setOutlineTool({ activeTool: null });
-		}
-	}, [disabled, toolState.activeTool]);
+	useOutlineToolReset(disabled, toolState.activeTool);
 
 	return (
 		<Space size={4}>
+			<BoardSetupAction disabled={disabled} setup={setup} board={board} />
 			<SyncAction disabled={disabled} sync={sync} />
 			<PourAction disabled={disabled} pour={pour} board={board} ir={ir} />
 			<OutlineToolGroup disabled={disabled} toolState={toolState} />
