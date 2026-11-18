@@ -3,6 +3,7 @@ import {
 	DeleteOutlined,
 	DownloadOutlined,
 	DownOutlined,
+	EllipsisOutlined,
 	LeftOutlined,
 	PlayCircleOutlined,
 	PlusOutlined,
@@ -69,6 +70,186 @@ import { useEditorDocument } from "./useEditorDocument.js";
 import { useLiveChecks } from "./useLiveChecks.js";
 import { formatCoord, GRID_PRESETS } from "./viewport.js";
 
+// --- PURE TOOLBAR OVERFLOW HELPERS (NO JSX) ---
+export const DEFAULT_TOOLBAR_PRIORITIES = Object.freeze({
+	undo: 100,
+	redo: 95,
+	addPart: 90,
+	save: 85,
+	saveCommit: 60,
+	rotate: 50,
+	flip: 45,
+	delete: 40,
+	annotate: 30,
+	boardTools: 20,
+	boardSetup: 20,
+	assignFootprints: 15,
+	symbolFields: 10,
+	checks: 5,
+	drc: 5,
+	erc: 5,
+	export: 1,
+});
+
+export const DEFAULT_ITEM_WIDTHS = Object.freeze({
+	undo: 32,
+	redo: 32,
+	addPart: 92,
+	rotate: 32,
+	flip: 32,
+	delete: 32,
+	save: 32,
+	saveCommit: 140,
+	annotate: 76,
+	symbolFields: 32,
+	assignFootprints: 32,
+	boardTools: 236,
+	boardSetup: 236,
+	checks: 32,
+	export: 92,
+});
+
+function resolvePriority(id, itemPri, priorities) {
+	if (typeof itemPri === "number") return itemPri;
+	if (priorities && typeof priorities[id] === "number") {
+		return priorities[id];
+	}
+	return DEFAULT_TOOLBAR_PRIORITIES[id] ?? 50;
+}
+
+function normalizeToolbarItems(itemsInput, prioritiesInput) {
+	if (!itemsInput) return [];
+	if (Array.isArray(itemsInput)) {
+		return itemsInput.map((it) => ({
+			id: typeof it === "string" ? it : it.id,
+			width: typeof it === "object" ? (it.width ?? 32) : 32,
+			priority: resolvePriority(
+				typeof it === "string" ? it : it.id,
+				it?.priority,
+				prioritiesInput,
+			),
+		}));
+	}
+	return Object.entries(itemsInput).map(([id, width]) => ({
+		id,
+		width: typeof width === "number" ? width : 32,
+		priority: resolvePriority(id, undefined, prioritiesInput),
+	}));
+}
+
+function calcRequiredWidth(items, hasMore, moreWidth, gap) {
+	const count = items.length;
+	if (count === 0) return hasMore ? moreWidth : 0;
+	let sum = 0;
+	for (let i = 0; i < count; i++) {
+		sum += items[i].width;
+	}
+	const totalGaps = count - 1 + (hasMore ? 1 : 0);
+	const moreExtra = hasMore ? moreWidth : 0;
+	return sum + totalGaps * gap + moreExtra;
+}
+
+function findLowestPriorityIndex(items) {
+	let minIdx = -1;
+	let minPri = Infinity;
+	for (let i = items.length - 1; i >= 0; i--) {
+		if (items[i].priority < minPri) {
+			minPri = items[i].priority;
+			minIdx = i;
+		}
+	}
+	return minIdx;
+}
+
+function isOptionsBag(val) {
+	if (!val || typeof val !== "object") return false;
+	if (Array.isArray(val)) return false;
+	return ["containerWidth", "items", "itemWidths"].some((k) => k in val);
+}
+
+function parseOptionsBag(opts) {
+	return {
+		items: normalizeToolbarItems(
+			opts.items || opts.itemWidths,
+			opts.priorities,
+		),
+		containerWidth: opts.containerWidth,
+		moreWidth: opts.moreWidth ?? 32,
+		gap: opts.gap ?? 4,
+	};
+}
+
+function parsePositionalArgs(itemsInput, width, priorities, extraOpts) {
+	const opts = extraOpts && typeof extraOpts === "object" ? extraOpts : {};
+	return {
+		items: normalizeToolbarItems(itemsInput, priorities),
+		containerWidth: width,
+		moreWidth: opts.moreWidth ?? 32,
+		gap: opts.gap ?? 4,
+	};
+}
+
+function extractOverflowConfig(arg1, arg2, arg3, arg4) {
+	if (isOptionsBag(arg1)) {
+		return parseOptionsBag(arg1);
+	}
+	return parsePositionalArgs(arg1, arg2, arg3, arg4);
+}
+
+export function computeToolbarOverflow(arg1, arg2, arg3, arg4) {
+	const { items, containerWidth, moreWidth, gap } = extractOverflowConfig(
+		arg1,
+		arg2,
+		arg3,
+		arg4,
+	);
+	const allIds = items.map((it) => it.id);
+	if (containerWidth == null || containerWidth === Infinity) {
+		return {
+			visible: allIds,
+			overflow: [],
+			more: [],
+			visibleIds: allIds,
+			overflowIds: [],
+		};
+	}
+	if (calcRequiredWidth(items, false, moreWidth, gap) <= containerWidth) {
+		return {
+			visible: allIds,
+			overflow: [],
+			more: [],
+			visibleIds: allIds,
+			overflowIds: [],
+		};
+	}
+	const visibleItems = [...items];
+	const overflowItems = [];
+	while (visibleItems.length > 0) {
+		if (
+			calcRequiredWidth(visibleItems, true, moreWidth, gap) <= containerWidth
+		) {
+			break;
+		}
+		const lowestIdx = findLowestPriorityIndex(visibleItems);
+		if (lowestIdx === -1) break;
+		const [removed] = visibleItems.splice(lowestIdx, 1);
+		overflowItems.unshift(removed);
+	}
+	const visible = visibleItems.map((it) => it.id);
+	const overflow = overflowItems.map((it) => it.id);
+	return {
+		visible,
+		overflow,
+		more: overflow,
+		visibleIds: visible,
+		overflowIds: overflow,
+	};
+}
+
+export const partitionToolbarItems = computeToolbarOverflow;
+export const resolveToolbarOverflow = computeToolbarOverflow;
+// --- END PURE TOOLBAR OVERFLOW HELPERS ---
+
 const ROOT_STYLE = Object.freeze({
 	display: "flex",
 	flexDirection: "column",
@@ -95,6 +276,10 @@ const TOOLBAR_CONTAINER_STYLE = Object.freeze({
 	alignItems: "center",
 	gap: "4px",
 	flexWrap: "nowrap",
+	minWidth: 0,
+	overflow: "hidden",
+	flex: 1,
+	justifyContent: "flex-end",
 });
 
 const PANEL_TOGGLE_STYLE = Object.freeze({
@@ -374,54 +559,64 @@ function ToolButton({
 	);
 }
 
-function HistoryButtons({ canUndo, canRedo, undo, redo }) {
-	const items = [
-		{
-			title: "Undo (Ctrl+Z)",
-			icon: <UndoOutlined />,
-			disabled: !canUndo,
-			onClick: undo,
-			ariaLabel: "Undo",
-		},
-		{
-			title: "Redo (Ctrl+Y)",
-			icon: <RedoOutlined />,
-			disabled: !canRedo,
-			onClick: redo,
-			ariaLabel: "Redo",
-		},
-	];
+function HistoryButtons({ canUndo, canRedo, undo, redo, visibleIds }) {
+	const showUndo = !visibleIds || visibleIds.includes("undo");
+	const showRedo = !visibleIds || visibleIds.includes("redo");
+	if (!showUndo && !showRedo) return null;
 	return (
 		<Space size={4}>
-			{items.map((it) => (
-				<ToolButton key={it.title} {...it} />
-			))}
+			{showUndo && (
+				<ToolButton
+					title="Undo (Ctrl+Z)"
+					icon={<UndoOutlined />}
+					disabled={!canUndo}
+					onClick={undo}
+					ariaLabel="Undo"
+				/>
+			)}
+			{showRedo && (
+				<ToolButton
+					title="Redo (Ctrl+Y)"
+					icon={<RedoOutlined />}
+					disabled={!canRedo}
+					onClick={redo}
+					ariaLabel="Redo"
+				/>
+			)}
 		</Space>
 	);
 }
 
-function TransformButtons({ hasSelection, rotate, flip }) {
+function TransformButtons({ hasSelection, rotate, flip, visibleIds }) {
+	const showRotate = !visibleIds || visibleIds.includes("rotate");
+	const showFlip = !visibleIds || visibleIds.includes("flip");
+	if (!showRotate && !showFlip) return null;
 	return (
 		<Space size={4} style={{ display: "inline-flex" }}>
-			<ToolButton
-				title="Rotate 90° (R)"
-				icon={<RotateRightOutlined />}
-				disabled={!hasSelection}
-				onClick={rotate}
-				ariaLabel="Rotate"
-			/>
-			<ToolButton
-				title="Flip Side (F)"
-				icon={<SwapOutlined />}
-				disabled={!hasSelection}
-				onClick={flip}
-				ariaLabel="Flip"
-			/>
+			{showRotate && (
+				<ToolButton
+					title="Rotate 90° (R)"
+					icon={<RotateRightOutlined />}
+					disabled={!hasSelection}
+					onClick={rotate}
+					ariaLabel="Rotate"
+				/>
+			)}
+			{showFlip && (
+				<ToolButton
+					title="Flip Side (F)"
+					icon={<SwapOutlined />}
+					disabled={!hasSelection}
+					onClick={flip}
+					ariaLabel="Flip"
+				/>
+			)}
 		</Space>
 	);
 }
 
-function DeleteButton({ hasSelection, remove }) {
+function DeleteButton({ hasSelection, remove, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Delete (Del)"
@@ -434,20 +629,30 @@ function DeleteButton({ hasSelection, remove }) {
 	);
 }
 
-function EditActionButtons({ hasSelection, rotate, flip, remove }) {
+function EditActionButtons({ hasSelection, rotate, flip, remove, visibleIds }) {
+	const isVisible = (id) => !visibleIds || visibleIds.includes(id);
+	const showDelete = isVisible("delete");
+	const showTransform = isVisible("rotate") || isVisible("flip");
+	if (!showDelete && !showTransform) return null;
 	return (
 		<Space size={4}>
 			<TransformButtons
 				hasSelection={hasSelection}
 				rotate={rotate}
 				flip={flip}
+				visibleIds={visibleIds}
 			/>
-			<DeleteButton hasSelection={hasSelection} remove={remove} />
+			<DeleteButton
+				hasSelection={hasSelection}
+				remove={remove}
+				visible={showDelete}
+			/>
 		</Space>
 	);
 }
 
-function SaveCommitButton({ dirty, onOpen }) {
+function SaveCommitButton({ dirty, onOpen, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Save and commit"
@@ -460,23 +665,33 @@ function SaveCommitButton({ dirty, onOpen }) {
 	);
 }
 
-function ModeButtons({ dirty, save, openCommit }) {
+function ModeButtons({ dirty, save, openCommit, visibleIds }) {
+	const showSave = !visibleIds || visibleIds.includes("save");
+	const showCommit = !visibleIds || visibleIds.includes("saveCommit");
+	if (!showSave && !showCommit) return null;
 	return (
 		<Space size={4}>
-			<ToolButton
-				title="Save (Ctrl+S)"
-				icon={<SaveOutlined />}
-				disabled={!dirty}
-				onClick={save}
-				ariaLabel="Save"
-				type="primary"
+			{showSave && (
+				<ToolButton
+					title="Save (Ctrl+S)"
+					icon={<SaveOutlined />}
+					disabled={!dirty}
+					onClick={save}
+					ariaLabel="Save"
+					type="primary"
+				/>
+			)}
+			<SaveCommitButton
+				dirty={dirty}
+				onOpen={openCommit}
+				visible={showCommit}
 			/>
-			<SaveCommitButton dirty={dirty} onOpen={openCommit} />
 		</Space>
 	);
 }
 
-function AddPartButton({ onAddPart }) {
+function AddPartButton({ onAddPart, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Add part (A)"
@@ -530,7 +745,8 @@ function runExportAction(key, actions) {
 	if (fabItem) actions.exportFab?.(fabItem.outputs);
 }
 
-function ExportDropdown({ state, actions }) {
+function ExportDropdown({ state, actions, visible = true }) {
+	if (visible === false) return null;
 	const isExporting = Boolean(
 		state.exporting ||
 			state.bomLoading ||
@@ -625,7 +841,8 @@ function AnnotateModal({ open, onCancel, onApply }) {
 	);
 }
 
-function AnnotateButton({ onOpen }) {
+function AnnotateButton({ onOpen, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Annotate schematic"
@@ -636,19 +853,23 @@ function AnnotateButton({ onOpen }) {
 	);
 }
 
-function AnnotateAction({ onApply }) {
+function AnnotateAction({ onApply, onOpenRef, visible = true }) {
 	const [open, setOpen] = useState(false);
 	const close = useCallback(() => setOpen(false), []);
 	const openModal = useCallback(() => setOpen(true), []);
+	useEffect(() => {
+		if (onOpenRef) onOpenRef.current = openModal;
+	}, [onOpenRef, openModal]);
 	return (
 		<>
-			<AnnotateButton onOpen={openModal} />
+			<AnnotateButton onOpen={openModal} visible={visible} />
 			<AnnotateModal open={open} onCancel={close} onApply={onApply} />
 		</>
 	);
 }
 
-function EditSymbolFieldsButton({ onOpen }) {
+function EditSymbolFieldsButton({ onOpen, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Edit symbol fields"
@@ -659,7 +880,8 @@ function EditSymbolFieldsButton({ onOpen }) {
 	);
 }
 
-function AssignFootprintsButton({ onOpen }) {
+function AssignFootprintsButton({ onOpen, visible = true }) {
+	if (visible === false) return null;
 	return (
 		<ToolButton
 			title="Assign footprints"
@@ -670,10 +892,13 @@ function AssignFootprintsButton({ onOpen }) {
 	);
 }
 
-function SymbolFieldsAction({ ir, onApply }) {
+function SymbolFieldsAction({ ir, onApply, onOpenRef, visible = true }) {
 	const [open, setOpen] = useState(false);
 	const close = useCallback(() => setOpen(false), []);
 	const openModal = useCallback(() => setOpen(true), []);
+	useEffect(() => {
+		if (onOpenRef) onOpenRef.current = openModal;
+	}, [onOpenRef, openModal]);
 	const handleApply = useCallback(
 		(cmd) => {
 			onApply?.(cmd);
@@ -683,7 +908,7 @@ function SymbolFieldsAction({ ir, onApply }) {
 	);
 	return (
 		<>
-			<EditSymbolFieldsButton onOpen={openModal} />
+			<EditSymbolFieldsButton onOpen={openModal} visible={visible} />
 			<SymbolFieldsTable
 				open={open}
 				ir={ir}
@@ -694,10 +919,13 @@ function SymbolFieldsAction({ ir, onApply }) {
 	);
 }
 
-function AssignFootprintsAction({ ir, onApply }) {
+function AssignFootprintsAction({ ir, onApply, onOpenRef, visible = true }) {
 	const [open, setOpen] = useState(false);
 	const close = useCallback(() => setOpen(false), []);
 	const openModal = useCallback(() => setOpen(true), []);
+	useEffect(() => {
+		if (onOpenRef) onOpenRef.current = openModal;
+	}, [onOpenRef, openModal]);
 	const handleApply = useCallback(
 		(cmd) => {
 			onApply?.(cmd);
@@ -707,7 +935,7 @@ function AssignFootprintsAction({ ir, onApply }) {
 	);
 	return (
 		<>
-			<AssignFootprintsButton onOpen={openModal} />
+			<AssignFootprintsButton onOpen={openModal} visible={visible} />
 			<AssignFootprints
 				open={open}
 				ir={ir}
@@ -718,7 +946,8 @@ function AssignFootprintsAction({ ir, onApply }) {
 	);
 }
 
-function SchematicTools({ state, actions, visible }) {
+function SchematicTools({ state, actions, visible, visibleIds, actionRefs }) {
+	const isVisible = (id) => !visibleIds || visibleIds.includes(id);
 	const style = {
 		display: visible ? "flex" : "none",
 		alignItems: "center",
@@ -726,17 +955,29 @@ function SchematicTools({ state, actions, visible }) {
 	};
 	return (
 		<div style={style}>
-			<AnnotateAction onApply={actions.annotate} />
-			<SymbolFieldsAction ir={state.ir} onApply={actions.applyModelCommand} />
+			<AnnotateAction
+				onApply={actions.annotate}
+				onOpenRef={actionRefs?.annotate}
+				visible={isVisible("annotate")}
+			/>
+			<SymbolFieldsAction
+				ir={state.ir}
+				onApply={actions.applyModelCommand}
+				onOpenRef={actionRefs?.symbolFields}
+				visible={isVisible("symbolFields")}
+			/>
 			<AssignFootprintsAction
 				ir={state.ir}
 				onApply={actions.applyModelCommand}
+				onOpenRef={actionRefs?.assignFootprints}
+				visible={isVisible("assignFootprints")}
 			/>
 		</div>
 	);
 }
 
-function ActionGroup({ state, actions }) {
+function ActionGroup({ state, actions, visibleIds }) {
+	const isVisible = (id) => !visibleIds || visibleIds.includes(id);
 	return (
 		<>
 			<HistoryButtons
@@ -744,13 +985,18 @@ function ActionGroup({ state, actions }) {
 				canRedo={state.canRedo}
 				undo={actions.undo}
 				redo={actions.redo}
+				visibleIds={visibleIds}
 			/>
-			<AddPartButton onAddPart={actions.openLibrary} />
+			<AddPartButton
+				onAddPart={actions.openLibrary}
+				visible={isVisible("addPart")}
+			/>
 			<EditActionButtons
 				hasSelection={state.hasSelection}
 				rotate={actions.rotate}
 				flip={actions.flip}
 				remove={actions.remove}
+				visibleIds={visibleIds}
 			/>
 		</>
 	);
@@ -782,29 +1028,295 @@ function RunErcButton({ loading, onRun }) {
 	);
 }
 
-function ChecksAction({ activeTab, loading, onRun }) {
+function ChecksAction({ activeTab, loading, onRun, visible = true }) {
+	if (visible === false) return null;
 	if (activeTab === "pcb") {
 		return <RunDrcButton loading={loading} onRun={onRun} />;
 	}
 	return <RunErcButton loading={loading} onRun={onRun} />;
 }
 
-function EditorToolbar({ state, actions }) {
+function useToolbarWidth(ref) {
+	const [width, setWidth] = useState(null);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		const update = (entries) => {
+			const entry = entries?.[0];
+			if (entry?.contentRect) {
+				setWidth(entry.contentRect.width);
+			} else {
+				setWidth(el.getBoundingClientRect().width);
+			}
+		};
+		update([{ contentRect: { width: el.getBoundingClientRect().width } }]);
+		if (typeof ResizeObserver === "undefined") return;
+		const ro = new ResizeObserver(update);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [ref]);
+
+	return width;
+}
+
+function createExportMenuItem(state, actions) {
+	return {
+		key: "export",
+		label: "Export",
+		icon: <DownloadOutlined />,
+		children: buildExportItems(state).map((it) => ({
+			key: `export-${it.key}`,
+			label: it.label,
+			disabled: it.disabled,
+			onClick: () => runExportAction(it.key, actions),
+		})),
+	};
+}
+
+function createEditMoreItem(id, state, actions) {
+	const map = {
+		undo: {
+			key: "undo",
+			label: "Undo (Ctrl+Z)",
+			icon: <UndoOutlined />,
+			disabled: !state.canUndo,
+			onClick: actions.undo,
+		},
+		redo: {
+			key: "redo",
+			label: "Redo (Ctrl+Y)",
+			icon: <RedoOutlined />,
+			disabled: !state.canRedo,
+			onClick: actions.redo,
+		},
+		addPart: {
+			key: "addPart",
+			label: "Add part (A)",
+			icon: <PlusOutlined />,
+			onClick: actions.openLibrary,
+		},
+		rotate: {
+			key: "rotate",
+			label: "Rotate 90° (R)",
+			icon: <RotateRightOutlined />,
+			disabled: !state.hasSelection,
+			onClick: actions.rotate,
+		},
+		flip: {
+			key: "flip",
+			label: "Flip Side (F)",
+			icon: <SwapOutlined />,
+			disabled: !state.hasSelection,
+			onClick: actions.flip,
+		},
+		delete: {
+			key: "delete",
+			label: "Delete (Del)",
+			icon: <DeleteOutlined />,
+			disabled: !state.hasSelection,
+			onClick: actions.remove,
+			danger: true,
+		},
+	};
+	return map[id] ?? null;
+}
+
+function createSaveMoreItem(id, state, actions) {
+	if (id === "save") {
+		return {
+			key: "save",
+			label: "Save (Ctrl+S)",
+			icon: <SaveOutlined />,
+			disabled: !state.dirty,
+			onClick: actions.save,
+		};
+	}
+	if (id === "saveCommit") {
+		return {
+			key: "saveCommit",
+			label: "Save and commit",
+			icon: <SaveOutlined />,
+			disabled: !state.dirty,
+			onClick: actions.openCommit,
+		};
+	}
+	return null;
+}
+
+function createToolMoreItem(id, state, actions, actionRefs) {
 	const isPcb = state.activeTab === "pcb";
+	if (id === "annotate")
+		return {
+			key: "annotate",
+			label: "Annotate",
+			onClick: () => actionRefs?.annotate?.current?.(),
+		};
+	if (id === "symbolFields")
+		return {
+			key: "symbolFields",
+			label: "Edit symbol fields",
+			icon: <TableOutlined />,
+			onClick: () => actionRefs?.symbolFields?.current?.(),
+		};
+	if (id === "assignFootprints")
+		return {
+			key: "assignFootprints",
+			label: "Assign footprints",
+			icon: <AppstoreOutlined />,
+			onClick: () => actionRefs?.assignFootprints?.current?.(),
+		};
+	if (id === "checks")
+		return {
+			key: "checks",
+			label: isPcb ? "Run DRC" : "Run ERC",
+			icon: <PlayCircleOutlined />,
+			disabled: state.checksLoading,
+			onClick: actions.runChecks,
+		};
+	if (id === "export") return createExportMenuItem(state, actions);
+	return null;
+}
+
+function createMoreMenuItem(id, state, actions, actionRefs) {
+	return (
+		createEditMoreItem(id, state, actions) ||
+		createSaveMoreItem(id, state, actions) ||
+		createToolMoreItem(id, state, actions, actionRefs)
+	);
+}
+
+function buildMoreMenuItems(overflowIds, state, actions, actionRefs) {
+	const items = [];
+	for (const id of overflowIds) {
+		const item = createMoreMenuItem(id, state, actions, actionRefs);
+		if (item) items.push(item);
+	}
+	return items;
+}
+
+function MoreDropdown({ items }) {
+	if (!items || items.length === 0) return null;
+	return (
+		<Dropdown menu={{ items }} trigger={["click"]}>
+			<Tooltip title="More actions">
+				<Button
+					icon={<EllipsisOutlined />}
+					size="small"
+					aria-label="More actions"
+				/>
+			</Tooltip>
+		</Dropdown>
+	);
+}
+
+function getTabItemIds(isPcb) {
+	if (isPcb) {
+		return [
+			"undo",
+			"redo",
+			"addPart",
+			"rotate",
+			"flip",
+			"delete",
+			"save",
+			"saveCommit",
+			"boardTools",
+			"checks",
+			"export",
+		];
+	}
+	return [
+		"undo",
+		"redo",
+		"addPart",
+		"rotate",
+		"flip",
+		"delete",
+		"save",
+		"saveCommit",
+		"annotate",
+		"symbolFields",
+		"assignFootprints",
+		"checks",
+		"export",
+	];
+}
+
+function buildToolbarItemsForTab(isPcb) {
+	const ids = getTabItemIds(isPcb);
+	return ids.map((id) => ({
+		id,
+		width: DEFAULT_ITEM_WIDTHS[id] ?? 32,
+		priority: DEFAULT_TOOLBAR_PRIORITIES[id] ?? 50,
+	}));
+}
+
+function useToolbarState(state, actions) {
+	const isPcb = state.activeTab === "pcb";
+	const containerRef = useRef(null);
+	const width = useToolbarWidth(containerRef);
+	const annotateRef = useRef(null);
+	const symbolFieldsRef = useRef(null);
+	const assignFootprintsRef = useRef(null);
+	const actionRefs = useMemo(
+		() => ({
+			annotate: annotateRef,
+			symbolFields: symbolFieldsRef,
+			assignFootprints: assignFootprintsRef,
+		}),
+		[],
+	);
+	const items = useMemo(() => buildToolbarItemsForTab(isPcb), [isPcb]);
+	const { visible, overflow } = useMemo(
+		() =>
+			computeToolbarOverflow({
+				items,
+				containerWidth: width,
+				moreWidth: 32,
+				gap: 4,
+			}),
+		[items, width],
+	);
+	const moreItems = useMemo(
+		() => buildMoreMenuItems(overflow, state, actions, actionRefs),
+		[overflow, state, actions, actionRefs],
+	);
+	return { containerRef, visible, moreItems, actionRefs, isPcb };
+}
+
+function EditorToolbar({ state, actions }) {
+	const { containerRef, visible, moreItems, actionRefs, isPcb } =
+		useToolbarState(state, actions);
+	const isVis = (id) => visible.includes(id);
+
 	return (
 		<div
+			ref={containerRef}
 			style={TOOLBAR_CONTAINER_STYLE}
 			role="toolbar"
 			aria-label="Editor tools"
 		>
-			<ActionGroup state={state} actions={actions} />
+			<ActionGroup state={state} actions={actions} visibleIds={visible} />
 			<ModeButtons
 				dirty={state.dirty}
 				save={actions.save}
 				openCommit={actions.openCommit}
+				visibleIds={visible}
 			/>
-			<SchematicTools state={state} actions={actions} visible={!isPcb} />
-			<div style={{ display: isPcb ? "flex" : "none", alignItems: "center" }}>
+			<SchematicTools
+				state={state}
+				actions={actions}
+				visible={!isPcb}
+				visibleIds={visible}
+				actionRefs={actionRefs}
+			/>
+			<div
+				style={{
+					display: isPcb && isVis("boardTools") ? "flex" : "none",
+					alignItems: "center",
+				}}
+			>
 				<BoardTools
 					ir={state.ir}
 					board={state.board}
@@ -816,8 +1328,14 @@ function EditorToolbar({ state, actions }) {
 				activeTab={state.activeTab}
 				loading={state.checksLoading}
 				onRun={actions.runChecks}
+				visible={isVis("checks")}
 			/>
-			<ExportDropdown state={state} actions={actions} />
+			<ExportDropdown
+				state={state}
+				actions={actions}
+				visible={isVis("export")}
+			/>
+			<MoreDropdown items={moreItems} />
 		</div>
 	);
 }
@@ -1115,7 +1633,7 @@ function useExportAction({ api, ir, board }) {
 	return { exportKiCad, exporting };
 }
 
-async function exportDesignFile(api, ir, board, ext, fileLabel) {
+async function exportDesignFile({ api, ir, board, ext, fileLabel }) {
 	if (typeof api?.editorExport !== "function") {
 		throw new Error("KiCad export is not available");
 	}
@@ -1131,11 +1649,23 @@ async function exportDesignFile(api, ir, board, ext, fileLabel) {
 }
 
 async function exportPcbText(api, ir, board) {
-	return exportDesignFile(api, ir, board, ".kicad_pcb", "PCB");
+	return exportDesignFile({
+		api,
+		ir,
+		board,
+		ext: ".kicad_pcb",
+		fileLabel: "PCB",
+	});
 }
 
 async function exportSchText(api, ir, board) {
-	return exportDesignFile(api, ir, board, ".kicad_sch", "schematic");
+	return exportDesignFile({
+		api,
+		ir,
+		board,
+		ext: ".kicad_sch",
+		fileLabel: "schematic",
+	});
 }
 
 function resolveFabOutputs(outputs) {
