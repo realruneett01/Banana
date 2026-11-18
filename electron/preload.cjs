@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 // Subscribe to a main-process event; returns an unsubscribe function.
 function subscribe(channel) {
@@ -12,6 +12,8 @@ function subscribe(channel) {
 contextBridge.exposeInMainWorld("banana", {
 	isElectron: true,
 	platform: process.platform,
+
+	getPathForFile: (file) => webUtils.getPathForFile(file),
 
 	// Open external links safely via OS default browser (shell.openExternal)
 	openExternal: (url) => ipcRenderer.invoke("banana:open-external", url),

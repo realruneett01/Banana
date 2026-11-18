@@ -1,7 +1,22 @@
-import { message } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE_URL } from "./config.js";
+import { Button, Modal, message } from "antd";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { onCommitCreated } from "./designEvents.js";
+
+async function resolveBaseUrl() {
+	try {
+		const mod = await import("./config.js");
+		return mod.API_BASE_URL;
+	} catch (_err) {
+		// Fallback for Node test environment where import.meta.env is undefined
+		const envVal =
+			typeof process !== "undefined" ? process.env?.VITE_API_URL : null;
+		return envVal?.trim()
+			? envVal.trim().replace(/\/+$/, "")
+			: "http://localhost:5000";
+	}
+}
+
+export const API_BASE_URL = await resolveBaseUrl();
 
 function isKiCadDesignFile(filePath) {
 	return filePath?.endsWith(".kicad_pcb") || filePath?.endsWith(".kicad_sch");
@@ -245,7 +260,135 @@ function useChangedFilesFetcher({ form, setRelativeFilePath }) {
 	return { changedFiles, setChangedFiles, fetchChangedFiles };
 }
 
-function useGitDropHandlers({ form, setRelativeFilePath, loadRepoInfo }) {
+function getDroppedDirectoryName(dataTransfer) {
+	const item = dataTransfer?.items?.[0];
+	const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+	if (!entry?.isDirectory) return null;
+	return entry.name || null;
+}
+
+function formatNoRepoMatchError(name) {
+	return `Could not find a Git repository named ${name} in your Desktop, Documents or Banana folders. Paste its full path in the Repository path box.`;
+}
+
+function formatRepoFindResult(matches, name) {
+	if (matches.length === 1) {
+		return { path: matches[0] };
+	}
+	if (matches.length > 1) {
+		return { choices: matches };
+	}
+	return { error: formatNoRepoMatchError(name) };
+}
+
+async function queryLocalRepoMatches(name, baseUrl, fetchImpl) {
+	const host = (baseUrl || "").replace(/\/+$/, "");
+	const url = `${host}/api/local-repos/find?name=${encodeURIComponent(name)}`;
+	const response = await fetchImpl(url);
+	if (!response.ok) {
+		throw new Error(`Failed to search repository: ${response.status}`);
+	}
+	const data = await response.json();
+	return Array.isArray(data?.matches) ? data.matches : [];
+}
+
+export async function resolveDroppedFolder(
+	dataTransfer,
+	{
+		banana = globalThis.window?.banana,
+		fetchImpl = fetch,
+		baseUrl = API_BASE_URL,
+	} = {},
+) {
+	if (banana?.getPathForFile && dataTransfer?.files?.[0]) {
+		const filePath = banana.getPathForFile(dataTransfer.files[0]);
+		if (filePath) return { path: filePath };
+	}
+	const name = getDroppedDirectoryName(dataTransfer);
+	if (!name) {
+		return {
+			error:
+				"To initialize branches/commits, please drag and drop the root Git repository folder.",
+		};
+	}
+	try {
+		const matches = await queryLocalRepoMatches(name, baseUrl, fetchImpl);
+		return formatRepoFindResult(matches, name);
+	} catch (err) {
+		// Return friendly error object when repository search request fails
+		return { error: err.message || "Failed to search for local repositories" };
+	}
+}
+
+function renderChoiceButtons(choices, onClick) {
+	const style = {
+		textAlign: "left",
+		whiteSpace: "normal",
+		height: "auto",
+		padding: "8px 12px",
+	};
+	const buttons = choices.map((c) =>
+		React.createElement(
+			Button,
+			{
+				key: c,
+				type: "default",
+				block: true,
+				style,
+				onClick: () => onClick(c),
+			},
+			c,
+		),
+	);
+	return React.createElement(
+		"div",
+		{
+			style: {
+				display: "flex",
+				flexDirection: "column",
+				gap: "8px",
+				marginTop: "16px",
+			},
+		},
+		buttons,
+	);
+}
+
+function showRepoChoicesModal(choices, onSelect) {
+	let modalInstance = null;
+	const onClick = (choice) => {
+		modalInstance?.destroy();
+		onSelect(choice);
+	};
+	const content = renderChoiceButtons(choices, onClick);
+	modalInstance = Modal.info({
+		title: "Select Repository",
+		icon: null,
+		closable: true,
+		maskClosable: true,
+		footer: null,
+		content,
+	});
+}
+
+function applyRepoPath(path, form, setRepoPath, loadRepoInfo) {
+	form.setFieldValue("repoPath", path);
+	setRepoPath(path);
+	loadRepoInfo(path, false);
+}
+
+function isSingleFileDrop(dataTransfer) {
+	const item = dataTransfer?.items?.[0];
+	const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+	return Boolean(entry ? !entry.isDirectory : item?.getAsFile?.());
+}
+
+function useGitDropHandlers({
+	form,
+	setRelativeFilePath,
+	setRepoPath,
+	loadRepoInfo,
+}) {
 	const repoLoadTimeoutRef = useRef(null);
 
 	const handleFileDraggedOrDropped = useCallback(
@@ -272,19 +415,26 @@ function useGitDropHandlers({ form, setRelativeFilePath, loadRepoInfo }) {
 	);
 
 	const handleFolderDrop = useCallback(
-		(e) => {
+		async (e) => {
 			e.preventDefault();
-			const item = e.dataTransfer.items?.[0];
-			const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-			if (entry?.isDirectory) {
-				loadRepoInfo(entry.name, false);
-			} else if (item?.getAsFile?.()) {
+			if (isSingleFileDrop(e.dataTransfer)) {
 				message.info(
 					"To initialize branches/commits, please drag and drop the root Git repository folder.",
 				);
+				return;
+			}
+			const result = await resolveDroppedFolder(e.dataTransfer);
+			if (result.path) {
+				applyRepoPath(result.path, form, setRepoPath, loadRepoInfo);
+			} else if (result.choices?.length) {
+				showRepoChoicesModal(result.choices, (chosen) => {
+					applyRepoPath(chosen, form, setRepoPath, loadRepoInfo);
+				});
+			} else if (result.error) {
+				message.warning(result.error);
 			}
 		},
-		[loadRepoInfo],
+		[form, loadRepoInfo, setRepoPath],
 	);
 
 	return { handleFileDraggedOrDropped, handleFolderDrop };
@@ -343,6 +493,7 @@ export function useLocalGitRepo(options) {
 	const { handleFileDraggedOrDropped, handleFolderDrop } = useGitDropHandlers({
 		form,
 		setRelativeFilePath,
+		setRepoPath,
 		loadRepoInfo,
 	});
 
