@@ -36,97 +36,95 @@ const {
 	getDatasheetValue,
 } = await loadHelpers();
 
-function checkRefValidity(cases, expected) {
-	for (const ref of cases) {
-		assert.equal(isValidReference(ref), expected);
-	}
+function checkTable(rows, run, assertFn = assert.equal) {
+	rows.forEach(([given, expected]) => {
+		assertFn(run(given), expected);
+	});
 }
 
-function checkUniqueness(cases, other) {
-	for (const [ref, expected] of cases) {
-		assert.equal(isUniqueReference(ref, other), expected);
-	}
-}
-
-function assertRefValidation(actual, expected) {
-	assert.deepEqual(
-		{
-			valid: actual.valid,
-			error: actual.error,
-			isUnique: actual.isUnique,
-			hint: actual.hint,
-		},
-		expected,
-	);
-}
-
-function createTestEditor() {
-	return createEditor({
-		schemaVersion: 1,
-		name: "prop-test",
+function makeEditorFixture() {
+	const editor = createEditor({
 		parts: [
 			{
 				id: "part_u1",
 				ref: "U1",
-				value: "NE555",
-				symbol: "Timer:NE555",
-				footprint: "Package_SO:SOIC-8",
-				props: { Datasheet: "http://example.com/ne555.pdf" },
-				placement: { x: 10, y: 20, rot: 0, side: "F" },
+				placement: { side: "F" },
 			},
 		],
-		nets: [],
-		constraints: [],
 	});
+	return {
+		editor,
+		firstPart: () => editor.state.ir.parts[0],
+	};
 }
 
 describe("reference validation logic", () => {
 	test("isValidReference accepts letters followed by digits or ?", () => {
-		checkRefValidity(["R1", "C12", "U?", "D?", "SW100", "LED1", " R1 "], true);
+		checkTable(
+			["R1", "C12", "U?", "D?", "SW100", "LED1", " R1 "].map((ref) => [
+				ref,
+				true,
+			]),
+			isValidReference,
+		);
 	});
 
 	test("isValidReference rejects non-compliant reference formats", () => {
-		checkRefValidity(
-			["", "   ", "1R", "R", "R1A", "R!", "R?1", null, undefined, 123],
-			false,
+		checkTable(
+			["", "   ", "1R", "R", "R1A", "R!", "R?1", null, undefined, 123].map(
+				(ref) => [ref, false],
+			),
+			isValidReference,
 		);
 	});
 
 	test("isUniqueReference detects duplicates across other parts", () => {
-		checkUniqueness(
+		checkTable(
 			[
 				["R1", true],
 				["R2", false],
 				["R2 ", false],
 			],
-			["R2", "R3", "C1", "U1"],
+			(ref) => isUniqueReference(ref, ["R2", "R3", "C1", "U1"]),
 		);
 	});
 
 	test("isUniqueReference allows wildcard unannotated references ending with ?", () => {
-		checkUniqueness(
+		checkTable(
 			[
 				["R?", true],
 				["C?", true],
 			],
-			["R?", "C?"],
+			(ref) => isUniqueReference(ref, ["R?", "C?"]),
 		);
 	});
 
 	test("validateReference produces appropriate valid, error and hint states", () => {
 		const other = ["R2", "C1"];
-		assertRefValidation(validateReference("R1", other), {
-			valid: true,
-			error: "",
-			isUnique: true,
-			hint: "",
-		});
-		assertRefValidation(validateReference("R2", other), {
-			valid: true,
-			error: "",
-			isUnique: false,
-			hint: "Reference already in use",
-		});
+		checkTable(
+			[
+				["R1", { valid: true, error: "", isUnique: true, hint: "" }],
+				[
+					"R2",
+					{
+						valid: true,
+						error: "",
+						isUnique: false,
+						hint: "Reference already in use",
+					},
+				],
+			],
+			(ref) => {
+				const res = validateReference(ref, other);
+				return {
+					valid: res.valid,
+					error: res.error,
+					isUnique: res.isUnique,
+					hint: res.hint,
+				};
+			},
+			assert.deepEqual,
+		);
 		const invalidFormat = validateReference("123", other);
 		assert.equal(invalidFormat.valid, false);
 		assert.match(invalidFormat.error, /letters followed by digits or \?/);
@@ -140,51 +138,52 @@ describe("extractOtherRefs", () => {
 			{ id: "p2", ref: "R2" },
 			{ id: "p3", ref: "C1" },
 		];
-		const testCases = [
-			["p1", ["R2", "C1"]],
-			["p2", ["R1", "C1"]],
-			["non-existent", ["R1", "R2", "C1"]],
-		];
-		for (const [id, expected] of testCases) {
-			assert.deepEqual(extractOtherRefs(parts, id), expected);
-		}
+		checkTable(
+			[
+				["p1", ["R2", "C1"]],
+				["p2", ["R1", "C1"]],
+				["non-existent", ["R1", "R2", "C1"]],
+			],
+			(id) => extractOtherRefs(parts, id),
+			assert.deepEqual,
+		);
 	});
 
 	test("handles null, missing, or malformed parts list gracefully", () => {
-		const invalidInputs = [null, [], [null, { id: "p2" }]];
-		for (const input of invalidInputs) {
-			assert.deepEqual(extractOtherRefs(input, "p1"), []);
-		}
+		checkTable(
+			[null, [], [null, { id: "p2" }]].map((input) => [input, []]),
+			(input) => extractOtherRefs(input, "p1"),
+			assert.deepEqual,
+		);
 	});
 });
 
 describe("command builder functions", () => {
 	test("buildFieldEditCommand creates setPartField for valid fields", () => {
-		const validFields = [
-			["ref", "U9"],
-			["value", "LM358"],
-			["footprint", "Package_SO:SOIC-8"],
-		];
-		for (const [field, value] of validFields) {
-			assert.deepEqual(buildFieldEditCommand("part_u1", field, value), {
-				type: "setPartField",
-				partId: "part_u1",
-				field,
-				value,
-			});
-		}
+		checkTable(
+			[
+				["ref", "U9"],
+				["value", "LM358"],
+				["footprint", "Package_SO:SOIC-8"],
+			].map(([field, value]) => [
+				[field, value],
+				{ type: "setPartField", partId: "part_u1", field, value },
+			]),
+			([field, value]) => buildFieldEditCommand("part_u1", field, value),
+			assert.deepEqual,
+		);
 	});
 
 	test("buildFieldEditCommand returns null for datasheet or unknown fields", () => {
-		const invalidCases = [
-			["part_u1", "datasheet", "https://example.com"],
-			["part_u1", "unknown", "val"],
-			["", "ref", "R1"],
-			["part_u1", "ref", 123],
-		];
-		for (const [partId, field, val] of invalidCases) {
-			assert.equal(buildFieldEditCommand(partId, field, val), null);
-		}
+		checkTable(
+			[
+				["part_u1", "datasheet", "https://example.com"],
+				["part_u1", "unknown", "val"],
+				["", "ref", "R1"],
+				["part_u1", "ref", 123],
+			].map((args) => [args, null]),
+			([partId, field, val]) => buildFieldEditCommand(partId, field, val),
+		);
 	});
 
 	test("buildFlipCommand builds valid flipPart command", () => {
@@ -196,67 +195,67 @@ describe("command builder functions", () => {
 	});
 
 	test("getLayerLabel formats PCB side and layer correctly", () => {
-		const layerCases = [
-			["F", "Top (F.Cu)"],
-			["B", "Bottom (B.Cu)"],
-			[undefined, "Top (F.Cu)"],
-		];
-		for (const [side, expected] of layerCases) {
-			assert.equal(getLayerLabel(side), expected);
-		}
+		checkTable(
+			[
+				["F", "Top (F.Cu)"],
+				["B", "Bottom (B.Cu)"],
+				[undefined, "Top (F.Cu)"],
+			],
+			getLayerLabel,
+		);
 	});
 
 	test("getDatasheetValue retrieves datasheet from various schema locations", () => {
-		const datasheetCases = [
-			[{ datasheet: "https://ds.example.com" }, "https://ds.example.com"],
+		checkTable(
 			[
-				{ props: { Datasheet: "https://kicad-ds.com" } },
-				"https://kicad-ds.com",
+				[{ datasheet: "https://ds.example.com" }, "https://ds.example.com"],
+				[
+					{ props: { Datasheet: "https://kicad-ds.com" } },
+					"https://kicad-ds.com",
+				],
+				[
+					{ props: { datasheet: "https://lower-ds.com" } },
+					"https://lower-ds.com",
+				],
+				[{}, ""],
+				[null, ""],
 			],
-			[
-				{ props: { datasheet: "https://lower-ds.com" } },
-				"https://lower-ds.com",
-			],
-			[{}, ""],
-			[null, ""],
-		];
-		for (const [input, expected] of datasheetCases) {
-			assert.equal(getDatasheetValue(input), expected);
-		}
+			getDatasheetValue,
+		);
 	});
 });
 
 describe("integration with editorModel dispatch and undo/redo", () => {
 	test("field edit command executes and un-does cleanly via editorModel", () => {
-		const editor = createTestEditor();
+		const { editor, firstPart } = makeEditorFixture();
 		editor.dispatch(buildFieldEditCommand("part_u1", "ref", "U100"));
 		assert.deepEqual(
-			{ ref: editor.state.ir.parts[0].ref, canUndo: editor.canUndo },
+			{ ref: firstPart().ref, canUndo: editor.canUndo },
 			{ ref: "U100", canUndo: true },
 		);
 
 		editor.undo();
 		assert.deepEqual(
-			{ ref: editor.state.ir.parts[0].ref, canRedo: editor.canRedo },
+			{ ref: firstPart().ref, canRedo: editor.canRedo },
 			{ ref: "U1", canRedo: true },
 		);
 
 		editor.redo();
-		assert.equal(editor.state.ir.parts[0].ref, "U100");
+		assert.equal(firstPart().ref, "U100");
 	});
 
 	test("flipPart command executes and un-does cleanly via editorModel", () => {
-		const editor = createTestEditor();
+		const { editor, firstPart } = makeEditorFixture();
 		editor.dispatch(buildFlipCommand("part_u1"));
 		assert.deepEqual(
 			{
-				side: editor.state.ir.parts[0].placement.side,
+				side: firstPart().placement.side,
 				canUndo: editor.canUndo,
 			},
 			{ side: "B", canUndo: true },
 		);
 
 		editor.undo();
-		assert.equal(editor.state.ir.parts[0].placement.side, "F");
+		assert.equal(firstPart().placement.side, "F");
 	});
 });
