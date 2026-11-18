@@ -2,31 +2,40 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { resolveListenHost } from "../../backend/src/config.js";
 
-const ANY = "0.0.0.0";
-const LOOPBACK = "127.0.0.1";
-const ALLOW = "BANANA_ALLOW_LOCAL_REPOS";
+const DEFAULT_HOST = "0.0.0.0";
+const LOCAL_HOST = "127.0.0.1";
+const LOCAL_REPO_ENV = "BANANA_ALLOW_LOCAL_REPOS";
 
-// [name, env, expected]
-const CASES = [
-	["defaults to 0.0.0.0 when empty", {}, ANY],
-	[`binds to loopback when ${ALLOW} is 1`, { [ALLOW]: "1" }, LOOPBACK],
-	[`defaults to 0.0.0.0 when ${ALLOW} is not 1`, { [ALLOW]: "0" }, ANY],
-	[
-		`prefers explicit HOST over ${ALLOW}`,
-		{ HOST: "10.0.0.5", [ALLOW]: "1" },
+const buildSpec = (name, env, expected) => ({ name, env, expected });
+
+const SCENARIOS = [
+	buildSpec("defaults to 0.0.0.0 when empty", {}, DEFAULT_HOST),
+	buildSpec(
+		`binds to loopback when ${LOCAL_REPO_ENV} is 1`,
+		{ [LOCAL_REPO_ENV]: "1" },
+		LOCAL_HOST,
+	),
+	buildSpec(
+		`defaults to 0.0.0.0 when ${LOCAL_REPO_ENV} is not 1`,
+		{ [LOCAL_REPO_ENV]: "0" },
+		DEFAULT_HOST,
+	),
+	buildSpec(
+		`prefers explicit HOST over ${LOCAL_REPO_ENV}`,
+		{ HOST: "10.0.0.5", [LOCAL_REPO_ENV]: "1" },
 		"10.0.0.5",
-	],
-	[
+	),
+	buildSpec(
 		"ignores whitespace-only HOST and falls back to 0.0.0.0",
 		{ HOST: "  " },
-		ANY,
-	],
+		DEFAULT_HOST,
+	),
 ];
 
 describe("resolveListenHost", () => {
-	for (const [name, env, expected] of CASES) {
+	SCENARIOS.forEach(({ name, env, expected }) => {
 		test(name, () => {
 			assert.equal(resolveListenHost(env), expected);
 		});
-	}
+	});
 });
