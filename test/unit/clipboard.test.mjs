@@ -161,11 +161,15 @@ describe("copySchematic", () => {
 	test("deep copies selected parts, annotations, sheets and computes origin", () => {
 		const doc = makeDoc();
 		const clip = copySchematic(doc, ["p_u1", "p_r1", "ann_1"]);
-		assert.equal(clip.kind, "schematic");
-		assert.deepEqual(clip.origin, { x: 100, y: 50 });
-		assert.equal(clip.parts.length, 2);
-		assert.equal(clip.annotations.length, 1);
-		assert.equal(clip.sheets.length, 0);
+		for (const [actual, expected] of [
+			[clip.kind, "schematic"],
+			[clip.origin, { x: 100, y: 50 }],
+			[clip.parts.length, 2],
+			[clip.annotations.length, 1],
+			[clip.sheets.length, 0],
+		]) {
+			assert.deepEqual(actual, expected);
+		}
 	});
 
 	test("keeps wires between copied parts and drops connections to non-copied parts", () => {
