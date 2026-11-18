@@ -36,6 +36,19 @@ import {
 const { Text } = Typography;
 const { TextArea } = Input;
 
+// --- Pure panel chrome helpers ---
+export function panelChrome({ inline = false, title, onClose } = {}) {
+	const isInline = Boolean(inline);
+	return {
+		isInline,
+		wrapper: isInline ? "inline" : "drawer",
+		showHeader: Boolean(title || (isInline && onClose)),
+		showClose: Boolean(onClose),
+		headerHeight: isInline ? 30 : undefined,
+	};
+}
+// --- End pure panel chrome helpers ---
+
 const PROMPT_ENTRIES = {
 	"Explain detected diffs": [
 		AimOutlined,
@@ -114,6 +127,33 @@ const DRAWER_STYLES = {
 		overflow: "hidden",
 	},
 };
+
+const INLINE_CONTAINER_STYLE = Object.freeze({
+	height: "100%",
+	display: "flex",
+	flexDirection: "column",
+	overflow: "hidden",
+	background: "#0f1015",
+});
+
+const INLINE_HEADER_STYLE = Object.freeze({
+	height: "30px",
+	minHeight: "30px",
+	maxHeight: "30px",
+	boxSizing: "border-box",
+	display: "flex",
+	alignItems: "center",
+	justifyContent: "space-between",
+	padding: "0 8px",
+	background: PANEL_BG,
+	borderBottom: `1px solid ${PANEL_BORDER}`,
+});
+
+const INLINE_BODY_STYLE = Object.freeze({
+	...DRAWER_STYLES.body,
+	flex: 1,
+	minHeight: 0,
+});
 
 const UI_STYLES = {
 	avatar: {
@@ -357,12 +397,20 @@ function HeaderBrand({ activeModel }) {
 	);
 }
 
-function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
+function HeaderActions({
+	hasKey,
+	onOpenSettings,
+	onClearHistory,
+	onClose,
+	compact,
+}) {
+	const btnSize = compact ? "small" : undefined;
 	return (
-		<Space size="small">
+		<Space size={compact ? 2 : "small"}>
 			<Tooltip title="Copilot Settings (API Key & Model)">
 				<Button
 					type="text"
+					size={btnSize}
 					icon={<SettingOutlined />}
 					onClick={onOpenSettings}
 					style={{ color: hasKey ? "#52c41a" : "#faad14" }}
@@ -371,23 +419,48 @@ function HeaderActions({ hasKey, onOpenSettings, onClearHistory, onClose }) {
 			<Tooltip title="Clear chat history">
 				<Button
 					type="text"
+					size={btnSize}
 					icon={<DeleteOutlined />}
 					onClick={onClearHistory}
 					style={{ color: "#a6adbb" }}
 				/>
 			</Tooltip>
-			<Button
-				type="text"
-				icon={<CloseOutlined />}
-				onClick={onClose}
-				style={{ color: "#a6adbb" }}
-			/>
+			{onClose && (
+				<Button
+					type="text"
+					size={btnSize}
+					icon={<CloseOutlined />}
+					onClick={onClose}
+					style={{ color: "#a6adbb" }}
+				/>
+			)}
 		</Space>
 	);
 }
 
 function checkKeyConfigured(apiKey, serverKeyAvailable) {
 	return Boolean(apiKey || serverKeyAvailable);
+}
+
+function ChatInlineHeader({ ai, onClose }) {
+	const hasKey = checkKeyConfigured(ai.apiKey, ai.serverKeyAvailable);
+	return (
+		<div style={INLINE_HEADER_STYLE}>
+			<Space align="center" size={6}>
+				<span style={{ fontSize: "13px" }}>🍌</span>
+				<Text strong style={{ color: "#fff", fontSize: "12px" }}>
+					Banana Hardware Copilot
+				</Text>
+			</Space>
+			<HeaderActions
+				hasKey={hasKey}
+				onOpenSettings={() => ai.setIsSettingsOpen(true)}
+				onClearHistory={ai.handleClearHistory}
+				onClose={onClose}
+				compact
+			/>
+		</div>
+	);
 }
 
 function ChatDrawerHeader({ ai, onClose }) {
@@ -625,14 +698,13 @@ function CopilotSettingsDialog({ ai }) {
 	);
 }
 
-export default function ChatbotDrawer({
+function ChatbotDrawerView({
+	ai,
+	boardContext,
+	onSelectModification,
 	open,
 	onClose,
-	boardContext = {},
-	onSelectModification,
 }) {
-	const ai = useChatbotAi(boardContext);
-
 	return (
 		<>
 			<Drawer
@@ -653,5 +725,65 @@ export default function ChatbotDrawer({
 			</Drawer>
 			<CopilotSettingsDialog ai={ai} />
 		</>
+	);
+}
+
+function ChatbotInlineView({
+	ai,
+	boardContext,
+	onSelectModification,
+	onClose,
+	chrome,
+}) {
+	return (
+		<div style={INLINE_CONTAINER_STYLE}>
+			{chrome.showHeader && <ChatInlineHeader ai={ai} onClose={onClose} />}
+			<div style={INLINE_BODY_STYLE}>
+				<ChatDrawerBody
+					ai={ai}
+					boardContext={boardContext}
+					onSelectModification={onSelectModification}
+					open={true}
+				/>
+			</div>
+			<CopilotSettingsDialog ai={ai} />
+		</div>
+	);
+}
+
+export default function ChatbotDrawer({
+	open,
+	onClose,
+	boardContext = {},
+	onSelectModification,
+	inline = false,
+}) {
+	const ai = useChatbotAi(boardContext);
+	const chrome = panelChrome({
+		inline,
+		title: "Banana Hardware Copilot",
+		onClose,
+	});
+
+	if (chrome.isInline) {
+		return (
+			<ChatbotInlineView
+				ai={ai}
+				boardContext={boardContext}
+				onSelectModification={onSelectModification}
+				onClose={onClose}
+				chrome={chrome}
+			/>
+		);
+	}
+
+	return (
+		<ChatbotDrawerView
+			ai={ai}
+			boardContext={boardContext}
+			onSelectModification={onSelectModification}
+			open={open}
+			onClose={onClose}
+		/>
 	);
 }

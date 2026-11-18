@@ -1,3 +1,4 @@
+import { CloseOutlined } from "@ant-design/icons";
 import { Alert, Button, Drawer, Empty, Select, Spin, Tabs, Tag } from "antd";
 import { useMemo } from "react";
 import { API_BASE_URL } from "../config.js";
@@ -7,6 +8,19 @@ import EnvironmentEditor from "./EnvironmentEditor.jsx";
 import IssuesPanel from "./IssuesPanel.jsx";
 import { useRunCommits } from "./runCommits.js";
 import { useSimulation } from "./useSimulation.js";
+
+// --- Pure panel chrome helpers ---
+export function panelChrome({ inline = false, title, onClose } = {}) {
+	const isInline = Boolean(inline);
+	return {
+		isInline,
+		wrapper: isInline ? "inline" : "drawer",
+		showHeader: Boolean(title || (isInline && onClose)),
+		showClose: Boolean(onClose),
+		headerHeight: isInline ? 30 : undefined,
+	};
+}
+// --- End pure panel chrome helpers ---
 
 const TEXT_COLOR = "#e2e8f0";
 const PANEL_BORDER = "1px solid #1e2438";
@@ -38,6 +52,44 @@ const DRAWER_STYLES = Object.freeze({
 		color: TEXT_COLOR,
 		overflowY: "auto",
 	}),
+});
+
+const INLINE_CONTAINER_STYLE = Object.freeze({
+	height: "100%",
+	display: "flex",
+	flexDirection: "column",
+	overflow: "hidden",
+	background: "#0f121d",
+});
+
+const INLINE_HEADER_STYLE = Object.freeze({
+	height: "30px",
+	minHeight: "30px",
+	maxHeight: "30px",
+	boxSizing: "border-box",
+	display: "flex",
+	alignItems: "center",
+	justifyContent: "space-between",
+	padding: "0 10px",
+	background: "#121520",
+	borderBottom: PANEL_BORDER,
+	color: TEXT_COLOR,
+});
+
+const INLINE_TITLE_STYLE = Object.freeze({
+	fontSize: "12px",
+	fontWeight: 700,
+	color: TEXT_COLOR,
+	lineHeight: "30px",
+});
+
+const INLINE_BODY_STYLE = flexColumn("14px", {
+	flex: 1,
+	minHeight: 0,
+	background: "#0f121d",
+	padding: "14px",
+	color: TEXT_COLOR,
+	overflowY: "auto",
 });
 
 const CARD_STYLE = flexColumn("10px", {
@@ -362,30 +414,40 @@ function resolveCommits(commits, fallback) {
 	return fallback;
 }
 
-export default function SimulationDrawer({
-	open,
-	onClose,
-	ir,
-	commit,
-	commits,
-	onSelectItem,
-	api: apiProp,
-}) {
-	const api = useMemo(
-		() => apiProp ?? createSimApi({ baseUrl: API_BASE_URL }),
-		[apiProp],
-	);
-	const sim = useSimulation({ api, ir, commit });
-	const fetched = useRunCommits({ api, open });
-	const activeCommits = resolveCommits(commits, fetched);
-	const items = buildTabItems({
-		sim,
-		commit,
-		commits: activeCommits,
-		onSelectItem,
-		api,
-	});
+function SimulationContent({ items }) {
+	return <Tabs defaultActiveKey="run" items={items} />;
+}
 
+function SimInlineHeader({ onClose }) {
+	return (
+		<div style={INLINE_HEADER_STYLE}>
+			<span style={INLINE_TITLE_STYLE}>Simulate</span>
+			{onClose && (
+				<Button
+					type="text"
+					size="small"
+					icon={<CloseOutlined />}
+					onClick={onClose}
+					style={{ color: "#a6adbb" }}
+					aria-label="Close"
+				/>
+			)}
+		</div>
+	);
+}
+
+function SimulationInlineView({ items, onClose, chrome }) {
+	return (
+		<div style={INLINE_CONTAINER_STYLE}>
+			{chrome.showHeader && <SimInlineHeader onClose={onClose} />}
+			<div style={INLINE_BODY_STYLE}>
+				<SimulationContent items={items} />
+			</div>
+		</div>
+	);
+}
+
+function SimulationDrawerView({ items, open, onClose }) {
 	return (
 		<Drawer
 			title="Simulate"
@@ -396,7 +458,43 @@ export default function SimulationDrawer({
 			styles={DRAWER_STYLES}
 			className="bn-drawer"
 		>
-			<Tabs defaultActiveKey="run" items={items} />
+			<SimulationContent items={items} />
 		</Drawer>
 	);
+}
+
+export default function SimulationDrawer({
+	open,
+	onClose,
+	ir,
+	commit,
+	commits,
+	onSelectItem,
+	api: apiProp,
+	inline = false,
+}) {
+	const api = useMemo(
+		() => apiProp ?? createSimApi({ baseUrl: API_BASE_URL }),
+		[apiProp],
+	);
+	const sim = useSimulation({ api, ir, commit });
+	const isOpen = inline || open;
+	const fetched = useRunCommits({ api, open: isOpen });
+	const activeCommits = resolveCommits(commits, fetched);
+	const items = buildTabItems({
+		sim,
+		commit,
+		commits: activeCommits,
+		onSelectItem,
+		api,
+	});
+	const chrome = panelChrome({ inline, title: "Simulate", onClose });
+
+	if (chrome.isInline) {
+		return (
+			<SimulationInlineView items={items} onClose={onClose} chrome={chrome} />
+		);
+	}
+
+	return <SimulationDrawerView items={items} open={open} onClose={onClose} />;
 }
