@@ -12,6 +12,7 @@ import { createMcpHttpRouter } from "./mcp/http.js";
 import agentRouter from "./routes/agent-routes.js";
 import circuitRouter from "./routes/circuit-routes.js";
 import editorRouter from "./routes/editor-routes.js";
+import fabRouter from "./routes/fab-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import libraryRouter from "./routes/library-routes.js";
 import projectRouter from "./routes/project-routes.js";
@@ -143,6 +144,7 @@ const DESIGN_BODY_ROUTES = [
 	"/api/editor/bom",
 	"/api/editor/netlist",
 	"/api/editor/commit",
+	"/api/fab/export",
 	"/api/erc/run",
 	"/api/circuit/simulate",
 	"/api/circuit/suggest-faults",
@@ -179,6 +181,7 @@ export function createApp(options = {}) {
 	app.use("/api", agentRouter);
 	app.use("/api", circuitRouter);
 	app.use("/api", editorRouter);
+	app.use("/api", fabRouter);
 	app.use("/api", libraryRouter);
 	app.use("/api", projectRouter);
 
