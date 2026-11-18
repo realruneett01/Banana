@@ -9,8 +9,26 @@ import { createFabRouter } from "../../backend/src/routes/fab-routes.js";
 
 const VALID_PCB = "(kicad_pcb (version 20240108) (generator test))";
 
+function writeExecOutputs(kind, args, tmpDir, extraFiles) {
+	const outArg = args[args.indexOf("--output") + 1];
+	if (outArg) {
+		const isDir = outArg.endsWith(path.sep) || outArg.endsWith("/");
+		const outPath = isDir ? path.join(outArg, `${kind}-out.dat`) : outArg;
+		fs.writeFileSync(outPath, `mock-${kind}`);
+	}
+	for (const rel of extraFiles) {
+		const target = path.join(tmpDir, rel);
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		fs.writeFileSync(target, "mock-extra");
+	}
+}
+
 function makeFakeExec(options = {}) {
-	const { failKind = null, stderr = "mock kicad error" } = options;
+	const {
+		failKind = null,
+		stderr = "mock kicad error",
+		extraFiles = [],
+	} = options;
 	let capturedTmpDir = null;
 	const calls = [];
 
@@ -19,14 +37,7 @@ function makeFakeExec(options = {}) {
 		const kind = args[2];
 		const pcbPath = args[args.length - 1];
 		capturedTmpDir = path.dirname(pcbPath);
-		const outArg = args[args.indexOf("--output") + 1];
-		if (outArg) {
-			if (outArg.endsWith(path.sep) || outArg.endsWith("/")) {
-				fs.writeFileSync(path.join(outArg, `${kind}-out.dat`), `mock-${kind}`);
-			} else {
-				fs.writeFileSync(outArg, `mock-${kind}`);
-			}
-		}
+		writeExecOutputs(kind, args, capturedTmpDir, extraFiles);
 		if (failKind === kind || failKind === "all") {
 			return cb(new Error("exec failed"), "", stderr);
 		}
@@ -133,6 +144,43 @@ describe("fab-routes unit tests", () => {
 		assert.equal(res.status, 200);
 		const names = res.json.files.map((f) => f.name);
 		assert.deepEqual(names, ["mycustomboard-pos.csv", "mycustomboard.pdf"]);
+	});
+
+	test("skips kicad side files and backups directory", async () => {
+		const sideFake = makeFakeExec({
+			extraFiles: [
+				"board.kicad_prl",
+				"board.kicad_pro",
+				"board.lck",
+				"fp-info-cache",
+				"backups/board-backup.kicad_pcb",
+			],
+		});
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api",
+			createFabRouter({
+				execFileImpl: sideFake.execFileImpl,
+				cliPath: process.execPath,
+			}),
+		);
+		const { server: testServer, port: testPort } = await startServer(app);
+		try {
+			const res = await postJson(testPort, "/api/fab/export", {
+				pcb: VALID_PCB,
+			});
+			assert.equal(res.status, 200);
+			assert.equal(res.json.files.length, 5);
+			const names = res.json.files.map((f) => f.name);
+			assert.ok(!names.includes("board.kicad_prl"));
+			assert.ok(!names.includes("board.kicad_pro"));
+			assert.ok(!names.includes("board.lck"));
+			assert.ok(!names.includes("fp-info-cache"));
+			assert.ok(!names.some((n) => n.startsWith("backups")));
+		} finally {
+			await stopServer(testServer);
+		}
 	});
 
 	const BAD_REQUEST_CASES = [

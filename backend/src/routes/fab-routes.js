@@ -140,15 +140,29 @@ async function runOutputs({ outputs, context, execFileImpl, cliPath }) {
 	return { ok: true, log };
 }
 
+const SIDE_FILE_EXTENSIONS = Object.freeze([
+	".kicad_prl",
+	".kicad_pro",
+	".lck",
+	".fp-info-cache",
+]);
+
+function isSideFile(name, inputName) {
+	if (name === inputName || name === "fp-info-cache") {
+		return true;
+	}
+	return SIDE_FILE_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
 async function collectFiles(dir, tmpDir, inputName) {
 	const entries = await fs.promises.readdir(dir, { withFileTypes: true });
 	const results = [];
 	for (const entry of entries) {
 		const fullPath = path.join(dir, entry.name);
-		if (entry.isDirectory()) {
+		if (entry.isDirectory() && entry.name !== "backups") {
 			const nested = await collectFiles(fullPath, tmpDir, inputName);
 			results.push(...nested);
-		} else if (entry.isFile() && entry.name !== inputName) {
+		} else if (entry.isFile() && !isSideFile(entry.name, inputName)) {
 			const relName = path.relative(tmpDir, fullPath).replace(/\\/g, "/");
 			const content = await fs.promises.readFile(fullPath);
 			results.push({ name: relName, base64: content.toString("base64") });
