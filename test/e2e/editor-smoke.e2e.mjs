@@ -464,6 +464,107 @@ async function checkLayout(page) {
 	}
 }
 
+function isWasmUrl(url) {
+	if (url.endsWith(".wasm")) return true;
+	const clean = url.split(/[?#]/)[0];
+	return clean.endsWith(".wasm");
+}
+
+async function closeEditor(page) {
+	const closeBtn = page.getByRole("button", { name: "Close" }).first();
+	if (await closeBtn.isVisible().catch(() => false)) {
+		await closeBtn.click({ timeout: 5000 });
+	} else {
+		const headerBtn = page
+			.locator(".ant-drawer-header button, .ant-drawer-close")
+			.first();
+		await headerBtn.click({ timeout: 5000 });
+	}
+	await page
+		.locator(".ant-drawer-open")
+		.waitFor({ state: "hidden", timeout: 5000 })
+		.catch(() => {}); // ponytail: ignore timeout if drawer already hidden
+}
+
+async function openStudio3D(page) {
+	const studioBtn = page.getByRole("button", {
+		name: "3D Studio",
+		exact: true,
+	});
+	await studioBtn.waitFor({ state: "visible", timeout: 5000 });
+	await studioBtn.click({ timeout: 5000 });
+}
+
+function collectStudioFailures({ canvasVisible, hasModel200, hasWasm200 }) {
+	const failures = [];
+	if (!canvasVisible) failures.push("canvas element not visible");
+	if (!hasModel200) failures.push("no 200 response from /api/models");
+	if (!hasWasm200) failures.push("no 200 response for .wasm");
+	return failures.join(", ");
+}
+
+async function waitForStudioConditions(page, netState, getPageError) {
+	const start = Date.now();
+	let canvasVisible = false;
+
+	while (Date.now() - start < 20000) {
+		const err = getPageError();
+		if (err) throw new Error(`pageerror: ${err}`);
+		if (!canvasVisible) {
+			const canvas = page.locator("canvas").first();
+			canvasVisible = await canvas.isVisible().catch(() => false); // ponytail: poll canvas visibility
+		}
+		const allReady = [
+			canvasVisible,
+			netState.hasModel200,
+			netState.hasWasm200,
+		].every(Boolean);
+		if (allReady) return;
+		await page.waitForTimeout(200);
+	}
+
+	const err = getPageError();
+	if (err) throw new Error(`pageerror: ${err}`);
+	const failure = collectStudioFailures({
+		canvasVisible,
+		hasModel200: netState.hasModel200,
+		hasWasm200: netState.hasWasm200,
+	});
+	throw new Error(failure);
+}
+
+async function checkStudio3D(page) {
+	const netState = { hasModel200: false, hasWasm200: false };
+	const onResponse = (res) => {
+		try {
+			if (res.status() === 200) {
+				const url = res.url();
+				if (url.includes("/api/models")) netState.hasModel200 = true;
+				if (isWasmUrl(url)) netState.hasWasm200 = true;
+			}
+		} catch {
+			// ponytail: ignore response access errors during navigation
+		}
+	};
+	let pageError = null;
+	const onPageError = (err) => {
+		if (!pageError) pageError = err?.message || String(err);
+	};
+
+	page.on("response", onResponse);
+	page.on("pageerror", onPageError);
+	try {
+		await prepareFreshEditor(page, "pcb");
+		await checkPcbPart(page);
+		await closeEditor(page);
+		await openStudio3D(page);
+		await waitForStudioConditions(page, netState, () => pageError);
+	} finally {
+		page.off("response", onResponse);
+		page.off("pageerror", onPageError);
+	}
+}
+
 const CHECKS = [
 	{ id: "pcb_part", docType: "pcb", run: checkPcbPart },
 	{ id: "pcb_outline", docType: "pcb", run: checkPcbOutline },
@@ -478,11 +579,14 @@ const CHECKS = [
 	{ id: "sch_power", docType: "schematic", run: checkSchPower },
 	{ id: "nav_zoom", docType: "pcb", run: checkNavZoom },
 	{ id: "layout", docType: "pcb", run: checkLayout },
+	{ id: "studio_3d", run: checkStudio3D },
 ];
 
 async function runCheck(check, page) {
 	try {
-		await prepareFreshEditor(page, check.docType);
+		if (check.docType && check.id !== "studio_3d") {
+			await prepareFreshEditor(page, check.docType);
+		}
 		await check.run(page);
 		console.log(`PASS ${check.id}`);
 		return true;
