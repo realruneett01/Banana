@@ -16,6 +16,29 @@ export const ALL_PCB_LAYERS = LAYER_SPECS.split(";").map((spec) => {
 	return { value, label: `${value} (${desc})` };
 });
 
+const KICAD_LAYER_COLORS = {
+	"F.Cu": "#c83232",
+	"B.Cu": "#3232c8",
+	"F.SilkS": "#00aaaa",
+	"B.SilkS": "#00aaaa",
+	"Edge.Cuts": "#c8c800",
+	"F.Mask": "#800080",
+	"B.Mask": "#800080",
+	"In1.Cu": "#c86432",
+	"In2.Cu": "#c86432",
+	"In3.Cu": "#c86432",
+	"In4.Cu": "#c86432",
+};
+
+const DEFAULT_LAYER_COLOR = "#8a91a3";
+
+export function getLayerColor(layerValue) {
+	if (!layerValue || typeof layerValue !== "string") {
+		return DEFAULT_LAYER_COLOR;
+	}
+	return KICAD_LAYER_COLORS[layerValue] ?? DEFAULT_LAYER_COLOR;
+}
+
 const SILKS_ALIASES = {
 	f_silks: ["f_silkscreen", "f_silks"],
 	b_silks: ["b_silkscreen", "b_silks"],

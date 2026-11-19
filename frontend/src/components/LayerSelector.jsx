@@ -1,6 +1,7 @@
 import {
 	Button,
 	Checkbox,
+	ConfigProvider,
 	Input,
 	Segmented,
 	Slider,
@@ -8,20 +9,20 @@ import {
 	Typography,
 } from "antd";
 import { useState } from "react";
-import { ALL_PCB_LAYERS } from "../utils/diffLayerUtils.js";
+import { ALL_PCB_LAYERS, getLayerColor } from "../utils/diffLayerUtils.js";
 
 const { Title, Text } = Typography;
 
 const DIFF_MODE_OPTIONS = ["Overlay Slider", "Color Delta Map", "Side by Side"];
 
 const LAYER_SELECTOR_STYLE = {
-	borderTop: "1px solid #232738",
+	borderTop: "1px solid var(--bn-border-subtle, #232838)",
 	paddingTop: "20px",
 };
 
 const SEGMENTED_STYLE = {
 	marginBottom: "20px",
-	background: "#0f1015",
+	background: "var(--bn-bg-surface, #161922)",
 };
 
 const HEADER_CONTAINER_STYLE = {
@@ -39,17 +40,17 @@ const ACTION_BUTTON_STYLE = {
 
 const SEARCH_INPUT_STYLE = {
 	marginBottom: "10px",
-	background: "#0f1015",
-	borderColor: "#232738",
+	background: "var(--bn-bg-surface, #161922)",
+	borderColor: "var(--bn-border-subtle, #232838)",
 };
 
 const LIST_CONTAINER_STYLE = {
 	height: "180px",
 	overflowY: "auto",
-	border: "1px solid #232738",
+	border: "1px solid var(--bn-border-subtle, #232838)",
 	borderRadius: "4px",
 	padding: "8px 12px",
-	background: "#0f1015",
+	background: "var(--bn-bg-surface, #161922)",
 };
 
 const CHECKBOX_GROUP_STYLE = {
@@ -90,9 +91,15 @@ const SLIDER_PERCENT_STYLE = {
 
 const CHECKBOX_STYLE = {
 	margin: 0,
-	color: "#a6adbb",
+	color: "var(--bn-text-primary, #e6eaf2)",
 	fontSize: "12px",
 };
+
+const getCheckboxStyle = (color) => ({
+	...CHECKBOX_STYLE,
+	accentColor: color,
+	borderColor: color,
+});
 
 const SOLO_SPAN_STYLE = {
 	color: "#fadb14",
@@ -135,18 +142,37 @@ function LayerSliderControl({ opacity, onOpacityChange }) {
 	);
 }
 
-function LayerLabel({ label, isSolo }) {
+function LayerColorChip({ layerValue }) {
 	return (
-		<>
-			{label}
+		<span
+			style={{
+				display: "inline-block",
+				width: "10px",
+				height: "10px",
+				borderRadius: "2px",
+				background: getLayerColor(layerValue),
+				marginRight: "6px",
+				verticalAlign: "middle",
+				flexShrink: 0,
+			}}
+		/>
+	);
+}
+
+function LayerLabel({ label, isSolo, layerValue }) {
+	return (
+		<span style={{ display: "inline-flex", alignItems: "center" }}>
+			<LayerColorChip layerValue={layerValue} />
+			<span>{label}</span>
 			{isSolo && <span style={SOLO_SPAN_STYLE}>(Soloed)</span>}
-		</>
+		</span>
 	);
 }
 
 function LayerRowItem(props) {
 	const { layer, isActive, isSolo, opacity, onDoubleClick, onOpacityChange } =
 		props;
+	const layerColor = getLayerColor(layer.value);
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: double click row contains checkbox and slider controls
 		<div
@@ -154,9 +180,22 @@ function LayerRowItem(props) {
 			style={getRowItemStyle(isSolo)}
 			title="Double click to Solo this layer"
 		>
-			<Checkbox value={layer.value} style={CHECKBOX_STYLE}>
-				<LayerLabel label={layer.label} isSolo={isSolo} />
-			</Checkbox>
+			<ConfigProvider
+				theme={{
+					token: {
+						colorPrimary: layerColor,
+						colorBorder: layerColor,
+					},
+				}}
+			>
+				<Checkbox value={layer.value} style={getCheckboxStyle(layerColor)}>
+					<LayerLabel
+						label={layer.label}
+						isSolo={isSolo}
+						layerValue={layer.value}
+					/>
+				</Checkbox>
+			</ConfigProvider>
 			{isActive && (
 				<LayerSliderControl
 					opacity={opacity}
