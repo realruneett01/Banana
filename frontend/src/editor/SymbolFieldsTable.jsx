@@ -1,4 +1,4 @@
-import { Checkbox, Input, Modal, Table } from "antd";
+import { Button, Checkbox, Input, Modal, Space, Table } from "antd";
 import { useCallback, useMemo, useState } from "react";
 import { buildRows, editsToCommand } from "./fieldsTable.js";
 
@@ -8,6 +8,16 @@ const TOOLBAR_STYLE = Object.freeze({
 	alignItems: "center",
 	marginBottom: 12,
 });
+
+const INLINE_CONTAINER_STYLE = Object.freeze({
+	height: "100%",
+	display: "flex",
+	flexDirection: "column",
+	padding: 12,
+	background: "var(--bn-bg-surface, #161922)",
+});
+
+const TABLE_SCROLL = Object.freeze({ x: "max-content", y: 400 });
 
 const EDITABLE_COLUMNS = Object.freeze([
 	{ field: "value", title: "Value" },
@@ -148,7 +158,15 @@ function EditableCell({ row, field, pendingEdits, onCommit }) {
 	);
 }
 
-function TableToolbar({ grouped, onToggleGroup, search, onSearchChange }) {
+function TableToolbar({
+	grouped,
+	onToggleGroup,
+	search,
+	onSearchChange,
+	inline,
+	onApply,
+	onCancel,
+}) {
 	return (
 		<div style={TOOLBAR_STYLE}>
 			<Checkbox
@@ -157,13 +175,23 @@ function TableToolbar({ grouped, onToggleGroup, search, onSearchChange }) {
 			>
 				Group symbols (Value + Footprint)
 			</Checkbox>
-			<Input
-				placeholder="Filter symbols..."
-				value={search}
-				onChange={(e) => onSearchChange(e.target.value)}
-				allowClear
-				style={{ width: 240 }}
-			/>
+			<Space>
+				<Input
+					placeholder="Filter symbols..."
+					value={search}
+					onChange={(e) => onSearchChange(e.target.value)}
+					allowClear
+					style={{ width: 240 }}
+				/>
+				{inline && (
+					<>
+						<Button onClick={onCancel}>Cancel</Button>
+						<Button type="primary" onClick={onApply}>
+							Apply
+						</Button>
+					</>
+				)}
+			</Space>
 		</div>
 	);
 }
@@ -217,7 +245,7 @@ function resetAndClose(setPendingEdits, onClose) {
 	onClose?.();
 }
 
-export function SymbolFieldsTable({ open, ir, onApply, onClose }) {
+function useSymbolFieldsController({ ir, onApply, onClose }) {
 	const [grouped, setGrouped] = useState(true);
 	const [search, setSearch] = useState("");
 	const [pendingEdits, setPendingEdits] = useState([]);
@@ -242,7 +270,7 @@ export function SymbolFieldsTable({ open, ir, onApply, onClose }) {
 
 	const handleApply = useCallback(() => {
 		const cmd = editsToCommand(ir, pendingEdits);
-		if (cmd && cmd.commands?.length > 0) {
+		if (cmd?.commands?.length > 0) {
 			onApply?.(cmd);
 		}
 		resetAndClose(setPendingEdits, onClose);
@@ -253,31 +281,63 @@ export function SymbolFieldsTable({ open, ir, onApply, onClose }) {
 		[grouped, pendingEdits, handleCommit],
 	);
 
+	return {
+		grouped,
+		setGrouped,
+		search,
+		setSearch,
+		displayRows,
+		columns,
+		handleApply,
+		handleCancel,
+	};
+}
+
+function SymbolFieldsContent({ ctrl, inline }) {
+	return (
+		<>
+			<TableToolbar
+				grouped={ctrl.grouped}
+				onToggleGroup={ctrl.setGrouped}
+				search={ctrl.search}
+				onSearchChange={ctrl.setSearch}
+				inline={inline}
+				onApply={ctrl.handleApply}
+				onCancel={ctrl.handleCancel}
+			/>
+			<Table
+				rowKey="key"
+				columns={ctrl.columns}
+				dataSource={ctrl.displayRows}
+				size="small"
+				pagination={ctrl.displayRows.length > 20 ? { pageSize: 20 } : false}
+				scroll={TABLE_SCROLL}
+			/>
+		</>
+	);
+}
+
+export function SymbolFieldsTable(props) {
+	const { open, inline = false } = props;
+	const ctrl = useSymbolFieldsController(props);
+	const content = <SymbolFieldsContent ctrl={ctrl} inline={inline} />;
+
+	if (inline) {
+		return <div style={INLINE_CONTAINER_STYLE}>{content}</div>;
+	}
+
 	return (
 		<Modal
 			open={open}
 			title="Symbol Fields Table"
 			width={950}
-			onCancel={handleCancel}
-			onOk={handleApply}
+			onCancel={ctrl.handleCancel}
+			onOk={ctrl.handleApply}
 			okText="Apply"
 			cancelText="Cancel"
 			destroyOnClose
 		>
-			<TableToolbar
-				grouped={grouped}
-				onToggleGroup={setGrouped}
-				search={search}
-				onSearchChange={setSearch}
-			/>
-			<Table
-				rowKey="key"
-				columns={columns}
-				dataSource={displayRows}
-				size="small"
-				pagination={displayRows.length > 20 ? { pageSize: 20 } : false}
-				scroll={{ y: 400 }}
-			/>
+			{content}
 		</Modal>
 	);
 }

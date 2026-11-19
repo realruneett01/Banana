@@ -15,10 +15,23 @@ import {
 	suggestFootprintQuery,
 } from "./footprintAssign.js";
 
+const INLINE_CONTAINER_STYLE = Object.freeze({
+	height: "100%",
+	display: "flex",
+	flexDirection: "column",
+	padding: 12,
+	background: "var(--bn-bg-surface, #161922)",
+});
+
+const ACTION_TOOLBAR_STYLE = Object.freeze({
+	marginBottom: 12,
+});
+
 const TWO_COLUMN_STYLE = Object.freeze({
 	display: "flex",
 	gap: 16,
 	minHeight: 380,
+	flex: 1,
 });
 
 const PANE_STYLE = Object.freeze({
@@ -30,6 +43,7 @@ const PANE_STYLE = Object.freeze({
 });
 
 const SCROLL_Y = Object.freeze({ y: 300 });
+const INLINE_TABLE_SCROLL = Object.freeze({ y: "calc(100vh - 220px)" });
 
 function renderStatusTag(status) {
 	const color = status === "Set" ? "green" : "volcano";
@@ -107,7 +121,7 @@ async function fillMissingSuggestions(parts, assignments, fetchOpts) {
 	return next;
 }
 
-function PartsPane({ rows, selectedId, onSelectPart }) {
+function PartsPane({ rows, selectedId, onSelectPart, scroll }) {
 	return (
 		<div style={PANE_STYLE}>
 			<Typography.Text strong>Schematic Parts</Typography.Text>
@@ -116,7 +130,7 @@ function PartsPane({ rows, selectedId, onSelectPart }) {
 				columns={PARTS_COLUMNS}
 				size="small"
 				pagination={false}
-				scroll={SCROLL_Y}
+				scroll={scroll || SCROLL_Y}
 				rowKey="id"
 				onRow={(record) => ({
 					onClick: () => onSelectPart(record),
@@ -130,40 +144,34 @@ function PartsPane({ rows, selectedId, onSelectPart }) {
 	);
 }
 
-function ResultsPane({
-	selectedPart,
-	query,
-	setQuery,
-	onSearch,
-	results,
-	loading,
-	error,
-	onAssign,
-}) {
-	const header = selectedPart
-		? `Footprints for ${selectedPart.ref} (${selectedPart.value || "no value"})`
-		: "Footprints (select a part)";
+function formatResultsHeader(part) {
+	if (!part) return "Footprints (select a part)";
+	return `Footprints for ${part.ref} (${part.value || "no value"})`;
+}
 
+function ResultsPane({ selectedPart, search, onAssign, scroll }) {
 	return (
 		<div style={PANE_STYLE}>
-			<Typography.Text strong>{header}</Typography.Text>
+			<Typography.Text strong>
+				{formatResultsHeader(selectedPart)}
+			</Typography.Text>
 			<Input.Search
 				placeholder="Search footprints..."
-				value={query}
-				onChange={(e) => setQuery(e.target.value)}
-				onSearch={onSearch}
-				loading={loading}
+				value={search.query}
+				onChange={(e) => search.setQuery(e.target.value)}
+				onSearch={search.handleSearch}
+				loading={search.loading}
 				allowClear
 				disabled={!selectedPart}
 			/>
-			{error && <Alert type="warning" message={error} showIcon />}
+			{search.error && <Alert type="warning" message={search.error} showIcon />}
 			<Table
-				dataSource={results}
+				dataSource={search.results}
 				columns={RESULT_COLUMNS}
 				size="small"
 				pagination={false}
-				scroll={SCROLL_Y}
-				loading={loading}
+				scroll={scroll || SCROLL_Y}
+				loading={search.loading}
 				rowKey="libId"
 				onRow={(record) => ({
 					onDoubleClick: () => onAssign(record.libId || record.name),
@@ -260,7 +268,7 @@ function useApplyActions({
 	return { applyingAll, handleApplyAll, handleApply };
 }
 
-function usePartSelection({ ir, open, search, assignments }) {
+function usePartSelection({ ir, open, inline, search, assignments }) {
 	const [selectedId, setSelectedId] = useState("");
 
 	const rows = useMemo(
@@ -284,7 +292,7 @@ function usePartSelection({ ir, open, search, assignments }) {
 	);
 
 	useEffect(() => {
-		if (!open) return;
+		if (!open && !inline) return;
 		const first = ir?.parts?.[0];
 		if (first) {
 			setSelectedId(first.id);
@@ -296,22 +304,31 @@ function usePartSelection({ ir, open, search, assignments }) {
 			search.setQuery("");
 			search.setResults([]);
 		}
-	}, [open, ir, search.handleSearch, search.setQuery, search.setResults]);
+	}, [
+		open,
+		inline,
+		ir,
+		search.handleSearch,
+		search.setQuery,
+		search.setResults,
+	]);
 
 	return { rows, selectedId, selectedPart, handleSelectPart };
 }
 
-function useAssignFootprintsController({
-	open,
-	ir,
-	onApply,
-	onClose,
-	baseUrl,
-	fetchImpl,
-}) {
+function useAssignFootprintsController(props) {
+	const {
+		open,
+		inline = false,
+		ir,
+		onApply,
+		onClose,
+		baseUrl,
+		fetchImpl,
+	} = props;
 	const [assignments, setAssignments] = useState({});
 	const search = useFootprintSearch({ baseUrl, fetchImpl });
-	const parts = usePartSelection({ ir, open, search, assignments });
+	const parts = usePartSelection({ ir, open, inline, search, assignments });
 	const apply = useApplyActions({
 		ir,
 		assignments,
@@ -323,8 +340,8 @@ function useAssignFootprintsController({
 	});
 
 	useEffect(() => {
-		if (open) setAssignments({});
-	}, [open]);
+		if (open || inline) setAssignments({});
+	}, [open, inline]);
 
 	const handleAssign = useCallback(
 		(fp) => {
@@ -337,9 +354,47 @@ function useAssignFootprintsController({
 	return { parts, search, apply, handleAssign };
 }
 
+function FootprintsPanes({ ctrl, scroll }) {
+	return (
+		<div style={TWO_COLUMN_STYLE}>
+			<PartsPane
+				rows={ctrl.parts.rows}
+				selectedId={ctrl.parts.selectedId}
+				onSelectPart={ctrl.parts.handleSelectPart}
+				scroll={scroll}
+			/>
+			<ResultsPane
+				selectedPart={ctrl.parts.selectedPart}
+				search={ctrl.search}
+				onAssign={ctrl.handleAssign}
+				scroll={scroll}
+			/>
+		</div>
+	);
+}
+
 export function AssignFootprints(props) {
-	const { open, onClose } = props;
+	const { open, inline = false, onClose } = props;
 	const ctrl = useAssignFootprintsController(props);
+	const scroll = inline ? INLINE_TABLE_SCROLL : SCROLL_Y;
+	const panes = <FootprintsPanes ctrl={ctrl} scroll={scroll} />;
+	const footer = (
+		<ModalFooter
+			onApplyAll={ctrl.apply.handleApplyAll}
+			applyingAll={ctrl.apply.applyingAll}
+			onApply={ctrl.apply.handleApply}
+			onClose={onClose}
+		/>
+	);
+
+	if (inline) {
+		return (
+			<div style={INLINE_CONTAINER_STYLE}>
+				<div style={ACTION_TOOLBAR_STYLE}>{footer}</div>
+				{panes}
+			</div>
+		);
+	}
 
 	return (
 		<Modal
@@ -347,32 +402,9 @@ export function AssignFootprints(props) {
 			onCancel={onClose}
 			title="Assign Footprints"
 			width={840}
-			footer={
-				<ModalFooter
-					onApplyAll={ctrl.apply.handleApplyAll}
-					applyingAll={ctrl.apply.applyingAll}
-					onApply={ctrl.apply.handleApply}
-					onClose={onClose}
-				/>
-			}
+			footer={footer}
 		>
-			<div style={TWO_COLUMN_STYLE}>
-				<PartsPane
-					rows={ctrl.parts.rows}
-					selectedId={ctrl.parts.selectedId}
-					onSelectPart={ctrl.parts.handleSelectPart}
-				/>
-				<ResultsPane
-					selectedPart={ctrl.parts.selectedPart}
-					query={ctrl.search.query}
-					setQuery={ctrl.search.setQuery}
-					onSearch={ctrl.search.handleSearch}
-					results={ctrl.search.results}
-					loading={ctrl.search.loading}
-					error={ctrl.search.error}
-					onAssign={ctrl.handleAssign}
-				/>
-			</div>
+			{panes}
 		</Modal>
 	);
 }

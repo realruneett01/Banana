@@ -2,7 +2,9 @@ import { Button, Empty, message, Space } from "antd";
 import { useRef } from "react";
 import { DiffViewport } from "../components/DiffViewport.jsx";
 import SimulationStudio from "../components/sim3d/SimulationStudio.jsx";
+import AssignFootprints from "../editor/AssignFootprints.jsx";
 import EditorScreen from "../editor/EditorScreen.jsx";
+import SymbolFieldsTable from "../editor/SymbolFieldsTable.jsx";
 import ProjectHome from "../projects/ProjectHome.jsx";
 
 // --- Pure ide-tab-content helpers ---
@@ -268,7 +270,12 @@ function StudioTabPane({ loop }) {
 		else message.error(res?.error || "Failed to apply fix");
 	};
 	return (
-		<SimulationStudio api={loop.api} ir={loop.ir} onApplyFix={onApplyFix} />
+		<SimulationStudio
+			api={loop.api}
+			ir={loop.ir}
+			board={loop.board}
+			onApplyFix={onApplyFix}
+		/>
 	);
 }
 
@@ -282,6 +289,17 @@ function TabEmptyView({ message: text }) {
 
 function renderEditorPane(kind, loop, repo) {
 	return <EditorTabPane loop={loop} repo={repo} initialTab={kind} />;
+}
+
+function renderInlineEditorTab(Component, loop, repo) {
+	if (!loop?.ir) return <DesignPlaceholder loop={loop} repo={repo} />;
+	return (
+		<Component
+			inline={true}
+			ir={loop.ir}
+			onApply={(cmd) => loop?.applyModelCommand?.(cmd) || loop?.setIr?.(cmd.ir)}
+		/>
+	);
 }
 
 function renderTabByKind({ kind, loop, repo, ws, onOpenFile }) {
@@ -303,6 +321,10 @@ function renderTabByKind({ kind, loop, repo, ws, onOpenFile }) {
 					<DiffViewport {...ws?.viewportProps} />
 				</ScrollBox>
 			);
+		case "fields":
+			return renderInlineEditorTab(SymbolFieldsTable, loop, repo);
+		case "footprints":
+			return renderInlineEditorTab(AssignFootprints, loop, repo);
 		default:
 			return null;
 	}
