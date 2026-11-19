@@ -131,4 +131,26 @@ describe("editor UX wiring", () => {
 		assert.match(editor, /runErc/);
 		assert.match(editor, /<ChecksPanel/);
 	});
+
+	test("root-only sheet breadcrumbs are hidden or collapsed when no sub-sheets exist", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /function SheetBreadcrumb/);
+		assert.match(
+			editor,
+			/if\s*\((?:!items\s*\|\|\s*)?items(?:\?\.|\.)length\s*<=\s*1\)\s*(?:return null;|{\s*return null;\s*})/,
+		);
+	});
+
+	test("toolbar buttons have standardized 24px bounds matching --bn-btn-h-sm", () => {
+		const editor = src("editor/EditorScreen.jsx");
+		assert.match(editor, /--bn-btn-h-sm/);
+		assert.match(editor, /24px/);
+	});
+
+	test("SaveCommitDialog embeds staged changes summary and styles commit button with brand gold", () => {
+		const dialog = src("editor/SaveCommitDialog.jsx");
+		assert.match(dialog, /function StagedChangesSummary/);
+		assert.match(dialog, /<StagedChangesSummary/);
+		assert.match(dialog, /--bn-color-brand/);
+	});
 });

@@ -12,6 +12,36 @@ const LIST_STYLE = Object.freeze({
 	paddingLeft: 20,
 });
 
+const COMMIT_BUTTON_STYLE = Object.freeze({
+	backgroundColor: "var(--bn-color-brand, #f5c542)",
+	borderColor: "var(--bn-color-brand, #f5c542)",
+	color: "#12151c",
+	fontWeight: 600,
+});
+
+const STAGED_SUMMARY_STYLE = Object.freeze({
+	background: "#181c25",
+	border: "1px solid #232836",
+	borderRadius: "4px",
+	padding: "8px 12px",
+	fontSize: "12px",
+	display: "flex",
+	flexDirection: "column",
+	gap: "6px",
+});
+
+const SUMMARY_TAG_STYLE = Object.freeze({
+	display: "inline-flex",
+	alignItems: "center",
+	gap: "4px",
+	color: "#8a91a3",
+});
+
+const SUMMARY_BADGE_STYLE = Object.freeze({
+	color: "var(--bn-color-brand, #f5c542)",
+	fontWeight: 600,
+});
+
 function buildCommitFiles(repo, sch, pcb) {
 	const files = [];
 	if (repo?.schPath && sch?.length > 0) {
@@ -179,6 +209,100 @@ function useSaveCommit(options) {
 	};
 }
 
+function isComponentOp(op) {
+	if (!op) return false;
+	const s = String(op).toLowerCase();
+	return s.includes("symbol") || s.includes("footprint") || s.includes("part");
+}
+
+function countComponentEdits(edits) {
+	const all = [...(edits?.sch ?? []), ...(edits?.pcb ?? [])];
+	const refs = new Set();
+	let other = 0;
+	for (const e of all) {
+		if (e.ref) {
+			refs.add(e.ref);
+		} else if (isComponentOp(e.op)) {
+			other++;
+		}
+	}
+	return refs.size + other;
+}
+
+function countTrackEdits(edits) {
+	const pcb = edits?.pcb ?? [];
+	return pcb.filter((e) =>
+		String(e.op ?? "")
+			.toLowerCase()
+			.includes("track"),
+	).length;
+}
+
+function StagedFilesList({ files }) {
+	if (!files || files.length === 0) return null;
+	return (
+		<div style={{ color: "#8a91a3", fontSize: "11px" }}>
+			{files.map((f) => (
+				<div
+					key={f.path}
+					style={{ display: "flex", justifyContent: "space-between" }}
+				>
+					<span>{f.path}</span>
+					<span>
+						{f.edits.length} {f.edits.length === 1 ? "change" : "changes"}
+					</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function StagedChangesSummary({ edits, repo }) {
+	const files = buildCommitFiles(repo, edits?.sch, edits?.pcb);
+	const branch = repo?.branch || "main";
+	const componentCount = countComponentEdits(edits);
+	const trackCount = countTrackEdits(edits);
+
+	return (
+		<section style={STAGED_SUMMARY_STYLE} aria-label="Staged changes summary">
+			<div
+				style={{
+					display: "flex",
+					justifyContent: "space-between",
+					alignItems: "center",
+				}}
+			>
+				<span style={{ fontWeight: 600, color: "#e6e8ee" }}>
+					Staged Changes
+				</span>
+				<span style={SUMMARY_TAG_STYLE}>
+					Branch: <span style={SUMMARY_BADGE_STYLE}>{branch}</span>
+				</span>
+			</div>
+			<div
+				style={{
+					display: "flex",
+					gap: "12px",
+					flexWrap: "wrap",
+					color: "#8a91a3",
+				}}
+			>
+				<span>
+					Files: <strong style={{ color: "#e6e8ee" }}>{files.length}</strong>
+				</span>
+				<span>
+					Components:{" "}
+					<strong style={{ color: "#e6e8ee" }}>{componentCount}</strong>
+				</span>
+				<span>
+					Tracks: <strong style={{ color: "#e6e8ee" }}>{trackCount}</strong>
+				</span>
+			</div>
+			<StagedFilesList files={files} />
+		</section>
+	);
+}
+
 function SaveCommitBody(props) {
 	const { edits, repo, errorText, commitMessage, onChangeMessage } = props;
 	return (
@@ -187,6 +311,7 @@ function SaveCommitBody(props) {
 			<UnsupportedAlert unsupported={edits.unsupported} />
 			<MissingFolderAlert repo={repo} />
 			<CommitErrorAlert errorText={errorText} />
+			<StagedChangesSummary edits={edits} repo={repo} />
 			<CommitMessageInput value={commitMessage} onChange={onChangeMessage} />
 		</Space>
 	);
@@ -214,7 +339,10 @@ export default function SaveCommitDialog(props) {
 			onOk={state.handleOk}
 			onCancel={onClose}
 			confirmLoading={state.loading}
-			okButtonProps={{ disabled: okDisabled }}
+			okButtonProps={{
+				disabled: okDisabled,
+				style: COMMIT_BUTTON_STYLE,
+			}}
 		>
 			<SaveCommitBody
 				edits={state.edits}

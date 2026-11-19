@@ -282,6 +282,16 @@ const TOOLBAR_CONTAINER_STYLE = Object.freeze({
 	justifyContent: "flex-end",
 });
 
+const TOOLBAR_BUTTON_STYLE = Object.freeze({
+	height: "var(--bn-btn-h-sm, 24px)",
+});
+
+const BREADCRUMB_ITEM_CONTAINER_STYLE = Object.freeze({
+	display: "inline-flex",
+	alignItems: "center",
+	gap: "6px",
+});
+
 const PANEL_TOGGLE_STYLE = Object.freeze({
 	position: "absolute",
 	top: "12px",
@@ -540,7 +550,11 @@ function ToolButton({
 	danger,
 	loading,
 	text,
+	style,
 }) {
+	const buttonStyle = style
+		? { ...TOOLBAR_BUTTON_STYLE, ...style }
+		: TOOLBAR_BUTTON_STYLE;
 	return (
 		<Tooltip title={title}>
 			<Button
@@ -552,6 +566,7 @@ function ToolButton({
 				type={type}
 				danger={danger}
 				loading={loading}
+				style={buttonStyle}
 			>
 				{text}
 			</Button>
@@ -763,6 +778,7 @@ function ExportDropdown({ state, actions, visible = true }) {
 					size="small"
 					loading={isExporting}
 					aria-label="Export"
+					style={TOOLBAR_BUTTON_STYLE}
 				>
 					Export <DownOutlined />
 				</Button>
@@ -1204,6 +1220,7 @@ function MoreDropdown({ items }) {
 					icon={<EllipsisOutlined />}
 					size="small"
 					aria-label="More actions"
+					style={TOOLBAR_BUTTON_STYLE}
 				/>
 			</Tooltip>
 		</Dropdown>
@@ -1958,38 +1975,41 @@ function useCollapsiblePanel(selection) {
 	return { panelOpen, togglePanel };
 }
 
+function BreadcrumbItem({ item, isLast, onJump, showSeparator }) {
+	return (
+		<span style={BREADCRUMB_ITEM_CONTAINER_STYLE}>
+			{showSeparator && <span style={{ color: "#64748b" }}>&gt;</span>}
+			<button
+				type="button"
+				onClick={() => onJump(item.index)}
+				style={isLast ? BREADCRUMB_CURRENT_STYLE : BREADCRUMB_BUTTON_STYLE}
+				aria-current={isLast ? "page" : undefined}
+			>
+				{item.label}
+			</button>
+		</span>
+	);
+}
+
 function SheetBreadcrumb({ items, canLeave, onJump, onLeave }) {
+	if (!items || items.length <= 1) {
+		return null;
+	}
 	return (
 		<nav
 			style={BREADCRUMB_BAR_STYLE}
 			aria-label="Hierarchical sheet navigation"
 		>
 			<div style={BREADCRUMB_LIST_STYLE}>
-				{items.map((it, idx) => {
-					const isLast = idx === items.length - 1;
-					return (
-						<span
-							key={it.index}
-							style={{
-								display: "inline-flex",
-								alignItems: "center",
-								gap: "6px",
-							}}
-						>
-							{idx > 0 && <span style={{ color: "#64748b" }}>&gt;</span>}
-							<button
-								type="button"
-								onClick={() => onJump(it.index)}
-								style={
-									isLast ? BREADCRUMB_CURRENT_STYLE : BREADCRUMB_BUTTON_STYLE
-								}
-								aria-current={isLast ? "page" : undefined}
-							>
-								{it.label}
-							</button>
-						</span>
-					);
-				})}
+				{items.map((it, idx) => (
+					<BreadcrumbItem
+						key={it.index}
+						item={it}
+						isLast={idx === items.length - 1}
+						onJump={onJump}
+						showSeparator={idx > 0}
+					/>
+				))}
 			</div>
 			<Tooltip title="Leave sheet (Alt+Backspace)">
 				<Button
@@ -1998,6 +2018,7 @@ function SheetBreadcrumb({ items, canLeave, onJump, onLeave }) {
 					disabled={!canLeave}
 					onClick={onLeave}
 					aria-label="Leave sheet (Alt+Backspace)"
+					style={TOOLBAR_BUTTON_STYLE}
 				>
 					Leave sheet
 				</Button>
