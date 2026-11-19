@@ -18,6 +18,68 @@ export function segmentToneColor(tone) {
 	return toneMap[tone.toLowerCase()] || "var(--bn-text-secondary, #8a91a3)";
 }
 
+export function formatCoordinates(x = 0, y = 0, units = "mm") {
+	const cleanX = Object.is(x, -0) ? 0 : Number(x ?? 0);
+	const cleanY = Object.is(y, -0) ? 0 : Number(y ?? 0);
+	const u = units || "mm";
+	return `X: ${cleanX.toFixed(2)}${u} Y: ${cleanY.toFixed(2)}${u}`;
+}
+
+export function formatGrid(grid = 1.27, units = "mm") {
+	const g = grid ?? 1.27;
+	const u = units || "mm";
+	return `Grid: ${g}${u}`;
+}
+
+function countSeverity(list, severity) {
+	if (!Array.isArray(list)) return 0;
+	return list.filter((item) => item?.severity === severity).length;
+}
+
+function extractCount(result, severity) {
+	if (!result) return 0;
+	if (result.counts?.[severity] != null) return result.counts[severity];
+	if (result[severity] != null) return result[severity];
+	const items = Array.isArray(result) ? result : result.violations;
+	return countSeverity(items, severity);
+}
+
+function pluralize(count, singular) {
+	return `${count} ${count === 1 ? singular : `${singular}s`}`;
+}
+
+function formatProblemsSummary(errs, warns) {
+	if (errs > 0 && warns > 0) {
+		return `${pluralize(errs, "error")}, ${pluralize(warns, "warning")}`;
+	}
+	if (errs > 0) return pluralize(errs, "error");
+	if (warns > 0) return pluralize(warns, "warning");
+	return "0 problems";
+}
+
+export function formatProblemsStatus(result) {
+	if (!result) {
+		return {
+			text: "0 problems",
+			tone: "default",
+			tooltip: "Problems: 0 problems",
+		};
+	}
+	const errs = extractCount(result, "error");
+	const warns = extractCount(result, "warning");
+	const text = formatProblemsSummary(errs, warns);
+	const tone = errs > 0 ? "error" : warns > 0 ? "warning" : "default";
+	return { text, tone, tooltip: `Problems: ${text}` };
+}
+
+export function handleSegmentKeyDown(event, onClick) {
+	if (!event || typeof onClick !== "function") return;
+	if (event.key === "Enter" || event.key === " ") {
+		event.preventDefault?.();
+		onClick(event);
+	}
+}
+
 function resolveSegmentColor(segment, isFirstLeft) {
 	if (segment.tone && segment.tone !== "default") {
 		return segmentToneColor(segment.tone);
@@ -62,22 +124,27 @@ function getSegmentClassName(isClickable, isFirstLeft) {
 	return cls;
 }
 
-// Clickable segments render as <button with aria-label and onClick via BarButton
+// Clickable segments render as <button with aria-label, onClick and onKeyDown via BarButton
 function StatusSegment({ segment, isFirstLeft }) {
 	if (!segment) return null;
 	const isClickable = typeof segment.onClick === "function";
 	const style = getSegmentStyle(segment, isFirstLeft, isClickable);
 	const className = getSegmentClassName(isClickable, isFirstLeft);
+	const ariaLabel = segment["aria-label"] || resolveAriaLabel(segment);
+	const handleKeyDown = isClickable
+		? (e) => handleSegmentKeyDown(e, segment.onClick)
+		: segment.onKeyDown;
 
 	return (
 		<BarButton
 			as={isClickable ? "button" : "span"}
 			className={className}
 			style={style}
-			aria-label={resolveAriaLabel(segment)}
+			aria-label={ariaLabel}
 			tooltip={segment.tooltip}
 			tooltipPlacement="top"
 			onClick={segment.onClick}
+			onKeyDown={handleKeyDown}
 		>
 			<BarIcon icon={segment.icon} size={12} />
 			{segment.text && <span>{segment.text}</span>}

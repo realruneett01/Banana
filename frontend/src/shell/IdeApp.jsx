@@ -4,12 +4,21 @@ import {
 	SearchOutlined,
 } from "@ant-design/icons";
 import { Avatar, Button, Tabs, Tooltip } from "antd";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import ChatbotDrawer from "../ChatbotDrawer.jsx";
 import AgentDesignPanel from "../components/AgentDesignPanel.jsx";
 import GithubConnectModal from "../components/GithubConnectModal.jsx";
 import SimulationDrawer from "../components/SimulationDrawer.jsx";
 import { WorkspaceControlSidebar } from "../components/WorkspaceControlSidebar.jsx";
+import ChecksPanel from "../editor/ChecksPanel.jsx";
+import { editorStatus } from "../editor/editorStatus.js";
 import ProjectHome from "../projects/ProjectHome.jsx";
 import { ActivityBar } from "./ActivityBar.jsx";
 import { CommandPalette } from "./CommandPalette.jsx";
@@ -21,7 +30,12 @@ import {
 	tabForKind,
 } from "./IdeTabContent.jsx";
 import { useIdeLayout } from "./ideLayout.js";
-import { StatusBar } from "./StatusBar.jsx";
+import {
+	formatCoordinates,
+	formatGrid,
+	formatProblemsStatus,
+	StatusBar,
+} from "./StatusBar.jsx";
 
 // --- Pure ide-app helpers ---
 const COMMAND_TAB_TITLES = Object.freeze({
@@ -492,25 +506,29 @@ function IdeSidebarContent({ activity, ws, loop, dispatch, onOpenFile }) {
 	return <SearchSidebar />;
 }
 
-function buildAuxItems(loop, ws) {
+function AgentDesignSlot({ loop }) {
 	const onOpenSim = (ir) => {
 		loop?.closeAgent?.();
 		loop?.openSimulation?.(ir);
 	};
+	return (
+		<div style={{ height: "100%", overflow: "auto", padding: 8 }}>
+			<AgentDesignPanel
+				api={loop?.api}
+				onOpenSimulation={onOpenSim}
+				currentIr={loop?.ir}
+				onAcceptIr={loop?.setIr}
+			/>
+		</div>
+	);
+}
+
+function buildAuxItems(loop, ws) {
 	return [
 		{
 			key: "design",
 			label: "Design",
-			children: (
-				<div style={{ height: "100%", overflow: "auto", padding: 8 }}>
-					<AgentDesignPanel
-						api={loop?.api}
-						onOpenSimulation={onOpenSim}
-						currentIr={loop?.ir}
-						onAcceptIr={loop?.setIr}
-					/>
-				</div>
-			),
+			children: <AgentDesignSlot loop={loop} />,
 		},
 		{
 			key: "copilot",
@@ -540,63 +558,132 @@ function IdeAuxPanel({ loop, ws, layout, dispatch }) {
 	);
 }
 
-const PROBLEMS_PANEL_STYLE = Object.freeze({
-	padding: "8px 12px",
-	fontSize: "12px",
-	color: "var(--bn-text-secondary, #8a91a3)",
-});
-
-function ProblemsPanel() {
+function ProblemsPanel({
+	result = null,
+	loading = false,
+	onRun,
+	onFocus,
+	kind = "drc",
+} = {}) {
 	return (
-		<div style={PROBLEMS_PANEL_STYLE}>
-			<div
-				style={{
-					display: "flex",
-					alignItems: "center",
-					gap: 8,
-					marginBottom: 6,
-				}}
-			>
-				<span
-					style={{
-						fontWeight: 600,
-						color: "var(--bn-text-primary, #e6e8ee)",
-					}}
-				>
-					Problems
-				</span>
-			</div>
-			<p style={{ margin: 0 }}>
-				No problems detected. Run DRC or ERC from the editor toolbar to check
-				your design.
-			</p>
+		<div style={{ height: "100%", width: "100%", overflow: "hidden" }}>
+			<ChecksPanel
+				result={result}
+				loading={loading}
+				onRun={onRun}
+				onFocus={onFocus}
+				kind={kind}
+			/>
 		</div>
 	);
 }
 
-function buildLeftSegments(ws) {
+function mapIssuesToViolations(issues) {
+	if (!Array.isArray(issues)) return [];
+	return issues.map((iss, i) => ({
+		severity: iss.severity || "error",
+		type: iss.metric || iss.source || "check",
+		description: iss.message || iss.suggestion || `Issue ${i + 1}`,
+		items: Array.isArray(iss.itemIds)
+			? iss.itemIds.map((id) => ({ description: id }))
+			: [],
+	}));
+}
+
+async function executeChecks(loop, setChecksResult, setChecksLoading) {
+	setChecksLoading(true);
+	try {
+		if (typeof loop?.api?.editorCheck === "function") {
+			const res = await loop.api.editorCheck({
+				ir: loop?.ir,
+				board: loop?.board,
+			});
+			const rawIssues = res?.data?.issues ?? res?.issues ?? [];
+			setChecksResult({ violations: mapIssuesToViolations(rawIssues) });
+		} else if (typeof loop?.runChecks === "function") {
+			const res = await loop.runChecks();
+			if (res) setChecksResult(res);
+		}
+	} catch (err) {
+		console.error("Check failed:", err);
+	} finally {
+		setChecksLoading(false);
+	}
+}
+
+function resolveEditorStatus(options) {
+	if (options?.status) return options.status;
+	if (typeof editorStatus !== "undefined") return editorStatus.get();
+	return { x: 0, y: 0, grid: 1.27, units: "mm" };
+}
+
+function makeBranchSegment(ws) {
 	const localProps = ws?.sidebarProps?.localProps;
 	const repoInfo = localProps?.repoInfo;
 	const repoPath = localProps?.repoPath;
 	const branch = repoInfo?.currentBranch || (repoPath ? "main" : null);
+	const icon =
+		typeof BranchesOutlined !== "undefined" ? BranchesOutlined : null;
+	return {
+		id: "git-branch",
+		icon,
+		text: branch || "No repository",
+		tooltip: branch ? `Git branch: ${branch}` : "No repository opened",
+	};
+}
 
+function makeProblemsSegment(checksResult, onToggleProblems) {
+	const prob = formatProblemsStatus(checksResult);
+	return {
+		id: "problems-status",
+		text: prob.text,
+		tone: prob.tone,
+		tooltip: prob.tooltip,
+		onClick: onToggleProblems,
+		"aria-label": `Problems: ${prob.text}`,
+	};
+}
+
+function makeCoordinatesSegment(status) {
+	const u = status?.units || "mm";
+	const text = formatCoordinates(status?.x, status?.y, u);
+	return {
+		id: "coordinates",
+		text,
+		tooltip: `Cursor: ${text}`,
+		"aria-label": `Coordinates: ${text}`,
+	};
+}
+
+function makeGridSegment(status) {
+	const u = status?.units || "mm";
+	const text = formatGrid(status?.grid, u);
+	return {
+		id: "grid",
+		text,
+		tooltip: `Grid: ${text}`,
+		"aria-label": text,
+	};
+}
+
+export function buildLeftSegments(ws, options = {}) {
+	const status = resolveEditorStatus(options);
 	return [
-		{
-			id: "git-branch",
-			icon: BranchesOutlined,
-			text: branch || "No repository",
-			tooltip: branch ? `Git branch: ${branch}` : "No repository opened",
-		},
-		{
-			id: "problems-status",
-			text: "0 problems",
-			tooltip: "Problems: 0",
-		},
+		makeBranchSegment(ws),
+		makeProblemsSegment(options.checksResult, options.onToggleProblems),
+		makeCoordinatesSegment(status),
+		makeGridSegment(status),
 	];
 }
 
-function buildRightSegments(ws) {
+export function buildRightSegments(ws, options = {}) {
+	const status =
+		options.status ||
+		(typeof editorStatus !== "undefined"
+			? editorStatus.get()
+			: { units: "mm" });
 	const isHealthy = ws?.shellProps?.backendStatus === "healthy";
+	const units = status?.units || "mm";
 	return [
 		{
 			id: "backend-status",
@@ -606,15 +693,38 @@ function buildRightSegments(ws) {
 		},
 		{
 			id: "units",
-			text: "mm",
-			tooltip: "Units: mm",
+			text: units,
+			tooltip: `Units: ${units}`,
+			onClick: options.onCycleUnits,
 		},
 	];
 }
 
-function IdeStatusBar({ ws }) {
-	const left = buildLeftSegments(ws);
-	const right = buildRightSegments(ws);
+function IdeStatusBar({ ws, layout, dispatch, checksResult }) {
+	const status = useSyncExternalStore(editorStatus.subscribe, editorStatus.get);
+	const onToggleProblems = useCallback(() => {
+		if (layout?.bottomOpen && layout?.bottomTab === "problems") {
+			dispatch?.({ type: "toggleBottom" });
+		} else {
+			dispatch?.({ type: "setBottomTab", id: "problems" });
+		}
+	}, [layout?.bottomOpen, layout?.bottomTab, dispatch]);
+
+	const onCycleUnits = useCallback(() => {
+		const current = status?.units || "mm";
+		const next = current === "mm" ? "mil" : current === "mil" ? "in" : "mm";
+		editorStatus.setUnits(next);
+	}, [status?.units]);
+
+	const left = buildLeftSegments(ws, {
+		status,
+		checksResult,
+		onToggleProblems,
+	});
+	const right = buildRightSegments(ws, {
+		status,
+		onCycleUnits,
+	});
 	return <StatusBar left={left} right={right} />;
 }
 
@@ -700,7 +810,13 @@ function ActivityBarSlot({ activity, sidebarOpen, dispatch }) {
 	);
 }
 
-function createShellSlots({
+function resolveCheckKind(layout) {
+	const activeKind =
+		layout?.tabs?.find((t) => t.id === layout?.activeTabId)?.kind || "drc";
+	return activeKind === "schematic" ? "erc" : "drc";
+}
+
+function createUpperSlots({
 	layout,
 	dispatch,
 	loop,
@@ -745,8 +861,44 @@ function createShellSlots({
 		aux: (
 			<IdeAuxPanel loop={loop} ws={ws} layout={layout} dispatch={dispatch} />
 		),
-		bottom: <ProblemsPanel />,
-		statusBar: <IdeStatusBar ws={ws} />,
+	};
+}
+
+function createLowerSlots({
+	layout,
+	dispatch,
+	loop,
+	ws,
+	checksResult,
+	checksLoading,
+	onRunChecks,
+}) {
+	const kind = resolveCheckKind(layout);
+	return {
+		bottom: (
+			<ProblemsPanel
+				result={checksResult}
+				loading={checksLoading}
+				onRun={onRunChecks}
+				onFocus={loop?.focusInEditor}
+				kind={kind}
+			/>
+		),
+		statusBar: (
+			<IdeStatusBar
+				ws={ws}
+				layout={layout}
+				dispatch={dispatch}
+				checksResult={checksResult}
+			/>
+		),
+	};
+}
+
+function createShellSlots(props) {
+	return {
+		...createUpperSlots(props),
+		...createLowerSlots(props),
 	};
 }
 
@@ -763,9 +915,20 @@ function IdeShellContainer(props) {
 	);
 }
 
+function useEditorChecks(initialResult, loop) {
+	const [checksResult, setChecksResult] = useState(initialResult ?? null);
+	const [checksLoading, setChecksLoading] = useState(false);
+	const onRunChecks = useCallback(
+		() => executeChecks(loop, setChecksResult, setChecksLoading),
+		[loop],
+	);
+	return { checksResult, checksLoading, onRunChecks };
+}
+
 export function IdeApp({ ws, loop }) {
 	const [layout, dispatch] = useIdeLayout();
 	const [paletteOpen, setPaletteOpen] = useState(false);
+	const checks = useEditorChecks(ws?.checksResult, loop);
 	const onOpenFile = useOpenFileHandler(ws, loop, dispatch);
 	const commands = useMemo(
 		() => buildIdeCommands({ dispatch, loop, ws }),
@@ -784,6 +947,7 @@ export function IdeApp({ ws, loop }) {
 				ws={ws}
 				onOpenFile={onOpenFile}
 				setPaletteOpen={setPaletteOpen}
+				{...checks}
 			/>
 			<CommandPalette
 				open={paletteOpen}
