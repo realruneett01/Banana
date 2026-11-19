@@ -414,6 +414,8 @@ function HeaderActions({
 					icon={<SettingOutlined />}
 					onClick={onOpenSettings}
 					style={{ color: hasKey ? "#52c41a" : "#faad14" }}
+					aria-label="Open AI settings"
+					title="Open AI settings"
 				/>
 			</Tooltip>
 			<Tooltip title="Clear chat history">
@@ -423,6 +425,8 @@ function HeaderActions({
 					icon={<DeleteOutlined />}
 					onClick={onClearHistory}
 					style={{ color: "#a6adbb" }}
+					aria-label="Clear conversation history"
+					title="Clear conversation history"
 				/>
 			</Tooltip>
 			{onClose && (
@@ -432,6 +436,8 @@ function HeaderActions({
 					icon={<CloseOutlined />}
 					onClick={onClose}
 					style={{ color: "#a6adbb" }}
+					aria-label="Close hardware copilot"
+					title="Close hardware copilot"
 				/>
 			)}
 		</Space>
@@ -627,6 +633,8 @@ function ChatInputBar(props) {
 				disabled={!inputMessage.trim()}
 				onClick={onSend}
 				style={UI_STYLES.sendBtn}
+				aria-label="Send prompt to copilot"
+				title="Send prompt to copilot"
 			/>
 		</div>
 	);

@@ -8,6 +8,8 @@ import {
 	ScanOutlined,
 	SyncOutlined,
 	UpOutlined,
+	ZoomInOutlined,
+	ZoomOutOutlined,
 } from "@ant-design/icons";
 import { Button, Segmented, Select, Slider, Spin, Tooltip } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -31,8 +33,18 @@ const QUALITIES = [
 	{ value: "ultra", label: "Ultra (max)" },
 ];
 const STYLE_OPTIONS = [
-	{ label: "KiCad metal", value: "kicad" },
-	{ label: "Hologram", value: "holo" },
+	{
+		label: "KiCad metal",
+		value: "kicad",
+		title: "Realistic PCB style",
+		"aria-label": "Realistic PCB style",
+	},
+	{
+		label: "Hologram",
+		value: "holo",
+		title: "Hologram style",
+		"aria-label": "Hologram style",
+	},
 ];
 
 // --- HOLO VIEWER PURE HELPERS START ---
@@ -225,6 +237,7 @@ function HoloSliderRow({ label, min, max, step = 0.01, value, onChange }) {
 			<span>{label}</span>
 			<Slider
 				aria-label={label}
+				title={label}
 				min={min}
 				max={max}
 				step={step}
@@ -241,6 +254,7 @@ function HoloSelectRow({ label, value, options, onChange }) {
 			<span>{label}</span>
 			<Select
 				aria-label={label}
+				title={label}
 				size="small"
 				value={value}
 				options={options}
@@ -274,6 +288,7 @@ function HoloCommitSelector({ source, which, onChange }) {
 			value={which}
 			onChange={onChange}
 			options={options}
+			aria-label="Commit selector"
 		/>
 	);
 }
@@ -306,6 +321,7 @@ function HoloLayerItem({ layer, isSolo, isHidden, onSolo, onToggle }) {
 				type="button"
 				className="holo-eye"
 				aria-label={`Toggle ${layer.label}`}
+				title={`Toggle ${layer.label}`}
 				onClick={(e) => {
 					e.stopPropagation();
 					onToggle(layer.key);
@@ -346,6 +362,8 @@ function HoloLayerActions({ disabled, explode, onStep }) {
 				icon={<UpOutlined />}
 				onClick={() => onStep(1)}
 				disabled={disabled || explode >= 1}
+				aria-label="Lift layer"
+				title="Lift layer"
 			>
 				Lift layer
 			</Button>
@@ -354,6 +372,8 @@ function HoloLayerActions({ disabled, explode, onStep }) {
 				icon={<DownOutlined />}
 				onClick={() => onStep(-1)}
 				disabled={disabled || explode <= 0}
+				aria-label="Lower layer"
+				title="Lower layer"
 			>
 				Lower layer
 			</Button>
@@ -436,6 +456,7 @@ function HoloStyleSelector({ style, onChange }) {
 			value={style}
 			onChange={onChange}
 			options={STYLE_OPTIONS}
+			aria-label="Display style"
 		/>
 	);
 }
@@ -448,6 +469,8 @@ function HoloCaptureButton({ scene, res, meta, disabled }) {
 				icon={<CameraOutlined />}
 				onClick={() => captureScene(scene, res, meta)}
 				disabled={disabled}
+				aria-label="Capture 3D view"
+				title="Capture 3D view"
 			>
 				Capture
 			</Button>
@@ -462,6 +485,8 @@ function HoloOrbitButton({ orbit, onToggle }) {
 			icon={<SyncOutlined spin={orbit} />}
 			type={orbit ? "primary" : "default"}
 			onClick={onToggle}
+			aria-label="Toggle auto rotation"
+			title="Toggle auto rotation"
 		>
 			Orbit
 		</Button>
@@ -483,14 +508,38 @@ function HoloViewActions({ disabled, scene, renderProps, layers, meta }) {
 				icon={<ScanOutlined />}
 				onClick={() => scene?.scan()}
 				disabled={disabled}
+				aria-label="Scan hologram"
+				title="Scan hologram"
 			>
 				Scan
 			</Button>
+			<Button
+				size="small"
+				icon={<ZoomInOutlined />}
+				onClick={() => scene?.zoom?.(1)}
+				disabled={disabled}
+				aria-label="Zoom in"
+				title="Zoom in"
+			/>
+			<Button
+				size="small"
+				icon={<ZoomOutOutlined />}
+				onClick={() => scene?.zoom?.(-1)}
+				disabled={disabled}
+				aria-label="Zoom out"
+				title="Zoom out"
+			/>
 			<HoloOrbitButton
 				orbit={renderProps.orbit}
 				onToggle={renderProps.toggleOrbit}
 			/>
-			<Button size="small" icon={<AimOutlined />} onClick={onReset}>
+			<Button
+				size="small"
+				icon={<AimOutlined />}
+				onClick={onReset}
+				aria-label="Reset camera view"
+				title="Reset camera view"
+			>
 				Reset
 			</Button>
 		</div>
@@ -772,6 +821,8 @@ function HoloPanel({ state }) {
 			<button
 				type="button"
 				className="holo-sheet-handle"
+				aria-label="Toggle layers and view panel"
+				title="Toggle layers and view panel"
 				onClick={() => setSheetOpen(!sheetOpen)}
 			>
 				<AppstoreOutlined /> Layers & view {icon}

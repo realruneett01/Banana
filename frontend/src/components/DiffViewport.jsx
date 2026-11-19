@@ -122,6 +122,7 @@ function CollapseToggleButton({ collapsed, setCollapsed, isLeft }) {
 	const Icon = getCollapseIcon(collapsed, isLeft);
 	const text = getCollapseLabel(collapsed, isLeft);
 	const activeStyle = collapsed ? COLLAPSED_STYLE : EXPANDED_STYLE;
+	const ariaLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
 
 	return (
 		<Button
@@ -130,6 +131,8 @@ function CollapseToggleButton({ collapsed, setCollapsed, isLeft }) {
 			icon={<Icon style={{ color: activeStyle.color }} />}
 			onClick={() => setCollapsed(!collapsed)}
 			style={{ ...BASE_COLLAPSE_BTN_STYLE, ...activeStyle }}
+			aria-label={ariaLabel}
+			title={ariaLabel}
 		>
 			<span style={{ fontSize: "11px", fontWeight: 600 }}>{text}</span>
 		</Button>
@@ -199,6 +202,8 @@ function EvolutionToggleBadge({
 				style={containerStyle}
 				onClick={handleClick}
 				onKeyDown={handleKeyDown}
+				aria-label="History Evolution"
+				title={tooltip}
 			>
 				<HistoryOutlined style={{ color: colors.icon, fontSize: "13px" }} />
 				<span style={{ fontSize: "11px", fontWeight: 600, color: colors.text }}>
@@ -210,6 +215,7 @@ function EvolutionToggleBadge({
 					disabled={!hasIntermediate}
 					onChange={handleSwitchChange}
 					style={{ backgroundColor: colors.bg }}
+					aria-label="Toggle history evolution"
 				/>
 			</div>
 		</Tooltip>
@@ -253,6 +259,8 @@ function ViewportHeader({
 							type="button"
 							role="tab"
 							aria-selected={viewType === value}
+							aria-label={label}
+							title={label}
 							className={viewType === value ? "is-active" : ""}
 							onClick={() => setViewType(value)}
 						>
@@ -308,6 +316,7 @@ function OverlaySliderBar({
 				value={sliderValue}
 				onChange={setSliderValue}
 				tooltip={{ formatter: (v) => `Split: ${v}%` }}
+				aria-label="Commit diff split"
 			/>
 		</div>
 	);
