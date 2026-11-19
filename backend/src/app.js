@@ -14,6 +14,7 @@ import checkRouter from "./routes/check-routes.js";
 import circuitRouter from "./routes/circuit-routes.js";
 import editorRouter from "./routes/editor-routes.js";
 import fabRouter from "./routes/fab-routes.js";
+import githubDeviceRouter from "./routes/github-device-routes.js";
 import { createApiRouter } from "./routes/index.js";
 import libraryRouter from "./routes/library-routes.js";
 import localRepoRouter from "./routes/local-repo-routes.js";
@@ -188,6 +189,7 @@ export function createApp(options = {}) {
 	app.use("/api", circuitRouter);
 	app.use("/api", editorRouter);
 	app.use("/api", fabRouter);
+	app.use("/api", githubDeviceRouter);
 	app.use("/api", checkRouter);
 	app.use("/api", libraryRouter);
 	app.use("/api", localRepoRouter);
