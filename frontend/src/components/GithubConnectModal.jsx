@@ -24,7 +24,7 @@ import {
 	Tag,
 	Typography,
 } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE_URL } from "../config.js";
 import {
 	DARK_BG,
@@ -108,10 +108,69 @@ const DARK_BTN_STYLE = buttonStyle("#24292e", "#fff", {
 	borderColor: "#444c56",
 });
 
-const DEVICE_POLL_ERRORS = Object.freeze({
-	expired_token: "The code has expired. Please click Restart to try again.",
-	access_denied: "Access was denied on GitHub.",
+// --- Pure Device Flow Helpers ---
+export const DEVICE_POLL_ERRORS = Object.freeze({
+	expired_token:
+		"The authorization code has expired. Please try again, or use a Personal Access Token.",
+	access_denied:
+		"Access was denied on GitHub. Please try again, or use a Personal Access Token.",
 });
+
+const PENDING_ERRORS = new Set(["authorization_pending", "slow_down"]);
+
+export function isSafeGithubUrl(url) {
+	if (typeof url !== "string" || !url.startsWith("https://github.com/")) {
+		return false;
+	}
+	try {
+		const parsed = new URL(url);
+		return parsed.protocol === "https:" && parsed.hostname === "github.com";
+	} catch {
+		// Return false for malformed URLs
+		return false;
+	}
+}
+
+export function nextPollDelay(currentInterval, response) {
+	const base =
+		typeof currentInterval === "number" && currentInterval > 0
+			? currentInterval
+			: 5;
+	if (response?.error === "slow_down") {
+		return base + (base >= 1000 ? 5000 : 5);
+	}
+	return base;
+}
+
+export function pollOutcome(response) {
+	if (response?.access_token) {
+		return {
+			status: "success",
+			type: "success",
+			outcome: "success",
+			token: response.access_token,
+			accessToken: response.access_token,
+		};
+	}
+	if (!response || PENDING_ERRORS.has(response.error)) {
+		return { status: "continue", type: "continue", outcome: "continue" };
+	}
+	const baseMsg =
+		DEVICE_POLL_ERRORS[response.error] ||
+		response.error_description ||
+		`Authentication error: ${response.error}.`;
+	const message = baseMsg.includes("Personal Access Token")
+		? baseMsg
+		: `${baseMsg} Try again or use a Personal Access Token.`;
+	return {
+		status: "error",
+		type: "error",
+		outcome: "error",
+		error: response.error,
+		message,
+	};
+}
+// --- End Pure Device Flow Helpers ---
 
 function ModalHeader() {
 	return (
@@ -236,29 +295,12 @@ function ProfileUserInfo({ user }) {
 	);
 }
 
-function parseGithubUrl(raw) {
-	if (typeof raw !== "string") return null;
-	try {
-		const parsed = new URL(raw);
-		const isGh =
-			parsed.protocol === "https:" && parsed.hostname === "github.com";
-		return isGh ? parsed : null;
-	} catch (err) {
-		// Return false for invalid profile URLs
-		console.debug("Invalid profile URL:", err);
-		return null;
-	}
-}
-
 function isGithubProfileUrl(url) {
-	const parsed = parseGithubUrl(url);
-	return Boolean(parsed && url.startsWith("https://github.com/"));
+	return isSafeGithubUrl(url);
 }
 
 function resolveVerificationUrl(uri) {
-	const parsed = parseGithubUrl(uri);
-	// Fall back to default device login on invalid URL
-	return parsed ? uri : "https://github.com/login/device";
+	return isSafeGithubUrl(uri) ? uri : "https://github.com/login/device";
 }
 
 function ExternalGithubLink({ href, children }) {
@@ -407,37 +449,63 @@ function SystemDetectedCard({ detected, onConnect, onIgnore }) {
 // ----------------------------------------------------------------------
 // 2. Device Flow View (Phase 3.2 & 4.3)
 // ----------------------------------------------------------------------
-function getPollInterval(data) {
-	const seconds = data?.interval || 5; // 0/undefined must never mean "poll continuously"
-	return seconds * 1000;
-}
-
-async function requestDeviceCode() {
-	if (!window.banana?.github?.startDeviceFlow) {
-		throw new Error(
-			"Device flow is only available in the Banana Desktop application.",
-		);
+function copyUserCode(code) {
+	if (!code) return;
+	try {
+		navigator.clipboard?.writeText(code)?.catch?.(() => {});
+	} catch {
+		// Ignore clipboard access restrictions
 	}
-	return await window.banana.github.startDeviceFlow();
+	message.success("Code copied to clipboard!");
 }
 
 function openDeviceVerification(deviceData) {
 	if (!deviceData) return;
-	navigator.clipboard.writeText(deviceData.user_code);
-	message.success("Code copied to clipboard!");
-	const targetUrl = resolveVerificationUrl(deviceData.verification_uri);
+	copyUserCode(deviceData.user_code);
+	const rawUrl =
+		deviceData.verification_uri || "https://github.com/login/device";
+	const targetUrl = resolveVerificationUrl(rawUrl);
 	if (window.banana?.openExternal) {
 		window.banana.openExternal(targetUrl);
 		return;
 	}
-	window.open(targetUrl, "_blank");
+	window.open(targetUrl, "_blank", "noopener,noreferrer");
+}
+
+async function requestDeviceCode() {
+	if (window.banana?.github?.startDeviceFlow) {
+		return await window.banana.github.startDeviceFlow();
+	}
+	const res = await fetch(`${API_BASE_URL}/api/github/device/code`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({}),
+	});
+	const data = await res.json();
+	if (!res.ok || data.error) {
+		throw new Error(
+			data.error_description ||
+				data.error ||
+				"Failed to start device authorization flow",
+		);
+	}
+	return data;
 }
 
 async function executePollStep(deviceCode) {
 	try {
-		return await window.banana.github.pollDeviceFlow(deviceCode);
+		if (window.banana?.github?.pollDeviceFlow) {
+			return await window.banana.github.pollDeviceFlow(deviceCode);
+		}
+		const res = await fetch(`${API_BASE_URL}/api/github/device/token`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ device_code: deviceCode }),
+		});
+		return await res.json();
 	} catch (err) {
-		console.debug("Device poll poll error:", err.message);
+		// Log transient polling network error
+		console.debug("Device poll error:", err.message);
 		return null;
 	}
 }
@@ -453,37 +521,39 @@ async function handleVerifiedDeviceToken(token, ctx) {
 	ctx.setErrorMsg(verify.error);
 }
 
-async function processPollResponse(res, ctx) {
-	if (res?.access_token) {
+async function pollLoopStep(data, expireTime, ctx) {
+	if (Date.now() >= expireTime) {
 		ctx.stopPolling();
-		await handleVerifiedDeviceToken(res.access_token, ctx);
+		ctx.setErrorMsg(DEVICE_POLL_ERRORS.expired_token);
 		return { done: true };
 	}
-	if (res?.error === "slow_down") {
-		return { done: false, slowDown: true };
-	}
-	const termMsg = DEVICE_POLL_ERRORS[res?.error];
-	if (termMsg) {
+	const res = await executePollStep(data.device_code);
+	const outcome = pollOutcome(res);
+	if (outcome.status === "success") {
 		ctx.stopPolling();
-		ctx.setErrorMsg(termMsg);
+		await handleVerifiedDeviceToken(outcome.token, ctx);
 		return { done: true };
 	}
-	return { done: false };
+	if (outcome.status === "error") {
+		ctx.stopPolling();
+		ctx.setErrorMsg(outcome.message);
+		return { done: true };
+	}
+	return { done: false, res };
 }
 
 async function runDevicePollingLoop(data, gen, ctx) {
-	let interval = getPollInterval(data);
+	let delayMs = (data?.interval || 5) * 1000;
+	const expireTime = Date.now() + (data?.expires_in || 900) * 1000;
 
 	while (ctx.isActive(gen)) {
-		await new Promise((r) => setTimeout(r, interval));
+		await ctx.sleep(delayMs);
 		if (!ctx.isActive(gen)) break;
 
-		const res = await executePollStep(data.device_code);
-		if (!ctx.isActive(gen)) break;
+		const step = await pollLoopStep(data, expireTime, ctx);
+		if (step.done || !ctx.isActive(gen)) break;
 
-		const outcome = await processPollResponse(res, ctx);
-		if (outcome.done) return;
-		if (outcome.slowDown) interval += 5000;
+		delayMs = nextPollDelay(delayMs, step.res);
 	}
 }
 
@@ -515,46 +585,86 @@ function usePollingRef() {
 	return activePollRef;
 }
 
-function useDevicePolling({ onAuthSuccess, onClose, setErrorMsg }) {
+function useDevicePolling({
+	onAuthSuccess,
+	onClose,
+	setErrorMsg,
+	clearDeviceData,
+}) {
 	const [polling, setPolling] = useState(false);
 	const [statusMsg, setStatusMsg] = useState("");
 	const activePollRef = usePollingRef();
+	const timerRef = useRef(null);
 
-	const cancel = () => {
+	const cancel = useCallback(() => {
 		activePollRef.current++;
+		if (timerRef.current) {
+			clearTimeout(timerRef.current);
+			timerRef.current = null;
+		}
 		setPolling(false);
-	};
+	}, [activePollRef]);
+
+	useEffect(() => {
+		return () => {
+			if (timerRef.current) {
+				clearTimeout(timerRef.current);
+				timerRef.current = null;
+			}
+		};
+	}, []);
+
+	const sleep = (ms) =>
+		new Promise((resolve) => {
+			timerRef.current = setTimeout(() => {
+				timerRef.current = null;
+				resolve();
+			}, ms);
+		});
 
 	const start = (data) => {
 		const gen = ++activePollRef.current;
 		setPolling(true);
-		setStatusMsg("Waiting for approval in your browser...");
+		setStatusMsg("Waiting for you to approve on GitHub");
 		runDevicePollingLoop(data, gen, {
 			isActive: (g) => activePollRef.current === g,
 			stopPolling: cancel,
 			onAuthSuccess,
 			onClose,
-			setErrorMsg,
+			setErrorMsg: (msg) => {
+				setErrorMsg(msg);
+				clearDeviceData?.();
+			},
+			sleep,
 		});
 	};
 
 	return { polling, statusMsg, start, cancel };
 }
 
-function useDeviceFlow({ onAuthSuccess, onClose }) {
+function useDeviceFlow({ onAuthSuccess, onClose, open }) {
 	const [deviceData, setDeviceData] = useState(null);
 	const [loading, setLoading] = useState(false);
 	const [errorMsg, setErrorMsg] = useState(null);
-	const poll = useDevicePolling({ onAuthSuccess, onClose, setErrorMsg });
+	const clearDeviceData = () => setDeviceData(null);
+	const poll = useDevicePolling({
+		onAuthSuccess,
+		onClose,
+		setErrorMsg,
+		clearDeviceData,
+	});
+
+	const { cancel } = poll;
+	useEffect(() => {
+		if (!open) {
+			cancel();
+			setDeviceData(null);
+		}
+	}, [open, cancel]);
 
 	const startFlow = () => {
 		poll.cancel();
 		executeStartFlow({ setLoading, setErrorMsg, setDeviceData }, poll.start);
-	};
-
-	const cancelFlow = () => {
-		poll.cancel();
-		setDeviceData(null);
 	};
 
 	return {
@@ -563,17 +673,26 @@ function useDeviceFlow({ onAuthSuccess, onClose }) {
 		loading,
 		errorMsg,
 		startFlow,
-		cancelFlow,
+		cancelFlow: () => {
+			poll.cancel();
+			clearDeviceData();
+		},
+		copyCode: () => copyUserCode(deviceData?.user_code),
 		openPage: () => openDeviceVerification(deviceData),
 	};
 }
 
 function DevicePromptAlert({ message: msg }) {
 	if (!msg) return null;
+	const hasPat = msg.includes("Personal Access Token");
+	const description = hasPat
+		? undefined
+		: "You can try again, or use the Personal Access Token tab as a fallback.";
 	return (
 		<Alert
 			type="error"
 			message={msg}
+			description={description}
 			showIcon
 			style={{ marginBottom: "16px", textAlign: "left" }}
 		/>
@@ -598,7 +717,7 @@ function DeviceFlowPrompt({ loading, errorMsg, onStart }) {
 				onClick={onStart}
 				style={DARK_BTN_STYLE}
 			>
-				Start 1-Click Browser Login
+				{errorMsg ? "Try Again" : "Start 1-Click Browser Login"}
 			</Button>
 		</div>
 	);
@@ -647,13 +766,13 @@ function DeviceFlowStatus({ polling, statusMsg }) {
 			}}
 		>
 			<Spin indicator={icon} />
-			<span>{statusMsg}</span>
+			<span>{statusMsg || "Waiting for you to approve on GitHub"}</span>
 		</div>
 	);
 }
 
 function DeviceFlowApproval(props) {
-	const { deviceData, polling, statusMsg, onOpen, onCancel } = props;
+	const { deviceData, polling, statusMsg, onCopy, onOpen, onCancel } = props;
 	const openBtnStyle = { ...YELLOW_BTN_STYLE, marginRight: "8px" };
 
 	return (
@@ -663,8 +782,15 @@ function DeviceFlowApproval(props) {
 			</Paragraph>
 			<DeviceCodeBox userCode={deviceData.user_code} onClick={onOpen} />
 			<div style={{ marginBottom: "16px" }}>
+				<Button
+					icon={<CopyOutlined />}
+					onClick={onCopy}
+					style={{ marginRight: "8px" }}
+				>
+					Copy Code
+				</Button>
 				<Button type="primary" onClick={onOpen} style={openBtnStyle}>
-					Open GitHub in Browser
+					Open GitHub
 				</Button>
 				<Button onClick={onCancel}>Cancel</Button>
 			</div>
@@ -673,8 +799,8 @@ function DeviceFlowApproval(props) {
 	);
 }
 
-function DeviceFlowTab({ onAuthSuccess, onClose }) {
-	const flow = useDeviceFlow({ onAuthSuccess, onClose });
+function DeviceFlowTab({ onAuthSuccess, onClose, open }) {
+	const flow = useDeviceFlow({ onAuthSuccess, onClose, open });
 
 	return (
 		<div style={{ padding: "8px 0", textAlign: "center" }}>
@@ -689,6 +815,7 @@ function DeviceFlowTab({ onAuthSuccess, onClose }) {
 					deviceData={flow.deviceData}
 					polling={flow.polling}
 					statusMsg={flow.statusMsg}
+					onCopy={flow.copyCode}
 					onOpen={flow.openPage}
 					onCancel={flow.cancelFlow}
 				/>
@@ -897,19 +1024,18 @@ function makeTabItem(key, icon, label, children) {
 	};
 }
 
-function buildAuthTabItems({ onAuthSuccess, onClose, patState }) {
-	const tabs = [];
-	if (window.banana?.isElectron) {
-		tabs.push(
-			makeTabItem(
-				"device",
-				<GithubOutlined style={{ marginRight: "6px" }} />,
-				"1-Click Browser Login",
-				<DeviceFlowTab onAuthSuccess={onAuthSuccess} onClose={onClose} />,
-			),
-		);
-	}
-	tabs.push(
+function buildAuthTabItems({ onAuthSuccess, onClose, open, patState }) {
+	return [
+		makeTabItem(
+			"device",
+			<GithubOutlined style={{ marginRight: "6px" }} />,
+			"1-Click Browser Login",
+			<DeviceFlowTab
+				onAuthSuccess={onAuthSuccess}
+				onClose={onClose}
+				open={open}
+			/>,
+		),
 		makeTabItem(
 			"pat",
 			<KeyOutlined style={{ marginRight: "6px" }} />,
@@ -922,8 +1048,7 @@ function buildAuthTabItems({ onAuthSuccess, onClose, patState }) {
 				onClose={onClose}
 			/>,
 		),
-	);
-	return tabs;
+	];
 }
 
 function UnauthenticatedContent(props) {
@@ -978,7 +1103,7 @@ function useModalAuth({ open, onClose, onAuthSuccess }) {
 		detected: sysAuth.showDetected ? sysAuth.detectedCli : null,
 		onConnectDetected: handleConnectDetected,
 		onDismissDetected: sysAuth.dismissDetected,
-		tabItems: buildAuthTabItems({ onAuthSuccess, onClose, patState }),
+		tabItems: buildAuthTabItems({ onAuthSuccess, onClose, open, patState }),
 		activeTab,
 		onTabChange: setActiveTab,
 	};
