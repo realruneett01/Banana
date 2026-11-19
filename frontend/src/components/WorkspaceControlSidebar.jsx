@@ -4,7 +4,7 @@ import {
 	MenuFoldOutlined,
 	SettingOutlined,
 } from "@ant-design/icons";
-import { Button, Drawer, Layout, Segmented, Space } from "antd";
+import { Button, ConfigProvider, Drawer, Layout, Segmented, Space } from "antd";
 import GithubControls from "./GithubControls.jsx";
 import { LayerSelector } from "./LayerSelector.jsx";
 import { LocalRepoControls } from "./LocalRepoControls.jsx";
@@ -20,10 +20,36 @@ const SOURCE_OPTIONS = [
 	},
 ];
 
+const SIDEBAR_THEME = Object.freeze({
+	components: {
+		Form: {
+			itemMarginBottom: 8,
+		},
+		Button: {
+			controlHeightSM: 22,
+			controlHeight: 26,
+		},
+	},
+});
+
+const SIDEBAR_STYLE = `
+	.bn-control-sidebar .ant-form-item {
+		margin-bottom: 8px;
+	}
+	.bn-control-sidebar .ant-btn-sm {
+		height: var(--bn-btn-h-sm, 22px);
+	}
+	.bn-control-sidebar .ant-btn:not(.ant-btn-sm) {
+		height: var(--bn-btn-h-md, 26px);
+	}
+`;
+
 function getSiderStyle(collapsed) {
 	return {
-		background: "var(--bn-surface)",
-		borderRight: collapsed ? "none" : "1px solid var(--bn-border)",
+		background: "var(--bn-bg-surface, #161922)",
+		borderRight: collapsed
+			? "none"
+			: "1px solid var(--bn-border-subtle, #232838)",
 		padding: collapsed ? 0 : "20px",
 		overflowY: "auto",
 		height: "calc(100vh - var(--bn-header-h))",
@@ -51,7 +77,10 @@ function SourceHeader({ compact, onCollapse }) {
 					icon={<MenuFoldOutlined />}
 					onClick={onCollapse}
 					title="Hide Controls (Left Panel)"
-					style={{ color: "var(--bn-text-muted)" }}
+					style={{
+						color: "var(--bn-text-muted)",
+						height: "var(--bn-btn-h-sm, 22px)",
+					}}
 				/>
 			)}
 		</div>
@@ -102,29 +131,43 @@ function SidebarBody({
 	layerProps,
 }) {
 	return (
-		<Space orientation="vertical" size="large" style={{ width: "100%" }}>
-			<SourceSection
-				compact={compact}
-				onCollapse={onCollapse}
-				sourceMode={sourceMode}
-				onSourceModeChange={onSourceModeChange}
-				localProps={localProps}
-				githubProps={githubProps}
-			/>
-			<LayerSelector {...layerProps} />
-		</Space>
+		<ConfigProvider theme={SIDEBAR_THEME}>
+			<style>{SIDEBAR_STYLE}</style>
+			<Space
+				orientation="vertical"
+				size={8}
+				style={{ width: "100%", gap: "8px" }}
+			>
+				<SourceSection
+					compact={compact}
+					onCollapse={onCollapse}
+					sourceMode={sourceMode}
+					onSourceModeChange={onSourceModeChange}
+					localProps={localProps}
+					githubProps={githubProps}
+				/>
+				<LayerSelector {...layerProps} />
+			</Space>
+		</ConfigProvider>
 	);
 }
 
 function renderDrawer(open, onClose, body) {
 	return (
 		<Drawer
-			className="bn-drawer"
+			className="bn-drawer bn-control-sidebar"
 			placement="left"
 			open={open}
 			onClose={onClose}
 			size="min(92vw, 380px)"
 			title="Controls"
+			styles={{
+				body: { background: "var(--bn-bg-surface, #161922)" },
+				header: {
+					background: "var(--bn-bg-surface, #161922)",
+					borderBottom: "1px solid var(--bn-border-subtle, #232838)",
+				},
+			}}
 		>
 			{body}
 		</Drawer>
@@ -134,6 +177,7 @@ function renderDrawer(open, onClose, body) {
 function renderSider(collapsed, onDrop, body) {
 	return (
 		<Sider
+			className="bn-control-sidebar"
 			width={340}
 			collapsible
 			collapsed={collapsed}

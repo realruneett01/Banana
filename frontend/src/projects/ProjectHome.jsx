@@ -22,6 +22,36 @@ const CONTAINER_STYLE = Object.freeze({
 	boxSizing: "border-box",
 });
 
+const BRAND_GOLD_BUTTON_STYLE = Object.freeze({
+	background: "var(--bn-color-brand, #f5c542)",
+	color: "var(--bn-text-inverse, #0e1117)",
+	fontWeight: 600,
+	borderColor: "var(--bn-color-brand, #f5c542)",
+});
+
+const CARD_BASE_STYLE = Object.freeze({
+	border: "1px solid var(--bn-border-base, #2e354a)",
+});
+
+const NEW_PROJECT_CARD_STYLE = Object.freeze({
+	...CARD_BASE_STYLE,
+	marginBottom: 24,
+});
+
+const SECTION_TITLE_STYLE = Object.freeze({
+	fontSize: "var(--bn-type-heading-md, 15px)",
+	fontWeight: 600,
+});
+
+const ITEM_LABEL_STYLE = Object.freeze({
+	fontSize: "var(--bn-type-body, 12px)",
+});
+
+const METADATA_PATH_STYLE = Object.freeze({
+	fontSize: "var(--bn-type-micro, 10px)",
+	color: "var(--bn-text-muted, #6c758d)",
+});
+
 function findFilePath(projectRoot, files, ext, name) {
 	const list = Array.isArray(files) ? files : [];
 	const found = list.find((f) => f.endsWith(ext));
@@ -109,7 +139,10 @@ export function NewProjectCard({ onCreate }) {
 		submitProject({ name, parentDir, onCreate, setLoading, setName });
 
 	return (
-		<Card title="New Project" style={{ marginBottom: 24 }}>
+		<Card
+			title={<span style={SECTION_TITLE_STYLE}>New Project</span>}
+			style={NEW_PROJECT_CARD_STYLE}
+		>
 			<Space orientation="vertical" size="middle" style={{ width: "100%" }}>
 				<Input
 					placeholder="Project name"
@@ -121,7 +154,12 @@ export function NewProjectCard({ onCreate }) {
 					setParentDir={setParentDir}
 					hasBrowse={hasBrowse}
 				/>
-				<Button type="primary" loading={loading} onClick={handleCreate}>
+				<Button
+					type="primary"
+					loading={loading}
+					onClick={handleCreate}
+					style={BRAND_GOLD_BUTTON_STYLE}
+				>
 					Create
 				</Button>
 			</Space>
@@ -147,11 +185,16 @@ function openKiCadFile(item) {
 function ItemActions({ item, kicadStatus, onOpenFile, onSelect }) {
 	return (
 		<Space>
-			<Button type="link" onClick={() => onSelect?.(item.projectRoot)}>
+			<Button
+				type="link"
+				style={ITEM_LABEL_STYLE}
+				onClick={() => onSelect?.(item.projectRoot)}
+			>
 				Files
 			</Button>
 			<Button
 				type="link"
+				style={ITEM_LABEL_STYLE}
 				onClick={() =>
 					openDesignFile(item, ".kicad_sch", "schematic", onOpenFile)
 				}
@@ -160,12 +203,17 @@ function ItemActions({ item, kicadStatus, onOpenFile, onSelect }) {
 			</Button>
 			<Button
 				type="link"
+				style={ITEM_LABEL_STYLE}
 				onClick={() => openDesignFile(item, ".kicad_pcb", "pcb", onOpenFile)}
 			>
 				Open PCB
 			</Button>
 			{kicadStatus?.installed && (
-				<Button type="link" onClick={() => openKiCadFile(item)}>
+				<Button
+					type="link"
+					style={ITEM_LABEL_STYLE}
+					onClick={() => openKiCadFile(item)}
+				>
 					Open in KiCad
 				</Button>
 			)}
@@ -186,7 +234,12 @@ export function RecentItem({ item, kicadStatus, onOpenFile, onSelect }) {
 				/>,
 			]}
 		>
-			<List.Item.Meta title={item.name} description={item.projectRoot} />
+			<List.Item.Meta
+				title={<span style={ITEM_LABEL_STYLE}>{item.name}</span>}
+				description={
+					<span style={METADATA_PATH_STYLE}>{item.projectRoot}</span>
+				}
+			/>
 		</List.Item>
 	);
 }
@@ -228,12 +281,17 @@ export default function ProjectHome({ onOpenFile }) {
 
 	return (
 		<div style={CONTAINER_STYLE}>
-			<Typography.Title level={2}>Project Manager</Typography.Title>
+			<Typography.Title level={2} style={SECTION_TITLE_STYLE}>
+				Project Manager
+			</Typography.Title>
 			<NewProjectCard onCreate={handleCreate} />
 			{activeRoot && (
 				<ProjectFiles projectRoot={activeRoot} onOpenFile={onOpenFile} />
 			)}
-			<Card title="Recent Projects">
+			<Card
+				title={<span style={SECTION_TITLE_STYLE}>Recent Projects</span>}
+				style={CARD_BASE_STYLE}
+			>
 				<RecentProjects
 					recent={recent}
 					kicadStatus={kicadStatus}
