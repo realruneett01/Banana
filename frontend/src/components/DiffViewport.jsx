@@ -28,35 +28,60 @@ const VIEW_TYPES = [
 
 const { Text } = Typography;
 
-function DiffEmptyState() {
+const EMPTY_MESSAGES = {
+	"2d": {
+		title: "No 2D Diff Loaded",
+		description:
+			"Select a Git repository on the left to run CAD diffs. The 3D Hologram view opens once a board diff is loaded.",
+	},
+	holo: {
+		title: "No 3D Hologram Loaded",
+		description:
+			"Open a board diff to see its hologram, or open 3D Studio > HOLO for the current board.",
+	},
+};
+
+const EMPTY_WRAPPER_STYLE = {
+	display: "flex",
+	alignItems: "center",
+	justifyContent: "center",
+	flex: 1,
+	width: "100%",
+	height: "100%",
+};
+
+const EMPTY_CARD_STYLE = {
+	width: "100%",
+	maxWidth: "620px",
+	background: "#161821",
+	borderColor: "#232738",
+	borderRadius: "8px",
+};
+
+function DiffEmptyState({ viewType = "2d" }) {
+	const info = EMPTY_MESSAGES[viewType] || EMPTY_MESSAGES["2d"];
+
 	return (
-		<Card
-			style={{
-				width: "100%",
-				maxWidth: "620px",
-				background: "#161821",
-				borderColor: "#232738",
-				borderRadius: "8px",
-			}}
-		>
-			<Empty
-				image={Empty.PRESENTED_IMAGE_SIMPLE}
-				description={
-					<Space orientation="vertical" size="middle" align="center">
-						<Text style={{ fontSize: 16, color: "#a6adbb", fontWeight: 600 }}>
-							No 2D Diff Loaded
-						</Text>
-						<Text
-							type="secondary"
-							style={{ fontSize: 13, textAlign: "center" }}
-						>
-							Select a Git repository on the left to run CAD diffs. The 3D
-							Hologram view opens once a board diff is loaded.
-						</Text>
-					</Space>
-				}
-			/>
-		</Card>
+		<div style={EMPTY_WRAPPER_STYLE}>
+			<Card style={EMPTY_CARD_STYLE}>
+				<Empty
+					image={Empty.PRESENTED_IMAGE_SIMPLE}
+					description={
+						<Space orientation="vertical" size="middle" align="center">
+							<Text style={{ fontSize: 16, color: "#a6adbb", fontWeight: 600 }}>
+								{info.title}
+							</Text>
+							<Text
+								type="secondary"
+								style={{ fontSize: 13, textAlign: "center" }}
+							>
+								{info.description}
+							</Text>
+						</Space>
+					}
+				/>
+			</Card>
+		</div>
 	);
 }
 
@@ -97,6 +122,7 @@ function CollapseToggleButton({ collapsed, setCollapsed, isLeft }) {
 	const Icon = getCollapseIcon(collapsed, isLeft);
 	const text = getCollapseLabel(collapsed, isLeft);
 	const activeStyle = collapsed ? COLLAPSED_STYLE : EXPANDED_STYLE;
+	const ariaLabel = collapsed ? "Expand sidebar" : "Collapse sidebar";
 
 	return (
 		<Button
@@ -105,6 +131,8 @@ function CollapseToggleButton({ collapsed, setCollapsed, isLeft }) {
 			icon={<Icon style={{ color: activeStyle.color }} />}
 			onClick={() => setCollapsed(!collapsed)}
 			style={{ ...BASE_COLLAPSE_BTN_STYLE, ...activeStyle }}
+			aria-label={ariaLabel}
+			title={ariaLabel}
 		>
 			<span style={{ fontSize: "11px", fontWeight: 600 }}>{text}</span>
 		</Button>
@@ -153,6 +181,13 @@ function EvolutionToggleBadge({
 		if (hasIntermediate) toggleEvolutionMode();
 	};
 
+	const handleKeyDown = (e) => {
+		if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+			e.preventDefault();
+			handleClick();
+		}
+	};
+
 	const handleSwitchChange = (checked, e) => {
 		if (e?.stopPropagation) e.stopPropagation();
 		toggleEvolutionMode(checked);
@@ -160,7 +195,16 @@ function EvolutionToggleBadge({
 
 	return (
 		<Tooltip title={tooltip}>
-			<div style={containerStyle} onClick={handleClick}>
+			{/* biome-ignore lint/a11y/useSemanticElements: badge contains switch child */}
+			<div
+				role="button"
+				tabIndex={hasIntermediate ? 0 : -1}
+				style={containerStyle}
+				onClick={handleClick}
+				onKeyDown={handleKeyDown}
+				aria-label="History Evolution"
+				title={tooltip}
+			>
 				<HistoryOutlined style={{ color: colors.icon, fontSize: "13px" }} />
 				<span style={{ fontSize: "11px", fontWeight: 600, color: colors.text }}>
 					History Evolution
@@ -171,6 +215,7 @@ function EvolutionToggleBadge({
 					disabled={!hasIntermediate}
 					onChange={handleSwitchChange}
 					style={{ backgroundColor: colors.bg }}
+					aria-label="Toggle history evolution"
 				/>
 			</div>
 		</Tooltip>
@@ -214,6 +259,8 @@ function ViewportHeader({
 							type="button"
 							role="tab"
 							aria-selected={viewType === value}
+							aria-label={label}
+							title={label}
 							className={viewType === value ? "is-active" : ""}
 							onClick={() => setViewType(value)}
 						>
@@ -269,6 +316,7 @@ function OverlaySliderBar({
 				value={sliderValue}
 				onChange={setSliderValue}
 				tooltip={{ formatter: (v) => `Split: ${v}%` }}
+				aria-label="Commit diff split"
 			/>
 		</div>
 	);
@@ -372,7 +420,31 @@ function EvolutionTimelineOverlay(props) {
 	);
 }
 
-function ViewportBody(props) {
+const HOLO_CONTAINER_STYLE = {
+	flex: 1,
+	minHeight: 0,
+	position: "relative",
+	width: "100%",
+	height: "100%",
+};
+
+function HoloViewPane({ padLabelProps }) {
+	return (
+		<div style={HOLO_CONTAINER_STYLE}>
+			<Suspense fallback={<Spin />}>
+				<HoloViewer source={padLabelProps} />
+			</Suspense>
+		</div>
+	);
+}
+
+const VIEWPORT_2D_STYLE = {
+	flex: 1,
+	minHeight: 0,
+	position: "relative",
+};
+
+function Diff2DView(props) {
 	const {
 		diffMode,
 		baseCommit,
@@ -380,29 +452,10 @@ function ViewportBody(props) {
 		sliderValue,
 		setSliderValue,
 		isSchematic,
-		viewType,
 	} = props;
 
-	if (viewType === "holo") {
-		return (
-			<div
-				style={{
-					flex: 1,
-					minHeight: 0,
-					position: "relative",
-					width: "100%",
-					height: "100%",
-				}}
-			>
-				<Suspense fallback={<Spin />}>
-					<HoloViewer source={props.padLabelProps} />
-				</Suspense>
-			</div>
-		);
-	}
-
 	return (
-		<div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+		<div style={VIEWPORT_2D_STYLE}>
 			<DiffCanvasContainer {...props} isSchematic={isSchematic} />
 			<EvolutionTimelineOverlay {...props} />
 			{diffMode === "Overlay Slider" && (
@@ -417,15 +470,42 @@ function ViewportBody(props) {
 	);
 }
 
-export function DiffViewport(props) {
-	const { diffData, relativeFilePath } = props;
-	const [viewType, setViewType] = useState("2d");
+function ViewportBody(props) {
+	const { diffData, viewType, padLabelProps } = props;
 
-	if (!diffData && viewType === "2d") {
-		return <DiffEmptyState />;
+	if (!diffData) {
+		return <DiffEmptyState viewType={viewType} />;
 	}
+	if (viewType === "holo") {
+		return <HoloViewPane padLabelProps={padLabelProps} />;
+	}
+	return <Diff2DView {...props} />;
+}
 
-	const isSchematic = Boolean(relativeFilePath?.endsWith(".kicad_sch"));
+const CARD_STYLE = {
+	width: "100%",
+	height: "100%",
+	background: "var(--bn-surface)",
+	borderColor: "var(--bn-border)",
+	display: "flex",
+	flexDirection: "column",
+};
+
+function getCardBodyStyle(viewType) {
+	return {
+		body: {
+			flex: 1,
+			display: "flex",
+			flexDirection: "column",
+			padding: viewType === "2d" ? "20px" : "0px",
+			overflow: "hidden",
+		},
+	};
+}
+
+export function DiffViewport(props) {
+	const [viewType, setViewType] = useState("2d");
+	const isSchematic = Boolean(props.relativeFilePath?.endsWith(".kicad_sch"));
 
 	return (
 		<Card
@@ -437,23 +517,8 @@ export function DiffViewport(props) {
 				/>
 			}
 			className="bn-viewport-card"
-			style={{
-				width: "100%",
-				height: "100%",
-				background: "var(--bn-surface)",
-				borderColor: "var(--bn-border)",
-				display: "flex",
-				flexDirection: "column",
-			}}
-			styles={{
-				body: {
-					flex: 1,
-					display: "flex",
-					flexDirection: "column",
-					padding: viewType === "2d" ? "20px" : "0px",
-					overflow: "hidden",
-				},
-			}}
+			style={CARD_STYLE}
+			styles={getCardBodyStyle(viewType)}
 		>
 			<ViewportBody {...props} isSchematic={isSchematic} viewType={viewType} />
 		</Card>

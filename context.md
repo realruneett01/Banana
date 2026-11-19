@@ -1,4 +1,4 @@
-# Banana 2.0 — System Architecture & Technical Context
+# Banana — System Architecture & Technical Context
 
 _Last updated: 2026-08-19_
 
@@ -6,8 +6,8 @@ _Last updated: 2026-08-19_
 
 ## 1. Project Identity & Objective
 
-- **Project Name / Domain**: Banana 2.0 — Hardware Git Visual & Semantic Diff Engine (EDA / KiCad Electronics Design Automation).
-- **Core Problem Solved**: Git and traditional diff tools treat hardware design files (`.kicad_sch` schematics and `.kicad_pcb` board layouts) as opaque text or raw S-expressions, resulting in unreadable merge conflicts and zero spatial/visual insight. Banana 2.0 provides an automated visual and topological diff engine that extracts revision pairs directly from Git history, converts them to vector layers via `kicad-cli`, performs a multi-pass semantic/geometric diff (categorizing additions, deletions, modifications, and component relocations while suppressing font/rendering noise), and presents them in synchronized side-by-side / overlay viewports with an automated audit log.
+- **Project Name / Domain**: Banana — Hardware Git Visual & Semantic Diff Engine (EDA / KiCad Electronics Design Automation).
+- **Core Problem Solved**: Git and traditional diff tools treat hardware design files (`.kicad_sch` schematics and `.kicad_pcb` board layouts) as opaque text or raw S-expressions, resulting in unreadable merge conflicts and zero spatial/visual insight. Banana provides an automated visual and topological diff engine that extracts revision pairs directly from Git history, converts them to vector layers via `kicad-cli`, performs a multi-pass semantic/geometric diff (categorizing additions, deletions, modifications, and component relocations while suppressing font/rendering noise), and presents them in synchronized side-by-side / overlay viewports with an automated audit log.
 - **Current Stage**: Functional prototype / MVP with audited core diffing engine, currently transitioning toward web-hosted server-side deployment (BullMQ, Redis, PostgreSQL/Drizzle, Docker) and cross-platform desktop capabilities.
 
 ---

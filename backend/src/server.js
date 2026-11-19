@@ -1,11 +1,12 @@
 import { createApp } from "./app.js";
-import { config } from "./config.js";
+import { config, resolveListenHost } from "./config.js";
 
 const app = createApp();
 const PORT = config.port;
+const HOST = resolveListenHost();
 
-app.listen(PORT, "0.0.0.0", () => {
-	console.log(`Server running on port ${PORT}`);
+app.listen(PORT, HOST, () => {
+	console.log(`Server running on port ${PORT} (${HOST})`);
 	console.log(`KiCad CLI path: ${config.kicadCliPath}`);
 });
 

@@ -1,4 +1,4 @@
-# Banana 2.0 — Web Deployment: Detailed Implementation Plan
+# Banana — Web Deployment: Detailed Implementation Plan
 
 > Scope: everything needed to turn the current local-only desktop tool into a publicly hosted web service. The diff engine (`svg-diff-processor.js`, `kicad-pcb-parser.js`, `kicad-renderer.js`) is **not modified** — it is treated as a stable, tested black box. All work is wrapper infrastructure around it.
 > 

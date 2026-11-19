@@ -71,6 +71,38 @@ function resolveKicadCliPath() {
 
 export const KICAD_CLI_PATH = resolveKicadCliPath();
 
+function resolveKicadAssetDir(envVars, subDir, extraDirs = []) {
+	for (const key of envVars) {
+		const val = process.env[key];
+		if (val && fs.existsSync(val)) return val;
+	}
+	const cliDir = path.dirname(KICAD_CLI_PATH);
+	const candidates = [
+		path.resolve(cliDir, "..", "share", "kicad", subDir),
+		path.resolve(cliDir, "..", "SharedSupport", subDir),
+		...extraDirs,
+	];
+	return candidates.find((dir) => fs.existsSync(dir)) || "";
+}
+
+export const KICAD_SYMBOL_DIR = resolveKicadAssetDir(
+	["KICAD_SYMBOL_DIR", "KICAD10_SYMBOL_DIR", "KICAD9_SYMBOL_DIR"],
+	"symbols",
+	["/usr/share/kicad/symbols", "/usr/local/share/kicad/symbols"],
+);
+
+export const KICAD_FOOTPRINT_DIR = resolveKicadAssetDir(
+	["KICAD_FOOTPRINT_DIR", "KICAD10_FOOTPRINT_DIR", "KICAD9_FOOTPRINT_DIR"],
+	"footprints",
+	["/usr/share/kicad/footprints", "/usr/local/share/kicad/footprints"],
+);
+
+export const KICAD_3DMODEL_DIR = resolveKicadAssetDir(
+	["KICAD_3DMODEL_DIR", "KICAD10_3DMODEL_DIR", "KICAD9_3DMODEL_DIR"],
+	"3dmodels",
+	["/usr/share/kicad/3dmodels", "/usr/local/share/kicad/3dmodels"],
+);
+
 // Fail-fast verification at startup: throw immediately if KiCad CLI cannot execute
 export const KICAD_VERSION = (() => {
 	try {
@@ -99,11 +131,16 @@ try {
 	console.warn("[Banana] Could not create BANANA_DATA_DIR:", e.message);
 }
 
+let explicitAllowLocalRepos = null;
+
 export const config = {
 	port: process.env.PORT || 5000,
 	tempStorageDir: BANANA_DATA_DIR,
 	kicadCliPath: KICAD_CLI_PATH,
 	kicadVersion: KICAD_VERSION,
+	kicadSymbolDir: KICAD_SYMBOL_DIR,
+	kicadFootprintDir: KICAD_FOOTPRINT_DIR,
+	kicad3dModelDir: KICAD_3DMODEL_DIR,
 	geminiApiKey: process.env.GEMINI_API_KEY || "",
 	geminiModel: process.env.GEMINI_MODEL || "gemini-3-flash-preview",
 	githubClientId: process.env.GITHUB_CLIENT_ID || "",
@@ -112,4 +149,24 @@ export const config = {
 		process.env.GITHUB_CALLBACK_URL ||
 		"http://localhost:5000/api/auth/github/callback",
 	frontendUrl: process.env.FRONTEND_URL || "http://localhost:5173",
+	get allowLocalRepos() {
+		if (explicitAllowLocalRepos !== null) {
+			return explicitAllowLocalRepos;
+		}
+		return process.env.BANANA_ALLOW_LOCAL_REPOS === "1";
+	},
+	set allowLocalRepos(val) {
+		explicitAllowLocalRepos = typeof val === "boolean" ? val : null;
+	},
 };
+
+export function resolveListenHost(env = process.env) {
+	const trimmedHost = typeof env?.HOST === "string" ? env.HOST.trim() : "";
+	if (trimmedHost) {
+		return trimmedHost;
+	}
+	if (env?.BANANA_ALLOW_LOCAL_REPOS === "1") {
+		return "127.0.0.1";
+	}
+	return "0.0.0.0";
+}

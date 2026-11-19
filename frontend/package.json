@@ -11,7 +11,10 @@
 	},
 	"dependencies": {
 		"@ant-design/icons": "^6.3.2",
+		"@mdi/js": "7.4.47",
+		"@tabler/icons-react": "3.52.0",
 		"antd": "^6.5.1",
+		"occt-import-js": "^0.0.23",
 		"react": "^19.2.7",
 		"react-dom": "^19.2.7",
 		"three": "^0.186.1"

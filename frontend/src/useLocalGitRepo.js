@@ -1,201 +1,512 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
-import { message } from 'antd';
-import { API_BASE_URL } from './config.js';
+import { Button, Modal, message } from "antd";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { onCommitCreated } from "./designEvents.js";
+
+async function resolveBaseUrl() {
+	try {
+		const mod = await import("./config.js");
+		return mod.API_BASE_URL;
+	} catch (_err) {
+		// Fallback for Node test environment where import.meta.env is undefined
+		const envVal =
+			typeof process !== "undefined" ? process.env?.VITE_API_URL : null;
+		return envVal?.trim()
+			? envVal.trim().replace(/\/+$/, "")
+			: "http://localhost:5000";
+	}
+}
+
+export const API_BASE_URL = await resolveBaseUrl();
 
 function isKiCadDesignFile(filePath) {
-  return filePath?.endsWith('.kicad_pcb') || filePath?.endsWith('.kicad_sch');
+	return filePath?.endsWith(".kicad_pcb") || filePath?.endsWith(".kicad_sch");
 }
 
 function updateSelectedCommits(commits, setBaseCommit, setTargetCommit, form) {
-  if (!commits || commits.length === 0) {
-    setBaseCommit('');
-    setTargetCommit('');
-    form.setFieldsValue({ baseCommit: '', targetCommit: '' });
-    return;
-  }
+	if (!commits || commits.length === 0) {
+		setBaseCommit("");
+		setTargetCommit("");
+		form.setFieldsValue({ baseCommit: "", targetCommit: "" });
+		return;
+	}
 
-  setBaseCommit((currentBase) => {
-    const hasBase = commits.some((c) => c.hash === currentBase);
-    if (hasBase) return currentBase;
-    const nextBase = commits[Math.min(1, commits.length - 1)].hash;
-    form.setFieldValue('baseCommit', nextBase);
-    return nextBase;
-  });
+	setBaseCommit((currentBase) => {
+		const hasBase = commits.some((c) => c.hash === currentBase);
+		if (hasBase) return currentBase;
+		const nextBase = commits[Math.min(1, commits.length - 1)].hash;
+		form.setFieldValue("baseCommit", nextBase);
+		return nextBase;
+	});
 
-  setTargetCommit((currentTarget) => {
-    const hasTarget = commits.some((c) => c.hash === currentTarget);
-    if (hasTarget) return currentTarget;
-    const nextTarget = commits[0].hash;
-    form.setFieldValue('targetCommit', nextTarget);
-    return nextTarget;
-  });
+	setTargetCommit((currentTarget) => {
+		const hasTarget = commits.some((c) => c.hash === currentTarget);
+		if (hasTarget) return currentTarget;
+		const nextTarget = commits[0].hash;
+		form.setFieldValue("targetCommit", nextTarget);
+		return nextTarget;
+	});
+}
+
+function selectCommitPair(commits, previousTarget) {
+	const hasPrevious = Boolean(
+		previousTarget && commits.some((c) => c.hash === previousTarget),
+	);
+	const baseCommit = hasPrevious ? previousTarget : (commits[1]?.hash ?? "");
+	const targetCommit = commits[0]?.hash ?? "";
+	return { baseCommit, targetCommit };
+}
+
+function applyAutoSelection(commits, pending, ctx) {
+	const { baseCommit, targetCommit } = selectCommitPair(
+		commits,
+		pending.previousTarget,
+	);
+	ctx.setBaseCommit(baseCommit);
+	ctx.setTargetCommit(targetCommit);
+	ctx.form.setFieldsValue({ baseCommit, targetCommit });
+	const relativeFilePath = pending.filePath || ctx.relativeFilePath;
+	ctx.onCommitsAutoSelected?.({
+		baseCommit,
+		targetCommit,
+		relativeFilePath,
+	});
+}
+
+function handleFetchedCommits(commits, ctx) {
+	ctx.setRepoInfo((prev) => (prev ? { ...prev, commits } : null));
+	if (ctx.pendingRef.current) {
+		const pending = ctx.pendingRef.current;
+		applyAutoSelection(commits, pending, ctx);
+		ctx.pendingRef.current = null;
+		return;
+	}
+	updateSelectedCommits(
+		commits,
+		ctx.setBaseCommit,
+		ctx.setTargetCommit,
+		ctx.form,
+	);
+}
+
+function handleCommitEvent(detail, ctx) {
+	const current = ctx.repoPath?.trim();
+	const incoming = detail?.repoPath?.trim();
+	if (!current || current !== incoming) return;
+
+	ctx.pendingRef.current = {
+		previousTarget: ctx.form.getFieldValue("targetCommit"),
+		filePath: detail?.filePath,
+	};
+	if (typeof detail?.filePath === "string" && detail.filePath.length > 0) {
+		ctx.setRelativeFilePath(detail.filePath);
+	}
+	ctx.setRefreshKey((k) => k + 1);
+}
+
+function fetchFileCommits(repoPath, relativeFilePath, onData) {
+	const query = `repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`;
+	fetch(`${API_BASE_URL}/api/git/commits?${query}`)
+		.then((res) => (res.ok ? res.json() : null))
+		.then((data) => {
+			if (data?.commits) onData(data.commits);
+		})
+		.catch((err) =>
+			console.error("Failed to fetch file-specific commits:", err),
+		);
 }
 
 function parseDroppedFile(file) {
-  const native = file.originFileObj || file;
-  const path = native.webkitRelativePath || '';
-  if (path) {
-    const parts = path.split('/');
-    return { repoName: parts[0], relPath: parts.slice(1).join('/') };
-  }
-  return { repoName: null, relPath: native.name };
+	const native = file.originFileObj || file;
+	const path = native.webkitRelativePath || "";
+	if (path) {
+		const parts = path.split("/");
+		return { repoName: parts[0], relPath: parts.slice(1).join("/") };
+	}
+	return { repoName: null, relPath: native.name };
 }
 
-
 async function initGitRepoApi(path) {
-  const response = await fetch(`${API_BASE_URL}/api/git/init`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoPath: path }),
-  });
-  if (!response.ok) {
-    const err = await response.json();
-    throw new Error(err.error || 'Failed to detect git repo details');
-  }
-  return response.json();
+	const response = await fetch(`${API_BASE_URL}/api/git/init`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ repoPath: path }),
+	});
+	if (!response.ok) {
+		const err = await response.json();
+		throw new Error(err.error || "Failed to detect git repo details");
+	}
+	return response.json();
 }
 
 async function fetchDiffFilesApi(path, base, target) {
-  const response = await fetch(`${API_BASE_URL}/api/git/diff-files`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoPath: path, baseRef: base, targetRef: target }),
-  });
-  return response.ok ? response.json() : null;
+	const response = await fetch(`${API_BASE_URL}/api/git/diff-files`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ repoPath: path, baseRef: base, targetRef: target }),
+	});
+	return response.ok ? response.json() : null;
 }
 
-function useRepoInfoLoader({ form, relativeFilePath, setRelativeFilePath, setRepoPath }) {
-  const [repoInfo, setRepoInfo] = useState(null);
+function useRepoInfoLoader({
+	form,
+	relativeFilePath,
+	setRelativeFilePath,
+	setRepoPath,
+}) {
+	const [repoInfo, setRepoInfo] = useState(null);
 
-  const loadRepoInfo = useCallback(async (path, silent = false) => {
-    if (!path) return;
-    try {
-      const data = await initGitRepoApi(path);
-      setRepoInfo(data);
-      form.setFieldsValue({ repoPath: data.resolvedPath });
-      setRepoPath(data.resolvedPath);
+	const loadRepoInfo = useCallback(
+		async (path, silent = false) => {
+			if (!path) return;
+			try {
+				const data = await initGitRepoApi(path);
+				setRepoInfo(data);
+				form.setFieldsValue({ repoPath: data.resolvedPath });
+				setRepoPath(data.resolvedPath);
 
-      if (data.kicadFiles?.length > 0 && !data.kicadFiles.includes(relativeFilePath)) {
-        setRelativeFilePath(data.kicadFiles[0]);
-        form.setFieldsValue({ relativeFilePath: data.kicadFiles[0] });
-      }
-      if (!silent) message.success(`Repository detected: ${data.resolvedPath}`);
-    } catch (err) {
-      message.error(err.message);
-    }
-  }, [form, relativeFilePath, setRelativeFilePath, setRepoPath]);
+				if (
+					data.kicadFiles?.length > 0 &&
+					!data.kicadFiles.includes(relativeFilePath)
+				) {
+					setRelativeFilePath(data.kicadFiles[0]);
+					form.setFieldsValue({ relativeFilePath: data.kicadFiles[0] });
+				}
+				if (!silent)
+					message.success(`Repository detected: ${data.resolvedPath}`);
+				return data;
+			} catch (err) {
+				message.error(err.message);
+			}
+		},
+		[form, relativeFilePath, setRelativeFilePath, setRepoPath],
+	);
 
-  return { repoInfo, setRepoInfo, loadRepoInfo };
+	return { repoInfo, setRepoInfo, loadRepoInfo };
 }
 
-function useFileCommitsEffect({ repoPath, relativeFilePath, form, setBaseCommit, setTargetCommit, setRepoInfo }) {
-  useEffect(() => {
-    if (!repoPath || !relativeFilePath) return;
-
-    const url = `${API_BASE_URL}/api/git/commits?repoPath=${encodeURIComponent(repoPath)}&filePath=${encodeURIComponent(relativeFilePath)}`;
-    fetch(url)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!data?.commits) return;
-        setRepoInfo((prev) => (prev ? { ...prev, commits: data.commits } : null));
-        updateSelectedCommits(data.commits, setBaseCommit, setTargetCommit, form);
-      })
-      .catch((err) => console.error('Failed to fetch file-specific commits:', err));
-  }, [repoPath, relativeFilePath, form, setBaseCommit, setTargetCommit, setRepoInfo]);
+function useFileCommitsEffect({
+	repoPath,
+	relativeFilePath,
+	refreshKey,
+	form,
+	setBaseCommit,
+	setTargetCommit,
+	setRepoInfo,
+	pendingRef,
+	onCommitsAutoSelected,
+}) {
+	useEffect(() => {
+		if (!repoPath || !relativeFilePath || refreshKey === undefined) return;
+		fetchFileCommits(repoPath, relativeFilePath, (commits) => {
+			handleFetchedCommits(commits, {
+				form,
+				relativeFilePath,
+				setBaseCommit,
+				setTargetCommit,
+				setRepoInfo,
+				pendingRef,
+				onCommitsAutoSelected,
+			});
+		});
+	}, [
+		repoPath,
+		relativeFilePath,
+		refreshKey,
+		form,
+		setBaseCommit,
+		setTargetCommit,
+		setRepoInfo,
+		pendingRef,
+		onCommitsAutoSelected,
+	]);
 }
 
 function areRefsValid(path, base, target) {
-  return Boolean(path && base && target);
+	return Boolean(path && base && target);
 }
 
 function applyDiffFilesResult(files, form, setRelativeFilePath) {
-  const firstFile = files?.[0] ?? '';
-  setRelativeFilePath(firstFile);
-  form.setFieldValue('relativeFilePath', firstFile);
+	const firstFile = files?.[0] ?? "";
+	setRelativeFilePath(firstFile);
+	form.setFieldValue("relativeFilePath", firstFile);
 
-  if (files?.length) {
-    message.info(`Found ${files.length} changed design file(s) between selected refs.`);
-  } else {
-    message.warning('No changed KiCad design files found between these refs.');
-  }
+	if (files?.length) {
+		message.info(
+			`Found ${files.length} changed design file(s) between selected refs.`,
+		);
+	} else {
+		message.warning("No changed KiCad design files found between these refs.");
+	}
 }
 
 function useChangedFilesFetcher({ form, setRelativeFilePath }) {
-  const [changedFiles, setChangedFiles] = useState([]);
+	const [changedFiles, setChangedFiles] = useState([]);
 
-  const fetchChangedFiles = useCallback(async (path, base, target) => {
-    if (!areRefsValid(path, base, target)) return;
-    try {
-      const data = await fetchDiffFilesApi(path, base, target);
-      const files = data?.files ?? [];
-      setChangedFiles(files);
-      applyDiffFilesResult(files, form, setRelativeFilePath);
-    } catch (err) {
-      console.error('Failed to fetch changed files:', err);
-    }
-  }, [form, setRelativeFilePath]);
+	const fetchChangedFiles = useCallback(
+		async (path, base, target) => {
+			if (!areRefsValid(path, base, target)) return;
+			try {
+				const data = await fetchDiffFilesApi(path, base, target);
+				const files = data?.files ?? [];
+				setChangedFiles(files);
+				applyDiffFilesResult(files, form, setRelativeFilePath);
+			} catch (err) {
+				console.error("Failed to fetch changed files:", err);
+			}
+		},
+		[form, setRelativeFilePath],
+	);
 
-  return { changedFiles, setChangedFiles, fetchChangedFiles };
+	return { changedFiles, setChangedFiles, fetchChangedFiles };
 }
 
-function useGitDropHandlers({ form, setRelativeFilePath, loadRepoInfo }) {
-  const repoLoadTimeoutRef = useRef(null);
+function getDroppedDirectoryName(dataTransfer) {
+	const item = dataTransfer?.items?.[0];
+	const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+	if (!entry?.isDirectory) return null;
+	return entry.name || null;
+}
 
-  const handleFileDraggedOrDropped = useCallback((file) => {
-    const { repoName, relPath } = parseDroppedFile(file);
-    if (isKiCadDesignFile(relPath)) {
-      setRelativeFilePath(relPath);
-      form.setFieldValue('relativeFilePath', relPath);
-    }
-    if (repoName) {
-      if (repoLoadTimeoutRef.current) clearTimeout(repoLoadTimeoutRef.current);
-      repoLoadTimeoutRef.current = setTimeout(() => loadRepoInfo(repoName, false), 300);
-    } else {
-      message.info('Single file dropped. Please verify or input the local absolute repository path below.');
-    }
-  }, [form, loadRepoInfo, setRelativeFilePath]);
+function formatNoRepoMatchError(name) {
+	return `Could not find a Git repository named ${name} in your Desktop, Documents or Banana folders. Paste its full path in the Repository path box.`;
+}
 
-  const handleFolderDrop = useCallback((e) => {
-    e.preventDefault();
-    const item = e.dataTransfer.items?.[0];
-    const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-    if (entry?.isDirectory) {
-      loadRepoInfo(entry.name, false);
-    } else if (item?.getAsFile?.()) {
-      message.info('To initialize branches/commits, please drag and drop the root Git repository folder.');
-    }
-  }, [loadRepoInfo]);
+function formatRepoFindResult(matches, name) {
+	if (matches.length === 1) {
+		return { path: matches[0] };
+	}
+	if (matches.length > 1) {
+		return { choices: matches };
+	}
+	return { error: formatNoRepoMatchError(name) };
+}
 
-  return { handleFileDraggedOrDropped, handleFolderDrop };
+async function queryLocalRepoMatches(name, baseUrl, fetchImpl) {
+	const host = (baseUrl || "").replace(/\/+$/, "");
+	const url = `${host}/api/local-repos/find?name=${encodeURIComponent(name)}`;
+	const response = await fetchImpl(url);
+	if (!response.ok) {
+		throw new Error(`Failed to search repository: ${response.status}`);
+	}
+	const data = await response.json();
+	return Array.isArray(data?.matches) ? data.matches : [];
+}
+
+export async function resolveDroppedFolder(
+	dataTransfer,
+	{
+		banana = globalThis.window?.banana,
+		fetchImpl = fetch,
+		baseUrl = API_BASE_URL,
+	} = {},
+) {
+	if (banana?.getPathForFile && dataTransfer?.files?.[0]) {
+		const filePath = banana.getPathForFile(dataTransfer.files[0]);
+		if (filePath) return { path: filePath };
+	}
+	const name = getDroppedDirectoryName(dataTransfer);
+	if (!name) {
+		return {
+			error:
+				"To initialize branches/commits, please drag and drop the root Git repository folder.",
+		};
+	}
+	try {
+		const matches = await queryLocalRepoMatches(name, baseUrl, fetchImpl);
+		return formatRepoFindResult(matches, name);
+	} catch (err) {
+		// Return friendly error object when repository search request fails
+		return { error: err.message || "Failed to search for local repositories" };
+	}
+}
+
+function renderChoiceButtons(choices, onClick) {
+	const style = {
+		textAlign: "left",
+		whiteSpace: "normal",
+		height: "auto",
+		padding: "8px 12px",
+	};
+	const buttons = choices.map((c) =>
+		React.createElement(
+			Button,
+			{
+				key: c,
+				type: "default",
+				block: true,
+				style,
+				onClick: () => onClick(c),
+			},
+			c,
+		),
+	);
+	return React.createElement(
+		"div",
+		{
+			style: {
+				display: "flex",
+				flexDirection: "column",
+				gap: "8px",
+				marginTop: "16px",
+			},
+		},
+		buttons,
+	);
+}
+
+function showRepoChoicesModal(choices, onSelect) {
+	let modalInstance = null;
+	const onClick = (choice) => {
+		modalInstance?.destroy();
+		onSelect(choice);
+	};
+	const content = renderChoiceButtons(choices, onClick);
+	modalInstance = Modal.info({
+		title: "Select Repository",
+		icon: null,
+		closable: true,
+		maskClosable: true,
+		footer: null,
+		content,
+	});
+}
+
+function applyRepoPath(path, form, setRepoPath, loadRepoInfo) {
+	form.setFieldValue("repoPath", path);
+	setRepoPath(path);
+	loadRepoInfo(path, false);
+}
+
+function isSingleFileDrop(dataTransfer) {
+	const item = dataTransfer?.items?.[0];
+	const entry = item?.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+	return Boolean(entry ? !entry.isDirectory : item?.getAsFile?.());
+}
+
+function useGitDropHandlers({
+	form,
+	setRelativeFilePath,
+	setRepoPath,
+	loadRepoInfo,
+}) {
+	const repoLoadTimeoutRef = useRef(null);
+
+	const handleFileDraggedOrDropped = useCallback(
+		(file) => {
+			const { repoName, relPath } = parseDroppedFile(file);
+			if (isKiCadDesignFile(relPath)) {
+				setRelativeFilePath(relPath);
+				form.setFieldValue("relativeFilePath", relPath);
+			}
+			if (repoName) {
+				if (repoLoadTimeoutRef.current)
+					clearTimeout(repoLoadTimeoutRef.current);
+				repoLoadTimeoutRef.current = setTimeout(
+					() => loadRepoInfo(repoName, false),
+					300,
+				);
+			} else {
+				message.info(
+					"Single file dropped. Please verify or input the local absolute repository path below.",
+				);
+			}
+		},
+		[form, loadRepoInfo, setRelativeFilePath],
+	);
+
+	const handleFolderDrop = useCallback(
+		async (e) => {
+			e.preventDefault();
+			if (isSingleFileDrop(e.dataTransfer)) {
+				message.info(
+					"To initialize branches/commits, please drag and drop the root Git repository folder.",
+				);
+				return;
+			}
+			const result = await resolveDroppedFolder(e.dataTransfer);
+			if (result.path) {
+				applyRepoPath(result.path, form, setRepoPath, loadRepoInfo);
+			} else if (result.choices?.length) {
+				showRepoChoicesModal(result.choices, (chosen) => {
+					applyRepoPath(chosen, form, setRepoPath, loadRepoInfo);
+				});
+			} else if (result.error) {
+				message.warning(result.error);
+			}
+		},
+		[form, loadRepoInfo, setRepoPath],
+	);
+
+	return { handleFileDraggedOrDropped, handleFolderDrop };
 }
 
 export function useLocalGitRepo(options) {
-  const {
-    form,
-    repoPath,
-    setRepoPath,
-    relativeFilePath,
-    setRelativeFilePath,
-    setBaseCommit,
-    setTargetCommit,
-  } = options;
+	const {
+		form,
+		repoPath,
+		setRepoPath,
+		relativeFilePath,
+		setRelativeFilePath,
+		setBaseCommit,
+		setTargetCommit,
+		onCommitsAutoSelected,
+	} = options;
 
-  const [compareBranches, setCompareBranches] = useState(false);
-  const { repoInfo, setRepoInfo, loadRepoInfo } = useRepoInfoLoader({ form, relativeFilePath, setRelativeFilePath, setRepoPath });
-  useFileCommitsEffect({ repoPath, relativeFilePath, form, setBaseCommit, setTargetCommit, setRepoInfo });
-  const { changedFiles, setChangedFiles, fetchChangedFiles } = useChangedFilesFetcher({ form, setRelativeFilePath });
-  const { handleFileDraggedOrDropped, handleFolderDrop } = useGitDropHandlers({ form, setRelativeFilePath, loadRepoInfo });
+	const [compareBranches, setCompareBranches] = useState(false);
+	const [refreshKey, setRefreshKey] = useState(0);
+	const pendingRef = useRef(null);
 
-  return {
-    repoInfo,
-    setRepoInfo,
-    compareBranches,
-    setCompareBranches,
-    changedFiles,
-    setChangedFiles,
-    loadRepoInfo,
-    fetchChangedFiles,
-    handleFileDraggedOrDropped,
-    handleFolderDrop,
-  };
+	useEffect(() => {
+		const unsubscribe = onCommitCreated((detail) => {
+			handleCommitEvent(detail, {
+				repoPath,
+				form,
+				setRelativeFilePath,
+				setRefreshKey,
+				pendingRef,
+			});
+		});
+		return () => {
+			if (typeof unsubscribe === "function") unsubscribe();
+		};
+	}, [repoPath, form, setRelativeFilePath]);
+
+	const { repoInfo, setRepoInfo, loadRepoInfo } = useRepoInfoLoader({
+		form,
+		relativeFilePath,
+		setRelativeFilePath,
+		setRepoPath,
+	});
+	useFileCommitsEffect({
+		repoPath,
+		relativeFilePath,
+		refreshKey,
+		form,
+		setBaseCommit,
+		setTargetCommit,
+		setRepoInfo,
+		pendingRef,
+		onCommitsAutoSelected,
+	});
+	const { changedFiles, setChangedFiles, fetchChangedFiles } =
+		useChangedFilesFetcher({ form, setRelativeFilePath });
+	const { handleFileDraggedOrDropped, handleFolderDrop } = useGitDropHandlers({
+		form,
+		setRelativeFilePath,
+		setRepoPath,
+		loadRepoInfo,
+	});
+
+	return {
+		repoInfo,
+		setRepoInfo,
+		compareBranches,
+		setCompareBranches,
+		changedFiles,
+		setChangedFiles,
+		loadRepoInfo,
+		fetchChangedFiles,
+		handleFileDraggedOrDropped,
+		handleFolderDrop,
+	};
 }

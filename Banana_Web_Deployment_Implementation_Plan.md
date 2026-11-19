@@ -1,7 +1,7 @@
-# Banana 2.0 — Web Deployment Implementation Plan
+# Banana — Web Deployment Implementation Plan
 ### Server-side KiCad diffing, GitHub + local repo upload, Docker, Drizzle ORM
 
-_Scope: this plan covers the web-hosted version of Banana 2.0 only. The desktop
+_Scope: this plan covers the web-hosted version of Banana only. The desktop
 (Electron) build reuses the same backend/core code and is addressed briefly at
 the end. The existing `svg-diff-processor.js` / `kicad-pcb-parser.js` diffing
 logic is NOT modified by this plan — it is treated as a stable, already-audited
@@ -437,7 +437,7 @@ scale — no need for WebSockets/SSE unless job volume grows significantly).
 
 ---
 
-## 11. Deployment Platform — Where to Host Web Banana 2.0
+## 11. Deployment Platform — Where to Host Web Banana
 
 _This section is scoped strictly to the web-based deployment (Section 1–10
 above). It does not apply to the Electron desktop build._
@@ -481,7 +481,7 @@ you want to avoid managing the VPS yourself.
 
 1. **Push the repo to GitHub** (Railway deploys from a connected repo).
 2. **Create a new Railway project** → "Deploy from GitHub repo" → select
-   the Banana 2.0 repo.
+   the Banana repo.
 3. **Add the Postgres and Redis plugins** from Railway's service catalog
    inside the same project — they auto-generate `DATABASE_URL` and
    `REDIS_URL` environment variables that your app can read directly.

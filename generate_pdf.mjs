@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 
 const htmlPath = path.resolve('saas_pricing_model.html');
-const pdfPath = path.resolve('Banana_2.0_SaaS_Pricing_Model.pdf');
+const pdfPath = path.resolve('Banana_SaaS_Pricing_Model.pdf');
 const tempProfile = path.join(os.tmpdir(), 'chrome_pdf_profile_' + Date.now());
 
 if (!fs.existsSync(tempProfile)) {

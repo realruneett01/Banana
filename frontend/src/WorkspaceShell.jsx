@@ -1,8 +1,13 @@
 import {
+	EditOutlined,
+	ExperimentOutlined,
 	FileSearchOutlined,
+	FolderOpenOutlined,
 	GithubOutlined,
 	MenuOutlined,
 	RobotOutlined,
+	ThunderboltFilled,
+	ThunderboltOutlined,
 	UnorderedListOutlined,
 } from "@ant-design/icons";
 import { Avatar, Button, Space, Tooltip } from "antd";
@@ -16,7 +21,7 @@ function BrandLogo({ compact }) {
 				🍌
 			</div>
 			<div className="bn-brand-text">
-				<span className="bn-brand-name">Banana 2.0</span>
+				<span className="bn-brand-name">Banana</span>
 				{!compact && (
 					<span className="bn-brand-sub">Visual Hardware Diff Studio</span>
 				)}
@@ -30,27 +35,27 @@ function BrandLogo({ compact }) {
 	);
 }
 
-function GithubUserButton({ githubUser, onOpenGithubModal, compact }) {
-	if (githubUser) {
-		return (
-			<Tooltip title={`Connected as @${githubUser.login} (Click to manage)`}>
-				<Button
-					className="bn-ghost-btn"
-					onClick={onOpenGithubModal}
-					style={{ height: BUTTON_HEIGHT }}
-				>
-					<Avatar
-						src={githubUser.avatarUrl}
-						size={20}
-						icon={<GithubOutlined />}
-					/>
-					{!compact && <span className="bn-gh-login">{githubUser.login}</span>}
-					<span className="bn-dot bn-dot-ok" />
-				</Button>
-			</Tooltip>
-		);
-	}
+function GithubConnectedBtn({ githubUser, onOpenGithubModal, compact }) {
+	return (
+		<Tooltip title={`Connected as @${githubUser.login} (Click to manage)`}>
+			<Button
+				className="bn-ghost-btn"
+				onClick={onOpenGithubModal}
+				style={{ height: BUTTON_HEIGHT }}
+			>
+				<Avatar
+					src={githubUser.avatarUrl}
+					size={20}
+					icon={<GithubOutlined />}
+				/>
+				{!compact && <span className="bn-gh-login">{githubUser.login}</span>}
+				<span className="bn-dot bn-dot-ok" />
+			</Button>
+		</Tooltip>
+	);
+}
 
+function GithubConnectBtn({ onOpenGithubModal, compact }) {
 	return (
 		<Tooltip title="Connect GitHub to diff remote repos & Pull Requests">
 			<Button
@@ -65,11 +70,24 @@ function GithubUserButton({ githubUser, onOpenGithubModal, compact }) {
 	);
 }
 
-function BackendStatusBadge({ backendStatus, kicadVersion, compact }) {
+function GithubUserButton({ githubUser, onOpenGithubModal, compact }) {
+	if (githubUser) {
+		return (
+			<GithubConnectedBtn
+				githubUser={githubUser}
+				onOpenGithubModal={onOpenGithubModal}
+				compact={compact}
+			/>
+		);
+	}
+	return (
+		<GithubConnectBtn onOpenGithubModal={onOpenGithubModal} compact={compact} />
+	);
+}
+
+function BackendStatusBadge({ backendStatus, compact }) {
 	const isHealthy = backendStatus === "healthy";
-	const label = isHealthy
-		? `KiCad ${kicadVersion || "CLI"}`
-		: "Backend offline";
+	const label = isHealthy ? "Connected" : "Backend offline";
 	return (
 		<Tooltip title={isHealthy ? "Backend connected" : "Backend not reachable"}>
 			<span className={`bn-status ${isHealthy ? "is-ok" : "is-down"}`}>
@@ -80,69 +98,123 @@ function BackendStatusBadge({ backendStatus, kicadVersion, compact }) {
 	);
 }
 
-function CopilotButton({ onOpenCopilot, compact }) {
+function ShellActionButton({
+	title,
+	icon,
+	onClick,
+	compact,
+	label,
+	ariaLabel,
+}) {
 	return (
-		<Tooltip title="Open Banana Hardware Copilot (AI PCB Diff Assistant)">
+		<Tooltip title={title}>
 			<Button
 				type="primary"
-				icon={<RobotOutlined />}
-				onClick={() => onOpenCopilot?.()}
+				icon={icon}
+				onClick={() => onClick?.()}
 				className="bn-copilot-btn"
 				style={{ height: BUTTON_HEIGHT }}
+				aria-label={ariaLabel}
 			>
-				{!compact && "Copilot"}
+				{!compact && label}
 			</Button>
 		</Tooltip>
 	);
 }
 
-export default function WorkspaceShell({
-	onOpenCopilot,
-	kicadVersion,
-	backendStatus,
-	githubUser,
-	onOpenGithubModal,
-	compact = false,
-	onOpenControls,
-	onOpenAudit,
-}) {
+function CopilotButton({ onOpenCopilot, compact }) {
+	return (
+		<ShellActionButton
+			title="Open Banana Hardware Copilot (AI PCB Diff Assistant)"
+			icon={<RobotOutlined />}
+			onClick={onOpenCopilot}
+			compact={compact}
+			label="Copilot"
+		/>
+	);
+}
+
+const LABELLED_ACTIONS = [
+	["onOpenProjects", "Projects", FolderOpenOutlined],
+	["onOpenAgent", "Design with AI", ExperimentOutlined],
+	["onOpenSimulation", "Simulate", ThunderboltOutlined],
+	["onOpenStudio", "3D Studio", ThunderboltFilled],
+	["onOpenEditor", "Editor", EditOutlined],
+];
+
+function LabelledActionButtons(props) {
+	return LABELLED_ACTIONS.map(([handler, label, Icon]) => (
+		<ShellActionButton
+			key={handler}
+			title={label}
+			icon={<Icon />}
+			onClick={props[handler]}
+			compact={props.compact}
+			label={label}
+			ariaLabel={label}
+		/>
+	));
+}
+
+function CompactIconButton({ icon, onClick, label }) {
+	return (
+		<Button
+			type="text"
+			className="bn-icon-btn"
+			icon={icon}
+			onClick={onClick}
+			aria-label={label}
+		/>
+	);
+}
+
+function HeaderLeft({ compact, onOpenControls }) {
+	return (
+		<div className="bn-header-left">
+			{compact && (
+				<CompactIconButton
+					icon={<MenuOutlined />}
+					onClick={onOpenControls}
+					label="Open controls"
+				/>
+			)}
+			<BrandLogo compact={compact} />
+		</div>
+	);
+}
+
+function HeaderActions(props) {
+	const { compact } = props;
+	return (
+		<Space size={compact ? 6 : 10} align="center">
+			<GithubUserButton
+				githubUser={props.githubUser}
+				onOpenGithubModal={props.onOpenGithubModal}
+				compact={compact}
+			/>
+			<BackendStatusBadge
+				backendStatus={props.backendStatus}
+				compact={compact}
+			/>
+			<CopilotButton onOpenCopilot={props.onOpenCopilot} compact={compact} />
+			<LabelledActionButtons {...props} />
+			{compact && (
+				<CompactIconButton
+					icon={<UnorderedListOutlined />}
+					onClick={props.onOpenAudit}
+					label="Open audit list"
+				/>
+			)}
+		</Space>
+	);
+}
+
+export default function WorkspaceShell(props) {
+	const { compact = false, onOpenControls } = props;
 	return (
 		<header className={`bn-header${compact ? " is-compact" : ""}`}>
-			<div className="bn-header-left">
-				{compact && (
-					<Button
-						type="text"
-						className="bn-icon-btn"
-						icon={<MenuOutlined />}
-						onClick={onOpenControls}
-						aria-label="Open controls"
-					/>
-				)}
-				<BrandLogo compact={compact} />
-			</div>
-
-			<Space size={compact ? 6 : 10} align="center">
-				<GithubUserButton
-					githubUser={githubUser}
-					onOpenGithubModal={onOpenGithubModal}
-					compact={compact}
-				/>
-				<BackendStatusBadge
-					backendStatus={backendStatus}
-					kicadVersion={kicadVersion}
-					compact={compact}
-				/>
-				<CopilotButton onOpenCopilot={onOpenCopilot} compact={compact} />
-				{compact && (
-					<Button
-						type="text"
-						className="bn-icon-btn"
-						icon={<UnorderedListOutlined />}
-						onClick={onOpenAudit}
-						aria-label="Open audit list"
-					/>
-				)}
-			</Space>
+			<HeaderLeft compact={compact} onOpenControls={onOpenControls} />
+			<HeaderActions {...props} />
 		</header>
 	);
 }

@@ -1,4 +1,4 @@
-# Banana 2.0 — Performance Diagnostic & Bottleneck Report
+# Banana — Performance Diagnostic & Bottleneck Report
 
 _Date: 2026-08-19 | Scope: End-to-End Visual Diff Pipeline (Backend KiCad CLI / Diff Engine + Frontend React Viewport)_
 

@@ -7,206 +7,367 @@ import { downloadRepoFile } from "../github-service.js";
 import { parseKiCadBoard } from "../kicad-pcb-parser.js";
 import { exportBoardGlb } from "../kicad-renderer.js";
 
-const router = express.Router();
+const VALID_REF_PATTERNS = [
+	/^[0-9a-fA-F]{4,40}$/,
+	/^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/,
+];
 
-function hasRepositoryTarget({ repoPath, owner, repo }) {
-	return Boolean(repoPath || (owner && repo));
+function isValidCommitRef(ref) {
+	if (typeof ref !== "string" || ref.length === 0) {
+		return false;
+	}
+	return VALID_REF_PATTERNS.some((pattern) => pattern.test(ref));
 }
 
-function validatePadRequest({ commit, targetFile, repoPath, owner, repo }) {
-	if (!commit || !targetFile) {
-		return "Missing required fields: commit, (relativeFilePath OR filePath)";
+const ROOT_OR_DRIVE_PATTERN = /^[a-zA-Z]:|^[/\\]/;
+const NETWORK_OR_DEVICE_PATTERN = /^[/\\]{2}/;
+const TRAVERSAL_SEGMENT_PATTERN = /(^|[/\\])\.\.([/\\]|$)/;
+const ALLOWED_BOARD_EXTENSIONS = [".kicad_pcb", ".kicad_sch"];
+
+function hasHostileString(val) {
+	if (typeof val !== "string" || val.length === 0) {
+		return true;
 	}
-	if (!hasRepositoryTarget({ repoPath, owner, repo })) {
-		return "Missing required fields: repoPath OR (owner and repo)";
+	if (val.includes("\0")) {
+		return true;
 	}
-	if (!targetFile.endsWith(".kicad_pcb")) {
-		return "Only .kicad_pcb files are supported by this endpoint";
+	if (NETWORK_OR_DEVICE_PATTERN.test(val)) {
+		return true;
 	}
-	return null;
+	return TRAVERSAL_SEGMENT_PATTERN.test(val);
 }
 
-async function retrieveBoardFile({
-	owner,
-	repo,
-	token,
-	repoPath,
-	commit,
-	targetFile,
-	tempFilePath,
-	uniqueId,
-	fileBasename,
-}) {
-	if (owner && repo) {
-		if (!token) {
-			const err = new Error("GitHub token required for remote pads");
-			err.statusCode = 401;
-			throw err;
+function isPathConfined(filePath) {
+	if (hasHostileString(filePath)) {
+		return false;
+	}
+	if (ROOT_OR_DRIVE_PATTERN.test(filePath)) {
+		return false;
+	}
+	return !path.isAbsolute(filePath);
+}
+
+function isValidFilePath(filePath) {
+	if (typeof filePath !== "string" || filePath.length === 0) {
+		return false;
+	}
+	if (!isPathConfined(filePath)) {
+		return false;
+	}
+	return ALLOWED_BOARD_EXTENSIONS.some((ext) => filePath.endsWith(ext));
+}
+
+function isValidRepoPath(repoPath) {
+	if (typeof repoPath !== "string" || repoPath.trim().length === 0) {
+		return false;
+	}
+	return !hasHostileString(repoPath);
+}
+
+function hasValidFileInputs(boardReq) {
+	if (
+		boardReq.relativeFilePath &&
+		!isValidFilePath(boardReq.relativeFilePath)
+	) {
+		return false;
+	}
+	if (boardReq.filePath && !isValidFilePath(boardReq.filePath)) {
+		return false;
+	}
+	return isValidFilePath(boardReq.targetFile);
+}
+
+function isRemoteTarget(boardReq) {
+	return Boolean(boardReq.owner && boardReq.repo);
+}
+
+const LOCAL_REPOS_DISABLED_MESSAGE =
+	"Local repositories are disabled on this server";
+
+function isLocalRepoRequest(boardReq) {
+	return Boolean(boardReq.repoPath) || !isRemoteTarget(boardReq);
+}
+
+function enforceLocalRepoPolicy(req, boardReq, res) {
+	const isLocal = isLocalRepoRequest(boardReq);
+	const permitsLocal = req.app?.locals?.allowLocalRepos === true;
+	if (isLocal && !permitsLocal) {
+		res.status(403).json({ error: LOCAL_REPOS_DISABLED_MESSAGE });
+		return false;
+	}
+	return true;
+}
+
+const VALIDATION_RULES = [
+	{
+		check: (req) => Boolean(req.commit && req.targetFile),
+		message: "Missing required fields: commit, (relativeFilePath OR filePath)",
+	},
+	{
+		check: (req) => Boolean(req.repoPath || isRemoteTarget(req)),
+		message: "Missing required fields: repoPath OR (owner and repo)",
+	},
+	{
+		check: (req) => isValidCommitRef(req.commit),
+		message: "Invalid commit ref",
+	},
+	{
+		check: (req) => !req.repoPath || isValidRepoPath(req.repoPath),
+		message: "Invalid repository path",
+	},
+	{
+		check: (req) => hasValidFileInputs(req),
+		message: "Invalid target file path",
+	},
+];
+
+function findValidationError(boardReq) {
+	const failedRule = VALIDATION_RULES.find((rule) => !rule.check(boardReq));
+	return failedRule ? failedRule.message : null;
+}
+
+function extractAuthToken(req) {
+	const headerToken = req.headers?.authorization?.replace(/^Bearer\s+/i, "");
+	return headerToken || req.body?.token;
+}
+
+function extractBoardRequest(req) {
+	const body = req.body || {};
+	return {
+		repoPath: body.repoPath,
+		commit: body.commit,
+		targetFile: body.relativeFilePath || body.filePath,
+		relativeFilePath: body.relativeFilePath,
+		filePath: body.filePath,
+		owner: body.owner,
+		repo: body.repo,
+		token: extractAuthToken(req),
+	};
+}
+
+function makeTempLocation(prefix, targetFile) {
+	const id = `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+	const fileName = path.basename(targetFile);
+	const dir = path.join(config.tempStorageDir, id);
+	const filePath = path.join(dir, fileName);
+	return { id, fileName, dir, filePath };
+}
+
+async function fetchBoardSource(boardReq, temp) {
+	if (isRemoteTarget(boardReq)) {
+		if (!boardReq.token) {
+			const authErr = new Error("GitHub token required for remote pads");
+			authErr.statusCode = 401;
+			throw authErr;
 		}
 		await downloadRepoFile(
-			token,
-			owner,
-			repo,
-			targetFile,
-			commit,
-			tempFilePath,
+			boardReq.token,
+			boardReq.owner,
+			boardReq.repo,
+			boardReq.targetFile,
+			boardReq.commit,
+			temp.filePath,
 		);
-	} else {
-		await extractFileFromCommit(
-			repoPath,
-			commit,
-			targetFile,
-			path.join(uniqueId, fileBasename),
-		);
+		return;
 	}
+	const relTarget = path.join(temp.id, temp.fileName);
+	await extractFileFromCommit(
+		boardReq.repoPath,
+		boardReq.commit,
+		boardReq.targetFile,
+		relTarget,
+	);
+}
+
+function formatPad(pad) {
+	return {
+		number: pad.number,
+		net: pad.net ?? "",
+		absAt: { x: pad.absAt.x, y: pad.absAt.y },
+		size: { w: pad.size?.w ?? 0.5, h: pad.size?.h ?? 0.5 },
+		layers: pad.layers ?? [],
+	};
+}
+
+function formatFootprint(fp) {
+	return {
+		reference: fp.reference?.text ?? "",
+		layer: fp.layer,
+		pads: fp.pads.map(formatPad),
+	};
 }
 
 function formatFootprints(board) {
-	return board.footprints.map((fp) => ({
-		reference: fp.reference?.text ?? "",
-		layer: fp.layer,
-		pads: fp.pads.map((pad) => ({
-			number: pad.number,
-			net: pad.net ?? "",
-			absAt: { x: pad.absAt.x, y: pad.absAt.y },
-			size: { w: pad.size?.w ?? 0.5, h: pad.size?.h ?? 0.5 },
-			layers: pad.layers ?? [],
-		})),
-	}));
+	return board.footprints.map(formatFootprint);
+}
+
+function removeDirSafely(dirPath) {
+	if (!dirPath || !fs.existsSync(dirPath)) {
+		return;
+	}
+	fs.rmSync(dirPath, { recursive: true, force: true });
 }
 
 function cleanupTempDir(dirPath) {
 	try {
-		if (fs.existsSync(dirPath)) {
-			fs.rmSync(dirPath, { recursive: true, force: true });
-		}
-	} catch (_) {}
+		removeDirSafely(dirPath);
+	} catch (err) {
+		console.warn("Failed to clean up temp directory:", dirPath, err?.message);
+	}
+}
+
+function waitForResponse(res) {
+	if (res.writableFinished || res.closed || res.destroyed) {
+		return Promise.resolve();
+	}
+	return new Promise((resolve) => {
+		const onDone = () => {
+			res.off("finish", onDone);
+			res.off("close", onDone);
+			resolve();
+		};
+		res.once("finish", onDone);
+		res.once("close", onDone);
+	});
+}
+
+function sendErrorResponse(res, error, fallbackError) {
+	const status = error.statusCode || 500;
+	res.status(status).json({
+		error: status === 401 ? error.message : fallbackError,
+		details: error.message,
+	});
+}
+
+async function handlePadsExtraction(tempFilePath, res) {
+	let board;
+	try {
+		board = parseKiCadBoard(tempFilePath);
+	} catch (err) {
+		return res.status(500).json({
+			error: "Failed to parse .kicad_pcb file",
+			details: err.message,
+		});
+	}
+	res.json({ footprints: formatFootprints(board) });
+}
+
+async function handleGlbExport(tempFilePath, res, exportGlb = exportBoardGlb) {
+	const { glbPath, cached, durationMs } = await exportGlb(tempFilePath);
+	res.set("X-Banana-Glb-Cached", cached ? "1" : "0");
+	res.set("X-Banana-Glb-Ms", String(Math.round(durationMs)));
+	res.type("model/gltf-binary").sendFile(glbPath);
+}
+
+const MAX_PCB_SIZE_BYTES = 20 * 1024 * 1024;
+
+function isValidPcbContent(pcb) {
+	if (typeof pcb !== "string") {
+		return false;
+	}
+	if (!pcb.trim().startsWith("(kicad_pcb")) {
+		return false;
+	}
+	return Buffer.byteLength(pcb, "utf8") <= MAX_PCB_SIZE_BYTES;
+}
+
+async function executeGlbFromPcb(req, res, exportGlb) {
+	const pcb = req.body?.pcb;
+	if (!isValidPcbContent(pcb)) {
+		return res.status(400).json({ error: "Invalid PCB content" });
+	}
+	const temp = makeTempLocation("glb", "board.kicad_pcb");
+	try {
+		fs.mkdirSync(temp.dir, { recursive: true });
+		fs.writeFileSync(temp.filePath, pcb, "utf8");
+		await handleGlbExport(temp.filePath, res, exportGlb);
+	} catch (error) {
+		sendErrorResponse(res, error, "Unexpected error during 3D export");
+	} finally {
+		await waitForResponse(res);
+		cleanupTempDir(temp.dir);
+	}
+}
+
+async function executeBoardAction(req, res, endpoint) {
+	const boardReq = extractBoardRequest(req);
+	const validationMsg = findValidationError(boardReq);
+	if (validationMsg) {
+		return res.status(400).json({ error: validationMsg });
+	}
+
+	if (!enforceLocalRepoPolicy(req, boardReq, res)) {
+		return;
+	}
+
+	const temp = makeTempLocation(endpoint.prefix, boardReq.targetFile);
+	try {
+		await fetchBoardSource(boardReq, temp);
+		await endpoint.handler(temp.filePath, res);
+	} catch (error) {
+		sendErrorResponse(res, error, endpoint.fallbackError);
+	} finally {
+		await waitForResponse(res);
+		cleanupTempDir(temp.dir);
+	}
 }
 
 /**
- * POST /api/board/pads
- *
- * Extracts a .kicad_pcb file from a git commit and returns parsed pad data
- * (absolute coordinates, size, net names, layer membership) for the
- * frontend pad/net label overlay.
+ * Configuration table for board route endpoints:
+ * - /pads: Extracts parsed pad/net labels for overlay rendering.
+ * - /glb: Generates binary glTF 3D model for hologram viewer.
  */
-router.post("/pads", async (req, res) => {
-	const { repoPath, commit, relativeFilePath, owner, repo, filePath } =
-		req.body;
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body.token;
-	const targetFile = relativeFilePath || filePath;
+const BOARD_ENDPOINT_REGISTRATIONS = [
+	/**
+	 * POST /api/board/pads - Extracts a .kicad_pcb file from a git commit and returns parsed pad data (absolute coordinates, size, net names, layer membership) for the frontend pad/net label overlay.
+	 */
+	{
+		endpointPath: "/pads",
+		prefix: "pads",
+		fallbackError: "Unexpected error during pad extraction",
+		handler: handlePadsExtraction,
+	},
+	/**
+	 * POST /api/board/glb - Extracts a .kicad_pcb at a commit (local git or GitHub) and returns it as a binary glTF with every copper layer, mask, silkscreen and component model, for the frontend 3D hologram viewer. Same request body as /pads.
+	 */
+	{
+		endpointPath: "/glb",
+		prefix: "glb",
+		fallbackError: "Unexpected error during 3D export",
+		handler: handleGlbExport,
+	},
+];
 
-	const validationError = validatePadRequest({
-		commit,
-		targetFile,
-		repoPath,
-		owner,
-		repo,
+async function executeGlbAction(req, res, activeExport) {
+	if (req.body?.pcb !== undefined) {
+		return executeGlbFromPcb(req, res, activeExport);
+	}
+	const glbEndpoint = {
+		...BOARD_ENDPOINT_REGISTRATIONS[1],
+		handler: (tempPath, response) =>
+			handleGlbExport(tempPath, response, activeExport),
+	};
+	return executeBoardAction(req, res, glbEndpoint);
+}
+
+const PADS_ROUTES = ["/pads", "/board/pads", "/api/board/pads"];
+const GLB_ROUTES = ["/glb", "/board/glb", "/api/board/glb"];
+
+export function createBoardRouter(options = {}) {
+	const router = express.Router();
+	const exportGlb = options.exportBoardGlb ?? exportBoardGlb;
+
+	router.post(PADS_ROUTES, (req, res) =>
+		executeBoardAction(req, res, BOARD_ENDPOINT_REGISTRATIONS[0]),
+	);
+
+	router.post(GLB_ROUTES, (req, res) => {
+		const activeExport = req.app?.locals?.exportBoardGlb ?? exportGlb;
+		return executeGlbAction(req, res, activeExport);
 	});
-	if (validationError) {
-		return res.status(400).json({ error: validationError });
-	}
 
-	const uniqueId = `pads_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-	const fileBasename = path.basename(targetFile);
-	const tempDir = path.join(config.tempStorageDir, uniqueId);
-	const tempFilePath = path.join(tempDir, fileBasename);
+	return router;
+}
 
-	try {
-		await retrieveBoardFile({
-			owner,
-			repo,
-			token,
-			repoPath,
-			commit,
-			targetFile,
-			tempFilePath,
-			uniqueId,
-			fileBasename,
-		});
-
-		let board;
-		try {
-			board = parseKiCadBoard(tempFilePath);
-		} catch (err) {
-			return res.status(500).json({
-				error: "Failed to parse .kicad_pcb file",
-				details: err.message,
-			});
-		}
-
-		res.json({ footprints: formatFootprints(board) });
-	} catch (error) {
-		const status = error.statusCode || 500;
-		res.status(status).json({
-			error:
-				status === 401
-					? error.message
-					: "Unexpected error during pad extraction",
-			details: error.message,
-		});
-	} finally {
-		cleanupTempDir(tempDir);
-	}
-});
-
-/**
- * POST /api/board/glb
- *
- * Extracts a .kicad_pcb at a commit (local git or GitHub) and returns it as a
- * binary glTF with every copper layer, mask, silkscreen and component model,
- * for the frontend 3D hologram viewer. Same request body as /pads.
- */
-router.post("/glb", async (req, res) => {
-	const { repoPath, commit, relativeFilePath, owner, repo, filePath } =
-		req.body;
-	const token =
-		req.headers.authorization?.replace(/^Bearer\s+/i, "") || req.body.token;
-	const targetFile = relativeFilePath || filePath;
-
-	const validationError = validatePadRequest({
-		commit,
-		targetFile,
-		repoPath,
-		owner,
-		repo,
-	});
-	if (validationError) {
-		return res.status(400).json({ error: validationError });
-	}
-
-	const uniqueId = `glb_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-	const fileBasename = path.basename(targetFile);
-	const tempDir = path.join(config.tempStorageDir, uniqueId);
-	const tempFilePath = path.join(tempDir, fileBasename);
-
-	try {
-		await retrieveBoardFile({
-			owner,
-			repo,
-			token,
-			repoPath,
-			commit,
-			targetFile,
-			tempFilePath,
-			uniqueId,
-			fileBasename,
-		});
-		const { glbPath, cached, durationMs } = await exportBoardGlb(tempFilePath);
-		res.set("X-Banana-Glb-Cached", cached ? "1" : "0");
-		res.set("X-Banana-Glb-Ms", String(Math.round(durationMs)));
-		res.type("model/gltf-binary").sendFile(glbPath);
-	} catch (error) {
-		const status = error.statusCode || 500;
-		res.status(status).json({
-			error:
-				status === 401 ? error.message : "Unexpected error during 3D export",
-			details: error.message,
-		});
-	} finally {
-		cleanupTempDir(tempDir);
-	}
-});
-
-export default router;
+const defaultRouter = createBoardRouter();
+export default defaultRouter;
